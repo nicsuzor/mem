@@ -5,6 +5,34 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.94](https://github.com/nicsuzor/mem/compare/mem-v0.3.93...mem-v0.3.94) (2026-09-12)
+
+
+### Bug Fixes
+
+* **excalidraw:** gate parse_canvas with structural validation (route B) ([#619](https://github.com/nicsuzor/mem/issues/619)) ([b502293](https://github.com/nicsuzor/mem/commit/b502293ec2ce000df475c33bb2589de61468e849))
+* **mcp:** allow agents to set intent bands under Nic's standing delegation ([d07f55a](https://github.com/nicsuzor/mem/commit/d07f55a1f88607602465e4bbcd9e84a3e45acd92))
+* **mcp:** make full_rebuild_epoch bump atomic with the graph swap ([b5418a3](https://github.com/nicsuzor/mem/commit/b5418a360a77979df27d6e5920c87a450b865ecd))
+* **mcp:** make full_rebuild_epoch bump atomic with the graph swap ([d7ac5fb](https://github.com/nicsuzor/mem/commit/d7ac5fb6d66b562db7f79e184324f533f5479b28))
+* **mcp:** stop claim_task scraping body #NNNN refs into tags; fix Tier-2/refresh_graph tag-index race ([c493b9e](https://github.com/nicsuzor/mem/commit/c493b9ee7622d78438ebc610bbb24ad2db3a012d))
+* **mcp:** tag-index integrity — claim_task hashtag scrape + Tier-2/refresh_graph race ([3222125](https://github.com/nicsuzor/mem/commit/32221255a11c619fd22db1dce5ea72c63c546bc1))
+* **ranking:** blocked leaves must not keep received/own-edge conduit value ([6dd5be6](https://github.com/nicsuzor/mem/commit/6dd5be6baca3376f44f22842e7dd716f24fb5fa2))
+* **ranking:** bring code and specs into line with the 11-12 Sept rulings ([bc93735](https://github.com/nicsuzor/mem/commit/bc93735b61437028c0a0526f51567026566185c9))
+* **ranking:** drop the committed-only filter from value_lineage pricing ([9eb00de](https://github.com/nicsuzor/mem/commit/9eb00de72ea58b7dd18f047958079335489fd77b))
+* **ranking:** fire stakeholder_waiting only when a stakeholder is named ([47e3bed](https://github.com/nicsuzor/mem/commit/47e3bedf9fe51f521b82596b0584ac99c68f41fb))
+* **ranking:** pin contributors of an overdue committed SEV4 target at 10,000 ([1d9e062](https://github.com/nicsuzor/mem/commit/1d9e062e73e7caf85afe20fe8ab79f32ea53781a))
+* **ranking:** replace deadline tier with value-scaled pressure multiplier ([#620](https://github.com/nicsuzor/mem/issues/620)) ([97707a5](https://github.com/nicsuzor/mem/commit/97707a5120b15f7ad2337381dabe1267414f2b47))
+* **ranking:** route urgency and value_lineage to ready leaves, not containers ([aa2b0a1](https://github.com/nicsuzor/mem/commit/aa2b0a1e0b2bdf1b2f40ddaaf4c5180a356c5845))
+* **ranking:** stop intent cascading to children; gate ready-node weight on blocked status ([91baf29](https://github.com/nicsuzor/mem/commit/91baf29b086725ab28d2ce7d769f2623991eead6))
+* **ranking:** stop intent cascading to children; weight ready nodes by parent intent, never a blocked node ([ae758a1](https://github.com/nicsuzor/mem/commit/ae758a1af79eb43a1e879d1cebf6fb734f7554df))
+* **tests:** make the Tier-2 concurrent refresh_graph test actually discriminate the TOCTOU fix ([4fa1469](https://github.com/nicsuzor/mem/commit/4fa14692885b393457a5f5000f2c502bdbc7da6c))
+
+
+### Documentation
+
+* **ranking:** correct stale compute_value_lineage line reference ([2f331b2](https://github.com/nicsuzor/mem/commit/2f331b23582b687fa4f712ff6c270b12e86c962f))
+* **ranking:** repair spec drift between ranking.md, multi-parent.md and code ([4d82e3f](https://github.com/nicsuzor/mem/commit/4d82e3f2f945b1e68f3d4aae4dcfecc13d415101))
+
 ## [0.3.93](https://github.com/nicsuzor/mem/compare/mem-v0.3.92...mem-v0.3.93) (2026-09-10)
 
 
