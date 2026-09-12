@@ -1021,6 +1021,164 @@ project: aops
     }
 
     #[test]
+    fn test_excalidraw_mcp_tools_reject_invalid_canvas() {
+        // task_aops_d7b96134 route B: `parse_canvas` is now the mandatory
+        // validation gate for every MCP ingestion path. Prove it end-to-end
+        // through the actual tool handlers, not just the library function.
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::create_dir_all(root.join("tasks")).unwrap();
+        let graph = GraphStore::build(&[], root);
+        let store = VectorStore::new(3);
+        let embedder = Embedder::new_dummy();
+        let server = PkbSearchServer::new(
+            Arc::new(RwLock::new(store)),
+            Arc::new(embedder),
+            root.to_path_buf(),
+            root.join("db.bin"),
+            Arc::new(RwLock::new(graph)),
+        );
+
+        // Acceptance criterion: `{}` no longer deserializes as a valid canvas.
+        let diff_err = server
+            .handle_diff_excalidraw(&serde_json::json!({ "canvas": "{}" }))
+            .expect_err("diff_excalidraw must reject {} as a canvas");
+        assert!(
+            diff_err.message.contains("elements") || diff_err.message.contains("type"),
+            "error should explain the missing top-level shape, got: {}",
+            diff_err.message
+        );
+
+        // Acceptance criterion: sync_excalidraw cannot write from an unvalidated
+        // canvas — {} must be rejected before any diff or disk write occurs.
+        let sync_err = server
+            .handle_sync_excalidraw(&serde_json::json!({ "canvas": "{}" }))
+            .expect_err("sync_excalidraw must reject {} as a canvas");
+        assert!(
+            sync_err.message.contains("elements") || sync_err.message.contains("type"),
+            "error should explain the missing top-level shape, got: {}",
+            sync_err.message
+        );
+
+        // Acceptance criterion: a canvas Excalidraw refuses to open is rejected,
+        // naming the offending element. Half-bound arrow ("bad-arrow") is one of
+        // the crash-causing invariants documented in specs/excalidraw-tooling.md.
+        let half_bound_canvas = serde_json::json!({
+            "type": "excalidraw",
+            "version": 2,
+            "elements": [
+                {
+                    "id": "shape-1",
+                    "type": "rectangle",
+                    "x": 0.0, "y": 0.0, "width": 100.0, "height": 50.0
+                },
+                {
+                    "id": "bad-arrow",
+                    "type": "arrow",
+                    "x": 0.0, "y": 0.0, "width": 10.0, "height": 10.0,
+                    "startBinding": { "elementId": "shape-1", "focus": 0.0, "gap": 1.0 },
+                    "endBinding": null
+                }
+            ]
+        })
+        .to_string();
+
+        let sync_err = server
+            .handle_sync_excalidraw(&serde_json::json!({ "canvas": half_bound_canvas }))
+            .expect_err("sync_excalidraw must reject a half-bound arrow");
+        assert!(
+            sync_err.message.contains("bad-arrow") && sync_err.message.contains("half-bound"),
+            "error should name the offending arrow, got: {}",
+            sync_err.message
+        );
+
+        let diff_err = server
+            .handle_diff_excalidraw(&serde_json::json!({ "canvas": half_bound_canvas }))
+            .expect_err("diff_excalidraw must reject a half-bound arrow");
+        assert!(
+            diff_err.message.contains("bad-arrow") && diff_err.message.contains("half-bound"),
+            "error should name the offending arrow, got: {}",
+            diff_err.message
+        );
+    }
+
+    // Added during independent review (mem_pr_review_619_20260912): the original
+    // branch hard-rejected the two Evidence violation classes (stale
+    // boundElements backref, text/originalText drift) through this same handler
+    // path, which meant the real academicops.excalidraw canvas — which carries
+    // 41 such pre-existing, Excalidraw-tolerated violations and opens fine —
+    // would be refused wholesale by sync_excalidraw/diff_excalidraw the moment
+    // Nic tried to sync a hand edit. validate_file now reports these as
+    // warnings, not fatal errors; this proves it end-to-end through the MCP
+    // handler, not just the library function.
+    #[test]
+    fn test_sync_excalidraw_accepts_canvas_with_only_preexisting_drift() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::create_dir_all(root.join("tasks")).unwrap();
+        let graph = GraphStore::build(&[], root);
+        let store = VectorStore::new(3);
+        let embedder = Embedder::new_dummy();
+        let server = PkbSearchServer::new(
+            Arc::new(RwLock::new(store)),
+            Arc::new(embedder),
+            root.to_path_buf(),
+            root.join("db.bin"),
+            Arc::new(RwLock::new(graph)),
+        );
+
+        // Models the real academicops.excalidraw: a container whose boundElements
+        // lists an arrow that used to bind it but has since been rewired
+        // elsewhere (stale backref — accumulates silently, Excalidraw tolerates
+        // it), plus a text element whose wrapped `text` disagrees in *content*
+        // (not just wrapping) with `originalText`.
+        let drifted_canvas = serde_json::json!({
+            "type": "excalidraw",
+            "version": 2,
+            "elements": [
+                {
+                    "id": "container-1", "type": "rectangle",
+                    "x": 0.0, "y": 0.0, "width": 100.0, "height": 50.0,
+                    "boundElements": [{"id": "arrow-old", "type": "arrow"}]
+                },
+                {
+                    "id": "other-a", "type": "rectangle",
+                    "x": 200.0, "y": 0.0, "width": 100.0, "height": 50.0,
+                    "boundElements": [{"id": "arrow-old", "type": "arrow"}]
+                },
+                {
+                    "id": "other-b", "type": "rectangle",
+                    "x": 400.0, "y": 0.0, "width": 100.0, "height": 50.0,
+                    "boundElements": [{"id": "arrow-old", "type": "arrow"}]
+                },
+                {
+                    "id": "arrow-old", "type": "arrow",
+                    "x": 200.0, "y": 0.0, "width": 200.0, "height": 0.0,
+                    "startBinding": {"elementId": "other-a", "focus": 0.0, "gap": 1.0},
+                    "endBinding": {"elementId": "other-b", "focus": 0.0, "gap": 1.0}
+                },
+                {
+                    "id": "text-1", "type": "text",
+                    "x": 0.0, "y": 60.0, "width": 100.0, "height": 20.0,
+                    "text": "Renamed label",
+                    "originalText": "Original label"
+                }
+            ]
+        })
+        .to_string();
+
+        let result = server.handle_sync_excalidraw(&serde_json::json!({
+            "canvas": drifted_canvas, "dry_run": true
+        }));
+        assert!(
+            result.is_ok(),
+            "a canvas carrying only the two Evidence violation classes (no newly-introduced \
+             breakage) must not be rejected by sync_excalidraw — got: {:?}",
+            result.err().map(|e| e.message)
+        );
+    }
+
+    #[test]
     fn test_status_reports_build_and_operational_diagnostics() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
