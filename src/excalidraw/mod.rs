@@ -6,12 +6,15 @@
 //! - [`reader`]: 5-pass parser with container-bound text resolution, safe arrow typing, and duplicate ID detection.
 //! - [`diff`]: 3-way diff between base snapshot, canvas, and live graph with non-destructive node removal.
 //! - [`merge`]: Spiral placement for new nodes, cycle validation, and disk frontmatter sync.
+//! - [`validate`]: Ingestion-side structural validation gating `parse_canvas` — rejects a
+//!   canvas Excalidraw would refuse to open before any downstream diff or disk write sees it.
 
 pub mod diff;
 pub mod layout;
 pub mod merge;
 pub mod reader;
 pub mod schema;
+pub mod validate;
 
 pub use diff::{
     AddedNodeMutation, BaseSnapshot, DiffConflict, DiffEngine, EdgeMutation, GraphDiff,
@@ -21,17 +24,17 @@ pub use layout::{
     compute_sugiyama_layout, extract_ego_subgraph, generate_excalidraw_scene, LayoutConfig,
 };
 pub use merge::{
-    find_spiral_placement, merge_live_into_canvas, sync_diff_to_disk, validate_no_cycle,
-    SyncReport,
+    find_spiral_placement, merge_live_into_canvas, sync_diff_to_disk, validate_no_cycle, SyncReport,
 };
 pub use reader::{CanvasArrow, CanvasCard, CanvasFrame, CanvasModel, CanvasReader};
 pub use schema::{
     compute_card_dimensions, edge_color_style, is_excluded_status, is_red_ring, node_color_style,
     AppState, BoundElement, CustomData, ElementColorStyle, ExcalidrawElement, ExcalidrawFile,
     PkbCustomData, PointBinding, Roundness, CARD_HEIGHT, CARD_WIDTH, CARD_WIDTH_A, CARD_WIDTH_L,
-    CARD_WIDTH_M, CARD_WIDTH_S, FRAME_HEADER_HEIGHT, FRAME_PADDING, PORT_BOTTOM, PORT_IN,
-    PORT_OUT, PORT_TOP,
+    CARD_WIDTH_M, CARD_WIDTH_S, FRAME_HEADER_HEIGHT, FRAME_PADDING, PORT_BOTTOM, PORT_IN, PORT_OUT,
+    PORT_TOP,
 };
+pub use validate::{validate_file, validate_raw_shape};
 
 use crate::graph::{Edge, GraphNode};
 use crate::graph_store::GraphStore;
@@ -80,9 +83,34 @@ pub fn export_subgraph(
 }
 
 /// Parse an Excalidraw JSON string into a structured [`CanvasModel`].
+///
+/// Validation-gated (`task_aops_d7b96134`, route B): every caller — `diff_canvas`
+/// via `diff_excalidraw`, `sync_canvas` via `sync_excalidraw`, and
+/// `parse_base_snapshot`'s canvas fallback — goes through this single function,
+/// so there is no ingestion path that can reach a `CanvasModel` without clearing
+/// [`validate::validate_raw_shape`] and [`validate::validate_file`] first. A
+/// canvas Excalidraw itself would refuse to open is rejected here, naming the
+/// offending element(s), before any downstream diff or disk write sees it.
 pub fn parse_canvas(json_str: &str) -> Result<CanvasModel> {
+    validate::validate_raw_shape(json_str).map_err(|fails| {
+        anyhow::anyhow!(
+            "canvas failed shape validation ({} issue(s)):\n{}",
+            fails.len(),
+            fails.join("\n")
+        )
+    })?;
+
     let file: ExcalidrawFile =
         serde_json::from_str(json_str).context("Failed to deserialize Excalidraw JSON")?;
+
+    validate::validate_file(&file).map_err(|fails| {
+        anyhow::anyhow!(
+            "canvas failed structural validation ({} issue(s)):\n{}",
+            fails.len(),
+            fails.join("\n")
+        )
+    })?;
+
     Ok(CanvasReader::parse_file(file))
 }
 
