@@ -131,6 +131,16 @@ pub struct PkbSearchServer {
     /// used by the lost-patch race test to widen the window deterministically.
     #[cfg(test)]
     pub(crate) tier2_sleep_ms: Arc<std::sync::atomic::AtomicU64>,
+    /// Test-only: optional sleep injected into Tier-1 (`rebuild_graph`) and
+    /// the Tier-2 swap, positioned immediately before the `full_rebuild_epoch`
+    /// bump. On correct (lock-atomic) code this delay runs *inside* the write
+    /// lock, so a concurrent rebuild attempting to acquire the lock simply
+    /// blocks until the delay elapses and the bump has landed. Used by the
+    /// TOCTOU regression test to make the bump-vs-swap-atomicity window
+    /// deterministically observable instead of relying on a nanosecond-scale
+    /// race.
+    #[cfg(test)]
+    pub(crate) pre_epoch_bump_delay_ms: Arc<std::sync::atomic::AtomicU64>,
     /// Counter incremented each time a Tier-2 rebuild actually executes
     /// (not coalesced). Used by the bench harness and tests to verify
     /// coalescing is working.
@@ -197,6 +207,8 @@ impl PkbSearchServer {
             full_rebuild_epoch: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             #[cfg(test)]
             tier2_sleep_ms: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            #[cfg(test)]
+            pre_epoch_bump_delay_ms: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             tier2_executions: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             embed_pending: Arc::new(Mutex::new(HashMap::new())),
             embed_worker_running: Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -232,6 +244,17 @@ impl PkbSearchServer {
     #[doc(hidden)]
     pub fn set_tier2_sleep_ms(&self, ms: u64) {
         self.tier2_sleep_ms
+            .store(ms, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Test-only: inject a delay immediately before the `full_rebuild_epoch`
+    /// bump in both `rebuild_graph` (Tier-1) and the Tier-2 swap. See the
+    /// field doc comment on `pre_epoch_bump_delay_ms` for why this makes the
+    /// bump/swap atomicity property deterministically testable.
+    #[cfg(test)]
+    #[doc(hidden)]
+    pub fn set_pre_epoch_bump_delay_ms(&self, ms: u64) {
+        self.pre_epoch_bump_delay_ms
             .store(ms, std::sync::atomic::Ordering::Relaxed);
     }
 
@@ -383,15 +406,28 @@ impl PkbSearchServer {
             }
             let count = new_graph.node_count();
             *g = new_graph;
+            #[cfg(test)]
+            {
+                let ms = self
+                    .pre_epoch_bump_delay_ms
+                    .load(std::sync::atomic::Ordering::Relaxed);
+                if ms > 0 {
+                    std::thread::sleep(std::time::Duration::from_millis(ms));
+                }
+            }
+            // Bump the full-rebuild epoch atomically with the swap, still
+            // under the write lock, so any Tier-2 rebuild currently in
+            // flight (computed from a `nodes_cloned()` snapshot predating
+            // this disk-scanning rebuild) is guaranteed to observe the new
+            // epoch at its own swap-time check and discard its stale
+            // result instead of reverting what this rebuild just picked up
+            // from disk. Bumping after the lock is released leaves a
+            // window where a Tier-2 worker can pass its epoch check before
+            // the bump lands and then clobber this fresher graph.
+            self.full_rebuild_epoch
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             count
         };
-        // Bump the full-rebuild epoch so any Tier-2 rebuild currently in
-        // flight (computed from a `nodes_cloned()` snapshot predating this
-        // disk-scanning rebuild) detects it is stale at swap time and
-        // discards its result instead of reverting what this rebuild just
-        // picked up from disk.
-        self.full_rebuild_epoch
-            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         *self.last_reindex.write() = ReindexStatus {
             timestamp: chrono::Utc::now().to_rfc3339(),
             outcome: "ok".to_string(),
@@ -541,6 +577,8 @@ impl PkbSearchServer {
         let dirty_for_abort = dirty.clone();
         #[cfg(test)]
         let sleep_ms = self.tier2_sleep_ms.clone();
+        #[cfg(test)]
+        let pre_bump_delay_ms = self.pre_epoch_bump_delay_ms.clone();
 
         let do_rebuild_once = move || {
             let _t_total = std::time::Instant::now();
@@ -641,8 +679,19 @@ impl PkbSearchServer {
                 reclassified = true;
             }
             *g = merged;
-            drop(g);
+            #[cfg(test)]
+            {
+                let ms = pre_bump_delay_ms.load(Ordering::Relaxed);
+                if ms > 0 {
+                    std::thread::sleep(std::time::Duration::from_millis(ms));
+                }
+            }
+            // Bump atomically with the swap, still under the write lock —
+            // see the matching comment in `rebuild_graph` for why bumping
+            // after `drop(g)` reopens the TOCTOU window this epoch exists
+            // to close.
             full_rebuild_epoch.fetch_add(1, Ordering::SeqCst);
+            drop(g);
             let n_merged = initial_patched.len() + late.len();
             let _ = reclassified;
 
