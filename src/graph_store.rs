@@ -1930,18 +1930,19 @@ impl GraphStore {
         }
 
         let mut stakeholder_waiting: i64 = 0;
-        // Stakeholder waiting urgency & Human gate urgency: someone external is waiting
-        // on this task, or a structurally-identified human gate is awaiting decision/review.
-        // Base +2000 (someone is waiting / human decision required), growing +200/day, capped at +8000 total.
+        // Stakeholder waiting urgency: a named person is waiting on this task.
+        // Base +2000 (someone is waiting), growing +200/day, capped at +8000 total.
         //
-        // The per-day growth is the *lateness* signal. When a hard `due` already
-        // fired the deadline ramp, that lateness is counted there — so we suppress
-        // the per-day growth and keep only the +2000 base, avoiding the additive
-        // double-count of one "late to an external party" fact (mem-830588f3). The
-        // ramp's distinct job is the "I promised, but there's no formal deadline"
-        // case, which has no `due` and so keeps its full time-growth.
-        let is_waiting_or_human_gate = node.stakeholder.is_some() || node.is_human_gate();
-        if is_waiting_or_human_gate {
+        // Ruling (Nic, 2026-09-11, mem_537e44a9 "Verdict: stakeholder_waiting /
+        // human gate"): this clock fires only when `stakeholder` is actually
+        // set — never merely because `is_human_gate()` is true. A bare
+        // `decision`-tagged node (or any `status: review` node) with no named
+        // stakeholder has nobody waiting on it, so it earns no waiting clock.
+        // `is_human_gate()` continues to serve the courtesy-decay gate only
+        // (`has_real_stakes`, above) and `focus_picks` surfacing — never this
+        // accrual.
+        let is_waiting = node.stakeholder.is_some();
+        if is_waiting {
             if deadline_ramp_fired {
                 // Deadline ramp already counts lateness; keep only the base.
                 stakeholder_waiting = 2000;
@@ -3726,7 +3727,20 @@ fn compute_urgency(nodes: &mut [GraphNode]) {
         }
     }
 
-    // 2. Pre-build adjacency for propagation (Urgency flows from blocked node to blocker)
+    // 2. Pre-build adjacency for propagation (Urgency flows from blocked node to blocker).
+    //
+    // `children` (parent -> child) is deliberately NOT a propagation edge here.
+    // Ruling (Nic, 2026-09-12, mem_537e44a9 "Verdict: value flow to
+    // children"): "children inherit from their parent, on the blocker
+    // basis -- a child is what advances the parent, so it carries the
+    // parent's pressure. Parent inheriting from children (x0.5) is the
+    // wrong direction." The old `children` entry let a parent pull in half
+    // of whatever S_lex reached its child, so an epic silently absorbed a
+    // child's contributes_to-derived urgency. The correct direction --
+    // value landing on the ready, unblocked leaf beneath a priced container
+    // rather than staying on the container -- is implemented below as an
+    // explicit downward pass over the (now children-free) result, mirroring
+    // `compute_effective_intent`'s ancestor-pressure channel.
     let adj: Vec<Vec<(usize, f64)>> = nodes
         .iter()
         .map(|n| {
@@ -3739,11 +3753,6 @@ fn compute_urgency(nodes: &mut [GraphNode]) {
             for sbid in &n.soft_blocks {
                 if let Some(&idx) = id_to_idx.get(sbid) {
                     neighbors.push((idx, 0.3));
-                }
-            }
-            for cid in &n.children {
-                if let Some(&idx) = id_to_idx.get(cid) {
-                    neighbors.push((idx, 0.5));
                 }
             }
             for ct in &n.contributes_to {
@@ -3778,6 +3787,21 @@ fn compute_urgency(nodes: &mut [GraphNode]) {
     let mut propagated_s_lex = s_lex.clone();
     let mut min_slacks = slacks.clone();
 
+    // Tracks, per node, whether the strongest path found so far originates
+    // from a committed-SEV4 target (`s_lex == 10000.0`, the only way that
+    // exact value arises, per the S_lex step function above) that is ITSELF
+    // at or past its deadline (`slacks[source] <= 0.0`). Ruling (Nic,
+    // 2026-09-12, mem_537e44a9 "SEV4 overdue pin reaches contributors"):
+    // when a contributor's propagated S_lex derives from such a target, the
+    // contributor is pinned to exactly 10,000 too — the same pin the
+    // target's own node gets — rather than `10000 * edge_weight * 10`
+    // uncapped (75,000 on an Expected/0.75 edge). Seeded from each node's
+    // own baseline so a target that is itself committed-SEV4-overdue starts
+    // pinned before any relaxation runs.
+    let mut pinned_via_committed_sev4_overdue: Vec<bool> = (0..num_nodes)
+        .map(|i| s_lex[i] == 10000.0 && slacks[i] <= 0.0)
+        .collect();
+
     let mut best_factor = vec![-1.0_f64; num_nodes];
     let mut queue = VecDeque::new();
 
@@ -3802,6 +3826,8 @@ fn compute_urgency(nodes: &mut [GraphNode]) {
             let s = s_lex[tid] * path_factor;
             if s > propagated_s_lex[start_idx] {
                 propagated_s_lex[start_idx] = s;
+                pinned_via_committed_sev4_overdue[start_idx] =
+                    s_lex[tid] == 10000.0 && slacks[tid] <= 0.0;
             }
             // Update Least Slack Time (min slack in downstream cone)
             if slacks[tid] < min_slacks[start_idx] {
@@ -3848,14 +3874,111 @@ fn compute_urgency(nodes: &mut [GraphNode]) {
             10.0
         };
         // Apply committed SEV4 guard at final site too (spec §1.3):
-        // overdue committed SEV4 stays at constant 10000, not unbounded.
+        // overdue committed SEV4 stays at constant 10000, not unbounded —
+        // and so does any contributor whose propagated S_lex derives from
+        // one (`pinned_via_committed_sev4_overdue`, seeded/updated above),
+        // so contributors compete among themselves at the same top band
+        // instead of one uncapped `edge_weight x 10` blowing past it.
         let is_committed_sev4 =
             nodes[i].severity == Some(4) && nodes[i].goal_type.as_deref() == Some("committed");
-        if is_committed_sev4 && slack <= 0.0 {
+        if (is_committed_sev4 && slack <= 0.0) || pinned_via_committed_sev4_overdue[i] {
             nodes[i].urgency = 10000.0;
         } else {
             nodes[i].urgency = propagated_s_lex[i] * f_s;
         }
+    }
+
+    // 5. Conduit pass (outcome 5, mem_fix_value_flows_to_ready_leaves):
+    // "A target's weight lands on the ready, unblocked leaves that advance
+    // it -- never on the container, never on anything itself blocked. A
+    // node with open children is not doable ... that structural fact makes
+    // it a conduit, not a competitor" (Nic, 2026-09-12, mem_537e44a9
+    // "Verdict: value flow to children"). A container (`!leaf`, i.e. it has
+    // children) does not compete on the urgency computed above -- that
+    // value is pushed down instead to the ready, unblocked leaf(s)
+    // beneath it, exactly mirroring `compute_effective_intent`'s
+    // ancestor-pressure channel (walk `parent` to the root, take the
+    // strongest value found) but carrying `urgency` instead of `intent`.
+    // A blocked leaf is itself a conduit too and inherits nothing from this
+    // pass, matching effective_intent's existing "blocked gets neither
+    // channel" gate.
+    let raw_urgency: Vec<f64> = nodes.iter().map(|n| n.urgency).collect();
+    let is_blocked = compute_effectively_blocked(nodes, &id_to_idx);
+
+    for i in 0..num_nodes {
+        // Container test reads `children` directly rather than the cached
+        // `node.leaf` flag: `leaf` is only populated by the full build
+        // pipeline (`compute_inverses`, which always runs before this
+        // function there), but `compute_urgency` is also exercised directly
+        // in tests against hand-built `GraphNode`s where `leaf` was never
+        // set. Reading `children` keeps this function self-contained and
+        // correct either way (`leaf` is defined as `children.is_empty()`).
+        if !nodes[i].children.is_empty() {
+            // Container: does not compete for ranking. Its value was
+            // captured in `raw_urgency` above and is pushed to descendants
+            // by the loop below.
+            nodes[i].urgency = 0.0;
+            continue;
+        }
+        if graph::is_completed(nodes[i].status.as_deref()) {
+            nodes[i].urgency = 0.0;
+            continue;
+        }
+        if is_blocked[i] {
+            // Conduit gate: a blocked leaf is itself a conduit, not a
+            // competitor (doctrine: "never on anything itself blocked";
+            // fix task AC: "receives no value from its parent or target").
+            // Mirrors `compute_effective_intent`'s blocked gate, which
+            // keeps "its own stated intent, full stop" rather than zeroing
+            // outright: a blocked leaf keeps only its OWN intrinsic
+            // severity/deadline baseline (`s_lex[i]` at its OWN slack,
+            // recomputed here rather than reused from `raw_urgency[i]`),
+            // never a boost it merely *received* via propagation through
+            // `blocks`/`soft_blocks`/`contributes_to` from something else
+            // (that would be "value from its target"). Without this
+            // distinction, a target-like node with its own severity would
+            // wrongly lose its own signal for being technically blocked
+            // (regression risk: `test_urgency_propagation`), while a
+            // blocked contributor whose only urgency came from a direct
+            // edge to a priced target would wrongly keep a boost it cannot
+            // currently act on (the bug this pass exists to close).
+            let own_slack = slacks[i];
+            let own_f = if own_slack > 0.0 {
+                (k * (SAFE_HORIZON - own_slack)).exp().max(0.001)
+            } else {
+                10.0
+            };
+            let own_is_committed_sev4 =
+                nodes[i].severity == Some(4) && nodes[i].goal_type.as_deref() == Some("committed");
+            nodes[i].urgency = if own_is_committed_sev4 && own_slack <= 0.0 {
+                10000.0
+            } else {
+                s_lex[i] * own_f
+            };
+            continue;
+        }
+
+        let mut best = raw_urgency[i];
+        let mut current = nodes[i].parent.clone();
+        let mut climbed: HashSet<usize> = HashSet::new();
+        let mut depth = 0usize;
+        while let Some(pid) = current {
+            if depth >= MAX_CONE_DEPTH {
+                break;
+            }
+            let Some(&pidx) = id_to_idx.get(&pid) else {
+                break;
+            };
+            if !climbed.insert(pidx) {
+                break; // cycle guard
+            }
+            if raw_urgency[pidx] > best {
+                best = raw_urgency[pidx];
+            }
+            current = nodes[pidx].parent.clone();
+            depth += 1;
+        }
+        nodes[i].urgency = best;
     }
 }
 
@@ -3868,18 +3991,28 @@ fn compute_urgency(nodes: &mut [GraphNode]) {
 /// phase (the diagnosed failure this phase exists to fix).
 const K_VALUE_LINEAGE: f64 = 10000.0;
 
-/// Value lineage (outcome 4): standing weight elicited on a committed
-/// target/goal node flows multiplicatively to its direct `contributes_to`
-/// contributors — `contribution size (edge stated_weight) × confidence
-/// discount × target standing_weight`, scaled by [`K_VALUE_LINEAGE`].
+/// Value lineage (outcome 4): standing weight elicited on ANY target/goal
+/// node that carries one flows multiplicatively to its direct
+/// `contributes_to` contributors — `contribution size (edge stated_weight)
+/// × confidence discount × target standing_weight`, scaled by
+/// [`K_VALUE_LINEAGE`]. Pricing is not gated on `goal_type` (ruling, Nic,
+/// 2026-09-12, mem_537e44a9 "Verdict: goal_type gating": "price should
+/// operate even when targets have null category"); an unpriced target
+/// (`standing_weight: None`) still contributes nothing, so this is Zero
+/// Defaults / Zero Inference, not a relaxed default.
 ///
-/// **One hop only.** This walks each node's own `contributes_to` edges
-/// directly; it does not chain transitively through a contributor's own
-/// further `contributes_to` edges. Standing weight is priced on committed
-/// targets specifically (the elicitation instrument's scope guard); a
-/// contributor of a contributor of a priced target is not itself credited
-/// unless it also has a direct edge to a priced target. This keeps the
-/// computation a local per-node scan rather than a new cone-walk mechanism.
+/// **One hop from the target, then down to the nearest ready leaf.** The
+/// pricing walk itself is one hop: it reads each node's own `contributes_to`
+/// edges directly and does not chain transitively through a contributor's
+/// own further `contributes_to` edges (a contributor of a contributor of a
+/// priced target earns nothing unless it also has a direct edge). But the
+/// edge-holder does not necessarily keep the resulting value for itself: if
+/// the edge-holder is a container (has open children), the value is instead
+/// pushed down to its nearest ready, unblocked leaf descendant (Nic,
+/// 2026-09-12, mem_537e44a9 "Verdict: value flow to children" — see the
+/// conduit pass at the end of this function). This is still a local
+/// per-node scan (one `contributes_to` read plus one `parent`-chain walk
+/// per node), not a new whole-graph cone-walk mechanism.
 ///
 /// **Sibling-contributor semantics (outcome 6):** independent and additive.
 /// Multiple nodes contributing to the same target are each scored off their
@@ -3900,14 +4033,21 @@ const K_VALUE_LINEAGE: f64 = 10000.0;
 /// standing weight, which stays strictly `None`-means-zero (Zero Defaults /
 /// Zero Inference, pkb-standing-weight-elicitation-instrument §1).
 fn compute_value_lineage(nodes: &mut [GraphNode]) {
-    // Only committed targets/goals are eligible to be priced (elicitation
-    // instrument §1 scope guard) — a standing_weight parsed on a
-    // non-committed goal_type is ignored here (defense in depth; nothing
-    // upstream currently writes it there, but this keeps the doctrine true
-    // even if it does).
+    // Any target/goal carrying a priced `standing_weight` is eligible,
+    // regardless of `goal_type` — null included. Ruling (Nic, 2026-09-12,
+    // mem_537e44a9 "Verdict: goal_type gating"), verbatim: "price should
+    // operate even when targets have null category. we shouldn't encourage
+    // that state, but while it's legal, we shouldn't always count [i.e.
+    // discount] targets that exist." The `committed` gate stays only on the
+    // three SEV4 lexicographic-override sites (`severity_gate`, `S_lex`
+    // base in `compute_urgency`, and the overdue clamp above) — those have
+    // a recorded rationale ("prevents moonshots from hijacking the focus
+    // queue", specs/multi-parent.md §1.3); value_lineage pricing itself
+    // never had one, and an unpriced target already contributes nothing
+    // (Zero Defaults / Zero Inference) so this only unlocks targets Nic has
+    // actually elicited a price for.
     let standing_weights: HashMap<&str, f64> = nodes
         .iter()
-        .filter(|n| n.goal_type.as_deref() == Some("committed"))
         .filter_map(|n| n.standing_weight.map(|w| (n.id.as_str(), w)))
         .collect();
 
@@ -3926,6 +4066,70 @@ fn compute_value_lineage(nodes: &mut [GraphNode]) {
                 total += ct.numeric_weight() * confidence * target_weight;
             }
             lineage[i] = total * K_VALUE_LINEAGE;
+        }
+    }
+
+    // Conduit pass (outcome 5, mem_fix_value_flows_to_ready_leaves): a
+    // priced edge held by a container (`!leaf`, i.e. it has children) does
+    // not land on the container. "A target's weight lands on the ready,
+    // unblocked leaves that advance it -- never on the container, never on
+    // anything itself blocked" (Nic, 2026-09-12, mem_537e44a9 "Verdict:
+    // value flow to children"). This replaces the previous strict one-hop
+    // reading with "one hop from the edge-holder, then down to the nearest
+    // ready/unblocked leaf beneath it" -- still a local scan (walk `parent`
+    // to the root once per node), not a new whole-graph cone walk.
+    if !standing_weights.is_empty() {
+        let id_to_idx: HashMap<String, usize> = nodes
+            .iter()
+            .enumerate()
+            .map(|(i, n)| (n.id.clone(), i))
+            .collect();
+        let is_blocked = compute_effectively_blocked(nodes, &id_to_idx);
+        let raw_lineage = lineage.clone();
+
+        for i in 0..nodes.len() {
+            // See the equivalent comment in `compute_urgency`'s conduit
+            // pass: read `children` directly rather than the cached `leaf`
+            // flag so this stays correct when exercised directly in tests
+            // against hand-built `GraphNode`s (where `leaf` was never set
+            // by the full build pipeline's `compute_inverses`).
+            if !nodes[i].children.is_empty() {
+                lineage[i] = 0.0; // container: conduit, does not compete
+                continue;
+            }
+            if graph::is_completed(nodes[i].status.as_deref()) || is_blocked[i] {
+                // Conduit gate: a blocked/completed leaf is itself a
+                // conduit, not a competitor (doctrine: "never on anything
+                // itself blocked"). Zero the leaf's OWN direct-edge value
+                // (computed above, before this pass ran) — not just skip
+                // inheriting from an ancestor. Without this, a blocked node
+                // holding its own priced `contributes_to` edge kept full
+                // credit for work it cannot currently advance.
+                lineage[i] = 0.0;
+                continue;
+            }
+
+            let mut best = raw_lineage[i];
+            let mut current = nodes[i].parent.clone();
+            let mut climbed: HashSet<usize> = HashSet::new();
+            let mut depth = 0usize;
+            while let Some(pid) = current {
+                if depth >= MAX_CONE_DEPTH {
+                    break;
+                }
+                let Some(&pidx) = id_to_idx.get(&pid) else {
+                    break;
+                };
+                if !climbed.insert(pidx) {
+                    break; // cycle guard
+                }
+                if raw_lineage[pidx] > best {
+                    best = raw_lineage[pidx];
+                }
+                current = nodes[pidx].parent.clone();
+                depth += 1;
+            }
+            lineage[i] = best;
         }
     }
 
@@ -6493,6 +6697,51 @@ mod tests {
         assert_eq!(sc, 10600, "deadline ramp alone (13d overdue)");
     }
 
+    /// Ruling (Nic, 2026-09-11, mem_537e44a9 "Verdict: stakeholder_waiting /
+    /// human gate"): the stakeholder-waiting clock fires only when
+    /// `stakeholder` is actually named. A bare `status: review` node (which
+    /// makes `is_human_gate()` true) with no stakeholder has nobody waiting
+    /// on it and must contribute zero `stakeholder_waiting`; a node with a
+    /// stakeholder set is unchanged.
+    #[test]
+    fn test_stakeholder_waiting_fires_only_when_stakeholder_named() {
+        use crate::graph::GraphNode;
+        use chrono::Utc;
+
+        let today = Utc::now().date_naive();
+        let d10_ago = (today - chrono::Duration::days(10))
+            .format("%Y-%m-%d")
+            .to_string();
+
+        // A: `status: review` (is_human_gate() == true), NO stakeholder.
+        // Must earn NO stakeholder_waiting credit despite being a human gate.
+        let mut a = GraphNode::default();
+        a.status = Some("review".to_string());
+        a.waiting_since = Some(d10_ago.clone());
+
+        // B: same waiting_since, but WITH a named stakeholder. Must still
+        // ramp exactly as before: 2000 + min(10*200, 6000) = 4000.
+        let mut b = GraphNode::default();
+        b.status = Some("review".to_string());
+        b.stakeholder = Some("nic".to_string());
+        b.waiting_since = Some(d10_ago);
+
+        let mut nodes = vec![a, b];
+        GraphStore::compute_focus_scores(&mut nodes);
+
+        let sa = nodes[0].focus_score.unwrap();
+        let sb = nodes[1].focus_score.unwrap();
+
+        assert_eq!(
+            sa, 0,
+            "status:review with no stakeholder must contribute zero stakeholder_waiting, got {sa}"
+        );
+        assert_eq!(
+            sb, 4000,
+            "named stakeholder still ramps 2000 + 10d*200 = 4000, got {sb}"
+        );
+    }
+
     /// mem-830588f3 binding proof (calibration target, epic aops-496a64ee).
     /// Re-scores the live over-ranked node and a sibling under the FIXED formula,
     /// using the exact scoring inputs pulled from the PKB MCP on 2026-06-10.
@@ -6597,10 +6846,16 @@ mod tests {
         );
     }
 
-    /// Task aops_fd5283aa: A structurally-identified human gate (awaiting human decision /
-    /// review / sign-off) must score in the waiting-urgency band (2000-8000) without
-    /// requiring hand-written `stakeholder` or other prohibited fields.
-    /// Ordinary tasks created by working agents must not earn this waiting bonus.
+    /// Task aops_fd5283aa, superseded by ruling (Nic, 2026-09-11,
+    /// mem_537e44a9 "Verdict: stakeholder_waiting / human gate"): a
+    /// structurally-identified human gate (awaiting human decision / review
+    /// / sign-off) with NO named `stakeholder` earns no waiting-urgency
+    /// bonus — nobody is actually waiting on it. Only a real `stakeholder`
+    /// field triggers the 2000-8000 band; `is_human_gate()` alone no longer
+    /// does (it still gates the courtesy-decay mechanism and `focus_picks`
+    /// surfacing, both unaffected here). Ordinary tasks created by working
+    /// agents must likewise not earn this bonus, so both groups now land in
+    /// the same place — pure age-staleness.
     #[test]
     fn test_human_gate_ranking_and_anti_gaming() {
         use crate::graph::GraphNode;
@@ -6695,18 +6950,21 @@ mod tests {
             "reference node with stakeholder: Nic scores 4814"
         );
 
-        // AC1: Structurally identified human gates score in the same 4814 band WITHOUT hand-written stakeholder
+        // AC1 (superseded): structurally-identified human gates WITHOUT a named
+        // stakeholder now score only age staleness (14) — the same as an
+        // ordinary task. `is_human_gate()` alone no longer earns the waiting
+        // band; a real `stakeholder` is required (compare score_3d6 above).
         assert_eq!(
-            score_72b, 4814,
-            "task_72b7886e must score 4814 (was 14 before fix)"
+            score_72b, 14,
+            "task_72b7886e (human gate, no stakeholder) must score only staleness (14)"
         );
         assert_eq!(
-            score_21d, 4814,
-            "task_21d3ece0 must score 4814 (was 14 before fix)"
+            score_21d, 14,
+            "task_21d3ece0 (human gate, no stakeholder) must score only staleness (14)"
         );
         assert_eq!(
-            score_ee2, 4814,
-            "aops_ee205f8f must score 4814 (was 14 before fix)"
+            score_ee2, 14,
+            "aops_ee205f8f (human gate, no stakeholder) must score only staleness (14)"
         );
 
         // AC2: Normal task created by working agent earns only age staleness (14 points), cannot game waiting urgency
@@ -6757,11 +7015,13 @@ mod tests {
             picks.contains(&"claimable-work-1".to_string()),
             "ready task must appear in focus_picks"
         );
-        // Human gate with 2000+ base score ranks higher than ordinary ready task with 0 score
-        assert_eq!(
-            picks[0], "human-gate-1",
-            "human gate with 2000+ score must rank above default P4 ready task"
-        );
+        // Ordering (superseded, mem_537e44a9 "Verdict: stakeholder_waiting /
+        // human gate"): this human gate carries no `stakeholder`, so it no
+        // longer earns an elevated waiting-urgency score purely from
+        // `is_human_gate()` — both nodes score 0 and neither outranks the
+        // other on that basis. `is_human_gate()` still drives *presence* in
+        // focus_picks and *exclusion* from ready_tasks() (AC3/AC4 below),
+        // which is what this test otherwise verifies.
 
         // AC4: ready_tasks() must strictly exclude the review-status human gate (staying non-claimable by polecats)
         let ready_ids: Vec<&str> = graph.ready_tasks().iter().map(|n| n.id.as_str()).collect();
@@ -7359,6 +7619,132 @@ mod tests {
             "in_progress task with SEV4 committed urgency must appear in focus_picks via status-independent scan");
     }
 
+    /// Ruling (Nic, 2026-09-12, mem_537e44a9 "SEV4 overdue pin reaches
+    /// contributors"): when a committed SEV4 target is past its deadline,
+    /// its contributors are lifted to the top band but capped at exactly
+    /// 10,000 — the same pin the target's own node gets — instead of
+    /// `10000 * edge_weight * 10` uncapped (75,000 on an Expected/0.75
+    /// edge, as this test's contributor would have scored pre-fix).
+    #[test]
+    fn test_sev4_overdue_pin_reaches_contributors() {
+        use crate::graph::GraphNode;
+        use chrono::Utc;
+
+        let today = Utc::now().date_naive();
+        // Overdue: slack = (-2) - 3(default effort) = -5 <= 0.
+        let due_2d_ago = (today - chrono::Duration::days(2))
+            .format("%Y-%m-%d")
+            .to_string();
+
+        let target = GraphNode {
+            id: "target-sev4-overdue".to_string(),
+            status: Some("ready".to_string()),
+            severity: Some(4),
+            goal_type: Some("committed".to_string()),
+            due: Some(due_2d_ago),
+            ..Default::default()
+        };
+        let contributor = GraphNode {
+            id: "contributor".to_string(),
+            status: Some("ready".to_string()),
+            contributes_to: vec![ct_edge("target-sev4-overdue", "Expected")],
+            ..Default::default()
+        };
+
+        let mut nodes = vec![target, contributor];
+        compute_urgency(&mut nodes);
+
+        let target_urgency = nodes
+            .iter()
+            .find(|n| n.id == "target-sev4-overdue")
+            .unwrap()
+            .urgency;
+        let contributor_urgency = nodes.iter().find(|n| n.id == "contributor").unwrap().urgency;
+
+        assert_eq!(
+            target_urgency, 10000.0,
+            "target's own node stays pinned at exactly 10000, got {target_urgency}"
+        );
+        assert_eq!(
+            contributor_urgency, 10000.0,
+            "contributor on an Expected (0.75) edge must be pinned to exactly 10000, \
+             not the uncapped 10000 * 0.75 * 10 = 75000, got {contributor_urgency}"
+        );
+    }
+
+    /// Ruling (Nic, 2026-09-12, mem_537e44a9 "Verdict: value flow to
+    /// children"): urgency lands on the ready, unblocked leaf that advances
+    /// a priced target, not on the container holding the `contributes_to`
+    /// edge, and not on a blocked sibling. Also proves the removal of the
+    /// old "parent inherits from children x0.5" channel: the epic's urgency
+    /// comes ONLY from its own edge to the target (pushed down to the
+    /// leaf), never inflated further by a child's own severity.
+    #[test]
+    fn test_urgency_flows_from_container_to_ready_leaf_not_blocked_sibling() {
+        use crate::graph::GraphNode;
+        use chrono::Utc;
+
+        let today = Utc::now().date_naive();
+        let due_5d = (today + chrono::Duration::try_days(5).unwrap())
+            .format("%Y-%m-%d")
+            .to_string();
+
+        let target = GraphNode {
+            id: "target-committed".to_string(),
+            status: Some("ready".to_string()),
+            severity: Some(4),
+            goal_type: Some("committed".to_string()),
+            due: Some(due_5d),
+            ..Default::default()
+        };
+        let epic = GraphNode {
+            id: "epic".to_string(),
+            status: Some("ready".to_string()),
+            children: vec!["leaf-ready".to_string(), "leaf-blocked".to_string()],
+            contributes_to: vec![ct_edge("target-committed", "Expected")],
+            ..Default::default()
+        };
+        let leaf_ready = GraphNode {
+            id: "leaf-ready".to_string(),
+            status: Some("ready".to_string()),
+            parent: Some("epic".to_string()),
+            ..Default::default()
+        };
+        let leaf_blocked = GraphNode {
+            id: "leaf-blocked".to_string(),
+            status: Some("ready".to_string()),
+            parent: Some("epic".to_string()),
+            depends_on: vec!["some-unmet-dep".to_string()],
+            ..Default::default()
+        };
+
+        let mut nodes = vec![target, epic, leaf_ready, leaf_blocked];
+        compute_urgency(&mut nodes);
+
+        let u = |nodes: &[GraphNode], id: &str| nodes.iter().find(|n| n.id == id).unwrap().urgency;
+        let epic_raw_urgency = u(&nodes, "leaf-ready"); // leaf inherits exactly the epic's own value
+
+        assert_eq!(
+            u(&nodes, "epic"),
+            0.0,
+            "container must not keep the urgency from its own contributes_to edge"
+        );
+        assert!(
+            epic_raw_urgency > 100.0,
+            "ready leaf must inherit the epic's (non-zero) propagated urgency, got {epic_raw_urgency}"
+        );
+        // The blocked sibling keeps only its own trivial baseline (no
+        // severity of its own, no due date -> default slack 100 -> the
+        // floor-adjacent 1 x f(100) ~= 0.0046) -- it inherits nothing from
+        // the parent's edge to the target, unlike its ready sibling above.
+        let blocked_urgency = u(&nodes, "leaf-blocked");
+        assert!(
+            blocked_urgency < 1.0,
+            "blocked sibling must receive no inherited urgency from the parent or target \
+             (only its own trivial baseline), got {blocked_urgency}"
+        );
+    }
+
     // ── Phase 2: chain slack, unlock breadth, value lineage ──────────────────
 
     /// AC1: chain slack must be the true minimum across the whole blocking
@@ -7614,6 +8000,203 @@ mod tests {
             std::cmp::Ordering::Less,
             "c-high (contributes to the heavier-weighted target) must outrank c-low despite \
              otherwise identical fields"
+        );
+    }
+
+    /// Ruling (Nic, 2026-09-12, mem_537e44a9 "Verdict: goal_type gating"):
+    /// value_lineage prices any target carrying a `standing_weight`,
+    /// `goal_type` null included — the `committed` gate stays only on the
+    /// three SEV4 lexicographic-override sites, not on ordinary pricing.
+    #[test]
+    fn test_value_lineage_prices_null_goal_type_target() {
+        let t_null = GraphNode {
+            id: "t-null-goal-type".to_string(),
+            status: Some("ready".to_string()),
+            goal_type: None,
+            standing_weight: Some(0.60),
+            ..Default::default()
+        };
+        let c = GraphNode {
+            id: "c".to_string(),
+            status: Some("ready".to_string()),
+            confidence: Some(1.0),
+            contributes_to: vec![ct_edge("t-null-goal-type", "Certain")],
+            ..Default::default()
+        };
+
+        let mut nodes = vec![t_null, c];
+        compute_value_lineage(&mut nodes);
+
+        let vl = nodes.iter().find(|n| n.id == "c").unwrap().value_lineage;
+        assert!(
+            (vl - 6000.0).abs() < 1e-6,
+            "a priced target with null goal_type must still price its contributors \
+             (1.0 Certain x 1.0 confidence x 0.60 standing_weight x 10000 = 6000), got {vl}"
+        );
+    }
+
+    /// Ruling (Nic, 2026-09-12, mem_537e44a9 "Verdict: value flow to
+    /// children"): a target's weight lands on the ready, unblocked leaf
+    /// that advances it, never on the container holding the edge and never
+    /// on a blocked sibling. Modelled on the kitchen worked example: an
+    /// epic (container, two children) holds the `contributes_to` edge to a
+    /// priced target; one child is a ready, unblocked leaf, the other is
+    /// blocked. The ready leaf must inherit the epic's value_lineage and
+    /// outrank the epic; the blocked leaf must get none of it.
+    #[test]
+    fn test_value_lineage_flows_from_container_to_ready_leaf_not_blocked_sibling() {
+        let target = GraphNode {
+            id: "targ-leave".to_string(),
+            status: Some("ready".to_string()),
+            standing_weight: Some(0.60),
+            ..Default::default()
+        };
+        let epic = GraphNode {
+            id: "epic-copper".to_string(),
+            status: Some("ready".to_string()),
+            children: vec!["leaf-ready".to_string(), "leaf-blocked".to_string()],
+            contributes_to: vec![ct_edge("targ-leave", "Expected")],
+            ..Default::default()
+        };
+        let leaf_ready = GraphNode {
+            id: "leaf-ready".to_string(),
+            status: Some("ready".to_string()),
+            parent: Some("epic-copper".to_string()),
+            ..Default::default()
+        };
+        let leaf_blocked = GraphNode {
+            id: "leaf-blocked".to_string(),
+            status: Some("ready".to_string()),
+            parent: Some("epic-copper".to_string()),
+            depends_on: vec!["some-unmet-dep".to_string()],
+            ..Default::default()
+        };
+
+        let mut nodes = vec![target, epic, leaf_ready, leaf_blocked];
+        compute_value_lineage(&mut nodes);
+
+        let vl = |nodes: &[GraphNode], id: &str| {
+            nodes.iter().find(|n| n.id == id).unwrap().value_lineage
+        };
+        let expected = 0.75 * 1.0 * 0.60 * K_VALUE_LINEAGE; // Expected x confidence x standing_weight
+
+        assert_eq!(
+            vl(&nodes, "epic-copper"),
+            0.0,
+            "container must not keep the value_lineage from its own contributes_to edge"
+        );
+        assert!(
+            (vl(&nodes, "leaf-ready") - expected).abs() < 1e-6,
+            "ready, unblocked leaf must inherit the epic's value_lineage ({expected}), got {}",
+            vl(&nodes, "leaf-ready")
+        );
+        assert_eq!(
+            vl(&nodes, "leaf-blocked"),
+            0.0,
+            "blocked sibling must receive no value_lineage from the parent or target"
+        );
+
+        // Must actually move the rank: the leaf outranks the container.
+        GraphStore::compute_focus_scores(&mut nodes);
+        let ordering = GraphStore::focus_cmp(
+            nodes.iter().find(|n| n.id == "leaf-ready").unwrap(),
+            nodes.iter().find(|n| n.id == "epic-copper").unwrap(),
+        );
+        assert_eq!(
+            ordering,
+            std::cmp::Ordering::Less,
+            "the ready leaf must outrank the epic that holds the priced edge"
+        );
+    }
+
+    /// Review fix (mem_pr_review_618_20260912, independent review of #618):
+    /// PR #618's conduit pass zeroed a *container's* own value_lineage but,
+    /// for a blocked LEAF holding its OWN direct `contributes_to` edge to a
+    /// priced target, only skipped the "inherit from ancestor" climb --
+    /// leaving the leaf's own directly-computed value_lineage untouched.
+    /// Doctrine (mem_537e44a9 "Verdict: value flow to children"): "never on
+    /// anything itself blocked"; the fix task's own AC: "A blocked node
+    /// receives no value from its parent OR target". A blocked contributor
+    /// with a direct `Certain` edge to a standing_weight=0.60 target scored
+    /// 6000 pre-fix; must be exactly 0.
+    #[test]
+    fn test_blocked_leaf_own_direct_edge_value_lineage_is_zeroed() {
+        let target = GraphNode {
+            id: "targ-probe".to_string(),
+            status: Some("ready".to_string()),
+            standing_weight: Some(0.60),
+            ..Default::default()
+        };
+        let blocked_contributor = GraphNode {
+            id: "blocked-contributor".to_string(),
+            status: Some("ready".to_string()),
+            depends_on: vec!["unmet-dep".to_string()],
+            contributes_to: vec![ct_edge("targ-probe", "Certain")],
+            ..Default::default()
+        };
+        let mut nodes = vec![target, blocked_contributor];
+        compute_value_lineage(&mut nodes);
+        let vl = nodes
+            .iter()
+            .find(|n| n.id == "blocked-contributor")
+            .unwrap()
+            .value_lineage;
+        assert_eq!(
+            vl, 0.0,
+            "a blocked node must not keep its own direct-edge value_lineage \
+             (would have been 6000 pre-fix), got {vl}"
+        );
+    }
+
+    /// Review fix (mem_pr_review_618_20260912): a blocked leaf with its own
+    /// direct `contributes_to` edge to a SEV-bearing target kept the FULL
+    /// *propagated* urgency pre-fix (only the ancestor-inheritance climb
+    /// was skipped, not the boost received via its own edge) -- a blocked
+    /// contributor with no severity of its own scored ~8577 pre-fix, purely
+    /// from a target it cannot currently advance. Doctrine: "never on
+    /// anything itself blocked"; fix task AC: "receives no value from its
+    /// parent or target".
+    ///
+    /// The fix must not simply zero blocked nodes outright, though: a node
+    /// with genuine severity of its own (e.g. a committed-SEV4 node that
+    /// happens to carry an unmet `depends_on`) must keep reflecting its OWN
+    /// deadline pressure, mirroring `compute_effective_intent`'s blocked
+    /// gate ("its own stated intent, full stop") -- see
+    /// `test_urgency_propagation`'s `target-committed`, which is
+    /// (indirectly) blocked by its own contributor via a `blocks` edge and
+    /// must still score `urgency > 10000` from its own severity/due, not 0.
+    #[test]
+    fn test_blocked_leaf_loses_propagated_boost_keeps_own_baseline_urgency() {
+        use chrono::Utc;
+        let today = Utc::now().date_naive();
+        let due_5d = (today + chrono::Duration::try_days(5).unwrap())
+            .format("%Y-%m-%d")
+            .to_string();
+        let target = GraphNode {
+            id: "target-probe-2".to_string(),
+            status: Some("ready".to_string()),
+            severity: Some(3),
+            due: Some(due_5d),
+            ..Default::default()
+        };
+        let blocked_contributor = GraphNode {
+            id: "blocked-contributor-2".to_string(),
+            status: Some("ready".to_string()),
+            depends_on: vec!["unmet-dep".to_string()],
+            contributes_to: vec![ct_edge("target-probe-2", "Certain")],
+            ..Default::default()
+        };
+        let mut nodes = vec![target, blocked_contributor];
+        compute_urgency(&mut nodes);
+        let u = nodes
+            .iter()
+            .find(|n| n.id == "blocked-contributor-2")
+            .unwrap()
+            .urgency;
+        assert!(
+            u < 1.0,
+            "a blocked node with no severity of its own must not keep the boost \
+             received via its own edge to a target (would have been ~8577 pre-fix), got {u}"
         );
     }
 
