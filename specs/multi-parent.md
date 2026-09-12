@@ -66,7 +66,7 @@ Given a task with `contributes_to: [{to: <target-id>, weight: <verbal-term>, why
 A task contributing to a `severity: 4, goal_type: committed` target with `Slack ≤ 0` MUST have `urgency ≥ 10_000`. SEV0–3 targets and `aspirational`/`learning` SEV4 targets MUST NOT trigger the override.
 
 **AC-4 — `urgency` composes additively into `cost_of_delay`.**
-No `severity_bonus` term exists (drift item 5, `mem_537e44a9`; superseded by `severity_gate`, a binary admission — §1). `cost_of_delay` MUST equal `priority_base + deadline_score + stakeholder_waiting_bonus + round(urgency) + round(voi_value) + round(value_lineage)` (`ranking.md` §2, §2.9); `age_staleness_bonus` and `downstream_weight × 10` are tie-breakers, not `cost_of_delay` inputs (`ranking.md` §2, tuple element 4). The `voi_value` and `value_lineage` terms are `0` on any graph with no dependency topology and no priced targets respectively, so this reduces to the legacy form on such a graph (AC-9).
+No `severity_bonus` term exists (drift item 5, `mem_537e44a9`; superseded by `severity_gate`, a binary admission — §1). `cost_of_delay` MUST equal `intent_pressure + deadline_score + stakeholder_waiting_bonus + round(urgency) + round(voi_value) + round(value_lineage)` (`ranking.md` §2, §2.9); `age_staleness_bonus` and `downstream_weight × 10` are tie-breakers, not `cost_of_delay` inputs (`ranking.md` §2, tuple element 4). The `voi_value` and `value_lineage` terms are `0` on any graph with no dependency topology and no priced targets respectively, so this reduces to the legacy form on such a graph (AC-9).
 
 **AC-5 — Single sort signal, now a tuple.**
 The ranking signal is `focus_tuple = (severity_gate, deadline_band, cost_of_delay, tie_breakers)`, compared lexicographically (`ranking.md` §1, §6) — not the scalar `focus_score`, which is a derived display number and is never the sort key. `focus_picks`, `list_tasks` default sort, and the TUI Focus view MUST sort by `focus_tuple`. Filtering by component fields (e.g. `urgency_gte`) is permitted; sorting by them individually is not.
@@ -265,7 +265,7 @@ Implemented as `compute_focus_scores` in `mem/src/graph_store.rs` (companion: `c
 
 ```
 focus_score =
-    priority_base
+    intent_pressure
   + deadline_score
   + age_staleness_bonus (P2+ only)
   + downstream_weight × 10
@@ -276,12 +276,12 @@ focus_score =
 
 | Component | Range | Notes |
 |-----------|-------|-------|
-| `priority_base` | 0 / 5 000 / 10 000 | P0 = 10 000, P1 = 5 000, P2+ = 0 |
+| `intent_pressure` | 0 / 5 000 / 10 000 | Bands `effective_intent` (`ranking.md` §4.6), not raw `intent`: `effective_intent` 0 → 10 000, 1 → 5 000, else → 0. There is no `priority_base`/`own_priority` field; `effective_intent` is two independently gated channels (blocker + ancestor-pressure), not a `min` over a downstream cone containing `children` — see `ranking.md` §4.6. |
 | `deadline_score` | 0 – 12 000 | Overdue: 8 000 + min(days × 200, 4 000). Tight (effort ≥ days_until): 6 000. Near-tight: linear interp 2 000–6 000. ≤30 days: 1 000. `consequence` is explanatory prose and applies **no** multiplier — stakes reach a task via target `severity` through `contributes_to`. Decays toward the no-`due` values on a no-real-stakes node past 20 days overdue — see the courtesy-review decay note in §2.1. |
 | `age_staleness_bonus` | 0 – 200 | min(days_since_created, 200), P2+ only. Prevents old low-priority items being buried. |
 | `downstream_weight × 10` | 0 – ∞ | downstream_weight float × 10 to land in same magnitude as base scores. Not a count of dependents — see §2.2 and TAXONOMY.md §criticality. |
 | `stakeholder_waiting_bonus` | 0 / 2 000 – 8 000 | Fires only when `stakeholder` is named (ruling, Nic, 2026-09-11, `mem_537e44a9` "Verdict: stakeholder_waiting / human gate" — a structurally-identified human gate with nobody named is not this term's job). 2 000 + min(days × 200, 6 000). Anchor: `waiting_since` or `created`. **When a hard `due` already fired a positive `deadline_score`, only the +2 000 base applies** — the per-day growth is suppressed so deadline lateness is not counted twice (the ramp's distinct job is the no-formal-deadline "I promised" case; [[mem-830588f3]]). |
-| `urgency_term` | 0 – 10 000+ | `round(node.urgency)`. SEV4-committed contribution drives this to exactly 10 000 (pinned; both the target itself and any contributor whose value derives from it — `mem_537e44a9` "SEV4 overdue pin reaches contributors"). Lands only on the ready, unblocked leaf that advances the target, never on a container or a blocked node (§2.1's `children`-propagation note; `ranking.md` §4.3 conduit pass). |
+| `urgency_term` | 0 – 10 000+ | `round(node.urgency)`. SEV4-committed contribution drives this to exactly 10 000 (pinned; both the target itself and any contributor whose value derives from it — `mem_537e44a9` "SEV4 overdue pin reaches contributors"). A container never keeps this value — it is zeroed and pushed down to the nearest ready, unblocked leaf descendant (§2.1's `children`-propagation note; `ranking.md` §4.3 conduit pass). A blocked leaf does **not** inherit this pushed-down value either, but — unlike `value_lineage_term`, which has no concept of an intrinsic value and zeroes outright — it keeps its own intrinsic `S_lex`-based baseline (its own severity/due, ungated by any inherited boost via `blocks`/`soft_blocks`/`contributes_to`); a committed-SEV4 node that happens to carry an unmet `depends_on` must still show its own deadline pressure rather than reading as 0 (`ranking.md` §4.3). |
 | `voi_term` | 0 – 5 000 | `round(node.voi_value)`. Value-of-information premium for a leaf task that **unblocks a downstream cone** (tasks that `depends_on` it, and what lies beyond them); keyed off dependents, not `contributes_to` targets ([[mem-830588f3]]). Accumulated by the same deduped cone walk as `downstream_weight`, so a subtree reachable from two dependents counts once. Capped at 5 000 to stay below the SEV4-committed urgency floor (AC-11); zero for non-leaf nodes (AC-12). |
 
 `urgency_term` composes additively (into `cost_of_delay`, per the current tuple model) because `S_lex × W_edge × f(Slack)` produces values in the same integer-magnitude scale as the other terms (~0.001 to 10 000+). The lexicographic-override property survives: a SEV4-committed contribution with `Slack ≤ 0` pushes `urgency_term` to exactly `10,000`, at the same admission the `severity_gate` gives the target itself — not by mirroring a `severity_bonus` value, which does not exist.

@@ -3920,8 +3920,42 @@ fn compute_urgency(nodes: &mut [GraphNode]) {
             nodes[i].urgency = 0.0;
             continue;
         }
-        if graph::is_completed(nodes[i].status.as_deref()) || is_blocked[i] {
-            continue; // conduit gate: blocked/completed leaves receive nothing extra
+        if graph::is_completed(nodes[i].status.as_deref()) {
+            nodes[i].urgency = 0.0;
+            continue;
+        }
+        if is_blocked[i] {
+            // Conduit gate: a blocked leaf is itself a conduit, not a
+            // competitor (doctrine: "never on anything itself blocked";
+            // fix task AC: "receives no value from its parent or target").
+            // Mirrors `compute_effective_intent`'s blocked gate, which
+            // keeps "its own stated intent, full stop" rather than zeroing
+            // outright: a blocked leaf keeps only its OWN intrinsic
+            // severity/deadline baseline (`s_lex[i]` at its OWN slack,
+            // recomputed here rather than reused from `raw_urgency[i]`),
+            // never a boost it merely *received* via propagation through
+            // `blocks`/`soft_blocks`/`contributes_to` from something else
+            // (that would be "value from its target"). Without this
+            // distinction, a target-like node with its own severity would
+            // wrongly lose its own signal for being technically blocked
+            // (regression risk: `test_urgency_propagation`), while a
+            // blocked contributor whose only urgency came from a direct
+            // edge to a priced target would wrongly keep a boost it cannot
+            // currently act on (the bug this pass exists to close).
+            let own_slack = slacks[i];
+            let own_f = if own_slack > 0.0 {
+                (k * (SAFE_HORIZON - own_slack)).exp().max(0.001)
+            } else {
+                10.0
+            };
+            let own_is_committed_sev4 =
+                nodes[i].severity == Some(4) && nodes[i].goal_type.as_deref() == Some("committed");
+            nodes[i].urgency = if own_is_committed_sev4 && own_slack <= 0.0 {
+                10000.0
+            } else {
+                s_lex[i] * own_f
+            };
+            continue;
         }
 
         let mut best = raw_urgency[i];
@@ -4064,7 +4098,15 @@ fn compute_value_lineage(nodes: &mut [GraphNode]) {
                 continue;
             }
             if graph::is_completed(nodes[i].status.as_deref()) || is_blocked[i] {
-                continue; // conduit gate: blocked/completed leaves receive nothing extra
+                // Conduit gate: a blocked/completed leaf is itself a
+                // conduit, not a competitor (doctrine: "never on anything
+                // itself blocked"). Zero the leaf's OWN direct-edge value
+                // (computed above, before this pass ran) — not just skip
+                // inheriting from an ancestor. Without this, a blocked node
+                // holding its own priced `contributes_to` edge kept full
+                // credit for work it cannot currently advance.
+                lineage[i] = 0.0;
+                continue;
             }
 
             let mut best = raw_lineage[i];
@@ -8064,6 +8106,97 @@ mod tests {
             ordering,
             std::cmp::Ordering::Less,
             "the ready leaf must outrank the epic that holds the priced edge"
+        );
+    }
+
+    /// Review fix (mem_pr_review_618_20260912, independent review of #618):
+    /// PR #618's conduit pass zeroed a *container's* own value_lineage but,
+    /// for a blocked LEAF holding its OWN direct `contributes_to` edge to a
+    /// priced target, only skipped the "inherit from ancestor" climb --
+    /// leaving the leaf's own directly-computed value_lineage untouched.
+    /// Doctrine (mem_537e44a9 "Verdict: value flow to children"): "never on
+    /// anything itself blocked"; the fix task's own AC: "A blocked node
+    /// receives no value from its parent OR target". A blocked contributor
+    /// with a direct `Certain` edge to a standing_weight=0.60 target scored
+    /// 6000 pre-fix; must be exactly 0.
+    #[test]
+    fn test_blocked_leaf_own_direct_edge_value_lineage_is_zeroed() {
+        let target = GraphNode {
+            id: "targ-probe".to_string(),
+            status: Some("ready".to_string()),
+            standing_weight: Some(0.60),
+            ..Default::default()
+        };
+        let blocked_contributor = GraphNode {
+            id: "blocked-contributor".to_string(),
+            status: Some("ready".to_string()),
+            depends_on: vec!["unmet-dep".to_string()],
+            contributes_to: vec![ct_edge("targ-probe", "Certain")],
+            ..Default::default()
+        };
+        let mut nodes = vec![target, blocked_contributor];
+        compute_value_lineage(&mut nodes);
+        let vl = nodes
+            .iter()
+            .find(|n| n.id == "blocked-contributor")
+            .unwrap()
+            .value_lineage;
+        assert_eq!(
+            vl, 0.0,
+            "a blocked node must not keep its own direct-edge value_lineage \
+             (would have been 6000 pre-fix), got {vl}"
+        );
+    }
+
+    /// Review fix (mem_pr_review_618_20260912): a blocked leaf with its own
+    /// direct `contributes_to` edge to a SEV-bearing target kept the FULL
+    /// *propagated* urgency pre-fix (only the ancestor-inheritance climb
+    /// was skipped, not the boost received via its own edge) -- a blocked
+    /// contributor with no severity of its own scored ~8577 pre-fix, purely
+    /// from a target it cannot currently advance. Doctrine: "never on
+    /// anything itself blocked"; fix task AC: "receives no value from its
+    /// parent or target".
+    ///
+    /// The fix must not simply zero blocked nodes outright, though: a node
+    /// with genuine severity of its own (e.g. a committed-SEV4 node that
+    /// happens to carry an unmet `depends_on`) must keep reflecting its OWN
+    /// deadline pressure, mirroring `compute_effective_intent`'s blocked
+    /// gate ("its own stated intent, full stop") -- see
+    /// `test_urgency_propagation`'s `target-committed`, which is
+    /// (indirectly) blocked by its own contributor via a `blocks` edge and
+    /// must still score `urgency > 10000` from its own severity/due, not 0.
+    #[test]
+    fn test_blocked_leaf_loses_propagated_boost_keeps_own_baseline_urgency() {
+        use chrono::Utc;
+        let today = Utc::now().date_naive();
+        let due_5d = (today + chrono::Duration::try_days(5).unwrap())
+            .format("%Y-%m-%d")
+            .to_string();
+        let target = GraphNode {
+            id: "target-probe-2".to_string(),
+            status: Some("ready".to_string()),
+            severity: Some(3),
+            due: Some(due_5d),
+            ..Default::default()
+        };
+        let blocked_contributor = GraphNode {
+            id: "blocked-contributor-2".to_string(),
+            status: Some("ready".to_string()),
+            depends_on: vec!["unmet-dep".to_string()],
+            contributes_to: vec![ct_edge("target-probe-2", "Certain")],
+            ..Default::default()
+        };
+        let mut nodes = vec![target, blocked_contributor];
+        compute_urgency(&mut nodes);
+        let u = nodes
+            .iter()
+            .find(|n| n.id == "blocked-contributor-2")
+            .unwrap()
+            .urgency;
+        assert!(
+            u < 1.0,
+            "a blocked node with no severity of its own must not keep the boost \
+             received via its own edge to a target (would have been ~8577 pre-fix), got {u}"
         );
     }
 

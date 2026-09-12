@@ -32,27 +32,30 @@ focus_tuple = (severity_gate, deadline_band, cost_of_delay, tie_breakers)
 
 The sort tuple replaces the hand-built positional encoding of the earlier eight-term additive accumulator. It maintains the strict "one signal" invariant — the tuple **is** the single sort key across all ranking surfaces (`GraphStore::focus_cmp`, `list_tasks`, and the CLI). A synthetic display number — **`focus_score`** — is derived from the tuple for human-facing output and backwards-compatibility, but is demonstrably not a sort input.
 
-Ranking in `mem` computes the sort tuple in `GraphStore::compute_focus_scores` (`src/graph_store.rs:1689`), executed at the end of the graph build pipeline:
+Ranking in `mem` computes the sort tuple in `GraphStore::compute_focus_scores` (`src/graph_store.rs:1993`), executed near the end of the graph build pipeline (`GraphStore::build_internal`, `src/graph_store.rs:447-513`):
 
 ```text
 canonical node sort (node id ASC)
   → compute_inverses
-  → compute_project_field / compute_target_ancestors
-  → compute_cone_base_weights
+  → compute_degree_metrics
+  → compute_centrality_metrics    (skipped on incremental rebuilds)
   → compute_downstream_metrics
-  → compute_effective_priority
-  → compute_degree_metrics / compute_centrality_metrics
-  → compute_criticality
-  → compute_scope
-  → compute_uncertainty
-  → compute_voi_term
+  → compute_effective_intent      (gated blocker + ancestor-pressure channels; mem_intent_ready_weight)
   → compute_blocking_urgency
   → compute_urgency              (also populates chain_slack — §4.3a)
+  → compute_scope
+  → compute_uncertainty
+  → compute_criticality
+  → compute_voi_term
   → compute_value_lineage        (§4.11, Phase 2)
   → compute_unlock_breadth       (§4.10, Phase 2)
   → compute_focus_scores
-  → classify_tasks
+  → compute_project_field
+  → compute_target_ancestors
+  → [similarity edges, if requested]
 ```
+
+There is no `compute_effective_priority` stage or `own_priority`/`priority_base` field anywhere in the engine — see §2.1 and §4.6 below. The only surviving "priority" spelling is a legacy frontmatter alias: a document with `priority:` instead of `intent:` still loads (`src/graph.rs:1334`), and `is_valid_priority` is a thin wrapper over `is_valid_intent` (`src/graph.rs:795-796`); the corpus key migration is deferred as its own decision per `.agent/CORE.md`.
 
 `compute_value_lineage` and `compute_unlock_breadth` are both pure, single-hop, per-node scans over fields already finalised earlier in the pipeline (`resolved_to`, `urgency`, `voi_value`) — neither is a new whole-graph BFS/cone-walk mechanism alongside the two that already exist (the downstream cone walk in `compute_downstream_metrics`/`compute_voi_term`, and the urgency-propagation relaxation in `compute_urgency`).
 
@@ -60,7 +63,7 @@ canonical node sort (node id ASC)
 
 To guarantee that graph rebuilds are strictly deterministic and immune to Rust's randomized `HashMap` iteration order or non-deterministic file scan order:
 - **Canonical Sort Order**: In `GraphStore::build_internal`, the node collection is canonically sorted by node `id` (`nodes.sort_unstable_by(|a, b| a.id.cmp(&b.id))`) at entry and immediately following ghost node discovery (where referenced IDs are also sorted).
-- **Invariance Property**: Two builds or rebuilds from byte-identical input produce byte-identical derived scores (`downstream_weight`, `criticality`, `focus_score`, `voi_value`, `urgency`, `effective_priority`) across all build entry points (`build`, `build_from_directory`, `rebuild_from_nodes`, `rebuild_from_nodes_fast`, `rebuild_from_nodes_fast_with_embeddings`, `rebuild_from_nodes_skip_similarity`).
+- **Invariance Property**: Two builds or rebuilds from byte-identical input produce byte-identical derived scores (`downstream_weight`, `criticality`, `focus_score`, `voi_value`, `urgency`, `effective_intent`) across all build entry points (`build`, `build_from_directory`, `rebuild_from_nodes`, `rebuild_from_nodes_fast`, `rebuild_from_nodes_fast_with_embeddings`, `rebuild_from_nodes_skip_similarity`).
 - **Precedence**: Follows established precedents in `build_resolution_map` (`src/graph_store.rs:3622-3635`) and `tarjan_scc` (`src/graph_store.rs:3691`).
 
 
@@ -72,14 +75,14 @@ Ranking is produced by the explicit 4-component tuple `FocusTuple`:
 
 1. **`severity_gate`**: Non-linear catastrophic obligation override (`Catastrophic` for SEV4-committed, else `Normal`).
 2. **`deadline_band`**: Discrete calendar float band (`Overdue` > `Imminent` > `Urgent` > `Approaching` > `None`).
-3. **`cost_of_delay`**: Commensurable dynamic pressure combining `priority_base`, fine-grained `deadline_score`, `stakeholder_waiting`, `urgency_term`, `voi_term`, and (Phase 2) `value_lineage_term`.
-4. **`tie_breakers`**: Deterministic tie-breaking signals (`downstream_weight × 10`, (Phase 2) `unlock_breadth × 10`, `age_staleness_bonus`, `effective_priority`, `order`, `id`).
+3. **`cost_of_delay`**: Commensurable dynamic pressure combining `intent_pressure`, fine-grained `deadline_score`, `stakeholder_waiting`, `urgency_term`, `voi_term`, and (Phase 2) `value_lineage_term`.
+4. **`tie_breakers`**: Deterministic tie-breaking signals (`downstream_weight × 10`, (Phase 2) `unlock_breadth × 10`, `age_staleness_bonus`, `effective_intent`, `order`, `id`).
 
 ```
 +---------------------------------------------------------------------------------------------------+
 | Term / Component           | Formula / Logic                                   | Shipped Range    |
 +---------------------------------------------------------------------------------------------------+
-| 1. priority_base           | match pri { 0 => 10000, 1 => 5000, _ => 0 }       | 0 – 10,000       |
+| 1. intent_pressure         | match effective_intent { 0=>10000, 1=>5000, _=>0 }| 0 – 10,000       |
 | 2. severity_bonus          | Replaced by severity_gate (no double-count)       | Catastrophic/Norm|
 | 3. deadline_score          | Piecewise ramp on due date & effort ratio         | 0 – 12,000       |
 | 4. age_staleness_bonus     | If pri >= 2: min(days_since_created, 200)         | 0 – 200          |
@@ -94,24 +97,26 @@ Ranking is produced by the explicit 4-component tuple `FocusTuple`:
 +---------------------------------------------------------------------------------------------------+
 ```
 
-Term 10, `value_lineage_term`, is the fix for the failure terms 5/11 cannot be: `downstream_weight × 10` and `unlock_breadth × 10` are both deliberately capped, shallow, tie-breaker-only signals (§4.1, §4.10), so the sanctioned importance channel (`contributes_to`) needed a term that lives inside `cost_of_delay` itself, at comparable magnitude to `priority_base`/`urgency_term`, to be able to move a ranking at all (§3, §4.11).
+Term 10, `value_lineage_term`, is the fix for the failure terms 5/11 cannot be: `downstream_weight × 10` and `unlock_breadth × 10` are both deliberately capped, shallow, tie-breaker-only signals (§4.1, §4.10), so the sanctioned importance channel (`contributes_to`) needed a term that lives inside `cost_of_delay` itself, at comparable magnitude to `intent_pressure`/`urgency_term`, to be able to move a ranking at all (§3, §4.11).
 
-### 2.1. Priority Base (`priority_base`)
-- **Code reference**: `src/graph_store.rs:1699–1703`
+### 2.1. Intent Pressure (`intent_pressure`)
+- **Code reference**: `compute_cost_of_delay`, `src/graph_store.rs:1788-1801`.
 - **Formula**:
   ```rust
-  let pri = node.priority.unwrap_or(4);
-  let score = match pri {
+  let intent_val = node.intent.unwrap_or(4);
+  let effective_intent_val = node.effective_intent.unwrap_or(intent_val);
+  let intent_pressure: i64 = match effective_intent_val {
       0 => 10000,
       1 => 5000,
       _ => 0,
   };
   ```
+  Bands the node's **gated, propagated** `effective_intent` (§4.6), not the raw stated `intent` — this is what lets a high-intent parent's pressure move a ready descendant's `cost_of_delay`, not just its tie-break order. `node.priority` does not exist as a field; a document authored with `priority:` in frontmatter loads into the same `intent` value via a parser-level alias (`src/graph.rs:1334`).
 - **Theoretical Range**: `0`, `5000`, or `10000`.
 - **Observed Range**: `0` for >97% of tasks (P0 is rare/transient).
-- **Default (absent input)**: `0` (defaults to P4 / P3).
-- **Zeroing conditions**: `priority >= 2` or unset.
-- **Consumers**: `compute_focus_scores`.
+- **Default (absent input)**: `0` (intent unset defaults to P4/4, which bands to `0`).
+- **Zeroing conditions**: `effective_intent >= 2` or unset.
+- **Consumers**: `compute_focus_scores` (via `compute_cost_of_delay`).
 
 ### 2.2. Severity Bonus (`severity_bonus`) — does not exist; see `severity_gate`
 No additive `severity_bonus` term exists anywhere in the engine, and none
@@ -129,7 +134,7 @@ values (`100,000`/`20,000`/`10,000`/`5,000`) describes a mechanism that
 predates this spec and was never restored.
 
 ### 2.3. Deadline Urgency Ramp (`deadline_score`)
-- **Code reference**: `src/graph_store.rs:1717–1753`
+- **Code reference**: `compute_cost_of_delay`, `src/graph_store.rs:1805-1850`
 - **Formula**:
   Let `today = Utc::now().date_naive()`, `due_date = parse(node.due)`, `days_until = (due_date - today).num_days()`, and `effort_days = parse_effort_days(node.effort).unwrap_or(3)`:
   - If `days_until < 0` (overdue):
@@ -184,18 +189,18 @@ Without this term, an overdue `due` date is a **permanent, unconditional overrid
   - **Blanket overdue decay (decay every overdue task, stakes or none).** Rejected: it fails the requirement that a real hard deadline must still bite, and repeats — at the deadline-band layer instead of the edge-weight layer — the exact mistake the standing-weight/edge-decay mechanism was rejected for (`pkb-prioritisation-evolution-plan`, "Decay: parked dormant" ruling, 2026-08-28): shipping a signal that measures a node's age, under an "attention" or "importance" label, rather than anything real about the node.
 
 ### 2.4. Age / Staleness Bonus (`age_staleness_bonus`)
-- **Code reference**: `src/graph_store.rs:1754–1766`
+- **Code reference**: `compute_focus_scores`, `src/graph_store.rs:2011,2021-2034`
 - **Formula**:
-  Only applies if `priority >= 2`:
+  Only applies if `intent (node.intent.unwrap_or(4)) >= 2`:
   $$\text{age\_bonus} = \min(\max(\text{days\_since\_created}, 0), 200)$$
 - **Theoretical Range**: `0` to `200`.
 - **Observed Range**: `0` to `200`.
 - **Default (absent input)**: `0`.
-- **Zeroing conditions**: `priority < 2` (P0 and P1 bypass staleness ramp) or `created` date missing/unparseable.
+- **Zeroing conditions**: raw `intent < 2` (P0 and P1 bypass staleness ramp; note this reads the node's own stated `intent`, not `effective_intent` — unlike `intent_pressure` in §2.1) or `created` date missing/unparseable.
 - **Consumers**: `compute_focus_scores`.
 
 ### 2.5. Downstream Weight Term (`(downstream_weight * 10.0) as i64`)
-- **Code reference**: `src/graph_store.rs:1767`
+- **Code reference**: `compute_focus_scores`, `src/graph_store.rs:2035`
 - **Formula**:
   $$\text{term} = \lfloor \text{node.downstream\_weight} \times 10.0 \rfloor$$
 - **Theoretical Range**: `0` to $\infty$.
@@ -258,12 +263,12 @@ Without this term, an overdue `due` date is a **permanent, unconditional overrid
 
 ## 3. Disparity Between Theoretical Caps and Observed Ranges
 
-The eight additive terms carry widely disparate theoretical caps versus realised empirical dynamics. This was the diagnosed failure Phase 2 exists to fix for the graph/importance channel specifically: `downstream_weight × 10` (a tie-breaker, not `cost_of_delay`) contributed at most ~53 observed points against a scale running to ~11,000, while `contributes_to` — the sanctioned channel by which agents are instructed to express importance instead of setting priority bands — reached the score only through that same ~53-point term. `value_lineage_term` (§2.9, §4.11) is the repair: it enters `cost_of_delay` directly, at the same 0–10,000 order of magnitude as `priority_base`/`urgency_term`, so it can actually move a ranking.
+The eight additive terms carry widely disparate theoretical caps versus realised empirical dynamics. This was the diagnosed failure Phase 2 exists to fix for the graph/importance channel specifically: `downstream_weight × 10` (a tie-breaker, not `cost_of_delay`) contributed at most ~53 observed points against a scale running to ~11,000, while `contributes_to` — the sanctioned channel by which agents are instructed to express importance instead of setting priority bands — reached the score only through that same ~53-point term. `value_lineage_term` (§2.9, §4.11) is the repair: it enters `cost_of_delay` directly, at the same 0–10,000 order of magnitude as `intent_pressure`/`urgency_term`, so it can actually move a ranking.
 
 | Term | Theoretical Range | Observed Range (Typical) |
 | --- | --- | --- |
 | `deadline_score` | 0 – 12,000 | 0 – 12,000 |
-| `priority_base` | 0 – 10,000 | 0 – 10,000 |
+| `intent_pressure` | 0 – 10,000 | 0 – 10,000 |
 | `urgency_term` | 0 – 10,000 | 0 – 10,000 |
 | `value_lineage_term` | 0 – 10,000 | 0 – 6,000 (`[[targ_4e2cc92a]]`, priced 0.60 — §2.9) |
 | `stakeholder_waiting` | 0 – 8,000 | 0 – 8,000 |
@@ -331,7 +336,7 @@ In addition to `focus_score`, `mem` computes several topological and network mea
     $$f(\\text{slack}) = \\begin{cases} e^{k(30.0 - \\text{slack})}.\\max(0.001) & \\text{if } \\text{slack} > 0.0 \\\\ 10.0 & \\text{if } \\text{slack} \\le 0.0 \\end{cases}$$
     The `.max(0.001)` floor is reached only asymptotically — at `slack = 120` days, not `slack = 30`. A node at `slack = 30` still scores `f(30) = 1.0`; the curve keeps decaying smoothly past that point (e.g. `f(100) ≈ 0.0046`) until the floor binds around `slack = 120`.
   - Guard: If committed SEV4 and $\\text{slack} \\le 0.0$, urgency is clamped to exactly $10000.0$ — **and so is any contributor whose strongest propagation path originates from such a target** (ruling, Nic, 2026-09-12, `mem_537e44a9` "SEV4 overdue pin reaches contributors"): the pin was previously applied only to the target's own node, letting a contributor on, say, an Expected (`0.75`) edge score `10000 × 0.75 × 10 = 75000` uncapped. Contributors now compete among themselves at the same `10000` band instead.
-  - **Conduit pass** (outcome 5, ruling as above, "Verdict: value flow to children"): after the relaxation above, any node with children (`!node.children.is_empty()`) does not keep its own computed `urgency` — it is zeroed. That value is instead pushed down, via one walk up the `parent` chain per leaf (mirroring `compute_effective_intent`'s ancestor-pressure channel, §"`effective_intent`" below), to the nearest ready, unblocked leaf descendant, which inherits the maximum of its own urgency and every ancestor's (pre-conduit) urgency. A blocked or completed leaf is itself a conduit and inherits nothing from this pass — it keeps only whatever it computed on its own account. "A target's weight lands on the ready, unblocked leaves that advance it — never on the container, never on anything itself blocked" (Nic, verbatim).
+  - **Conduit pass** (outcome 5, ruling as above, "Verdict: value flow to children"): after the relaxation above, any node with children (`!node.children.is_empty()`) does not keep its own computed `urgency` — it is zeroed. That value is instead pushed down, via one walk up the `parent` chain per leaf (mirroring `compute_effective_intent`'s ancestor-pressure channel, §4.6), to the nearest ready, unblocked leaf descendant, which inherits the maximum of its own urgency and every ancestor's (pre-conduit) urgency. A blocked or completed leaf is itself a conduit and inherits nothing from this *inheritance* — but it is not zeroed outright the way a blocked leaf's `value_lineage` is (§4.11): it keeps its own **intrinsic** baseline, `s_lex[i]` at its own (non-chain-propagated) slack, recomputed fresh rather than reused from the pre-conduit `urgency` value — because that pre-conduit value can itself already include a *received* boost from a target reached via `blocks`/`soft_blocks`/`contributes_to`, and a blocked node must not keep a boost it merely received (same "never on anything itself blocked" rule), even though it must keep whatever severity/deadline pressure is genuinely its own (mirroring `effective_intent`'s blocked gate, which likewise falls back to "its own stated intent, full stop," never to zero). Concretely: a committed-SEV4 node with its own near-term `due` that happens to also carry an unmet `depends_on` still shows a high `urgency` from its own severity — it does not read as 0 merely for being technically blocked; but a blocked node whose only urgency came from propagation through a `contributes_to` edge to some other severity-bearing target drops to that same near-zero intrinsic floor. "A target's weight lands on the ready, unblocked leaves that advance it — never on the container, never on anything itself blocked" (Nic, verbatim) — read in light of this distinction, "blocked" bars *inherited* value, not a node's own severity.
   - Completed nodes have $\\text{urgency} = 0.0$.
 - **Theoretical Range**: $0.0$ to $10,000.0$.
 - **Consumers**: `compute_focus_scores`, `focus_picks`, `get_task` / `list_tasks` signals.
@@ -375,13 +380,15 @@ In addition to `focus_score`, `mem` computes several topological and network mea
 - **Theoretical Range**: $[0.0, 1.0]$.
 - **Consumers**: `compute_voi_term`, `get_task` / `list_tasks` signals.
 
-### 4.6. `effective_priority`
-- **Code reference**: `src/graph_store.rs:2815–2870`
-- **Formula**:
-  $$\\text{effective\\_priority}(x) = \\min(\\text{own\\_priority}(x), \\min_{t \\in \\text{downstream\\_cone}(x)} \\text{priority}(t))$$
-  where downstream cone traverses `blocks`, `soft_blocks`, `children`, and `contributes_to` (skipping completed nodes).
+### 4.6. `effective_intent` (mem_intent_ready_weight; `kb_pauli_prioritisation_doctrine` §6)
+- **Code reference**: `compute_effective_intent`, `src/graph_store.rs:3354-3464`.
+- There is no `effective_priority` field, `own_priority` function, or single undirected downstream-cone cascade. The prior shape (a min-cascade over `blocks`/`soft_blocks`/`children`/`contributes_to` in one pass, letting a parent silently absorb a child's urgency and a blocked node inherit pressure from what it blocks) was replaced (PR #616, "stop intent cascading to children; gate ready-node weight on blocked status") by two independently gated channels, neither of which is `min` over a "downstream cone" containing `children`:
+  - **Blocker channel.** DFS over `blocks`, `soft_blocks`, `contributes_to` — **excluding `children`** — taking the lowest `intent` found in what the node transitively blocks (skipping completed nodes). A node blocking a P0 task gets pulled toward `0`.
+  - **Ancestor-pressure channel.** Walks `parent` to the root, taking the lowest `intent` found among ancestors. A ready child of a P0 epic gets pulled toward `0` — the opposite traversal direction from the blocker channel, and the reverse of what the old single-cascade shape did with `children`.
+  - **Gate.** A node that is itself effectively blocked (`compute_effectively_blocked`: unmet hard `depends_on`, explicit `status: blocked`, or transitively blocked downstream of one) receives **neither** channel — its `effective_intent` is just its own stated `intent`, full stop.
+  Both channels seed from, and can only lower (never raise), the node's own stated `intent` (`node.intent.unwrap_or(4)`).
 - **Theoretical Range**: `0` (P0) to `4` (P4). Default: `4`.
-- **Consumers**: Secondary tie-breaker in `focus_cmp`, priority filtering in `list_tasks`.
+- **Consumers**: `intent_pressure` in `compute_cost_of_delay` (§2.1 — reads the gated/propagated value, not raw `intent`), secondary tie-breaker in `focus_cmp` (§8.4), `classify_tasks` ready sorting, priority filtering in `list_tasks`.
 
 ### 4.7. `scope`
 - **Code reference**: `src/graph_store.rs:3224–3263`
@@ -413,7 +420,7 @@ In addition to `focus_score`, `mem` computes several topological and network mea
 - **Formula**:
   $$\text{value\_lineage}(x) = K_{\text{VL}} \times \text{confidence}(x) \times \sum_{ct \,\in\, x.\text{contributes\_to}} ct.\text{numeric\_weight}() \times \text{standing\_weight}(ct.\text{target})$$
   where $K_{\text{VL}} = 10{,}000$ (§2.9), $\text{confidence}(x)$ defaults to $1.0$ when unset (mirrors `compute_uncertainty`'s existing "missing confidence, no open question ⇒ certain" default — a default on the *contributor's* stated confidence, never on the target's `standing_weight`, which is strictly `None`-means-zero), and a target contributes nothing to the sum unless it has a priced `standing_weight` (`pkb-standing-weight-elicitation-instrument` §1; "Zero Defaults / Zero Inference"). **`goal_type` is not part of this gate** (ruling, Nic, 2026-09-12, `mem_537e44a9` "Verdict: goal_type gating"), verbatim: "price should operate even when targets have null category. we shouldn't encourage that state, but while it's legal, we shouldn't always count [i.e. discount] targets that exist." The prior formula filtered the sum to `goal_type(ct.target) == committed`; that filter is gone. `goal_type: committed` remains load-bearing only at the three SEV4 lexicographic-override sites (`severity_gate`, the `S_lex` base in §4.3, and the overdue-pin guard in §4.3) — those have a recorded rationale ("prevents moonshots from hijacking the focus queue," `specs/multi-parent.md` §1.3) that never applied to ordinary pricing.
-- **One hop from the target, then down to the nearest ready leaf**: the pricing walk itself is one hop — it reads a node's own `contributes_to` edges directly and does not chain transitively through a contributor's own further edges (a contributor of a contributor of a priced target earns nothing unless it also has its own direct edge). But the edge-holder does not necessarily keep the resulting value: if it is a container (`!node.children.is_empty()`), the value is zeroed on the container and instead pushed down — one walk up the `parent` chain per leaf, same shape as `compute_effective_intent`'s ancestor-pressure channel — to its nearest ready, unblocked leaf descendant (ruling, Nic, 2026-09-12, `mem_537e44a9` "Verdict: value flow to children": "A target's weight lands on the ready, unblocked leaves that advance it — never on the container, never on anything itself blocked"). A blocked or completed leaf is itself a conduit and inherits nothing from this pass. This replaces the prior strict one-hop-and-stop reading (`ranking.md:412`, pre-2026-09-12) and is still a local per-node scan, not a new whole-graph cone-walk mechanism ("no fourth graph computation").
+- **One hop from the target, then down to the nearest ready leaf**: the pricing walk itself is one hop — it reads a node's own `contributes_to` edges directly and does not chain transitively through a contributor's own further edges (a contributor of a contributor of a priced target earns nothing unless it also has its own direct edge). But the edge-holder does not necessarily keep the resulting value: if it is a container (`!node.children.is_empty()`), the value is zeroed on the container and instead pushed down — one walk up the `parent` chain per leaf, same shape as `compute_effective_intent`'s ancestor-pressure channel — to its nearest ready, unblocked leaf descendant (ruling, Nic, 2026-09-12, `mem_537e44a9` "Verdict: value flow to children": "A target's weight lands on the ready, unblocked leaves that advance it — never on the container, never on anything itself blocked"). A blocked or completed leaf is itself a conduit: it inherits nothing from this pass **and** its own directly-computed value (from its own `contributes_to` edge to a priced target, if it has one) is zeroed too, not merely left un-boosted — `value_lineage` has no notion of an "intrinsic" value the way `urgency`'s `S_lex` does (§4.3), since value_lineage is entirely a function of edges to priced targets, so a blocked contributor's own direct edge is exactly the "value... from its target" the ruling bars. (Contrast `urgency` §4.3, where a blocked node's own severity/deadline baseline survives — the two terms are asymmetric here because only `urgency` has a self-contained baseline independent of any edge.) This replaces the prior strict one-hop-and-stop reading (`ranking.md:412`, pre-2026-09-12) and is still a local per-node scan, not a new whole-graph cone-walk mechanism ("no fourth graph computation").
 - **Sibling-contributor combination semantics (settled)**: independent and additive. Multiple nodes contributing to the same target are each scored off their own edge alone — nothing reduces a contributor's credit because other contributors also point at the same target. This is a deliberate rejection of a Birnbaum-style reliability combination (cut sets, structure functions) across sibling edges, consistent with the parent plan's "Explicitly not building: Birnbaum importance proper" and §7's existing disclaimer that the verbal scale computes no such thing. See §7 for the corrected gloss this setting fixes.
 - **Theoretical Range**: `0` to `10,000` per contributing edge (§2.9); a node with edges to multiple priced targets sums across them.
 - **Observed Range**: `0` for nodes with no priced target in their lineage. `[[targ_4e2cc92a]]` is priced (`standing_weight: 0.60`, `goal_type: null`) as of 2026-09-12, the first live nonzero source.
@@ -494,11 +501,9 @@ A task is `blocked` if:
 Roots are defined as tasks with no parent or whose parent is not in the index, restricted to `ACTIONABLE_TYPES` (`["epic", "task", "learn", "pr"]`).
 
 ### 8.4. Canonical Sort Order (`focus_cmp`)
-All flat task listings in MCP (`list_tasks`) and CLI (`pkb tasks`, `pkb list`) use the single canonical comparator `GraphStore::focus_cmp` (`src/graph_store.rs:895–906`):
-1. `focus_score` **DESC** (unscored nodes sort last)
-2. `effective_priority` **ASC** (P0 before P1 before P2)
-3. `order` **ASC** (manual sequence order)
-4. `id` **ASC** (guarantees a deterministic, total order)
+All flat task listings in MCP (`list_tasks`) and CLI (`pkb tasks`, `pkb list`) use the single canonical comparator `GraphStore::focus_cmp` (`src/graph_store.rs:937-949`):
+1. **`focus_tuple` DESC** — nodes carrying a tuple sort by it (reversed `cmp`, so the "largest" tuple sorts first); a node with `None` (filtered/unscored — e.g. `affordable_loss: false`, or completed) sorts after any node that has a tuple. This is the §1 tuple, **not** `focus_score` — the two are demonstrably not the same sort key (§1).
+2. **Only when *both* nodes have no tuple** (both filtered/unscored) does the comparator fall through to a secondary chain: `effective_intent` **ASC** (§4.6) → `order` **ASC** (manual sequence order) → `id` **ASC** (guarantees a deterministic, total order). This fallback exists so unscored nodes still sort deterministically relative to each other; it never runs when either node has a real tuple.
 
 ---
 
@@ -531,7 +536,7 @@ All flat task listings in MCP (`list_tasks`) and CLI (`pkb tasks`, `pkb list`) u
 | `standing_weight` | Read by `compute_value_lineage`; elicited/written only via hand-edited frontmatter as of this phase (no MCP write-tool wiring — out of scope, elicitation session not yet run). |
 | `voi_value` | `compute_focus_scores`, `get_task` / `list_tasks` `signals: {}`. |
 | `uncertainty` | `compute_voi_term`, `get_task` / `list_tasks` `signals: {}`. |
-| `effective_priority` | `focus_cmp` tie-breaker, `classify_tasks` ready sorting, `list_tasks` filter. |
+| `effective_intent` | `intent_pressure` in `cost_of_delay` (§2.1), `focus_cmp` fallback tie-breaker (§8.4, unscored nodes only), `classify_tasks` ready sorting, `list_tasks` filter. |
 | `scope` | `get_task` / `list_tasks` `signals: {}`. |
 | `pagerank` | `compute_criticality`, `top_n_by_metric`, `get_network_metrics`. |
 | `betweenness` | `top_n_by_metric`, `get_network_metrics`. |
