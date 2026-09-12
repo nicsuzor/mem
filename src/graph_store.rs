@@ -3779,6 +3779,21 @@ fn compute_urgency(nodes: &mut [GraphNode]) {
     let mut propagated_s_lex = s_lex.clone();
     let mut min_slacks = slacks.clone();
 
+    // Tracks, per node, whether the strongest path found so far originates
+    // from a committed-SEV4 target (`s_lex == 10000.0`, the only way that
+    // exact value arises, per the S_lex step function above) that is ITSELF
+    // at or past its deadline (`slacks[source] <= 0.0`). Ruling (Nic,
+    // 2026-09-12, mem_537e44a9 "SEV4 overdue pin reaches contributors"):
+    // when a contributor's propagated S_lex derives from such a target, the
+    // contributor is pinned to exactly 10,000 too — the same pin the
+    // target's own node gets — rather than `10000 * edge_weight * 10`
+    // uncapped (75,000 on an Expected/0.75 edge). Seeded from each node's
+    // own baseline so a target that is itself committed-SEV4-overdue starts
+    // pinned before any relaxation runs.
+    let mut pinned_via_committed_sev4_overdue: Vec<bool> = (0..num_nodes)
+        .map(|i| s_lex[i] == 10000.0 && slacks[i] <= 0.0)
+        .collect();
+
     let mut best_factor = vec![-1.0_f64; num_nodes];
     let mut queue = VecDeque::new();
 
@@ -3803,6 +3818,8 @@ fn compute_urgency(nodes: &mut [GraphNode]) {
             let s = s_lex[tid] * path_factor;
             if s > propagated_s_lex[start_idx] {
                 propagated_s_lex[start_idx] = s;
+                pinned_via_committed_sev4_overdue[start_idx] =
+                    s_lex[tid] == 10000.0 && slacks[tid] <= 0.0;
             }
             // Update Least Slack Time (min slack in downstream cone)
             if slacks[tid] < min_slacks[start_idx] {
@@ -3849,10 +3866,14 @@ fn compute_urgency(nodes: &mut [GraphNode]) {
             10.0
         };
         // Apply committed SEV4 guard at final site too (spec §1.3):
-        // overdue committed SEV4 stays at constant 10000, not unbounded.
+        // overdue committed SEV4 stays at constant 10000, not unbounded —
+        // and so does any contributor whose propagated S_lex derives from
+        // one (`pinned_via_committed_sev4_overdue`, seeded/updated above),
+        // so contributors compete among themselves at the same top band
+        // instead of one uncapped `edge_weight x 10` blowing past it.
         let is_committed_sev4 =
             nodes[i].severity == Some(4) && nodes[i].goal_type.as_deref() == Some("committed");
-        if is_committed_sev4 && slack <= 0.0 {
+        if (is_committed_sev4 && slack <= 0.0) || pinned_via_committed_sev4_overdue[i] {
             nodes[i].urgency = 10000.0;
         } else {
             nodes[i].urgency = propagated_s_lex[i] * f_s;
@@ -7414,6 +7435,59 @@ mod tests {
         let focus = graph.focus_picks(50);
         assert!(focus.contains(&"inprogress-urgent".to_string()),
             "in_progress task with SEV4 committed urgency must appear in focus_picks via status-independent scan");
+    }
+
+    /// Ruling (Nic, 2026-09-12, mem_537e44a9 "SEV4 overdue pin reaches
+    /// contributors"): when a committed SEV4 target is past its deadline,
+    /// its contributors are lifted to the top band but capped at exactly
+    /// 10,000 — the same pin the target's own node gets — instead of
+    /// `10000 * edge_weight * 10` uncapped (75,000 on an Expected/0.75
+    /// edge, as this test's contributor would have scored pre-fix).
+    #[test]
+    fn test_sev4_overdue_pin_reaches_contributors() {
+        use crate::graph::GraphNode;
+        use chrono::Utc;
+
+        let today = Utc::now().date_naive();
+        // Overdue: slack = (-2) - 3(default effort) = -5 <= 0.
+        let due_2d_ago = (today - chrono::Duration::days(2))
+            .format("%Y-%m-%d")
+            .to_string();
+
+        let target = GraphNode {
+            id: "target-sev4-overdue".to_string(),
+            status: Some("ready".to_string()),
+            severity: Some(4),
+            goal_type: Some("committed".to_string()),
+            due: Some(due_2d_ago),
+            ..Default::default()
+        };
+        let contributor = GraphNode {
+            id: "contributor".to_string(),
+            status: Some("ready".to_string()),
+            contributes_to: vec![ct_edge("target-sev4-overdue", "Expected")],
+            ..Default::default()
+        };
+
+        let mut nodes = vec![target, contributor];
+        compute_urgency(&mut nodes);
+
+        let target_urgency = nodes
+            .iter()
+            .find(|n| n.id == "target-sev4-overdue")
+            .unwrap()
+            .urgency;
+        let contributor_urgency = nodes.iter().find(|n| n.id == "contributor").unwrap().urgency;
+
+        assert_eq!(
+            target_urgency, 10000.0,
+            "target's own node stays pinned at exactly 10000, got {target_urgency}"
+        );
+        assert_eq!(
+            contributor_urgency, 10000.0,
+            "contributor on an Expected (0.75) edge must be pinned to exactly 10000, \
+             not the uncapped 10000 * 0.75 * 10 = 75000, got {contributor_urgency}"
+        );
     }
 
     // ── Phase 2: chain slack, unlock breadth, value lineage ──────────────────
