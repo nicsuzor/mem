@@ -3727,7 +3727,20 @@ fn compute_urgency(nodes: &mut [GraphNode]) {
         }
     }
 
-    // 2. Pre-build adjacency for propagation (Urgency flows from blocked node to blocker)
+    // 2. Pre-build adjacency for propagation (Urgency flows from blocked node to blocker).
+    //
+    // `children` (parent -> child) is deliberately NOT a propagation edge here.
+    // Ruling (Nic, 2026-09-12, mem_537e44a9 "Verdict: value flow to
+    // children"): "children inherit from their parent, on the blocker
+    // basis -- a child is what advances the parent, so it carries the
+    // parent's pressure. Parent inheriting from children (x0.5) is the
+    // wrong direction." The old `children` entry let a parent pull in half
+    // of whatever S_lex reached its child, so an epic silently absorbed a
+    // child's contributes_to-derived urgency. The correct direction --
+    // value landing on the ready, unblocked leaf beneath a priced container
+    // rather than staying on the container -- is implemented below as an
+    // explicit downward pass over the (now children-free) result, mirroring
+    // `compute_effective_intent`'s ancestor-pressure channel.
     let adj: Vec<Vec<(usize, f64)>> = nodes
         .iter()
         .map(|n| {
@@ -3740,11 +3753,6 @@ fn compute_urgency(nodes: &mut [GraphNode]) {
             for sbid in &n.soft_blocks {
                 if let Some(&idx) = id_to_idx.get(sbid) {
                     neighbors.push((idx, 0.3));
-                }
-            }
-            for cid in &n.children {
-                if let Some(&idx) = id_to_idx.get(cid) {
-                    neighbors.push((idx, 0.5));
                 }
             }
             for ct in &n.contributes_to {
@@ -3879,6 +3887,65 @@ fn compute_urgency(nodes: &mut [GraphNode]) {
             nodes[i].urgency = propagated_s_lex[i] * f_s;
         }
     }
+
+    // 5. Conduit pass (outcome 5, mem_fix_value_flows_to_ready_leaves):
+    // "A target's weight lands on the ready, unblocked leaves that advance
+    // it -- never on the container, never on anything itself blocked. A
+    // node with open children is not doable ... that structural fact makes
+    // it a conduit, not a competitor" (Nic, 2026-09-12, mem_537e44a9
+    // "Verdict: value flow to children"). A container (`!leaf`, i.e. it has
+    // children) does not compete on the urgency computed above -- that
+    // value is pushed down instead to the ready, unblocked leaf(s)
+    // beneath it, exactly mirroring `compute_effective_intent`'s
+    // ancestor-pressure channel (walk `parent` to the root, take the
+    // strongest value found) but carrying `urgency` instead of `intent`.
+    // A blocked leaf is itself a conduit too and inherits nothing from this
+    // pass, matching effective_intent's existing "blocked gets neither
+    // channel" gate.
+    let raw_urgency: Vec<f64> = nodes.iter().map(|n| n.urgency).collect();
+    let is_blocked = compute_effectively_blocked(nodes, &id_to_idx);
+
+    for i in 0..num_nodes {
+        // Container test reads `children` directly rather than the cached
+        // `node.leaf` flag: `leaf` is only populated by the full build
+        // pipeline (`compute_inverses`, which always runs before this
+        // function there), but `compute_urgency` is also exercised directly
+        // in tests against hand-built `GraphNode`s where `leaf` was never
+        // set. Reading `children` keeps this function self-contained and
+        // correct either way (`leaf` is defined as `children.is_empty()`).
+        if !nodes[i].children.is_empty() {
+            // Container: does not compete for ranking. Its value was
+            // captured in `raw_urgency` above and is pushed to descendants
+            // by the loop below.
+            nodes[i].urgency = 0.0;
+            continue;
+        }
+        if graph::is_completed(nodes[i].status.as_deref()) || is_blocked[i] {
+            continue; // conduit gate: blocked/completed leaves receive nothing extra
+        }
+
+        let mut best = raw_urgency[i];
+        let mut current = nodes[i].parent.clone();
+        let mut climbed: HashSet<usize> = HashSet::new();
+        let mut depth = 0usize;
+        while let Some(pid) = current {
+            if depth >= MAX_CONE_DEPTH {
+                break;
+            }
+            let Some(&pidx) = id_to_idx.get(&pid) else {
+                break;
+            };
+            if !climbed.insert(pidx) {
+                break; // cycle guard
+            }
+            if raw_urgency[pidx] > best {
+                best = raw_urgency[pidx];
+            }
+            current = nodes[pidx].parent.clone();
+            depth += 1;
+        }
+        nodes[i].urgency = best;
+    }
 }
 
 /// Scale constant turning a raw `[0.0, 1.0]`-ish value-lineage product into
@@ -3900,12 +3967,18 @@ const K_VALUE_LINEAGE: f64 = 10000.0;
 /// (`standing_weight: None`) still contributes nothing, so this is Zero
 /// Defaults / Zero Inference, not a relaxed default.
 ///
-/// **One hop only.** This walks each node's own `contributes_to` edges
-/// directly; it does not chain transitively through a contributor's own
-/// further `contributes_to` edges. A contributor of a contributor of a
-/// priced target is not itself credited unless it also has a direct edge to
-/// a priced target. This keeps the computation a local per-node scan rather
-/// than a new cone-walk mechanism.
+/// **One hop from the target, then down to the nearest ready leaf.** The
+/// pricing walk itself is one hop: it reads each node's own `contributes_to`
+/// edges directly and does not chain transitively through a contributor's
+/// own further `contributes_to` edges (a contributor of a contributor of a
+/// priced target earns nothing unless it also has a direct edge). But the
+/// edge-holder does not necessarily keep the resulting value for itself: if
+/// the edge-holder is a container (has open children), the value is instead
+/// pushed down to its nearest ready, unblocked leaf descendant (Nic,
+/// 2026-09-12, mem_537e44a9 "Verdict: value flow to children" — see the
+/// conduit pass at the end of this function). This is still a local
+/// per-node scan (one `contributes_to` read plus one `parent`-chain walk
+/// per node), not a new whole-graph cone-walk mechanism.
 ///
 /// **Sibling-contributor semantics (outcome 6):** independent and additive.
 /// Multiple nodes contributing to the same target are each scored off their
@@ -3959,6 +4032,62 @@ fn compute_value_lineage(nodes: &mut [GraphNode]) {
                 total += ct.numeric_weight() * confidence * target_weight;
             }
             lineage[i] = total * K_VALUE_LINEAGE;
+        }
+    }
+
+    // Conduit pass (outcome 5, mem_fix_value_flows_to_ready_leaves): a
+    // priced edge held by a container (`!leaf`, i.e. it has children) does
+    // not land on the container. "A target's weight lands on the ready,
+    // unblocked leaves that advance it -- never on the container, never on
+    // anything itself blocked" (Nic, 2026-09-12, mem_537e44a9 "Verdict:
+    // value flow to children"). This replaces the previous strict one-hop
+    // reading with "one hop from the edge-holder, then down to the nearest
+    // ready/unblocked leaf beneath it" -- still a local scan (walk `parent`
+    // to the root once per node), not a new whole-graph cone walk.
+    if !standing_weights.is_empty() {
+        let id_to_idx: HashMap<String, usize> = nodes
+            .iter()
+            .enumerate()
+            .map(|(i, n)| (n.id.clone(), i))
+            .collect();
+        let is_blocked = compute_effectively_blocked(nodes, &id_to_idx);
+        let raw_lineage = lineage.clone();
+
+        for i in 0..nodes.len() {
+            // See the equivalent comment in `compute_urgency`'s conduit
+            // pass: read `children` directly rather than the cached `leaf`
+            // flag so this stays correct when exercised directly in tests
+            // against hand-built `GraphNode`s (where `leaf` was never set
+            // by the full build pipeline's `compute_inverses`).
+            if !nodes[i].children.is_empty() {
+                lineage[i] = 0.0; // container: conduit, does not compete
+                continue;
+            }
+            if graph::is_completed(nodes[i].status.as_deref()) || is_blocked[i] {
+                continue; // conduit gate: blocked/completed leaves receive nothing extra
+            }
+
+            let mut best = raw_lineage[i];
+            let mut current = nodes[i].parent.clone();
+            let mut climbed: HashSet<usize> = HashSet::new();
+            let mut depth = 0usize;
+            while let Some(pid) = current {
+                if depth >= MAX_CONE_DEPTH {
+                    break;
+                }
+                let Some(&pidx) = id_to_idx.get(&pid) else {
+                    break;
+                };
+                if !climbed.insert(pidx) {
+                    break; // cycle guard
+                }
+                if raw_lineage[pidx] > best {
+                    best = raw_lineage[pidx];
+                }
+                current = nodes[pidx].parent.clone();
+                depth += 1;
+            }
+            lineage[i] = best;
         }
     }
 
@@ -7501,6 +7630,79 @@ mod tests {
         );
     }
 
+    /// Ruling (Nic, 2026-09-12, mem_537e44a9 "Verdict: value flow to
+    /// children"): urgency lands on the ready, unblocked leaf that advances
+    /// a priced target, not on the container holding the `contributes_to`
+    /// edge, and not on a blocked sibling. Also proves the removal of the
+    /// old "parent inherits from children x0.5" channel: the epic's urgency
+    /// comes ONLY from its own edge to the target (pushed down to the
+    /// leaf), never inflated further by a child's own severity.
+    #[test]
+    fn test_urgency_flows_from_container_to_ready_leaf_not_blocked_sibling() {
+        use crate::graph::GraphNode;
+        use chrono::Utc;
+
+        let today = Utc::now().date_naive();
+        let due_5d = (today + chrono::Duration::try_days(5).unwrap())
+            .format("%Y-%m-%d")
+            .to_string();
+
+        let target = GraphNode {
+            id: "target-committed".to_string(),
+            status: Some("ready".to_string()),
+            severity: Some(4),
+            goal_type: Some("committed".to_string()),
+            due: Some(due_5d),
+            ..Default::default()
+        };
+        let epic = GraphNode {
+            id: "epic".to_string(),
+            status: Some("ready".to_string()),
+            children: vec!["leaf-ready".to_string(), "leaf-blocked".to_string()],
+            contributes_to: vec![ct_edge("target-committed", "Expected")],
+            ..Default::default()
+        };
+        let leaf_ready = GraphNode {
+            id: "leaf-ready".to_string(),
+            status: Some("ready".to_string()),
+            parent: Some("epic".to_string()),
+            ..Default::default()
+        };
+        let leaf_blocked = GraphNode {
+            id: "leaf-blocked".to_string(),
+            status: Some("ready".to_string()),
+            parent: Some("epic".to_string()),
+            depends_on: vec!["some-unmet-dep".to_string()],
+            ..Default::default()
+        };
+
+        let mut nodes = vec![target, epic, leaf_ready, leaf_blocked];
+        compute_urgency(&mut nodes);
+
+        let u = |nodes: &[GraphNode], id: &str| nodes.iter().find(|n| n.id == id).unwrap().urgency;
+        let epic_raw_urgency = u(&nodes, "leaf-ready"); // leaf inherits exactly the epic's own value
+
+        assert_eq!(
+            u(&nodes, "epic"),
+            0.0,
+            "container must not keep the urgency from its own contributes_to edge"
+        );
+        assert!(
+            epic_raw_urgency > 100.0,
+            "ready leaf must inherit the epic's (non-zero) propagated urgency, got {epic_raw_urgency}"
+        );
+        // The blocked sibling keeps only its own trivial baseline (no
+        // severity of its own, no due date -> default slack 100 -> the
+        // floor-adjacent 1 x f(100) ~= 0.0046) -- it inherits nothing from
+        // the parent's edge to the target, unlike its ready sibling above.
+        let blocked_urgency = u(&nodes, "leaf-blocked");
+        assert!(
+            blocked_urgency < 1.0,
+            "blocked sibling must receive no inherited urgency from the parent or target \
+             (only its own trivial baseline), got {blocked_urgency}"
+        );
+    }
+
     // ── Phase 2: chain slack, unlock breadth, value lineage ──────────────────
 
     /// AC1: chain slack must be the true minimum across the whole blocking
@@ -7788,6 +7990,80 @@ mod tests {
             (vl - 6000.0).abs() < 1e-6,
             "a priced target with null goal_type must still price its contributors \
              (1.0 Certain x 1.0 confidence x 0.60 standing_weight x 10000 = 6000), got {vl}"
+        );
+    }
+
+    /// Ruling (Nic, 2026-09-12, mem_537e44a9 "Verdict: value flow to
+    /// children"): a target's weight lands on the ready, unblocked leaf
+    /// that advances it, never on the container holding the edge and never
+    /// on a blocked sibling. Modelled on the kitchen worked example: an
+    /// epic (container, two children) holds the `contributes_to` edge to a
+    /// priced target; one child is a ready, unblocked leaf, the other is
+    /// blocked. The ready leaf must inherit the epic's value_lineage and
+    /// outrank the epic; the blocked leaf must get none of it.
+    #[test]
+    fn test_value_lineage_flows_from_container_to_ready_leaf_not_blocked_sibling() {
+        let target = GraphNode {
+            id: "targ-leave".to_string(),
+            status: Some("ready".to_string()),
+            standing_weight: Some(0.60),
+            ..Default::default()
+        };
+        let epic = GraphNode {
+            id: "epic-copper".to_string(),
+            status: Some("ready".to_string()),
+            children: vec!["leaf-ready".to_string(), "leaf-blocked".to_string()],
+            contributes_to: vec![ct_edge("targ-leave", "Expected")],
+            ..Default::default()
+        };
+        let leaf_ready = GraphNode {
+            id: "leaf-ready".to_string(),
+            status: Some("ready".to_string()),
+            parent: Some("epic-copper".to_string()),
+            ..Default::default()
+        };
+        let leaf_blocked = GraphNode {
+            id: "leaf-blocked".to_string(),
+            status: Some("ready".to_string()),
+            parent: Some("epic-copper".to_string()),
+            depends_on: vec!["some-unmet-dep".to_string()],
+            ..Default::default()
+        };
+
+        let mut nodes = vec![target, epic, leaf_ready, leaf_blocked];
+        compute_value_lineage(&mut nodes);
+
+        let vl = |nodes: &[GraphNode], id: &str| {
+            nodes.iter().find(|n| n.id == id).unwrap().value_lineage
+        };
+        let expected = 0.75 * 1.0 * 0.60 * K_VALUE_LINEAGE; // Expected x confidence x standing_weight
+
+        assert_eq!(
+            vl(&nodes, "epic-copper"),
+            0.0,
+            "container must not keep the value_lineage from its own contributes_to edge"
+        );
+        assert!(
+            (vl(&nodes, "leaf-ready") - expected).abs() < 1e-6,
+            "ready, unblocked leaf must inherit the epic's value_lineage ({expected}), got {}",
+            vl(&nodes, "leaf-ready")
+        );
+        assert_eq!(
+            vl(&nodes, "leaf-blocked"),
+            0.0,
+            "blocked sibling must receive no value_lineage from the parent or target"
+        );
+
+        // Must actually move the rank: the leaf outranks the container.
+        GraphStore::compute_focus_scores(&mut nodes);
+        let ordering = GraphStore::focus_cmp(
+            nodes.iter().find(|n| n.id == "leaf-ready").unwrap(),
+            nodes.iter().find(|n| n.id == "epic-copper").unwrap(),
+        );
+        assert_eq!(
+            ordering,
+            std::cmp::Ordering::Less,
+            "the ready leaf must outrank the epic that holds the priced edge"
         );
     }
 
