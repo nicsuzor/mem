@@ -68,16 +68,6 @@ pub enum SeverityGate {
     Catastrophic = 1,
 }
 
-/// Calendar float / slack deadline bands.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-pub enum DeadlineBand {
-    None = 0,
-    Approaching = 1,
-    Urgent = 2,
-    Imminent = 3,
-    Overdue = 4,
-}
-
 /// Deterministic tie-breaker signals for ranking.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FocusTieBreakers {
@@ -98,12 +88,22 @@ pub struct FocusTieBreakers {
 
 /// Canonical explicit sort tuple for task ranking.
 ///
-/// Under the derived ordering:
-/// `(severity gate, deadline band, cost-of-delay index, tie-breakers)`
+/// Under the derived ordering: `(severity gate, cost-of-delay index, tie-breakers)`.
+///
+/// `deadline_band` was removed from this tuple by ruling (Nic, 2026-09-12,
+/// `mem_537e44a9` "Ruling: deadline pressure is a multiplier on value, not a
+/// tier"; see [`mem_fix_deadline_multiplier`]): neither spec nor doctrine ever
+/// justified a deadline tier ranking above value, and a due date alone no
+/// longer buys a node a rung above every non-overdue task regardless of
+/// `cost_of_delay` magnitude. Deadline pressure now multiplies a node's own
+/// value points (`intent_pressure + stakeholder_waiting + value_lineage_term`)
+/// inside `cost_of_delay` itself — see `compute_cost_of_delay` in
+/// `graph_store.rs` — so a node with no value has nothing for a deadline to
+/// amplify, and a node with real value is pressed harder the bigger its
+/// effort against the days left.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FocusTuple {
     pub severity_gate: SeverityGate,
-    pub deadline_band: DeadlineBand,
     pub cost_of_delay: i64,
     pub tie_breakers: FocusTieBreakers,
 }
@@ -113,8 +113,6 @@ impl FocusTuple {
     pub fn explain_diff(&self, other: &Self) -> &'static str {
         if self.severity_gate != other.severity_gate {
             "severity_gate"
-        } else if self.deadline_band != other.deadline_band {
-            "deadline_band"
         } else if self.cost_of_delay != other.cost_of_delay {
             "cost_of_delay"
         } else if self.tie_breakers.downstream_weight_x10 != other.tie_breakers.downstream_weight_x10 {
@@ -152,7 +150,6 @@ impl Ord for FocusTuple {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         self.severity_gate
             .cmp(&other.severity_gate)
-            .then_with(|| self.deadline_band.cmp(&other.deadline_band))
             .then_with(|| self.cost_of_delay.cmp(&other.cost_of_delay))
             .then_with(|| self.tie_breakers.downstream_weight_x10.cmp(&other.tie_breakers.downstream_weight_x10))
             .then_with(|| self.tie_breakers.unlock_breadth_x10.cmp(&other.tie_breakers.unlock_breadth_x10))
