@@ -27,10 +27,12 @@ Per `.agents/CORE.md`, this specification documents approved current state only.
 The PKB prioritisation model ranks every active, uncompleted task (`status ∉ {"done", "cancelled"}`) using an explicit, ordered sort tuple under a derived ordering:
 
 ```text
-focus_tuple = (severity_gate, deadline_band, cost_of_delay, tie_breakers)
+focus_tuple = (severity_gate, cost_of_delay, tie_breakers)
 ```
 
 The sort tuple replaces the hand-built positional encoding of the earlier eight-term additive accumulator. It maintains the strict "one signal" invariant — the tuple **is** the single sort key across all ranking surfaces (`GraphStore::focus_cmp`, `list_tasks`, and the CLI). A synthetic display number — **`focus_score`** — is derived from the tuple for human-facing output and backwards-compatibility, but is demonstrably not a sort input.
+
+**`deadline_band` no longer exists.** A three-element tuple, not four (ruling, Nic, 2026-09-12, `mem_537e44a9` "Ruling: deadline pressure is a multiplier on value, not a tier"): "deadline pressure should multiply importance in proportion to the size of the task vs days left." Neither spec nor doctrine ever justified a deadline tier ranking *above* value — a due date alone no longer buys a node a rung above every non-overdue task regardless of `cost_of_delay` magnitude, and §2.3a's own text had already named that band-dominance property a defect it existed only to bound, not a feature. Deadline pressure is now a multiplier applied *inside* `cost_of_delay` to a node's own value points (§2.3, §2.1, §2.6, §2.9) — a node with no value has nothing for a deadline to amplify, and the multiplier itself has no tier of its own to occupy in the tuple.
 
 Ranking in `mem` computes the sort tuple in `GraphStore::compute_focus_scores` (`src/graph_store.rs:1993`), executed near the end of the graph build pipeline (`GraphStore::build_internal`, `src/graph_store.rs:447-513`):
 
@@ -71,12 +73,11 @@ To guarantee that graph rebuilds are strictly deterministic and immune to Rust's
 
 ## 2. `focus_tuple` and `focus_score` Components
 
-Ranking is produced by the explicit 4-component tuple `FocusTuple`:
+Ranking is produced by the explicit 3-component tuple `FocusTuple`:
 
 1. **`severity_gate`**: Non-linear catastrophic obligation override (`Catastrophic` for SEV4-committed, else `Normal`).
-2. **`deadline_band`**: Discrete calendar float band (`Overdue` > `Imminent` > `Urgent` > `Approaching` > `None`).
-3. **`cost_of_delay`**: Commensurable dynamic pressure combining `intent_pressure`, fine-grained `deadline_score`, `stakeholder_waiting`, `urgency_term`, `voi_term`, and (Phase 2) `value_lineage_term`.
-4. **`tie_breakers`**: Deterministic tie-breaking signals (`downstream_weight × 10`, (Phase 2) `unlock_breadth × 10`, `age_staleness_bonus`, `effective_intent`, `order`, `id`).
+2. **`cost_of_delay`**: Commensurable dynamic pressure. A node's *value points* — `intent_pressure` + `stakeholder_waiting` + `value_lineage_term` — are scaled by the *deadline pressure multiplier* (§2.3); `urgency_term` and `voi_term` are added on top unmultiplied (each already carries its own independent time-value curve).
+3. **`tie_breakers`**: Deterministic tie-breaking signals (`downstream_weight × 10`, (Phase 2) `unlock_breadth × 10`, `age_staleness_bonus`, `effective_intent`, `order`, `id`).
 
 ```
 +---------------------------------------------------------------------------------------------------+
@@ -84,18 +85,20 @@ Ranking is produced by the explicit 4-component tuple `FocusTuple`:
 +---------------------------------------------------------------------------------------------------+
 | 1. intent_pressure         | match effective_intent { 0=>10000, 1=>5000, _=>0 }| 0 – 10,000       |
 | 2. severity_bonus          | Replaced by severity_gate (no double-count)       | Catastrophic/Norm|
-| 3. deadline_score          | Piecewise ramp on due date & effort ratio         | 0 – 12,000       |
+| 3. deadline_pressure_mult. | 1 + 2*sqrt(ratio) on value_points; see §2.3       | 1.0 – ∞ (decays) |
 | 4. age_staleness_bonus     | If pri >= 2: min(days_since_created, 200)         | 0 – 200          |
 | 5. downstream_weight × 10  | (downstream_weight * 10.0) as i64                 | 0 – ~53 (obs)    |
-| 6. stakeholder/human gate  | Base 2000 + lateness ramp (unless deadline fired) | 0 / 2,000 – 8,000|
-| 7. urgency_term            | round(node.urgency)                               | 0 – 10,000+      |
-| 8. voi_term                | round(node.voi_value) (leaf nodes only)           | 0 – 5,000        |
+| 6. stakeholder/human gate  | Base 2000 + lateness ramp (unless a `due` exists) | 0 / 2,000 – 8,000|
+| 7. urgency_term            | round(node.urgency); added unmultiplied           | 0 – 10,000+      |
+| 8. voi_term                | round(node.voi_value) (leaf nodes only); unmult.  | 0 – 5,000        |
 | 9. affordable_loss         | Non-compensatory filter zeroing unaffordable tasks| Bool filter      |
 | 10. value_lineage_term     | round(node.value_lineage); see §4.11 (Phase 2)    | 0 – 10,000       |
 | 11. unlock_breadth × 10    | (node.unlock_breadth * 10.0) as i64; tie-breaker, | 0 – ∞ (§4.10)    |
 |                            | not cost_of_delay (Phase 2)                       |                  |
 +---------------------------------------------------------------------------------------------------+
 ```
+
+`deadline_score` — the old flat additive ramp (`0` to `12,000`, capped after 20 days overdue) — no longer exists, for the same non-double-counting reason row 2's `severity_bonus` doesn't: a deadline is pressure, never a flat bonus. Term 3 replaces it with a multiplier on rows 1/6/10 (`intent_pressure` + `stakeholder_waiting` + `value_lineage_term`) — see §2.3.
 
 Term 10, `value_lineage_term`, is the fix for the failure terms 5/11 cannot be: `downstream_weight × 10` and `unlock_breadth × 10` are both deliberately capped, shallow, tie-breaker-only signals (§4.1, §4.10), so the sanctioned importance channel (`contributes_to`) needed a term that lives inside `cost_of_delay` itself, at comparable magnitude to `intent_pressure`/`urgency_term`, to be able to move a ranking at all (§3, §4.11).
 
@@ -133,28 +136,28 @@ text elsewhere describing a `severity_bonus` formula with SEV-keyed point
 values (`100,000`/`20,000`/`10,000`/`5,000`) describes a mechanism that
 predates this spec and was never restored.
 
-### 2.3. Deadline Urgency Ramp (`deadline_score`)
-- **Code reference**: `compute_cost_of_delay`, `src/graph_store.rs:1805-1850`
-- **Formula**:
-  Let `today = Utc::now().date_naive()`, `due_date = parse(node.due)`, `days_until = (due_date - today).num_days()`, and `effort_days = parse_effort_days(node.effort).unwrap_or(3)`:
-  - If `days_until < 0` (overdue):
-    $$\text{deadline\_score} = 8000 + \min((-\text{days\_until}) \times 200, 4000) \quad \in [8000, 12000]$$
-  - Else (`days_until >= 0`), let $\text{ratio} = \frac{\text{effort\_days}}{\max(\text{days\_until}, 1)}$:
-    - If $\text{ratio} \ge 1.0$: $\text{deadline\_score} = 6000$
-    - Else if $\text{ratio} > 0.5$: $\text{deadline\_score} = 2000 + \lfloor(\text{ratio} - 0.5) \times 8000.0\rfloor \quad \in (2000, 6000)$
-    - Else if $\text{days\_until} \le 30$: $\text{deadline\_score} = 1000$
-    - Else: $\text{deadline\_score} = 0$
-- **Theoretical Range**: `0` to `12,000`.
-- **Flag side-effect**: Sets `deadline_ramp_fired = deadline_score > 0` (used to suppress lateness double-counting in the stakeholder waiting bonus).
-- **Default (absent input)**: `0`.
-- **Zeroing conditions**: `due` is absent or unparseable, or `days_until > 30` and $\text{ratio} \le 0.5$.
-- **Consumers**: `compute_focus_scores`.
+### 2.3. Deadline Pressure Multiplier (`deadline_pressure_multiplier`; formerly `deadline_score`)
+**Superseded (ruling, Nic, 2026-09-12, `mem_537e44a9` "Ruling: deadline pressure is a multiplier on value, not a tier"; `mem_fix_deadline_multiplier`).** Nic, verbatim: "deadline pressure should multiply importance in proportion to the size of the task vs days left." The flat additive ramp described below — `deadline_score`, `0` to `12,000`, capped after 20 days overdue and never falling again outside §2.3a's decay — no longer exists. It is replaced by a **deadline pressure multiplier**, `deadline_pressure_multiplier`, applied to a node's own *value points* rather than added as a free-standing term:
 
-### 2.3a. Courtesy-Review Decay (task_e2afd38e)
+$$\text{value\_points} = \text{intent\_pressure} + \text{stakeholder\_waiting} + \text{value\_lineage\_term}$$
+$$\text{cost\_of\_delay} = \text{round}(\text{value\_points} \times \text{deadline\_pressure\_multiplier}) + \text{urgency\_term} + \text{voi\_term}$$
 
-Without this term, an overdue `due` date is a **permanent, unconditional override**: `deadline_band == Overdue` sorts ahead of every non-overdue band regardless of `cost_of_delay` magnitude (§1 — the tuple compares `deadline_band` before `cost_of_delay`), and `deadline_score` caps at `12000` after 20 days overdue and never falls again. A task nobody ever closes out — a standing courtesy review-invitation, a recurring nag with a stale `due` — therefore outranks live work forever, growing more entrenched, never less, the longer it is ignored. Empirically confirmed live on 2026-09-02: `task_f1f59685` (due 2026-09-01, `focus_score` 10237) outranked `teaching` (no `due`, `focus_score` 50021, `urgency` 50000) in `list_tasks(status="ready")` purely on `deadline_band` — a ~1-day-overdue task with modest stakes beat a P1/P2 epic with 5000× the propagated urgency. `task_f1f59685` is correctly *unaffected* by the mechanism below (it is inside the 20-day grace window and carries a real `stakeholder`); the example is cited to show the band-dominance property this term exists to bound is live and material, not hypothetical.
+`urgency_term` and `voi_term` are **not** multiplied: `urgency` already carries its own independent time-value curve (`f(slack)`, §4.3), and `voi_term` measures the value of resolving an open question, not a promise against a calendar date — multiplying either would compound two independent lateness/value signals into one. A node with `value_points == 0` (no curated intent, no named stakeholder, no priced target lineage) has nothing for a deadline to amplify: its `cost_of_delay` is whatever `urgency_term`/`voi_term` it earns on their own, regardless of how pressing its `due` date is. This is a deliberate, accepted consequence of the ruling, not an edge case to work around.
 
-- **Code reference**: `src/graph_store.rs`, inside `compute_cost_of_delay`'s `days_until < 0` branch (immediately after `deadline_score`/`deadline_band` are set).
+- **Code reference**: `compute_cost_of_delay`, `src/graph_store.rs:1790-2002`.
+- **Formula**: Let `today = Utc::now().date_naive()`, `due_date = parse(node.due)`, `days_until = (due_date - today).num_days()`, and `effort_days = parse_effort_days(node.effort).unwrap_or(3)`. `deadline_pressure_multiplier` starts at the neutral `1.0` (used whenever `due` is absent or unparseable) and, when a `due` parses:
+  $$\text{ratio} = \begin{cases} \dfrac{\text{effort\_days}}{\text{days\_until}} & \text{days\_until} \ge 1 \\ \text{effort\_days} + (-\text{days\_until}) + 1 & \text{days\_until} \le 0 \end{cases}$$
+  $$\text{deadline\_pressure\_multiplier} = 1.0 + 2.0 \times \sqrt{\max(\text{ratio}, 0.0)}$$
+  The pre-due branch is the classic "effort left / runway left" — a bigger job against a nearer date presses harder, reaching exactly `effort_days` as `days_until` shrinks to `1`. There is no positive runway left to divide by at or past the due date, so the post-due branch instead continues additively in `days_overdue` — the `+1` keeps it strictly above the pre-due branch's floor at `days_until == 1` (both would otherwise land on exactly `effort_days`, a tie at the crossing that would violate "an overdue task outranks its day-before self" at the exact due-date boundary) — and then grows by a flat `+1` per additional day overdue regardless of task size, so growth continues past the due date rather than plateauing (contrast the retired ramp's cliff, capped after 20 days). The size of the task still sets where the climb starts; the per-day growth rate once overdue is the same for every task.
+- **Flag side-effect**: `deadline_pressure_active = due.is_some() && parseable` (regardless of how far away, or whether the multiplier is later decayed) — gates the stakeholder-waiting day-ramp in §2.6, so the two lateness signals never compound.
+- **Theoretical Range**: `1.0` (no `due`, or `value_points == 0` makes the multiplier moot) to unbounded for a real-stakes node arbitrarily far overdue (§2.3a bounds it back toward `1.0` for a no-stakes node).
+- **Consumers**: `compute_cost_of_delay` (multiplies `value_points`; §1).
+
+### 2.3a. Courtesy-Review Decay (task_e2afd38e), re-homed as decay of the multiplier
+
+Without this term, an overdue `due` date presses harder without limit, forever, even on a task nobody ever closes out — a standing courtesy review-invitation, a recurring nag with a stale `due` — growing more entrenched, never less, the longer it is ignored. (Historically, before the multiplier replaced the flat ramp, this was empirically confirmed live on 2026-09-02: `task_f1f59685`, due 2026-09-01, outranked a P1/P2 epic with 5000× its propagated urgency purely on the then-existing `deadline_band` tier — the example that motivated this term in the first place, cited here because the underlying failure mode — an unowned overdue date growing without bound — is exactly what this decay still bounds, just against the multiplier now rather than the retired band.)
+
+- **Code reference**: `src/graph_store.rs`, inside `compute_cost_of_delay`'s `days_until < 0` branch (immediately after `deadline_pressure_multiplier` is set).
 - **Gate — applies only when a node is judged to carry no real stakes**, checked via signals the engine already reads for other terms (never a new field, never a tag someone has to remember to apply):
   ```
   has_real_stakes = downstream_weight > 0.0
@@ -172,21 +175,17 @@ Without this term, an overdue `due` date is a **permanent, unconditional overrid
 - **Formula** (only when `!has_real_stakes` and `days_overdue > 20`):
   ```
   decay_days = min(days_overdue - 20, 100)
-  decay_frac = decay_days / 100.0                       // 0.0 .. 1.0
-  deadline_score_after = deadline_score - round(deadline_score * decay_frac)
-  deadline_band_after  = Overdue      if decay_frac < 0.25
-                        = Imminent    if decay_frac < 0.5
-                        = Urgent      if decay_frac < 0.75
-                        = Approaching if decay_frac < 1.0
-                        = None        otherwise
+  decay_frac = decay_days / 100.0                                      // 0.0 .. 1.0
+  deadline_pressure_multiplier_after = 1.0
+      + (deadline_pressure_multiplier - 1.0) * (1.0 - decay_frac)
   ```
-  The first 20 days overdue are untouched for every node, stakes or none — this matches the point at which the pre-existing ramp itself already saturates at `12000`, so nothing changes for a task freshly overdue. Past that, both terms decay together and smoothly over the following 100 days, landing at **exactly** the values a task with no `due` at all would get (`deadline_score == 0`, `DeadlineBand::None`) once fully decayed at 120 days overdue — an expired courtesy review is ranked as what it functionally is: undated. Nothing is hidden, filtered, or deleted; it keeps surfacing in every list, just without the permanent band override.
-- **Theoretical range**: `deadline_score` as §2.3; `deadline_band` additionally reachable at any of the five values for an overdue, no-stakes node (not just `Overdue`).
+  The first 20 days overdue are untouched for every node, stakes or none — this matches the point at which the pre-existing ramp itself used to saturate, so nothing changes for a task freshly overdue. Past that, the *excess* pressure above the neutral `1.0` decays smoothly over the following 100 days, landing at **exactly** `1.0` — the value a task with no `due` at all gets — once fully decayed at 120 days overdue: an expired courtesy review is ranked as what it functionally is, undated. Nothing is hidden, filtered, or deleted; it keeps surfacing in every list, just without ever-growing leverage.
+- **Theoretical range**: `deadline_pressure_multiplier` decays linearly (in `decay_frac`) from its undecayed value down to exactly `1.0`.
 - **Default / zeroing conditions**: no-op (`has_real_stakes == true`, or `days_overdue <= 20`, or no `due` at all — falls through to §2.3 unchanged).
-- **Consumers**: `compute_focus_scores` (same call site as §2.3; not a separate pipeline stage).
+- **Consumers**: `compute_cost_of_delay` (same call site as §2.3; not a separate pipeline stage).
 - **Rejected alternatives** (recorded per `.agent/CORE.md` — specs document approved current state, not the road not taken, so the reasoning lives here only because the originating task required it be recorded where the model is documented):
   - **An explicit `courtesy: true` frontmatter tag.** Rejected on curation-burden grounds: every task-creation path in this system (`create_task`, `claim_task`, `decompose_task`, `batch_create_epics`, ad-hoc creation via `release_task`) can mint a courtesy-shaped task, and a tag only helps the instances someone remembers to label — which is precisely the failure mode that let the two originating example tasks crowd in the first place (neither was tagged). This flips if the system gains a single, enforced choke point for review-shaped task creation (e.g. a dedicated review-invitation template) where tagging could be applied at creation time and never bypassed; no such choke point exists today.
-  - **Blanket overdue decay (decay every overdue task, stakes or none).** Rejected: it fails the requirement that a real hard deadline must still bite, and repeats — at the deadline-band layer instead of the edge-weight layer — the exact mistake the standing-weight/edge-decay mechanism was rejected for (`pkb-prioritisation-evolution-plan`, "Decay: parked dormant" ruling, 2026-08-28): shipping a signal that measures a node's age, under an "attention" or "importance" label, rather than anything real about the node.
+  - **Blanket overdue decay (decay every overdue task, stakes or none).** Rejected: it fails the requirement that a real hard deadline must still bite, and repeats — at the multiplier layer instead of the edge-weight layer — the exact mistake the standing-weight/edge-decay mechanism was rejected for (`pkb-prioritisation-evolution-plan`, "Decay: parked dormant" ruling, 2026-08-28): shipping a signal that measures a node's age, under an "attention" or "importance" label, rather than anything real about the node.
 
 ### 2.4. Age / Staleness Bonus (`age_staleness_bonus`)
 - **Code reference**: `compute_focus_scores`, `src/graph_store.rs:2011,2021-2034`
@@ -214,9 +213,9 @@ Without this term, an overdue `due` date is a **permanent, unconditional overrid
 - **Ruling (Nic, 2026-09-11, `mem_537e44a9` "Verdict: stakeholder_waiting / human gate"):** this term fires **only when a `stakeholder` is actually named** — never merely because `node.is_human_gate()` is true. A bare `decision`-tagged node, or any node satisfying `is_human_gate()` (`status: review`, or tags `decision`/`sign-off`/`signoff`/`one-way-door`/`human-approval`), with no named stakeholder has nobody waiting on it and earns no waiting clock. `is_human_gate()` continues to gate the courtesy-decay mechanism (§2.3a's `has_real_stakes`) and `focus_picks`/`pkb focus` surfacing (both structurally distinct from this accrual) — it no longer independently triggers this term.
 - **Formula**:
   Applies when `node.stakeholder.is_some()`:
-  - If `deadline_ramp_fired` is `true`:
-    $$\text{score} += 2000 \quad \text{(base only, suppressing per-day lateness growth to prevent double-counting)}$$
-  - Else (`deadline_ramp_fired` is `false`):
+  - If `deadline_pressure_active` is `true` (§2.3 — a `due` date is present and parses, regardless of how far away):
+    $$\text{score} += 2000 \quad \text{(base only; the deadline pressure multiplier, §2.3, already carries the day-scaled lateness signal for this base)}$$
+  - Else (no `due` at all — no multiplier exists to carry a lateness signal instead):
     Let $\text{anchor} = \text{parse}(\text{node.waiting\_since} \lor \text{node.created})$, and $\text{days} = \max((\text{today} - \text{anchor}).\text{num\_days}(), 0)$:
     $$\text{score} += 2000 + \min(\text{days} \times 200, 6000) \quad \in [2000, 8000]$$
     If anchor date is missing or unparseable, score is `2000`.
@@ -265,9 +264,9 @@ Without this term, an overdue `due` date is a **permanent, unconditional overrid
 
 The eight additive terms carry widely disparate theoretical caps versus realised empirical dynamics. This was the diagnosed failure Phase 2 exists to fix for the graph/importance channel specifically: `downstream_weight × 10` (a tie-breaker, not `cost_of_delay`) contributed at most ~53 observed points against a scale running to ~11,000, while `contributes_to` — the sanctioned channel by which agents are instructed to express importance instead of setting priority bands — reached the score only through that same ~53-point term. `value_lineage_term` (§2.9, §4.11) is the repair: it enters `cost_of_delay` directly, at the same 0–10,000 order of magnitude as `intent_pressure`/`urgency_term`, so it can actually move a ranking.
 
-| Term | Theoretical Range | Observed Range (Typical) |
+| Term | Theoretical Range (pre-multiplier) | Observed Range (Typical) |
 | --- | --- | --- |
-| `deadline_score` | 0 – 12,000 | 0 – 12,000 |
+| `deadline_pressure_multiplier` | 1.0 – ∞ (decays toward 1.0 for no-stakes overdue nodes, §2.3a) | 1.0 – ~20 |
 | `intent_pressure` | 0 – 10,000 | 0 – 10,000 |
 | `urgency_term` | 0 – 10,000 | 0 – 10,000 |
 | `value_lineage_term` | 0 – 10,000 | 0 – 6,000 (`[[targ_4e2cc92a]]`, priced 0.60 — §2.9) |
@@ -276,12 +275,17 @@ The eight additive terms carry widely disparate theoretical caps versus realised
 | `age_staleness_bonus` | 0 – 200 | 0 – 200 |
 | `downstream_weight × 10` (tie-breaker) | 0 – $\infty$ | 0 – ~500 |
 | `unlock_breadth × 10` (tie-breaker) | 0 – $\infty$ | not yet measured on the live PKB |
-| **`focus_score` Composite** | **0 – ~55,200** | **0 – ~11,000+** |
+| **`focus_score` Composite** | **0 – unbounded (multiplier applies to `intent_pressure` + `stakeholder_waiting` + `value_lineage_term`)** | **0 – ~30,000+** |
 
-No `severity_bonus` row exists: the additive severity bonus this table
-once carried was replaced by `severity_gate` (§1, §2.2) — a binary
-admission to the `Catastrophic` band, never an additive point value — so
-it is excluded from this sum. `severity` still reaches `cost_of_delay`
+No `deadline_score` row exists any more: the flat additive ramp this table
+once carried was replaced by `deadline_pressure_multiplier` (§2.3) — a
+scalar applied to `intent_pressure` + `stakeholder_waiting` +
+`value_lineage_term`, never a free-standing additive term — so it is listed
+above as a multiplier, not summed into the composite the way the other rows
+are. No `severity_bonus` row exists either: the additive severity bonus this
+table once carried was replaced by `severity_gate` (§1, §2.2) — a binary
+admission to the `Catastrophic` band, never an additive point value — so it
+is excluded from this sum. `severity` still reaches `cost_of_delay`
 indirectly through `urgency_term`.
 
 ---

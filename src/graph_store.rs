@@ -924,8 +924,10 @@ impl GraphStore {
 
     /// Canonical default ordering for any flat task/node result set.
     ///
-    /// The explicit `focus_tuple` (severity gate, deadline band, cost-of-delay index, tie-breakers)
+    /// The explicit `focus_tuple` (severity gate, cost-of-delay index, tie-breakers)
     /// computed in [`Self::compute_focus_scores`] is the primary ranking key under derived ordering.
+    /// Deadline pressure is not a tier here — it multiplies a node's value points inside
+    /// `cost_of_delay` itself (`compute_cost_of_delay`; ruling, Nic, 2026-09-12, `mem_537e44a9`).
     /// Ties are broken deterministically so repeated identical calls yield identical ordering:
     ///   1. `focus_tuple` DESC (nodes with no score sort last)
     ///   2. `effective_intent` ASC (propagated min-intent in the downstream cone)
@@ -1785,10 +1787,7 @@ impl GraphStore {
     /// (what a blocker's completion is worth to its dependents) call this, so
     /// the two can never drift apart into two different definitions of "cost
     /// of delay".
-    fn compute_cost_of_delay(
-        node: &GraphNode,
-        today: chrono::NaiveDate,
-    ) -> (crate::graph::DeadlineBand, i64) {
+    fn compute_cost_of_delay(node: &GraphNode, today: chrono::NaiveDate) -> i64 {
         let intent_val = node.intent.unwrap_or(4);
         // intent_pressure bands the gated, propagated `effective_intent`
         // (mem_intent_ready_weight), not the raw stated `intent` — this is
@@ -1803,15 +1802,33 @@ impl GraphStore {
             _ => 0,
         };
 
-        let mut deadline_band = crate::graph::DeadlineBand::None;
-        let mut deadline_points: i64 = 0;
-        let mut deadline_ramp_fired = false;
+        // Deadline pressure -- a multiplier on the node's own value, never a
+        // tier and never flat points (ruling, Nic, 2026-09-12, mem_537e44a9
+        // "Ruling: deadline pressure is a multiplier on value, not a tier";
+        // specs/ranking.md §2.3, kb_pauli_prioritisation_doctrine §6.2).
+        //
+        // `deadline_pressure_multiplier` starts at the neutral `1.0` (no
+        // amplification) and grows with `ratio = effort_days / days_until`,
+        // the size of the task against the runway left to do it in. Unlike
+        // the old flat-cliff ramp, growth continues past the due date rather
+        // than plateauing: every additional day overdue increases the ratio
+        // further, so the property "an overdue task outranks its day-before
+        // self" holds by construction for any node carrying real value
+        // (below), not just up to a 20-day cap.
+        //
+        // `deadline_pressure_active` records whether a `due` date was present
+        // and parseable at all (regardless of how far away) -- it gates the
+        // stakeholder-waiting day-ramp below, so the two lateness clocks
+        // never compound multiplicatively.
+        let mut deadline_pressure_multiplier: f64 = 1.0;
+        let mut deadline_pressure_active = false;
 
         if let Some(ref due) = node.due {
             let len = std::cmp::min(10, due.len());
             if let Ok(due_date) =
                 chrono::NaiveDate::parse_from_str(&due[..due.floor_char_boundary(len)], "%Y-%m-%d")
             {
+                deadline_pressure_active = true;
                 let days_until = (due_date - today).num_days();
                 let effort_days = node
                     .effort
@@ -1819,62 +1836,81 @@ impl GraphStore {
                     .and_then(crate::graph::parse_effort_days)
                     .unwrap_or(3);
 
-                if days_until < 0 {
-                    deadline_band = crate::graph::DeadlineBand::Overdue;
-                    deadline_points = 8000 + std::cmp::min((-days_until) * 200, 4000);
-                    deadline_ramp_fired = true;
+                // `ratio`: pre-due, the classic "effort left / runway left" --
+                // a bigger job against a nearer date presses harder. At and
+                // past the due date (days_until <= 0) there is no positive
+                // runway left to divide by, so the ratio instead continues as
+                // `effort_days + days_overdue + 1`: the `+1` keeps it
+                // strictly above the pre-due branch's value at `days_until ==
+                // 1` (which reaches exactly `effort_days`, the pre-due
+                // branch's own floor as `days_until` shrinks to its smallest
+                // positive value) so crossing the due date is always a step
+                // up, never a tie -- required for "an overdue task outranks
+                // its day-before self" to hold at the crossing itself, not
+                // just deep into either side of it. Past that, it grows by a
+                // flat `+1` for every additional day overdue regardless of
+                // task size -- the size of the task still sets where the
+                // climb starts, but the per-day growth rate past due is the
+                // same for every task, so one very large task doesn't get a
+                // many-times-larger multiplier than a small one purely for
+                // having been overdue the same number of days.
+                let ratio: f64 = if days_until >= 1 {
+                    effort_days as f64 / days_until as f64
+                } else {
+                    effort_days as f64 + (-days_until) as f64 + 1.0
+                };
 
-                    // Courtesy-review decay (task_e2afd38e, specs/ranking.md §2.3a).
-                    //
-                    // Without this, an overdue `due` date is a permanent, unconditional
-                    // override: `deadline_band == Overdue` sorts ahead of every
-                    // non-overdue band regardless of `cost_of_delay` magnitude (the tuple
-                    // compares `deadline_band` before `cost_of_delay` — see
-                    // `crate::graph::FocusTuple::cmp`), and `deadline_points` caps at
-                    // 12000 after 20 days overdue and never falls again. A due date on a
-                    // task nobody ever closes out (a standing courtesy review-invitation,
-                    // a recurring nudge) therefore outranks live work forever, growing
-                    // more entrenched — never less — the longer it is ignored.
-                    //
-                    // Decay applies only to a task this doctrine already treats as
-                    // carrying no real stakes, checked via signals the ranking engine
-                    // already reads for other terms (never a new field, never a tag
-                    // someone has to remember to apply):
-                    //   - nothing depends on it (`downstream_weight == 0`);
-                    //   - nobody is named as waiting and it is not a structurally
-                    //     identified human gate (`stakeholder`, `is_human_gate()`);
-                    //   - no severity propagates to it from any target via
-                    //     `contributes_to`/`blocks`/`children` (`urgency` stays at the
-                    //     no-propagation floor even though `f(slack) == 10.0` while
-                    //     overdue — see `compute_urgency`);
-                    //   - Nic has not curated it to P0/P1 (`intent`).
-                    // A task acquires any of these by becoming a real blocker, being
-                    // named a stakeholder, being wired to a severity-bearing target, or
-                    // being promoted by Nic — every route requires a truthful claim the
-                    // model already treats as load-bearing elsewhere, not a cosmetic
-                    // label. `stated_weight` and `intent` are themselves closed to
-                    // agents (pauli/Nic only) per `kb_pauli_prioritisation_doctrine` §5,
-                    // so a task cannot quietly game itself out of decay.
-                    //
-                    // `consequence` is deliberately NOT part of this gate: doctrine
-                    // (`kb_pauli_prioritisation_doctrine` §4.2) is explicit that
-                    // `consequence` is explanatory prose, never read by the ranking
-                    // engine — reading it here would be a new violation of that rule,
-                    // not a fix. `severity` is likewise not read directly off the task:
-                    // doctrine reserves `severity` for target nodes and requires it reach
-                    // a task only via propagated `urgency`, so checking `node.severity`
-                    // here would silently no-op on every correctly-modelled task.
-                    //
-                    // The first `COURTESY_GRACE_DAYS` overdue are unaffected (matches
-                    // the existing ramp's own cap point, so nothing changes for a task
-                    // freshly overdue). Past that, both `deadline_points` and
-                    // `deadline_band` decay together and smoothly over the following
-                    // `COURTESY_DECAY_WINDOW_DAYS`, landing at exactly the values a task
-                    // with no `due` at all would get (`deadline_points == 0`,
-                    // `DeadlineBand::None`) once fully decayed — an expired courtesy
-                    // review is ranked as what it functionally is: undated. Nothing is
-                    // hidden or deleted; it keeps surfacing, just without the permanent
-                    // override.
+                const DEADLINE_PRESSURE_GAIN: f64 = 2.0;
+                deadline_pressure_multiplier = 1.0 + DEADLINE_PRESSURE_GAIN * ratio.max(0.0).sqrt();
+
+                // Courtesy-review decay (task_e2afd38e, specs/ranking.md §2.3a),
+                // re-homed as decay of the multiplier rather than decay of a
+                // flat point cliff + calendar band (ruling, Nic, 2026-09-12,
+                // mem_537e44a9).
+                //
+                // Without this, an overdue `due` date presses harder forever,
+                // without limit, even on a task nobody ever closes out (a
+                // standing courtesy review-invitation, a recurring nudge) --
+                // growing more entrenched, never less, the longer it is
+                // ignored. Decay applies only to a task this doctrine already
+                // treats as carrying no real stakes, checked via signals the
+                // ranking engine already reads for other terms (never a new
+                // field, never a tag someone has to remember to apply):
+                //   - nothing depends on it (`downstream_weight == 0`);
+                //   - nobody is named as waiting and it is not a structurally
+                //     identified human gate (`stakeholder`, `is_human_gate()`);
+                //   - no severity propagates to it from any target via
+                //     `contributes_to`/`blocks`/`children` (`urgency` stays at
+                //     the no-propagation floor even though `f(slack) == 10.0`
+                //     while overdue -- see `compute_urgency`);
+                //   - Nic has not curated it to P0/P1 (`intent`).
+                // A task acquires any of these by becoming a real blocker,
+                // being named a stakeholder, being wired to a severity-bearing
+                // target, or being promoted by Nic -- every route requires a
+                // truthful claim the model already treats as load-bearing
+                // elsewhere, not a cosmetic label. `stated_weight` and
+                // `intent` are themselves closed to agents (pauli/Nic only)
+                // per `kb_pauli_prioritisation_doctrine` §5, so a task cannot
+                // quietly game itself out of decay.
+                //
+                // `consequence` is deliberately NOT part of this gate: doctrine
+                // (`kb_pauli_prioritisation_doctrine` §4.2) is explicit that
+                // `consequence` is explanatory prose, never read by the
+                // ranking engine. `severity` is likewise not read directly off
+                // the task: doctrine reserves `severity` for target nodes and
+                // requires it reach a task only via propagated `urgency`.
+                //
+                // The first `COURTESY_GRACE_DAYS` overdue are unaffected
+                // (matches the point at which the pre-existing ramp itself
+                // used to saturate, so nothing changes for a task freshly
+                // overdue). Past that, the *excess* pressure above the
+                // neutral `1.0` decays smoothly over the following
+                // `COURTESY_DECAY_WINDOW_DAYS`, landing at exactly `1.0`
+                // (the value a task with no `due` at all gets) once fully
+                // decayed -- an expired courtesy review is ranked as what it
+                // functionally is: undated. Nothing is hidden or deleted; it
+                // keeps surfacing, just without ever-growing leverage.
+                if days_until < 0 {
                     const COURTESY_GRACE_DAYS: i64 = 20;
                     const COURTESY_DECAY_WINDOW_DAYS: i64 = 100;
                     const COURTESY_URGENCY_CEILING: f64 = 50.0;
@@ -1891,39 +1927,9 @@ impl GraphStore {
                             let decay_days = (days_overdue - COURTESY_GRACE_DAYS)
                                 .min(COURTESY_DECAY_WINDOW_DAYS);
                             let decay_frac = decay_days as f64 / COURTESY_DECAY_WINDOW_DAYS as f64;
-
-                            deadline_points -= (deadline_points as f64 * decay_frac) as i64;
-                            deadline_band = if decay_frac < 0.25 {
-                                crate::graph::DeadlineBand::Overdue
-                            } else if decay_frac < 0.5 {
-                                crate::graph::DeadlineBand::Imminent
-                            } else if decay_frac < 0.75 {
-                                crate::graph::DeadlineBand::Urgent
-                            } else if decay_frac < 1.0 {
-                                crate::graph::DeadlineBand::Approaching
-                            } else {
-                                crate::graph::DeadlineBand::None
-                            };
+                            deadline_pressure_multiplier = 1.0
+                                + (deadline_pressure_multiplier - 1.0) * (1.0 - decay_frac);
                         }
-                    }
-                } else {
-                    let ratio = effort_days as f64 / (days_until.max(1) as f64);
-                    if ratio >= 1.0 {
-                        deadline_band = crate::graph::DeadlineBand::Imminent;
-                        deadline_points = 6000;
-                        deadline_ramp_fired = true;
-                    } else if ratio > 0.5 {
-                        deadline_band = crate::graph::DeadlineBand::Urgent;
-                        deadline_points = 2000 + ((ratio - 0.5) * 8000.0) as i64;
-                        deadline_ramp_fired = true;
-                    } else if days_until <= 30 {
-                        deadline_band = crate::graph::DeadlineBand::Approaching;
-                        deadline_points = (ratio * 4000.0) as i64;
-                        deadline_ramp_fired = deadline_points > 0;
-                    } else {
-                        deadline_band = crate::graph::DeadlineBand::None;
-                        deadline_points = 0;
-                        deadline_ramp_fired = false;
                     }
                 }
             }
@@ -1943,8 +1949,13 @@ impl GraphStore {
         // accrual.
         let is_waiting = node.stakeholder.is_some();
         if is_waiting {
-            if deadline_ramp_fired {
-                // Deadline ramp already counts lateness; keep only the base.
+            if deadline_pressure_active {
+                // A `due` date already carries the lateness signal, via the
+                // deadline pressure multiplier applied to this very base
+                // below -- growing this term by days-waited too would
+                // compound the same lateness twice (once linearly here, once
+                // again through the multiplier). Keep only the "someone is
+                // waiting" base; the multiplier does the rest.
                 stakeholder_waiting = 2000;
             } else {
                 let anchor = node.waiting_since.as_ref().or(node.created.as_ref());
@@ -1968,27 +1979,36 @@ impl GraphStore {
         let urgency_term = node.urgency.round() as i64;
         let voi_term = node.voi_value.map(|v| v.round() as i64).unwrap_or(0);
         // Value lineage (Phase 2): the sanctioned importance channel
-        // (contributes_to -> a priced committed target) enters cost_of_delay
-        // directly, already scaled by K_VALUE_LINEAGE in
-        // `compute_value_lineage` so it can carry real weight instead of the
-        // ~53-point cap `downstream_weight` was limited to (specs/ranking.md §3).
+        // (contributes_to -> a priced target) enters cost_of_delay directly,
+        // already scaled by K_VALUE_LINEAGE in `compute_value_lineage` so it
+        // can carry real weight instead of the ~53-point cap `downstream_weight`
+        // was limited to (specs/ranking.md §3).
         let value_lineage_term = node.value_lineage.round() as i64;
 
-        let cost_of_delay = intent_pressure
-            + deadline_points
-            + stakeholder_waiting
-            + urgency_term
-            + voi_term
-            + value_lineage_term;
+        // The task's own value points -- intent, a named stakeholder waiting,
+        // and priced target lineage -- are what deadline pressure multiplies.
+        // `urgency_term` and `voi_term` are added unmultiplied: `urgency`
+        // already carries its own time-value curve (`f(slack)`, §4.3) and
+        // double-applying deadline pressure on top of it would compound two
+        // independent lateness signals; `voi_term` measures the value of
+        // resolving an open question, not a promise with a due date. A node
+        // with no value points has nothing for a deadline to amplify -- its
+        // `cost_of_delay` still carries whatever `urgency_term`/`voi_term` it
+        // earns on their own.
+        let value_points = intent_pressure + stakeholder_waiting + value_lineage_term;
+        let deadline_boosted_value =
+            (value_points as f64 * deadline_pressure_multiplier).round() as i64;
 
-        (deadline_band, cost_of_delay)
+        deadline_boosted_value + urgency_term + voi_term
     }
 
     /// Compute focus scores and sort tuples for all nodes.
     ///
     /// Evaluates the canonical sort tuple:
-    /// (severity gate, deadline band, cost-of-delay index, tie-breakers)
-    /// and derives synthetic display focus_scores.
+    /// (severity gate, cost-of-delay index, tie-breakers)
+    /// and derives synthetic display focus_scores. Deadline pressure enters
+    /// `cost_of_delay` as a multiplier on the node's own value points, not as
+    /// a separate tuple element (ruling, Nic, 2026-09-12, `mem_537e44a9`).
     /// Results are stored in node.focus_tuple and node.focus_score.
     fn compute_focus_scores(nodes: &mut [GraphNode]) {
         let today = chrono::Utc::now().date_naive();
@@ -2016,7 +2036,7 @@ impl GraphStore {
                 crate::graph::SeverityGate::Normal
             };
 
-            let (deadline_band, cost_of_delay) = Self::compute_cost_of_delay(node, today);
+            let cost_of_delay = Self::compute_cost_of_delay(node, today);
 
             let mut age_staleness: i64 = 0;
             if intent_val >= 2 {
@@ -2046,7 +2066,6 @@ impl GraphStore {
 
             let tuple = crate::graph::FocusTuple {
                 severity_gate,
-                deadline_band,
                 cost_of_delay,
                 tie_breakers,
             };
@@ -4173,7 +4192,7 @@ fn compute_unlock_breadth(nodes: &mut [GraphNode]) {
     // recomputation of the whole tuple.
     let cod: Vec<i64> = nodes
         .iter()
-        .map(|n| GraphStore::compute_cost_of_delay(n, today).1)
+        .map(|n| GraphStore::compute_cost_of_delay(n, today))
         .collect();
 
     let mut breadth = vec![0.0_f64; nodes.len()];
@@ -6532,6 +6551,17 @@ mod tests {
         use crate::graph::GraphNode;
         use chrono::Utc;
 
+        // Ruling (Nic, 2026-09-12, mem_537e44a9 "Ruling: deadline pressure is
+        // a multiplier on value, not a tier"): a node with no value has
+        // nothing for a deadline to amplify. Every scenario below therefore
+        // carries the same P1 value baseline (`intent = 1` -> `intent_pressure
+        // = 5000`) so the deadline multiplier's effect on `cost_of_delay` is
+        // observable and comparable across scenarios; the multiplier itself
+        // is `1.0 + 2*sqrt(ratio)` (`compute_cost_of_delay`), where
+        // `ratio = effort_days / days_until` pre-due and continues as
+        // `effort_days + days_overdue` at and past the due date.
+        const BASELINE_INTENT_PRESSURE: i64 = 5000;
+
         let today = Utc::now().date_naive();
         let tomorrow = today + chrono::Duration::days(1);
         let in_5d = today + chrono::Duration::days(5);
@@ -6539,33 +6569,26 @@ mod tests {
         let in_2w = today + chrono::Duration::days(14);
         let in_4w = today + chrono::Duration::days(28);
 
-        // Scenario 1: Corporate card (effort=1d, due in 7d): ratio=1/7=0.142857.
-        // Under continuous linear interpolation (ratio * 4000.0), score is 571 (was flat 1000 under broken 30d cliff).
-        let mut node1 = GraphNode::default();
-        node1.due = Some(in_7d.format("%Y-%m-%d").to_string());
-        node1.effort = Some("1d".to_string());
+        let with_baseline = |due: Option<String>, effort: Option<&str>| {
+            let mut n = GraphNode::default();
+            n.intent = Some(1);
+            n.due = due;
+            n.effort = effort.map(|s| s.to_string());
+            n
+        };
 
-        // Scenario 2: Corporate card (effort=1d, due tomorrow): ratio=1/1=1.0, +6000
-        let mut node2 = GraphNode::default();
-        node2.due = Some(tomorrow.format("%Y-%m-%d").to_string());
-        node2.effort = Some("1d".to_string());
-
-        // Scenario 3: Paper review (effort=3w, due in 4w): ratio=21/28=0.75, ~+4000
-        let mut node3 = GraphNode::default();
-        node3.due = Some(in_4w.format("%Y-%m-%d").to_string());
-        node3.effort = Some("3w".to_string());
-
-        // Scenario 4: Paper review (effort=3w, due in 2w): ratio=21/14=1.5 -> 1.0, +6000
-        let mut node4 = GraphNode::default();
-        node4.due = Some(in_2w.format("%Y-%m-%d").to_string());
-        node4.effort = Some("3w".to_string());
-
-        // Scenario 5: No effort, due in 5d: default 3d, ratio=3/5=0.6, ~+2800 (2000 + (0.6-0.5)*8000 = 2800)
-        let mut node5 = GraphNode::default();
-        node5.due = Some(in_5d.format("%Y-%m-%d").to_string());
-
-        // Scenario 6: No due date: unchanged (0 deadline component)
-        let node6 = GraphNode::default();
+        // Scenario 1: effort=1d, due in 7d -> ratio=1/7, multiplier=1+2*sqrt(1/7)=1.7559.
+        let node1 = with_baseline(Some(in_7d.format("%Y-%m-%d").to_string()), Some("1d"));
+        // Scenario 2: effort=1d, due tomorrow -> ratio=1/1=1.0, multiplier=3.0.
+        let node2 = with_baseline(Some(tomorrow.format("%Y-%m-%d").to_string()), Some("1d"));
+        // Scenario 3: effort=3w=21d, due in 4w=28d -> ratio=0.75, multiplier=2.7321.
+        let node3 = with_baseline(Some(in_4w.format("%Y-%m-%d").to_string()), Some("3w"));
+        // Scenario 4: effort=3w=21d, due in 2w=14d -> ratio=1.5, multiplier=3.4495.
+        let node4 = with_baseline(Some(in_2w.format("%Y-%m-%d").to_string()), Some("3w"));
+        // Scenario 5: no effort (default 3d), due in 5d -> ratio=0.6, multiplier=2.5492.
+        let node5 = with_baseline(Some(in_5d.format("%Y-%m-%d").to_string()), None);
+        // Scenario 6: no due date at all -> multiplier is neutral 1.0, cost_of_delay == value_points.
+        let node6 = with_baseline(None, None);
 
         let mut nodes = vec![
             node1,
@@ -6577,57 +6600,78 @@ mod tests {
         ];
         GraphStore::compute_focus_scores(&mut nodes);
 
-        // Verify scores
-        assert_eq!(nodes[0].focus_score.unwrap(), 571);
-        assert_eq!(nodes[1].focus_score.unwrap(), 6000);
-        assert!(
-            nodes[2].focus_score.unwrap() >= 3900 && nodes[2].focus_score.unwrap() <= 4100,
-            "Scenario 3 failed: expected ~4000, got {}",
-            nodes[2].focus_score.unwrap()
+        // Verify scores (cost_of_delay == focus_score here: no downstream/unlock/age
+        // staleness inputs are set on these bare nodes, and `created` is unset so
+        // age_staleness stays 0 despite intent >= 2 not applying -- intent is 1 here,
+        // which is < 2, so age_staleness is gated off entirely regardless).
+        assert_eq!(nodes[0].focus_score.unwrap(), 8780, "scenario 1: ratio=1/7");
+        assert_eq!(nodes[1].focus_score.unwrap(), 15000, "scenario 2: ratio=1.0");
+        assert_eq!(nodes[2].focus_score.unwrap(), 13660, "scenario 3: ratio=0.75");
+        assert_eq!(nodes[3].focus_score.unwrap(), 17247, "scenario 4: ratio=1.5");
+        assert_eq!(nodes[4].focus_score.unwrap(), 12746, "scenario 5: ratio=0.6, default effort");
+        assert_eq!(
+            nodes[5].focus_score.unwrap(),
+            BASELINE_INTENT_PRESSURE,
+            "scenario 6: no due date -> multiplier neutral, cost_of_delay == value_points"
         );
-        assert_eq!(nodes[3].focus_score.unwrap(), 6000);
-        assert!(
-            nodes[4].focus_score.unwrap() >= 2700 && nodes[4].focus_score.unwrap() <= 2900,
-            "Scenario 5 failed: expected ~2800, got {}",
-            nodes[4].focus_score.unwrap()
-        );
-        assert_eq!(nodes[5].focus_score.unwrap(), 0);
 
         // Consequence presence must NOT alter the deadline term.
         // `consequence` is explanatory prose, not a scoring lever; stakes flow via
         // target severity through `contributes_to` edges (TAXONOMY.md L159, L282-300).
-        // A task identical to scenario 2 (effort=1d, due tomorrow -> +6000) but carrying
-        // a consequence string must score exactly the same.
-        let mut node7 = GraphNode::default();
-        node7.due = Some(tomorrow.format("%Y-%m-%d").to_string());
-        node7.effort = Some("1d".to_string());
+        // A task identical to scenario 2 but carrying a consequence string must
+        // score exactly the same.
+        let mut node7 = with_baseline(Some(tomorrow.format("%Y-%m-%d").to_string()), Some("1d"));
         node7.consequence = Some("high".to_string());
         let mut nodes7 = vec![node7];
         GraphStore::compute_focus_scores(&mut nodes7);
         assert_eq!(
             nodes7[0].focus_score.unwrap(),
-            6000,
-            "consequence presence must not change the deadline term (was inflated ×1.5 to 9000)"
+            15000,
+            "consequence presence must not change the deadline multiplier"
         );
 
-        // Scenario 8: Overdue by 2 days: +8000 + 2*200 = 8400
-        let mut node8 = GraphNode::default();
-        node8.due = Some(
+        // Scenario 8: overdue by 2 days, default effort 3d ->
+        // ratio = 3 + 2 + 1 = 6, multiplier = 1 + 2*sqrt(6) = 5.899,
+        // cost_of_delay = round(5000 * 5.899) = 29495.
+        let node8 = with_baseline(
+            Some(
+                (today - chrono::Duration::days(2))
+                    .format("%Y-%m-%d")
+                    .to_string(),
+            ),
+            None,
+        );
+        let mut nodes8 = vec![node8];
+        GraphStore::compute_focus_scores(&mut nodes8);
+        assert_eq!(nodes8[0].focus_score.unwrap(), 29495);
+
+        // A node with NO value points at all gets no amplification regardless
+        // of how pressing the deadline is -- the direct, intended consequence
+        // of "a node with no value has nothing for a deadline to amplify".
+        let mut valueless_overdue = GraphNode::default();
+        valueless_overdue.due = Some(
             (today - chrono::Duration::days(2))
                 .format("%Y-%m-%d")
                 .to_string(),
         );
-        let mut nodes8 = vec![node8];
-        GraphStore::compute_focus_scores(&mut nodes8);
-        assert_eq!(nodes8[0].focus_score.unwrap(), 8400);
+        let mut nodes9 = vec![valueless_overdue];
+        GraphStore::compute_focus_scores(&mut nodes9);
+        assert_eq!(
+            nodes9[0].focus_score.unwrap(),
+            0,
+            "a due date alone, on a node with no intent/stakeholder/value_lineage, scores 0"
+        );
     }
 
-    /// mem-830588f3 defect 1: when a task has BOTH a hard `due` and a
-    /// `stakeholder`, the overdue-deadline ramp and the stakeholder-waiting ramp
-    /// must NOT both count the same lateness. The deadline ramp owns lateness; the
-    /// stakeholder ramp keeps only its +2000 "someone is waiting" base. A
-    /// stakeholder with NO `due` keeps its full per-day growth (its distinct job:
-    /// "I promised, but there's no formal deadline").
+    /// mem-830588f3 defect 1 (re-homed under mem_fix_deadline_multiplier,
+    /// 2026-09-12): when a task has BOTH a hard `due` and a `stakeholder`,
+    /// the deadline pressure multiplier and the stakeholder-waiting ramp
+    /// must NOT both count the same lateness. A `due` date owns the day-based
+    /// lateness signal (via the multiplier); the stakeholder term keeps only
+    /// its +2000 "someone is waiting" base whenever a `due` is present. A
+    /// stakeholder with NO `due` keeps its full per-day growth (its distinct
+    /// job: "I promised, but there's no formal deadline" -- no multiplier
+    /// exists to carry that signal instead).
     #[test]
     fn test_deadline_and_stakeholder_do_not_double_count_lateness() {
         use crate::graph::GraphNode;
@@ -6638,11 +6682,18 @@ mod tests {
             .format("%Y-%m-%d")
             .to_string();
 
-        // A: overdue `due` (13d late) AND a stakeholder waiting 28d.
-        // Deadline ramp: 8000 + min(13*200, 4000) = 8000 + 2600 = 10600.
-        // Stakeholder ramp is suppressed to its base +2000 (lateness already counted).
-        // Expected = 10600 + 2000 = 12600 (no per-day stakeholder growth).
+        // All three nodes carry the same value_lineage baseline (3000, as if
+        // wired to a priced target) so the deadline/stakeholder interaction
+        // is observable -- a value of 0 would multiply to 0 regardless of
+        // the interaction under test, hiding the property.
+        const BASELINE_VALUE_LINEAGE: f64 = 3000.0;
+
+        // A: overdue `due` (13d late, effort 1d) AND a stakeholder waiting 28d.
+        // ratio = 1 + 13 + 1 = 15, multiplier = 1 + 2*sqrt(15) = 8.746.
+        // Stakeholder is suppressed to its +2000 base (a `due` is present).
+        // value_points = 3000 + 2000 = 5000; cost_of_delay = round(5000*8.746) = 43730.
         let mut a = GraphNode::default();
+        a.value_lineage = BASELINE_VALUE_LINEAGE;
         a.due = Some(
             (today - chrono::Duration::days(13))
                 .format("%Y-%m-%d")
@@ -6653,12 +6704,16 @@ mod tests {
         a.waiting_since = Some(d28_ago.clone());
 
         // B: stakeholder waiting 28d, NO `due`. Full ramp: 2000 + min(28*200, 6000) = 7600.
+        // No `due` -> multiplier stays neutral (1.0). cost_of_delay = 3000 + 7600 = 10600.
         let mut b = GraphNode::default();
+        b.value_lineage = BASELINE_VALUE_LINEAGE;
         b.stakeholder = Some("external-party".to_string());
         b.waiting_since = Some(d28_ago.clone());
 
-        // C: same overdue `due` as A but NO stakeholder. Deadline ramp only = 10600.
+        // C: same overdue `due` as A but NO stakeholder.
+        // value_points = 3000; cost_of_delay = round(3000*8.746) = 26238.
         let mut c = GraphNode::default();
+        c.value_lineage = BASELINE_VALUE_LINEAGE;
         c.due = Some(
             (today - chrono::Duration::days(13))
                 .format("%Y-%m-%d")
@@ -6675,26 +6730,29 @@ mod tests {
             nodes[2].focus_score.unwrap(),
         );
 
-        // Core AC: A must NOT receive the full sum of both ramps (10600 + 7600 = 18200).
-        let full_sum = 18200;
-        assert!(
-            sa < full_sum,
-            "deadline + stakeholder must not fully sum: got {sa}, full sum would be {full_sum}"
-        );
-        // A is exactly the deadline ramp plus the suppressed stakeholder base.
-        assert_eq!(
-            sa, 12600,
-            "expected deadline ramp (10600) + stakeholder base (2000)"
-        );
-        // The stakeholder contribution on A (sa - sc) is just the +2000 base, far
-        // below B's full no-due ramp (+7600).
+        assert_eq!(sa, 43730, "value_lineage(3000) + stakeholder base(2000), boosted by the 13d-overdue multiplier");
+        assert_eq!(sb, 10600, "no due date: full per-day stakeholder ramp, no multiplier");
+        assert_eq!(sc, 26238, "value_lineage(3000) alone, boosted by the same 13d-overdue multiplier");
+
+        // Core AC: adding a stakeholder to a due-bearing node adds only the
+        // boosted +2000 base (round(2000 * multiplier)), not an independent
+        // day-scaled ramp stacked on top of the deadline multiplier.
         assert_eq!(
             sa - sc,
-            2000,
-            "stakeholder adds only its base when a due ramp already fired"
+            17492,
+            "stakeholder's marginal contribution on a due-bearing node is the boosted +2000 base only"
         );
-        assert_eq!(sb, 7600, "no-due stakeholder keeps full per-day ramp");
-        assert_eq!(sc, 10600, "deadline ramp alone (13d overdue)");
+        // If the two lateness clocks were naively summed -- the day-scaled
+        // stakeholder ramp AND the deadline multiplier both counting the same
+        // 13 days late -- the stakeholder's marginal contribution would be
+        // far larger than the boosted base (17492). Bounding it well under
+        // the no-due full ramp (7600) confirms the day-based growth was
+        // suppressed, not stacked.
+        assert!(
+            sa - sc < 20000,
+            "stakeholder's marginal contribution must stay near the boosted base, not blow out with day-scaled growth: got {}",
+            sa - sc
+        );
     }
 
     /// Ruling (Nic, 2026-09-11, mem_537e44a9 "Verdict: stakeholder_waiting /
@@ -6742,13 +6800,26 @@ mod tests {
         );
     }
 
-    /// mem-830588f3 binding proof (calibration target, epic aops-496a64ee).
-    /// Re-scores the live over-ranked node and a sibling under the FIXED formula,
-    /// using the exact scoring inputs pulled from the PKB MCP on 2026-06-10.
-    /// `voi_value` is set to its NEW value (0 → modelled as None) because both
-    /// nodes are leaf deliverables with no dependents (`blocks == []`); under the
-    /// re-keyed VoI the contributes_to target's downstream_weight no longer leaks
-    /// in. Dates are relative so the deadline ramp is run-date stable.
+    /// mem-830588f3 binding proof (calibration target, epic aops-496a64ee),
+    /// re-scored again under mem_fix_deadline_multiplier (2026-09-12) now that
+    /// deadline pressure is a multiplier on a node's own value points rather
+    /// than a flat additive ramp. Same three live-inspired nodes as the
+    /// original binding proof; the numbers below are the new shipped values,
+    /// not a re-derivation of the old ones -- the mechanism changed, so the
+    /// arithmetic they were calibrating against no longer applies.
+    ///
+    /// The headline emergent difference from the pre-multiplier shipped
+    /// behaviour: JOLT now clearly *outranks* the SEV4 marking task, inverted
+    /// from before. This is intended, not a regression -- JOLT has its own
+    /// named-stakeholder value (`stakeholder_waiting` base 2000) for the
+    /// deadline multiplier to amplify (14 days overdue -> ×9.4853), while the
+    /// marking task carries no `intent`/`stakeholder`/`value_lineage` value of
+    /// its own at all (P2 effective_intent bands to 0 points) -- its entire
+    /// score comes from `urgency_term`, which is deliberately *not* multiplied
+    /// (§ compute_cost_of_delay: urgency already carries its own time-value
+    /// curve via `f(slack)`, and doubling up two independent lateness signals
+    /// would compound them). A node with real value pressed by a real
+    /// deadline can now legitimately outrank a flat, unowned severity number.
     #[test]
     fn test_live_calibration_rescore_jolt_and_marking() {
         use crate::graph::GraphNode;
@@ -6760,44 +6831,43 @@ mod tests {
                 .to_string()
         };
 
-        // brain-2ae555b3 — ANU JOLT peer review. Live (OLD) focus_score = 23287
-        // = deadline 10800 (14d overdue) + stakeholder 7800 (2000 + 29d ramp)
-        //   + VoI 4587 (leaked from contributes_to target) + urgency 100.
-        // No `created` field in live frontmatter -> P2 staleness bonus is 0.
+        // brain-2ae555b3 — ANU JOLT peer review. Stakeholder named, 14d
+        // overdue (default effort 3d): ratio = 3 + 14 + 1 = 18, multiplier =
+        // 1 + 2*sqrt(18) = 9.4853. A `due` is present, so stakeholder_waiting
+        // is suppressed to its +2000 base regardless of `waiting_since`.
+        // value_points = 2000; cost_of_delay = round(2000*9.4853) + urgency(100)
+        // = 18971 + 100 = 19071. No `created` -> age_staleness stays 0.
         let mut jolt = GraphNode::default();
         jolt.intent = Some(2);
         jolt.due = Some(ago(14));
         jolt.stakeholder = Some("ANU JOLT Editors".to_string());
         jolt.waiting_since = Some(ago(29));
         jolt.urgency = 100.0;
-        jolt.voi_value = None; // re-keyed VoI: no dependents -> 0 (was 4587)
+        jolt.voi_value = None; // re-keyed VoI: no dependents -> 0
 
-        // task-d73c1ffa — LLB242 A2 marking. Live (OLD) focus_score = 24823
-        // = deadline 9800 (9d overdue) + VoI 5000 (capped, leaked from the SEV4
-        //   target's downstream_weight) + urgency 10000 (SEV4 inherited) + staleness 23.
-        // This is itself an instance of defect 2: a pure marking deliverable with
-        // no dependents was earning max VoI. The fix removes that 5000.
+        // task-d73c1ffa — LLB242 A2 marking. No intent/stakeholder/value_lineage
+        // value of its own (P2 -> effective_intent 2 -> intent_pressure 0), so
+        // the deadline multiplier has nothing to amplify: value_points = 0,
+        // deadline_boosted_value = 0 regardless of the 9d-overdue multiplier.
+        // cost_of_delay = urgency_term(10000) alone. age_staleness = 23.
         let mut marking = GraphNode::default();
         marking.intent = Some(2);
         marking.due = Some(ago(9));
         marking.created = Some(ago(23));
         marking.urgency = 10000.0;
-        marking.voi_value = None; // re-keyed VoI: no dependents -> 0 (was 5000)
+        marking.voi_value = None; // re-keyed VoI: no dependents -> 0
 
-        // task-ethics-8b89a1ae — overdue QUT ethics progress report. A leaf
-        // contributing to a compliance target, with a `consequence`, no stakeholder,
-        // no dependents. Inputs: due 14d overdue, created 44d ago, urgency 1000,
-        // VoI 2000 (OLD, leaked). Under main (post-#426: consequence no longer
-        // multiplies the deadline) + this change (VoI -> 0): deadline 10800 +
-        // staleness 44 + urgency 1000 = 11844. The task AC asks JOLT to land
-        // "roughly level with the ethics compliance task" — this asserts it.
+        // task-ethics-8b89a1ae — overdue QUT ethics progress report. Same
+        // shape as marking: no intent/stakeholder/value_lineage value of its
+        // own, `consequence` is ignored by the ranking engine entirely.
+        // cost_of_delay = urgency_term(1000) alone. age_staleness = 44.
         let mut ethics = GraphNode::default();
         ethics.intent = Some(2);
         ethics.due = Some(ago(14));
         ethics.created = Some(ago(44));
-        ethics.consequence = Some("compliance exposure".to_string()); // ignored by deadline (#426)
+        ethics.consequence = Some("compliance exposure".to_string()); // never read by the ranking engine
         ethics.urgency = 1000.0;
-        ethics.voi_value = None; // re-keyed VoI: no dependents -> 0 (was 2000)
+        ethics.voi_value = None; // re-keyed VoI: no dependents -> 0
 
         let mut nodes = vec![jolt, marking, ethics];
         GraphStore::compute_focus_scores(&mut nodes);
@@ -6807,42 +6877,33 @@ mod tests {
             nodes[2].focus_score.unwrap(),
         );
 
-        // (1) JOLT falls into the 12–14k band, down from the live 23287.
+        // (1) JOLT: boosted stakeholder base (18971) + raw urgency (100).
         assert_eq!(
-            jolt_new, 12900,
-            "JOLT re-scores to 12900 (deadline 10800 + stakeholder base 2000 + urgency 100)"
-        );
-        assert!(
-            (12000..=14000).contains(&jolt_new),
-            "JOLT must land in the 12–14k band"
-        );
-        assert!(
-            jolt_new < 23287,
-            "JOLT must drop from the live double-counted 23287"
+            jolt_new, 19071,
+            "JOLT re-scores to 19071 (boosted stakeholder base 18971 + urgency 100)"
         );
 
-        // (2) The SEV4 LLB242 marking work stays clearly above JOLT (its spurious
-        //     VoI is removed too, but real SEV4 urgency + deadline dominate).
+        // (2) Marking: value-less, so only its raw SEV4-inherited urgency and
+        //     age staleness show up -- the deadline multiplier has nothing to
+        //     amplify on a node that names no stakeholder and prices no target.
         assert_eq!(
-            marking_new, 19823,
-            "marking re-scores to 19823 (deadline 9800 + urgency 10000 + staleness 23)"
+            marking_new, 10023,
+            "marking re-scores to 10023 (urgency 10000 + staleness 23, no value to boost)"
         );
-        assert!(
-            marking_new > jolt_new,
-            "the SEV4 marking task must remain clearly above JOLT"
-        );
-        // The SEV4 target itself (task-9c33dd1b, live 116080: severity 100000 +
-        // urgency 10000 + …) is untouched by this change (non-leaf target, no
-        // stakeholder, no VoI) and remains the unmistakable global #1.
 
-        // (3) JOLT lands roughly level with the ethics compliance task (task AC).
-        assert_eq!(
-            ethics_new, 11844,
-            "ethics re-scores to 11844 (deadline 10800 + staleness 44 + urgency 1000)"
-        );
+        // (3) JOLT now clearly outranks marking -- the emergent inversion
+        //     documented above. This is the multiplier doing its job: a task
+        //     with a named stakeholder waiting on a missed deadline presses
+        //     harder than an unowned severity number sitting on its own.
         assert!(
-            (jolt_new - ethics_new).abs() < 2000,
-            "JOLT must be roughly level with the ethics task"
+            jolt_new > marking_new,
+            "JOLT (real value + deadline pressure) must now outrank value-less marking"
+        );
+
+        // (4) Ethics: same value-less shape as marking, own urgency + staleness only.
+        assert_eq!(
+            ethics_new, 1044,
+            "ethics re-scores to 1044 (urgency 1000 + staleness 44, no value to boost)"
         );
     }
 
@@ -8399,7 +8460,7 @@ mod tests {
             betweenness: 1.0,
             ..Default::default()
         };
-        let (_, cost_of_delay) = GraphStore::compute_cost_of_delay(&node, today);
+        let cost_of_delay = GraphStore::compute_cost_of_delay(&node, today);
         assert_eq!(
             cost_of_delay, 0,
             "criticality/pagerank/betweenness must never enter cost_of_delay; got {cost_of_delay}"
@@ -10701,11 +10762,14 @@ mod tests {
 
     #[test]
     fn test_phase1_sort_tuple_inspectability_and_explain_diff() {
-        use crate::graph::{DeadlineBand, FocusTieBreakers, FocusTuple, SeverityGate};
+        use crate::graph::{FocusTieBreakers, FocusTuple, SeverityGate};
 
+        // `deadline_band` no longer exists on `FocusTuple` (ruling, Nic,
+        // 2026-09-12, mem_537e44a9 "Ruling: deadline pressure is a multiplier
+        // on value, not a tier"): the tuple is now
+        // `(severity_gate, cost_of_delay, tie_breakers)`.
         let t1 = FocusTuple {
             severity_gate: SeverityGate::Catastrophic,
-            deadline_band: DeadlineBand::Overdue,
             cost_of_delay: 5000,
             tie_breakers: FocusTieBreakers {
                 downstream_weight_x10: 10,
@@ -10721,11 +10785,6 @@ mod tests {
         t2.severity_gate = SeverityGate::Normal;
         assert_eq!(t1.explain_diff(&t2), "severity_gate");
         assert!(t1 > t2);
-
-        let mut t3 = t1.clone();
-        t3.deadline_band = DeadlineBand::Imminent;
-        assert_eq!(t1.explain_diff(&t3), "deadline_band");
-        assert!(t1 > t3);
 
         let mut t4 = t1.clone();
         t4.cost_of_delay = 4000;
@@ -10804,9 +10863,18 @@ mod tests {
         );
     }
 
+    /// `deadline_band` was removed from the tuple entirely (ruling, Nic,
+    /// 2026-09-12, mem_537e44a9 "Ruling: deadline pressure is a multiplier on
+    /// value, not a tier"). This test used to assert the discrete band
+    /// hierarchy (`Overdue > Imminent > Urgent > Approaching > None`); it now
+    /// asserts the replacement property -- with identical value points on
+    /// every node (P1, `intent_pressure` = 5000), the deadline pressure
+    /// *multiplier* alone must still order these same five due-date shapes
+    /// in the same relative sequence, via `cost_of_delay`, not via a separate
+    /// tuple element.
     #[test]
-    fn test_phase1_deadline_band_hierarchy() {
-        use crate::graph::{DeadlineBand, GraphNode};
+    fn test_deadline_pressure_multiplier_orders_by_ratio_when_value_equal() {
+        use crate::graph::GraphNode;
         use chrono::Utc;
 
         let today = Utc::now().date_naive();
@@ -10825,50 +10893,40 @@ mod tests {
 
         let mut n_overdue = GraphNode::default();
         n_overdue.id = "t-overdue".to_string();
+        n_overdue.intent = Some(1);
         n_overdue.due = Some(overdue_date);
         n_overdue.effort = Some("1d".to_string());
 
         let mut n_imminent = GraphNode::default();
         n_imminent.id = "t-imminent".to_string();
+        n_imminent.intent = Some(1);
         n_imminent.due = Some(imminent_date);
         n_imminent.effort = Some("2d".to_string());
 
         let mut n_urgent = GraphNode::default();
         n_urgent.id = "t-urgent".to_string();
+        n_urgent.intent = Some(1);
         n_urgent.due = Some(urgent_date);
         n_urgent.effort = Some("3d".to_string());
 
         let mut n_approaching = GraphNode::default();
         n_approaching.id = "t-approaching".to_string();
+        n_approaching.intent = Some(1);
         n_approaching.due = Some(approaching_date);
         n_approaching.effort = Some("1d".to_string());
 
         let mut n_none = GraphNode::default();
         n_none.id = "t-none".to_string();
+        n_none.intent = Some(1);
 
         let mut nodes = vec![n_overdue, n_imminent, n_urgent, n_approaching, n_none];
         GraphStore::compute_focus_scores(&mut nodes);
 
-        assert_eq!(
-            nodes[0].focus_tuple.as_ref().unwrap().deadline_band,
-            DeadlineBand::Overdue
-        );
-        assert_eq!(
-            nodes[1].focus_tuple.as_ref().unwrap().deadline_band,
-            DeadlineBand::Imminent
-        );
-        assert_eq!(
-            nodes[2].focus_tuple.as_ref().unwrap().deadline_band,
-            DeadlineBand::Urgent
-        );
-        assert_eq!(
-            nodes[3].focus_tuple.as_ref().unwrap().deadline_band,
-            DeadlineBand::Approaching
-        );
-        assert_eq!(
-            nodes[4].focus_tuple.as_ref().unwrap().deadline_band,
-            DeadlineBand::None
-        );
+        assert_eq!(nodes[0].focus_score.unwrap(), 27361, "3d overdue, effort 1d");
+        assert_eq!(nodes[1].focus_score.unwrap(), 19142, "due tomorrow, effort 2d");
+        assert_eq!(nodes[2].focus_score.unwrap(), 13660, "due in 4d, effort 3d");
+        assert_eq!(nodes[3].focus_score.unwrap(), 7236, "due in 20d, effort 1d");
+        assert_eq!(nodes[4].focus_score.unwrap(), 5000, "no due date: neutral multiplier");
 
         // Verify pairwise ordering: Overdue > Imminent > Urgent > Approaching > None
         for i in 0..4 {
@@ -10882,16 +10940,27 @@ mod tests {
     }
 
     // -------------------------------------------------------------------
-    // Courtesy-review decay (task_e2afd38e, specs/ranking.md §2.3a)
+    // Courtesy-review decay (task_e2afd38e, specs/ranking.md §2.3a),
+    // re-homed under mem_fix_deadline_multiplier (2026-09-12) as decay of the
+    // deadline pressure *multiplier* rather than decay of a flat point cliff
+    // + calendar band. A node with no value has nothing for a deadline to
+    // amplify in the first place, so every fixture below carries a
+    // `value_lineage` baseline (as if wired to a priced target) purely so the
+    // multiplier's effect -- and its decay -- is observable in
+    // `cost_of_delay`.
     // -------------------------------------------------------------------
 
-    /// Build a structurally-inert overdue node: no downstream weight, no
+    /// Build a structurally-inert overdue node carrying only a
+    /// `value_lineage` baseline: no downstream weight, no
     /// stakeholder/human-gate, no propagated urgency, default (P4) intent —
     /// i.e. a task the courtesy-decay gate should treat as carrying no real
     /// stakes. `days_overdue` is relative to `Utc::now()` so the test stays
-    /// deterministic regardless of when it runs (matches the existing
-    /// `test_phase1_deadline_band_hierarchy` convention).
-    fn inert_overdue_node(id: &str, days_overdue: i64) -> crate::graph::GraphNode {
+    /// deterministic regardless of when it runs.
+    fn inert_overdue_node_with_value(
+        id: &str,
+        days_overdue: i64,
+        value_lineage: f64,
+    ) -> crate::graph::GraphNode {
         use chrono::Utc;
         let today = Utc::now().date_naive();
         let due = (today - chrono::Duration::days(days_overdue))
@@ -10900,33 +10969,31 @@ mod tests {
         let mut n = crate::graph::GraphNode::default();
         n.id = id.to_string();
         n.due = Some(due);
+        n.value_lineage = value_lineage;
         n
     }
 
     #[test]
     fn test_courtesy_decay_grace_period_unaffected() {
-        use crate::graph::DeadlineBand;
-
-        // 10 days overdue is inside the 20-day grace window: behaviour must
-        // be byte-identical to the pre-existing (undecayed) ramp.
-        let mut nodes = vec![inert_overdue_node("t-grace", 10)];
+        // 10 days overdue is inside the 20-day grace window: the multiplier
+        // must be the plain, undecayed value.
+        // ratio = 3 (default effort) + 10 + 1 = 14, multiplier = 1 + 2*sqrt(14) = 8.4833,
+        // cost_of_delay = round(4000 * 8.4833) = 33933.
+        let mut nodes = vec![inert_overdue_node_with_value("t-grace", 10, 4000.0)];
         GraphStore::compute_focus_scores(&mut nodes);
         let tuple = nodes[0].focus_tuple.as_ref().unwrap();
-        assert_eq!(tuple.deadline_band, DeadlineBand::Overdue);
-        assert_eq!(tuple.cost_of_delay, 8000 + 10 * 200); // unchanged ramp formula
+        assert_eq!(tuple.cost_of_delay, 33933, "unchanged, undecayed multiplier inside grace");
     }
 
     #[test]
     fn test_courtesy_decay_inert_task_decays_past_grace() {
-        use crate::graph::DeadlineBand;
-
         // 81 days overdue mirrors the reconstructed real-world shape of
         // task-d2d0b835 (P2 review-invitation courtesy task, due 2026-06-13,
         // ~81 days overdue as of 2026-09-02 — the node itself no longer
         // exists in the PKB to query directly; see PR/report for the
-        // reconstruction caveat). decay_frac = (81-20)/100 = 0.61 -> Urgent.
-        let inert = inert_overdue_node("t-inert-81", 81);
-        let mut real = inert_overdue_node("t-real-81", 81);
+        // reconstruction caveat). decay_frac = (81-20)/100 = 0.61.
+        let inert = inert_overdue_node_with_value("t-inert-81", 81, 4000.0);
+        let mut real = inert_overdue_node_with_value("t-real-81", 81, 4000.0);
         real.stakeholder = Some("editor@journal.example".to_string()); // real stakes
 
         let mut nodes = vec![inert, real];
@@ -10935,23 +11002,23 @@ mod tests {
         let inert_tuple = nodes[0].focus_tuple.as_ref().unwrap();
         let real_tuple = nodes[1].focus_tuple.as_ref().unwrap();
 
-        // Structurally-inert task decays out of the Overdue band...
-        assert_eq!(inert_tuple.deadline_band, DeadlineBand::Urgent);
-        assert!(
-            inert_tuple.cost_of_delay < 12000,
-            "decayed cost_of_delay should drop below the old permanent cap, got {}",
-            inert_tuple.cost_of_delay
+        // Structurally-inert task's multiplier decays: undecayed would be
+        // round(4000 * 19.4391) = 77756; decayed lands at 32765.
+        assert_eq!(
+            inert_tuple.cost_of_delay, 32765,
+            "decayed cost_of_delay should drop well below the undecayed 77756"
         );
 
         // ...while the otherwise-identical task with a real stakeholder does
-        // not move at all: same band, same capped cost_of_delay as today.
-        assert_eq!(real_tuple.deadline_band, DeadlineBand::Overdue);
-        assert_eq!(real_tuple.cost_of_delay, 8000 + 4000 + 2000); // capped deadline + stakeholder base
+        // not decay at all: value_points = 4000 (lineage) + 2000 (stakeholder
+        // base, suppressed since due is active), multiplier stays the full
+        // undecayed 19.4391 -> cost_of_delay = round(6000 * 19.4391) = 116635.
+        assert_eq!(
+            real_tuple.cost_of_delay, 116635,
+            "real stakeholder must not decay: full undecayed multiplier applies"
+        );
 
-        // And the real task now outranks the decayed courtesy task purely on
-        // deadline_band, which is exactly the crowding fix: before this
-        // patch both were `Overdue` and tied on the band; the courtesy task
-        // no longer gets to compete in that tier at all.
+        // The real task clearly outranks the decayed courtesy task.
         assert_eq!(
             GraphStore::focus_cmp(&nodes[1], &nodes[0]),
             std::cmp::Ordering::Less,
@@ -10961,14 +11028,15 @@ mod tests {
 
     #[test]
     fn test_courtesy_decay_fully_decayed_matches_no_due_date() {
-        use crate::graph::{DeadlineBand, GraphNode};
+        use crate::graph::GraphNode;
 
         // 140 days overdue is past grace (20) + full window (100) = 120:
-        // fully decayed. Must land on EXACTLY the same tuple a task with no
-        // `due` field at all would get.
-        let decayed = inert_overdue_node("t-decayed-140", 140);
+        // fully decayed. The multiplier must land on EXACTLY 1.0 -- the same
+        // value a task with no `due` field at all would get.
+        let decayed = inert_overdue_node_with_value("t-decayed-140", 140, 4000.0);
         let mut undated = GraphNode::default();
         undated.id = "t-undated".to_string();
+        undated.value_lineage = 4000.0;
 
         let mut nodes = vec![decayed, undated];
         GraphStore::compute_focus_scores(&mut nodes);
@@ -10976,90 +11044,85 @@ mod tests {
         let decayed_tuple = nodes[0].focus_tuple.as_ref().unwrap().clone();
         let undated_tuple = nodes[1].focus_tuple.as_ref().unwrap().clone();
 
-        assert_eq!(decayed_tuple.deadline_band, DeadlineBand::None);
+        assert_eq!(decayed_tuple.cost_of_delay, 4000, "fully decayed multiplier is exactly neutral (1.0)");
         assert_eq!(decayed_tuple.cost_of_delay, undated_tuple.cost_of_delay);
-        assert_eq!(decayed_tuple.deadline_band, undated_tuple.deadline_band);
     }
 
     #[test]
     fn test_courtesy_decay_escape_via_downstream_weight() {
-        use crate::graph::DeadlineBand;
-
         // Nothing else distinguishes this from the decaying fixture except
         // that something depends on it (downstream_weight > 0) — a real
-        // blocker in the graph. Decay must not apply.
-        let mut n = inert_overdue_node("t-blocker", 81);
+        // blocker in the graph. Decay must not apply: cost_of_delay stays at
+        // the full undecayed round(4000 * 19.4391) = 77756.
+        let mut n = inert_overdue_node_with_value("t-blocker", 81, 4000.0);
         n.downstream_weight = 1.5;
 
         let mut nodes = vec![n];
         GraphStore::compute_focus_scores(&mut nodes);
         let tuple = nodes[0].focus_tuple.as_ref().unwrap();
-        assert_eq!(tuple.deadline_band, DeadlineBand::Overdue);
-        assert_eq!(tuple.cost_of_delay, 8000 + 4000); // capped, undecayed
+        assert_eq!(tuple.cost_of_delay, 77756, "downstream_weight escapes decay");
     }
 
     #[test]
     fn test_courtesy_decay_escape_via_human_gate() {
-        use crate::graph::DeadlineBand;
-
         // `status == "review"` makes `is_human_gate()` true (a structurally
         // identified human decision gate) — decay must not apply even though
         // no explicit `stakeholder` name is set.
-        let mut n = inert_overdue_node("t-gate", 81);
+        let mut n = inert_overdue_node_with_value("t-gate", 81, 4000.0);
         n.status = Some("review".to_string());
 
         let mut nodes = vec![n];
         GraphStore::compute_focus_scores(&mut nodes);
         let tuple = nodes[0].focus_tuple.as_ref().unwrap();
-        assert_eq!(tuple.deadline_band, DeadlineBand::Overdue);
+        assert_eq!(tuple.cost_of_delay, 77756, "human gate escapes decay");
     }
 
     #[test]
     fn test_courtesy_decay_escape_via_propagated_urgency() {
-        use crate::graph::DeadlineBand;
-
         // Simulates a task with real severity propagated onto it from a
         // target via `contributes_to`/`blocks` (computed upstream of
         // `compute_focus_scores` by `compute_urgency` in the real pipeline;
         // set directly here since this test exercises `compute_focus_scores`
-        // in isolation, matching the other Phase-1 tests in this module).
-        let mut n = inert_overdue_node("t-urgent-propagated", 81);
+        // in isolation, matching the other tests in this module). The
+        // multiplier itself escapes decay (undecayed boost = 77756);
+        // `urgency_term` (1000) is added unmultiplied on top.
+        let mut n = inert_overdue_node_with_value("t-urgent-propagated", 81, 4000.0);
         n.urgency = 1000.0; // SEV2-equivalent propagated severity while overdue
 
         let mut nodes = vec![n];
         GraphStore::compute_focus_scores(&mut nodes);
         let tuple = nodes[0].focus_tuple.as_ref().unwrap();
-        assert_eq!(tuple.deadline_band, DeadlineBand::Overdue);
+        assert_eq!(tuple.cost_of_delay, 78756, "propagated urgency escapes decay");
     }
 
     #[test]
     fn test_courtesy_decay_escape_via_curated_p1_intent() {
-        use crate::graph::DeadlineBand;
-
         // Nic-curated P1 (intent = 1) is a deliberate human override
         // (kb_pauli_prioritisation_doctrine §5: "Mechanism 1 (intent) is
-        // Nic's Curated Field") and must never be silently decayed.
-        let mut n = inert_overdue_node("t-p1", 81);
+        // Nic's Curated Field") and must never be silently decayed. P1 also
+        // supplies its own value (`intent_pressure` = 5000) for the
+        // multiplier to amplify, with no separate `value_lineage` needed:
+        // round(5000 * 19.4391) = 97195.
+        let mut n = inert_overdue_node_with_value("t-p1", 81, 0.0);
         n.intent = Some(1);
 
         let mut nodes = vec![n];
         GraphStore::compute_focus_scores(&mut nodes);
         let tuple = nodes[0].focus_tuple.as_ref().unwrap();
-        assert_eq!(tuple.deadline_band, DeadlineBand::Overdue);
+        assert_eq!(tuple.cost_of_delay, 97195, "curated P1 escapes decay");
     }
 
     #[test]
     fn test_courtesy_decay_does_not_read_severity_or_consequence() {
-        use crate::graph::DeadlineBand;
-
         // kb_pauli_prioritisation_doctrine §4.2: `severity` is target-only
         // (never set directly on a task) and `consequence` is explanatory
         // prose the ranking engine must never read. A courtesy-decay gate
         // that keyed off either would (a) silently no-op on every correctly
         // modelled task, since well-formed tasks never carry `severity`, and
         // (b) introduce a new doctrine violation. Setting them on an
-        // otherwise fully inert node must NOT block decay.
-        let mut n = inert_overdue_node("t-severity-consequence", 81);
+        // otherwise fully inert node must NOT block decay -- this must land
+        // on exactly the same decayed value as the plain inert fixture (32765).
+        let mut n = inert_overdue_node_with_value("t-severity-consequence", 81, 4000.0);
         n.severity = Some(3); // doctrine violation if it were set on a real task; decay must ignore it anyway
         n.consequence = Some("This looks important but is explanatory prose only.".to_string());
 
@@ -11067,7 +11130,171 @@ mod tests {
         GraphStore::compute_focus_scores(&mut nodes);
         let tuple = nodes[0].focus_tuple.as_ref().unwrap();
         // Still decays: severity/consequence are not part of the gate.
-        assert_eq!(tuple.deadline_band, DeadlineBand::Urgent);
+        assert_eq!(tuple.cost_of_delay, 32765, "severity/consequence must not block decay");
+    }
+
+    /// Property (kb_pauli_prioritisation_doctrine §6, doctrine §7's "four
+    /// properties that define good"; ruling, Nic, 2026-09-12,
+    /// mem_537e44a9): "an overdue task outranks its day-before self." For a
+    /// node with real stakes (a named stakeholder, so courtesy decay never
+    /// engages), the deadline pressure multiplier -- and therefore
+    /// `cost_of_delay` -- must climb strictly with every additional day
+    /// overdue, with no plateau, across the pre-due -> due-today ->
+    /// deep-overdue range (swept well past the 20-day grace window where a
+    /// stakes-less task would already be decaying).
+    #[test]
+    fn test_overdue_task_with_real_stakes_outranks_day_before_self() {
+        use crate::graph::GraphNode;
+        use chrono::Utc;
+        let today = Utc::now().date_naive();
+
+        let mut prev: Option<i64> = None;
+        for days_overdue in -5..=200i64 {
+            let mut n = GraphNode::default();
+            n.value_lineage = 1000.0;
+            n.stakeholder = Some("someone".to_string());
+            n.due = Some(
+                (today - chrono::Duration::days(days_overdue))
+                    .format("%Y-%m-%d")
+                    .to_string(),
+            );
+            let mut nodes = vec![n];
+            GraphStore::compute_focus_scores(&mut nodes);
+            let cost = nodes[0].focus_tuple.as_ref().unwrap().cost_of_delay;
+            if let Some(p) = prev {
+                assert!(
+                    cost > p,
+                    "cost_of_delay must strictly increase at days_overdue={days_overdue}: prev={p} now={cost}"
+                );
+            }
+            prev = Some(cost);
+        }
+    }
+
+    /// Same property, for a stakes-less node strictly inside the 20-day
+    /// courtesy-decay grace window (where decay has not yet engaged): the
+    /// undecayed ramp itself must still be strictly monotonic day over day.
+    #[test]
+    fn test_overdue_task_within_grace_outranks_day_before_self() {
+        use crate::graph::GraphNode;
+        use chrono::Utc;
+        let today = Utc::now().date_naive();
+
+        let mut prev: Option<i64> = None;
+        for days_overdue in -5..=20i64 {
+            let mut n = GraphNode::default();
+            n.value_lineage = 1000.0;
+            n.due = Some(
+                (today - chrono::Duration::days(days_overdue))
+                    .format("%Y-%m-%d")
+                    .to_string(),
+            );
+            let mut nodes = vec![n];
+            GraphStore::compute_focus_scores(&mut nodes);
+            let cost = nodes[0].focus_tuple.as_ref().unwrap().cost_of_delay;
+            if let Some(p) = prev {
+                assert!(
+                    cost > p,
+                    "cost_of_delay must strictly increase at days_overdue={days_overdue}: prev={p} now={cost}"
+                );
+            }
+            prev = Some(cost);
+        }
+    }
+
+    /// Calibration table for the six worked examples from the ruling (Nic,
+    /// 2026-09-12, mem_537e44a9 "Ruling: deadline pressure is a multiplier on
+    /// value, not a tier") and `mem_fix_deadline_multiplier`'s acceptance
+    /// criteria. Each node's inputs are noted inline; see the PR description
+    /// for the full re-derivation.
+    #[test]
+    fn test_deadline_multiplier_ruling_calibration_examples() {
+        use crate::graph::GraphNode;
+        use chrono::Utc;
+        let today = Utc::now().date_naive();
+        let ago = |d: i64| {
+            (today - chrono::Duration::days(d))
+                .format("%Y-%m-%d")
+                .to_string()
+        };
+        let hence = |d: i64| {
+            (today + chrono::Duration::days(d))
+                .format("%Y-%m-%d")
+                .to_string()
+        };
+
+        // 1. Undated P0: intent_pressure=10000, no due -> neutral multiplier.
+        let mut p0_undated = GraphNode::default();
+        p0_undated.intent = Some(0);
+
+        // 2. Low-value overdue email: no intent/stakeholder/value_lineage,
+        //    5 days overdue, default effort -> nothing for the deadline to amplify.
+        let mut low_value_overdue_email = GraphNode::default();
+        low_value_overdue_email.due = Some(ago(5));
+
+        // 3. Book: certain (1.00) edge to a 0.60-priced target ->
+        //    value_lineage = 10000 * 1.0 * 1.00 * 0.60 = 6000. No due date.
+        let mut book = GraphNode::default();
+        book.value_lineage = 6000.0;
+
+        // 4. Overdue email tied to a 0.05 target via an Expected (0.75) edge ->
+        //    value_lineage = 10000 * 1.0 * 0.75 * 0.05 = 375. 10 days overdue, default effort.
+        let mut low_target_overdue_email = GraphNode::default();
+        low_target_overdue_email.value_lineage = 375.0;
+        low_target_overdue_email.due = Some(ago(10));
+
+        // 5. Kathy Bowrey feedback: named stakeholder, 26 days overdue, default effort.
+        //    stakeholder_waiting suppressed to its +2000 base (due is active).
+        let mut kathy_bowrey = GraphNode::default();
+        kathy_bowrey.stakeholder = Some("Kathy Bowrey".to_string());
+        kathy_bowrey.due = Some(ago(26));
+
+        // 6a. Copper (Kylie): stakeholder (the promise) + Expected (0.75) edge to the
+        //     0.60-priced leave target -> value_lineage = 10000*1.0*0.75*0.60 = 4500;
+        //     P2 (effective_intent 2 -> intent_pressure 0); due in 18 days, default effort.
+        let mut copper = GraphNode::default();
+        copper.intent = Some(2);
+        copper.stakeholder = Some("Kylie".to_string());
+        copper.value_lineage = 4500.0;
+        copper.due = Some(hence(18));
+
+        // 6b. Undated P1 CV: intent_pressure=5000, no due.
+        let mut cv_p1_undated = GraphNode::default();
+        cv_p1_undated.intent = Some(1);
+
+        let mut nodes = vec![
+            p0_undated,
+            low_value_overdue_email,
+            book,
+            low_target_overdue_email,
+            kathy_bowrey,
+            copper,
+            cv_p1_undated,
+        ];
+        GraphStore::compute_focus_scores(&mut nodes);
+        let cost = |i: usize| nodes[i].focus_tuple.as_ref().unwrap().cost_of_delay;
+        let (p0, email_low, book_cod, email_target, kathy, copper_cod, cv) = (
+            cost(0), cost(1), cost(2), cost(3), cost(4), cost(5), cost(6),
+        );
+
+        assert_eq!(p0, 10000, "undated P0");
+        assert_eq!(email_low, 0, "low-value overdue email: no value to amplify");
+        assert_eq!(book_cod, 6000, "book: value_lineage alone, no due date");
+        assert_eq!(email_target, 3181, "overdue email tied to a 0.05 target");
+        assert_eq!(kathy, 23909, "Kathy Bowrey: boosted stakeholder base, 26d overdue");
+        assert_eq!(copper_cod, 11807, "copper: stakeholder + value_lineage, boosted by 18-days-out multiplier");
+        assert_eq!(cv, 5000, "undated P1 CV");
+
+        // Target 1: undated P0 ranks above the low-value overdue email.
+        assert!(p0 > email_low, "target 1: undated P0 must outrank the low-value overdue email");
+        // Target 2: the book ranks above the overdue email tied to the low-priced target.
+        assert!(book_cod > email_target, "target 2: book must outrank the low-target overdue email");
+        // Target 3: Kathy Bowrey ranks above both.
+        assert!(kathy > p0, "target 3: Kathy Bowrey must outrank the undated P0");
+        assert!(kathy > book_cod, "target 3: Kathy Bowrey must outrank the book");
+        // Target 4: copper ranks above the undated P1 CV -- because its pressure
+        // times value earns it, not because deadlines are ranked above value.
+        assert!(copper_cod > cv, "target 4: copper's pressure x value must earn its rank above the undated P1 CV");
     }
 
     #[test]
@@ -11150,7 +11377,7 @@ mod tests {
 
     #[test]
     fn test_p0_without_due_date_ranks_above_low_priority_far_future_due_date() {
-        use crate::graph::{DeadlineBand, GraphNode};
+        use crate::graph::GraphNode;
         use chrono::Utc;
 
         let today = Utc::now().date_naive();
@@ -11173,14 +11400,14 @@ mod tests {
         let mut nodes = vec![p0_no_due, p4_far_due];
         GraphStore::compute_focus_scores(&mut nodes);
 
-        // Far-future due date task should have DeadlineBand::None
+        // The far-future, value-less P4 task has nothing for the deadline
+        // multiplier to amplify (no intent/stakeholder/value_lineage of its
+        // own), so it scores exactly 0 regardless of how the ratio behaves
+        // at 90 days out.
         assert_eq!(
-            nodes[1].focus_tuple.as_ref().unwrap().deadline_band,
-            DeadlineBand::None
-        );
-        assert_eq!(
-            nodes[0].focus_tuple.as_ref().unwrap().deadline_band,
-            DeadlineBand::None
+            nodes[1].focus_tuple.as_ref().unwrap().cost_of_delay,
+            0,
+            "far-future due date with no value scores 0"
         );
 
         // P0 task without due date ranks above low priority far-future task
