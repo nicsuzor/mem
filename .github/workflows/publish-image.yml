@@ -5,13 +5,14 @@ name: Publish PKB image to GHCR
 # No Rust toolchain — the binary is downloaded from the release asset.
 #
 # Triggers:
-#   - workflow_call       — chained from release-please.yml / manual-release.yml
+#   - workflow_call       — chained from build-release.yml
 #   - release.published   — fires if release is created with a PAT (not GITHUB_TOKEN)
 #   - workflow_dispatch   — manual repackage of an existing release tag
 #
 # Tags pushed:
 #   - latest          (always)
 #   - <release-tag>   (e.g. mem-v0.3.59)
+#   - <version>       (e.g. v0.3.59)
 #
 # Image must be marked PUBLIC in GHCR settings after the first push so
 # services-new can pull without auth.
@@ -20,7 +21,7 @@ on:
   workflow_call:
     inputs:
       tag:
-        description: "Release tag to package (e.g. mem-v0.3.59)"
+        description: "Release tag to package (e.g. mem-v0.3.59 or v0.3.59)"
         required: true
         type: string
   release:
@@ -28,7 +29,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Release tag to package (e.g. mem-v0.3.59)"
+        description: "Release tag to package (e.g. mem-v0.3.59 or v0.3.59)"
         required: true
         type: string
 
@@ -50,10 +51,15 @@ jobs:
         id: tag
         run: |
           if [ "${{ github.event_name }}" = "release" ]; then
-            echo "tag=${{ github.event.release.tag_name }}" >> "$GITHUB_OUTPUT"
+            TAG="${{ github.event.release.tag_name }}"
           else
-            echo "tag=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
+            TAG="${{ inputs.tag }}"
           fi
+          if [[ ! "$TAG" =~ ^mem- ]]; then
+            TAG="mem-$TAG"
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=${TAG#mem-}" >> "$GITHUB_OUTPUT"
 
       - name: Find Linux binary asset URL
         id: binary
@@ -88,6 +94,7 @@ jobs:
           tags: |
             type=raw,value=latest
             type=raw,value=${{ steps.tag.outputs.tag }}
+            type=raw,value=${{ steps.tag.outputs.version }}
 
       - name: Build and push
         uses: docker/build-push-action@v6

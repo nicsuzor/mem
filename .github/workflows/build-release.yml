@@ -19,7 +19,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Version tag for the release (e.g. v0.3.19)"
+        description: "Version tag for the release (e.g. mem-v0.3.94 or v0.3.94)"
         required: true
         type: string
       prerelease:
@@ -30,6 +30,7 @@ on:
 
 permissions:
   contents: write
+  packages: write
 
 jobs:
   build:
@@ -49,7 +50,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.tag }}
+          ref: ${{ startsWith(inputs.tag, 'mem-') && inputs.tag || format('mem-{0}', inputs.tag) }}
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -66,7 +67,8 @@ jobs:
         shell: bash
         run: |
           TAG="${{ inputs.tag }}"
-          ARCHIVE="mem-${TAG}-${{ matrix.artifact }}.tar.gz"
+          VERSION="${TAG#mem-}"
+          ARCHIVE="mem-${VERSION}-${{ matrix.artifact }}.tar.gz"
           BINARIES=("pkb" "pkb-excalidraw")
           if [[ "${{ matrix.runner }}" == "windows-latest" ]]; then
             BINARIES=("pkb.exe" "pkb-excalidraw.exe")
@@ -90,6 +92,13 @@ jobs:
       - name: Upload to GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ inputs.tag }}
+          tag_name: ${{ startsWith(inputs.tag, 'mem-') && inputs.tag || format('mem-{0}', inputs.tag) }}
           prerelease: ${{ inputs.prerelease }}
           files: mem-*.tar.gz
+
+  publish-image:
+    needs: publish
+    uses: ./.github/workflows/publish-image.yml
+    with:
+      tag: ${{ startsWith(inputs.tag, 'mem-') && inputs.tag || format('mem-{0}', inputs.tag) }}
+    secrets: inherit
