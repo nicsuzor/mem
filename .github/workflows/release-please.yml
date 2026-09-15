@@ -43,9 +43,3 @@ jobs:
     uses: ./.github/workflows/build-release.yml
     with:
       tag: ${{ needs.release-please.outputs.tag_name }}
-
-  publish-image:
-    needs: [release-please, build-release]
-    uses: ./.github/workflows/publish-image.yml
-    with:
-      tag: ${{ needs.release-please.outputs.tag_name }}

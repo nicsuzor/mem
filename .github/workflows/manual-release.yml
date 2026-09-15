@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Version tag (e.g. v0.1.12 or v0.4.0-beta.1)"
+        description: "Version tag (e.g. mem-v0.4.0 or v0.4.0)"
         required: true
         type: string
       prerelease:
@@ -20,6 +20,8 @@ permissions:
 jobs:
   bump-and-tag:
     runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.set-tag.outputs.tag }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -29,10 +31,12 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
       - name: Bump Cargo.toml + Cargo.lock to ${{ inputs.tag }}
+        id: set-tag
         run: |
           set -euo pipefail
-          TAG="${{ inputs.tag }}"
-          VERSION="${TAG#v}"
+          RAW_TAG="${{ inputs.tag }}"
+          VERSION="${RAW_TAG#mem-}"
+          VERSION="${VERSION#v}"
           # Bump first version line (the [package] version)
           sed -i "0,/^version = \".*\"/s//version = \"$VERSION\"/" Cargo.toml
           # Bump the mem entry in Cargo.lock
@@ -47,22 +51,19 @@ jobs:
           p.write_text(t2)
           PY
           git add Cargo.toml Cargo.lock
-          git commit -m "chore: release ${{ inputs.tag }}"
+          TAG="${RAW_TAG}"
+          if [[ ! "$TAG" =~ ^mem- ]]; then
+            TAG="mem-$TAG"
+          fi
+          git commit -m "chore: release $TAG"
           git push origin HEAD:main
-      - name: Create and push tag
-        run: |
-          git tag "${{ inputs.tag }}"
-          git push origin "${{ inputs.tag }}"
+          git tag "$TAG"
+          git push origin "$TAG"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
 
   build-release:
     needs: bump-and-tag
     uses: ./.github/workflows/build-release.yml
     with:
-      tag: ${{ inputs.tag }}
+      tag: ${{ needs.bump-and-tag.outputs.tag }}
       prerelease: ${{ inputs.prerelease }}
-
-  publish-image:
-    needs: build-release
-    uses: ./.github/workflows/publish-image.yml
-    with:
-      tag: ${{ inputs.tag }}
