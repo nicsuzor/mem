@@ -2,12 +2,14 @@
 # Cross-compile to Apple Silicon from Linux using cargo-zigbuild + zig 0.13
 
 CARGO        ?= cargo
-TARGET_MACOS  = aarch64-apple-darwin
-TARGET_LINUX  = x86_64-unknown-linux-gnu
-TARGET_WIN    = x86_64-pc-windows-gnullvm
-RELEASE_DIR   = target/release
-MACOS_DIR     = target/$(TARGET_MACOS)/release
-WIN_DIR       = target/$(TARGET_WIN)/release
+TARGET_MACOS   = aarch64-apple-darwin
+TARGET_LINUX   = x86_64-unknown-linux-gnu
+TARGET_LINUX_ARM = aarch64-unknown-linux-gnu
+TARGET_WIN     = x86_64-pc-windows-gnullvm
+RELEASE_DIR    = target/release
+MACOS_DIR      = target/$(TARGET_MACOS)/release
+LINUX_ARM_DIR  = target/$(TARGET_LINUX_ARM)/release
+WIN_DIR        = target/$(TARGET_WIN)/release
 BINS          = pkb pkb-excalidraw
 VERSION       = $(shell grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
 
@@ -47,6 +49,17 @@ windows:
 	@echo ""
 	@echo "Binaries:"
 	@ls -lh $(WIN_DIR)/pkb.exe 2>/dev/null || true
+
+# ── Linux ARM64 cross-build ──────────────────────────────────────────
+# Requires: zig 0.13, cargo-zigbuild
+# Run `make setup-cross` first to install prerequisites
+
+.PHONY: linux-arm
+linux-arm:
+	$(CARGO) zigbuild --release --target $(TARGET_LINUX_ARM)
+	@echo ""
+	@echo "Binaries:"
+	@for b in $(BINS); do ls -lh $(LINUX_ARM_DIR)/$$b 2>/dev/null || true; done
 
 # ── Release ────────────────────────────────────────────────────────
 # Automated via release-plz (see .github/workflows/release-plz.yml):
@@ -133,6 +146,7 @@ $(MACOS_SYSROOT)/usr/lib/libSystem.B.tbd:
 setup-cross:
 	rustup target add $(TARGET_MACOS)
 	rustup target add $(TARGET_WIN)
+	rustup target add $(TARGET_LINUX_ARM)
 	$(CARGO) install cargo-zigbuild
 	@echo ""
 	@echo "Zig 0.13 is required (bundles macOS and Windows libc/CRT stubs)."
@@ -161,6 +175,8 @@ sizes:
 	@for b in $(BINS); do ls -lh $(RELEASE_DIR)/$$b 2>/dev/null || true; done
 	@echo "── Apple Silicon ──"
 	@for b in $(BINS); do ls -lh $(MACOS_DIR)/$$b 2>/dev/null || true; done
+	@echo "── Linux ARM64 ──"
+	@for b in $(BINS); do ls -lh $(LINUX_ARM_DIR)/$$b 2>/dev/null || true; done
 	@echo "── Windows ──"
 	@ls -lh $(WIN_DIR)/pkb.exe 2>/dev/null || true
 
@@ -170,6 +186,7 @@ help:
 	@echo "  build          Release build for current host"
 	@echo "  install        Install release binaries via cargo-binstall"
 	@echo "  apple          Cross-compile for Apple Silicon (aarch64-apple-darwin)"
+	@echo "  linux-arm      Cross-compile for Linux ARM64 (aarch64-unknown-linux-gnu)"
 	@echo "  windows        Cross-compile for Windows (x86_64-pc-windows-gnullvm)"
 	@echo "  version        Print current version"
 	@echo "  setup-cross    Install rustup targets + cargo-zigbuild + zig instructions"
