@@ -21,6 +21,7 @@ pub mod lint;
 pub mod mcp_server;
 pub mod metrics;
 pub mod migrations;
+pub mod path_lint;
 pub mod pkb;
 pub mod polecat_config;
 pub mod rerank;

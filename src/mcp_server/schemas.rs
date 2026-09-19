@@ -157,7 +157,7 @@ impl PkbSearchServer {
                         "severity": { "type": "integer", "description": "Severity ladder (0-4) for target nodes. SEV4 is lexicographic." },
                         "goal_type": { "type": "string", "description": "Goal classification: committed | aspirational | learning.", "enum": GOAL_TYPE_ENUM },
                         "classification": { "type": "string", "description": "Optional content classification: bug | feature | spike | chore | refactor | docs | milestone | action." },
-                        "body": { "type": "string", "description": "Markdown body" },
+                        "body": { "type": "string", "description": "Markdown body. Refer to other PKB files by wikilink (`[[id]]`) or PKB-root-relative path; a machine-specific path such as `~/brain/...` or `/home/nic/brain/...` is rejected with error_type `machine_specific_path`." },
                         "stakeholder": { "type": "string", "description": "Who is waiting on this task (e.g. 'Jacob', 'funding-committee'). Drives waiting urgency in focus scoring." },
                         "waiting_since": { "type": "string", "description": "When the stakeholder started waiting (ISO date, e.g. '2026-03-20'). Falls back to created date if omitted." },
                         "due": { "type": "string", "description": "Due date (ISO date, e.g. '2026-06-01')" },
@@ -209,7 +209,7 @@ impl PkbSearchServer {
                         "type": { "type": "string", "enum": ["epic", "task", "learn", "pr", "template", "goal", "target", "note", "knowledge", "memory", "insight", "observation", "contact", "document", "reference", "review", "case", "spec", "prototype", "index"], "description": "Document type (required): note, knowledge, memory, insight, observation, task, epic, goal, target, etc." },
                         "id": { "type": "string", "description": "Document ID (auto-generated if omitted)" },
                         "tags": { "type": "array", "items": { "type": "string" }, "description": "Free-form tags for search and filtering" },
-                        "body": { "type": "string", "description": "Markdown body" },
+                        "body": { "type": "string", "description": "Markdown body. Refer to other PKB files by wikilink (`[[id]]`) or PKB-root-relative path; a machine-specific path such as `~/brain/...` or `/home/nic/brain/...` is rejected with error_type `machine_specific_path`." },
                         "status": { "type": "string", "enum": ["inbox", "ready"], "description": "Document/task status. Real default when unset: 'inbox' (captured, untriaged). Creators legitimately set only 'inbox' or 'ready' — 'ready' means decomposed to a leaf with all hard deps resolved. The inbox→ready transition is auto-computed once a task graduates, so leaving it 'inbox' is fine. Do NOT set queued/in_progress/terminal statuses at create time. See TAXONOMY §Status Values and Transitions." },
                         "intent": { "type": "integer", "description": "Intent band 0-4 (P0 Critical / P1 Active intent / P2 Active work / P3 Planned / P4 Backlog). Default when unset: P3 (Planned). Agents may set this under Nic's standing delegation (2026-09-10: 'allow agents to set intent on my behalf') — it does not require him to direct this specific value. The band must reflect Nic's strategic context read across the graph, never the agent's own impression of its work, and must never be inherited or copied from a parent/sibling task. Leave unset when no band is warranted — that is curation-by-absence, not an omission to fix. See specs/ranking.md §2.1 and §4.6." },
                         "parent": { "type": "string", "description": "Parent document ID" },
@@ -243,7 +243,7 @@ impl PkbSearchServer {
                     "type": "object",
                     "properties": {
                         "id": { "type": "string", "description": "Document ID (flexible resolution: ID, filename stem, or title)" },
-                        "content": { "type": "string", "description": "Content to append (will be timestamped)" },
+                        "content": { "type": "string", "description": "Content to append (will be timestamped). Refer to other PKB files by wikilink (`[[id]]`) or PKB-root-relative path; a machine-specific path such as `~/brain/...` or `/home/nic/brain/...` is rejected with error_type `machine_specific_path`." },
                         "section": { "type": "string", "description": "Optional target section heading (e.g. 'Log', 'References'). Creates section if not found." },
                         "expected_modified": { "type": "string", "description": "Optional compare-and-swap precondition: the `modified` frontmatter value you last read from this document. If the document's current `modified` no longer matches, the call fails with error_type `stale_write` instead of overwriting a concurrent change. Omit to keep unconditional (last-write-wins) behaviour." }
                     },
@@ -260,7 +260,7 @@ impl PkbSearchServer {
                     "type": "object",
                     "properties": {
                         "id": { "type": "string", "minLength": 1, "description": "Document ID (flexible resolution: ID, filename stem, or title)" },
-                        "new_body": { "type": "string", "minLength": 1, "description": "New markdown body content (full replacement — not appended; cannot be empty)" },
+                        "new_body": { "type": "string", "minLength": 1, "description": "New markdown body content (full replacement — not appended; cannot be empty). Refer to other PKB files by wikilink (`[[id]]`) or PKB-root-relative path; a machine-specific path such as `~/brain/...` or `/home/nic/brain/...` is rejected when newly introduced with error_type `machine_specific_path`." },
                         "preserve_frontmatter": { "type": "boolean", "description": "Keep YAML frontmatter and bump modified timestamp (default: true). Set false only when replacing scratch documents with no meaningful frontmatter." },
                         "expected_modified": { "type": "string", "description": "Optional compare-and-swap precondition: the `modified` frontmatter value you last read from this document. If the document's current `modified` no longer matches, the call fails with error_type `stale_write` instead of overwriting a concurrent change. Omit to keep unconditional (last-write-wins) behaviour." }
                     },
@@ -277,7 +277,7 @@ impl PkbSearchServer {
                     "type": "object",
                     "properties": {
                         "id": { "type": "string", "description": "Document ID (flexible resolution: ID, filename stem, or title)" },
-                        "diff": { "type": "string", "description": "Unified-diff hunks to apply to the body (standard git-style hunk format or markdown ```diff block)" },
+                        "diff": { "type": "string", "description": "Unified-diff hunks to apply to the body (standard git-style hunk format or markdown ```diff block). Refer to other PKB files by wikilink (`[[id]]`) or PKB-root-relative path; a machine-specific path such as `~/brain/...` or `/home/nic/brain/...` on an added line is rejected with error_type `machine_specific_path`." },
                         "preserve_frontmatter": { "type": "boolean", "description": "Keep YAML frontmatter and bump modified timestamp (default: true). Set false only when editing scratch documents with no meaningful frontmatter." },
                         "dry_run": { "type": "boolean", "description": "If true, validates and previews the diff application without writing to disk (default: false)" },
                         "expected_modified": { "type": "string", "description": "Optional compare-and-swap precondition: the `modified` frontmatter value you last read from this document. If the document's current `modified` no longer matches, the call fails with error_type `stale_write` instead of overwriting a concurrent change. Omit to keep unconditional (last-write-wins) behaviour." }
@@ -489,7 +489,7 @@ impl PkbSearchServer {
                                     "tags": { "type": "array", "items": { "type": "string" }, "description": "Free-form tags for search and filtering" },
                                     "assignee": { "type": "string", "description": "Who is responsible for this subtask" },
                                     "complexity": { "type": "string", "description": "Free-form complexity/size label (e.g. 'S', 'M', 'L')" },
-                                    "body": { "type": "string", "description": "Markdown body" },
+                                    "body": { "type": "string", "description": "Markdown body. Refer to other PKB files by wikilink (`[[id]]`) or PKB-root-relative path; a machine-specific path such as `~/brain/...` or `/home/nic/brain/...` is rejected with error_type `machine_specific_path`." },
                                     "stakeholder": { "type": "string", "description": "Who is waiting on this subtask. Drives waiting urgency in focus scoring." },
                                     "waiting_since": { "type": "string", "description": "When the stakeholder started waiting (ISO date). Falls back to created date if omitted." },
                                     "consequence": { "type": "string", "description": "Narrative description of what happens if this subtask is not done or fails" },

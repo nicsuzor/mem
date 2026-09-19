@@ -7,6 +7,46 @@ use std::path::{Path, PathBuf};
 use super::PkbSearchServer;
 
 impl PkbSearchServer {
+    /// Reject `new_text` if it introduces a machine-specific path to a PKB
+    /// file (see `crate::path_lint`). `existing_text` is the body as it is
+    /// now, for whole-body rewrites: paths already present are tolerated so
+    /// editing a note that still carries an old path is not blocked, only
+    /// adding a new one. The server's own `pkb_root` is checked alongside
+    /// the known mount points.
+    pub(crate) fn reject_machine_paths(
+        &self,
+        new_text: &str,
+        existing_text: Option<&str>,
+    ) -> Result<(), McpError> {
+        // Only an absolute root is a machine-specific prefix; a relative
+        // root (`.`) would make every relative path look like a hit.
+        let root = self.pkb_root.to_string_lossy();
+        let extra: Vec<&str> = if self.pkb_root.is_absolute() {
+            vec![root.as_ref()]
+        } else {
+            vec![]
+        };
+        let found = match existing_text {
+            Some(existing) => crate::path_lint::find_new_machine_paths(new_text, existing, &extra),
+            None => crate::path_lint::find_machine_paths(new_text, &extra),
+        };
+        if found.is_empty() {
+            return Ok(());
+        }
+        Err(McpError {
+            code: ErrorCode::INVALID_PARAMS,
+            message: Cow::from(crate::path_lint::rejection_message(&found)),
+            data: Some(serde_json::json!({
+                "error_type": "machine_specific_path",
+                "paths": found.iter().map(|p| serde_json::json!({
+                    "matched": p.matched,
+                    "root": p.root,
+                    "relative": p.relative,
+                })).collect::<Vec<_>>(),
+            })),
+        })
+    }
+
     pub(crate) fn abs_path(&self, rel: &Path) -> PathBuf {
         if rel.is_absolute() {
             rel.to_path_buf()
