@@ -15,6 +15,7 @@ mod stale_read_tests;
 mod ghost_node_tests;
 mod batch_update_allowlist_tests;
 mod orphan_index_tests;
+mod path_lint_tests;
 
 
 pub(crate) fn make_doc(

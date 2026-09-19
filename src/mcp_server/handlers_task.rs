@@ -229,6 +229,10 @@ impl PkbSearchServer {
             severity_warning = true;
         }
 
+        if let Some(body) = args.get("body").and_then(|v| v.as_str()) {
+            self.reject_machine_paths(body, None)?;
+        }
+
         let fields = crate::document_crud::TaskFields {
             title: title.to_string(),
             id: args.get("id").and_then(|v| v.as_str()).map(String::from),
@@ -2114,6 +2118,13 @@ impl PkbSearchServer {
         // Per-phase timing for write-path perf investigation (task-a4dcc039).
         // Emitted at debug; set RUST_LOG=mem::mcp_server=debug to observe.
         let t_total = std::time::Instant::now();
+
+        if let Some(body) = update_map.get("body").and_then(|v| v.as_str()) {
+            let existing_body = std::fs::read_to_string(&path)
+                .map(|s| crate::document_crud::extract_body_content(&s).to_string())
+                .unwrap_or_default();
+            self.reject_machine_paths(body, Some(&existing_body))?;
+        }
 
         let t = std::time::Instant::now();
         crate::document_crud::update_document(&path, update_map).map_err(|e| McpError {

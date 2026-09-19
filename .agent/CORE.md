@@ -40,6 +40,7 @@ src/
   distance.rs       — Distance/similarity calculations
   eval.rs           — Evaluation utilities
   lint.rs           — PKB linting/validation
+  path_lint.rs      — rejects new machine-specific paths to PKB files (`~/brain/...`) in bodies written via MCP
   reproduction.rs   — Reproduction/test helpers
   lib.rs            — Library root
 ```

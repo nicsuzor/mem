@@ -245,6 +245,10 @@ impl PkbSearchServer {
                 data: None,
             })?;
 
+        if let Some(body) = args.get("body").and_then(|v| v.as_str()) {
+            self.reject_machine_paths(body, None)?;
+        }
+
         let fields = crate::document_crud::MemoryFields {
             title: title.to_string(),
             id: args.get("id").and_then(|v| v.as_str()).map(String::from),
@@ -362,6 +366,10 @@ impl PkbSearchServer {
                 message: Cow::from("Missing required parameter: type"),
                 data: None,
             })?;
+
+        if let Some(body) = args.get("body").and_then(|v| v.as_str()) {
+            self.reject_machine_paths(body, None)?;
+        }
 
         let fields = crate::document_crud::DocumentFields {
             title: title.to_string(),
@@ -616,6 +624,8 @@ impl PkbSearchServer {
         let section = args.get("section").and_then(|v| v.as_str());
         let expected_modified = args.get("expected_modified").and_then(|v| v.as_str());
 
+        self.reject_machine_paths(content, None)?;
+
         // Resolve ID to path via graph
         let graph = self.graph.read();
         let node = graph.resolve(id).ok_or_else(|| McpError {
@@ -720,6 +730,11 @@ impl PkbSearchServer {
             (self.abs_path_for_node(node, Some(&graph))?, node.label.clone())
         };
 
+        let existing_body = std::fs::read_to_string(&abs_path)
+            .map(|s| crate::document_crud::extract_body_content(&s).to_string())
+            .unwrap_or_default();
+        self.reject_machine_paths(new_body, Some(&existing_body))?;
+
         let result = crate::document_crud::rewrite_body(
             &abs_path,
             new_body,
@@ -798,6 +813,8 @@ impl PkbSearchServer {
             })?;
             (self.abs_path_for_node(node, Some(&graph))?, node.label.clone())
         };
+
+        self.reject_machine_paths(&crate::path_lint::added_lines_of_diff(diff), None)?;
 
         let result = crate::document_crud::edit_body(
             &abs_path,
@@ -897,6 +914,8 @@ impl PkbSearchServer {
             })?;
             (self.abs_path_for_node(node, Some(&graph))?, node.label.clone())
         };
+
+        self.reject_machine_paths(&lines_vec.join("\n"), None)?;
 
         let result = crate::document_crud::add_observations(
             &abs_path,
