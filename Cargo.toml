@@ -111,6 +111,9 @@ bin-dir = "{ bin }{ binary-ext }"
 [package.metadata.binstall.overrides.aarch64-apple-darwin]
 pkg-url = "https://github.com/nicsuzor/mem/releases/download/v{ version }/mem-v{ version }-aarch64-darwin.tar.gz"
 
+[package.metadata.binstall.overrides.aarch64-unknown-linux-gnu]
+pkg-url = "https://github.com/nicsuzor/mem/releases/download/v{ version }/mem-v{ version }-aarch64-linux.tar.gz"
+
 [package.metadata.binstall.overrides.x86_64-unknown-linux-gnu]
 pkg-url = "https://github.com/nicsuzor/mem/releases/download/v{ version }/mem-v{ version }-x86_64-linux.tar.gz"
 
