@@ -60,6 +60,7 @@ pub struct PkbSearchServer {
     pub(crate) pkb_root: PathBuf,
     pub(crate) db_path: PathBuf,
     pub(crate) graph: Arc<RwLock<GraphStore>>,
+    pub(crate) session_registry: Arc<crate::otel::session_registry::SessionRegistry>,
     pub(crate) stale_count: usize,
     /// True when a background vector-store save is already scheduled. Used
     /// to coalesce burst writes: a subsequent `save_store` call while a save
@@ -195,6 +196,7 @@ impl PkbSearchServer {
             pkb_root,
             db_path,
             graph,
+            session_registry: crate::otel::session_registry::SessionRegistry::new(),
             stale_count: 0,
             save_pending: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             save_in_flight: Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -256,6 +258,11 @@ impl PkbSearchServer {
     pub fn set_pre_epoch_bump_delay_ms(&self, ms: u64) {
         self.pre_epoch_bump_delay_ms
             .store(ms, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    pub fn with_session_registry(mut self, reg: Arc<crate::otel::session_registry::SessionRegistry>) -> Self {
+        self.session_registry = reg;
+        self
     }
 
     pub fn with_stale_count(mut self, count: usize) -> Self {
@@ -1534,6 +1541,29 @@ impl PkbSearchServer {
 
 
 impl ServerHandler for PkbSearchServer {
+    fn initialize(
+        &self,
+        request: rmcp::model::InitializeRequestParams,
+        context: rmcp::service::RequestContext<rmcp::service::RoleServer>,
+    ) -> impl std::future::Future<Output = Result<rmcp::model::InitializeResult, McpError>> + Send + '_ {
+        let client_name = request.client_info.name.clone();
+        let mcp_session_id = context
+            .extensions
+            .get::<http::request::Parts>()
+            .and_then(|parts| parts.headers.get("mcp-session-id"))
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_string());
+            
+        if let Some(mcp_id) = mcp_session_id {
+            self.session_registry.register_handshake(&mcp_id, Some(client_name));
+        }
+
+        if context.peer.peer_info().is_none() {
+            context.peer.set_peer_info(request);
+        }
+        std::future::ready(Ok(self.get_info()))
+    }
+
     fn call_tool(
         &self,
         request: CallToolRequestParams,
@@ -1544,6 +1574,16 @@ impl ServerHandler for PkbSearchServer {
         let args = Self::args_to_value(request.arguments);
 
         let effective_name = tool_name.to_string();
+
+        let client_context = crate::otel::client_context::ClientContext::extract(
+            context.extensions.get::<http::request::Parts>(),
+            request.meta.as_ref(),
+            &self.session_registry,
+        );
+
+        if let Some(ref mcp_id) = client_context.mcp_session_id {
+            self.session_registry.update_activity(mcp_id, Some(client_context.session_id.clone()));
+        }
 
         let this = self.clone();
         async move {
@@ -1557,7 +1597,67 @@ impl ServerHandler for PkbSearchServer {
             let this_task = this.clone();
 
             tokio::task::spawn_blocking(move || {
+                let tracer = opentelemetry::global::tracer("mem");
+                use opentelemetry::trace::Tracer;
+                let mut builder = tracer.span_builder(format!("mcp.{}", tool_name_task))
+                    .with_kind(opentelemetry::trace::SpanKind::Server);
+                
+                let mut attrs = vec![
+                    opentelemetry::KeyValue::new("openinference.span.kind", "TOOL"),
+                    opentelemetry::KeyValue::new("tool.name", tool_name_task.clone()),
+                    opentelemetry::KeyValue::new("session.id", client_context.session_id.clone()),
+                ];
+
+                if let Some(ref tid) = client_context.task_id {
+                    attrs.push(opentelemetry::KeyValue::new("tag.tags", format!("[\"task:{}\"]", tid)));
+                }
+                if let Some(ref mcp_id) = client_context.mcp_session_id {
+                    attrs.push(opentelemetry::KeyValue::new("mcp.session_id", mcp_id.clone()));
+                }
+
+                let input_str = serde_json::to_string(&args_task).unwrap_or_default();
+                let truncated_input = if input_str.len() > 8192 {
+                    format!("{}...", &input_str[..8189])
+                } else {
+                    input_str
+                };
+                attrs.push(opentelemetry::KeyValue::new("input.value", truncated_input));
+                attrs.push(opentelemetry::KeyValue::new("input.mime_type", "application/json"));
+
+                builder = builder.with_attributes(attrs);
+
+                let mut span = if let Some(ref parent) = client_context.parent_context {
+                    use opentelemetry::trace::Tracer;
+                    tracer.build_with_context(builder, parent)
+                } else {
+                    use opentelemetry::trace::Tracer;
+                    tracer.build(builder)
+                };
+
                 let res = this_task.dispatch_tool_sync(&tool_name_task, &args_task);
+
+                // Add output attributes
+                let is_error = res.is_err();
+                let output_str = match &res {
+                    Ok(r) => serde_json::to_string(r).unwrap_or_default(),
+                    Err(e) => serde_json::to_string(e).unwrap_or_default(),
+                };
+                let truncated_output = if output_str.len() > 8192 {
+                    format!("{}...", &output_str[..8189])
+                } else {
+                    output_str
+                };
+                
+                use opentelemetry::trace::Span;
+                span.set_attribute(opentelemetry::KeyValue::new("output.value", truncated_output));
+                span.set_attribute(opentelemetry::KeyValue::new("output.mime_type", "application/json"));
+                if is_error {
+                    span.set_status(opentelemetry::trace::Status::Error { description: std::borrow::Cow::Borrowed("Tool error") });
+                } else {
+                    span.set_status(opentelemetry::trace::Status::Ok);
+                }
+                span.end();
+
                 let _ = tx.send(res);
             });
 
@@ -1620,6 +1720,7 @@ impl ServerHandler for PkbSearchServer {
             "PKB Search — semantic search + task graph over personal knowledge base. \
              A suite of tools for search, documents, tasks, and knowledge graph. \
              Use MCP prompts (find-task, explore-topic, navigate-graph, find-by-tag) for search pattern guidance. \
+            session_registry: crate::otel::session_registry::SessionRegistry::new(),
              Use get_stats to view per-tool usage telemetry.",
         );
         if self.stale_count > 0 {

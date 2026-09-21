@@ -102,6 +102,12 @@ schemars = "0.8"
 indicatif = "0.18.4"
 serde_yaml = "0.9"
 toml = "0.8"
+opentelemetry = "0.24"
+opentelemetry_sdk = { version = "0.24", features = ["rt-tokio"] }
+opentelemetry-otlp = { version = "0.17", features = ["http-proto", "reqwest-client", "trace"] }
+tracing-opentelemetry = "0.25"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+http = "1"
 
 [package.metadata.binstall]
 pkg-url = "https://github.com/nicsuzor/mem/releases/download/v{ version }/mem-v{ version }-{ target }.tar.gz"
@@ -126,6 +132,8 @@ pkg-url = "https://github.com/nicsuzor/mem/releases/download/v{ version }/mem-v{
 [package.metadata.binstall.overrides.x86_64-pc-windows-gnullvm]
 pkg-url = "https://github.com/nicsuzor/mem/releases/download/v{ version }/mem-v{ version }-x86_64-windows.tar.gz"
 
+# OpenTelemetry
+
 [dev-dependencies]
 tempfile = "3"
 
@@ -141,3 +149,4 @@ lto = true
 codegen-units = 1
 strip = true
 panic = "abort"
+
