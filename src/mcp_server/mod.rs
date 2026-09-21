@@ -1648,7 +1648,7 @@ impl ServerHandler for PkbSearchServer {
                     output_str
                 };
                 
-                use opentelemetry::trace::{TraceContextExt, Span};
+                use opentelemetry::trace::Span;
                 span.set_attribute(opentelemetry::KeyValue::new("output.value", truncated_output));
                 span.set_attribute(opentelemetry::KeyValue::new("output.mime_type", "application/json"));
                 if is_error {
