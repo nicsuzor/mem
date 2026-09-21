@@ -1023,25 +1023,43 @@ async fn main() -> Result<()> {
 
     // MCP mode: info-level logging to stderr (stdout is protocol).
     // CLI mode: only warnings.
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
-                let mut filter =
-                    tracing_subscriber::EnvFilter::new(if is_mcp { "info" } else { "warn" });
-                if is_mcp {
-                    // Suppress noisy rmcp session close errors (benign during shutdown/cleanup).
-                    // Refs task-2ae61ce6.
-                    filter = filter.add_directive(
-                        "rmcp::transport::streamable_http_server::tower=warn"
-                            .parse()
-                            .unwrap(),
-                    );
-                }
-                filter
-            }),
-        )
-        .with_writer(std::io::stderr)
-        .init();
+    let env_filter = tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+        let mut filter =
+            tracing_subscriber::EnvFilter::new(if is_mcp { "info" } else { "warn" });
+        if is_mcp {
+            // Suppress noisy rmcp session close errors (benign during shutdown/cleanup).
+            // Refs task-2ae61ce6.
+            filter = filter.add_directive(
+                "rmcp::transport::streamable_http_server::tower=warn"
+                    .parse()
+                    .unwrap(),
+            );
+        }
+        filter
+    });
+
+    let fmt_layer = tracing_subscriber::fmt::layer().with_writer(std::io::stderr);
+
+    use tracing_subscriber::layer::SubscriberExt;
+    use tracing_subscriber::util::SubscriberInitExt;
+    
+    let otel_provider = mem::otel::init_telemetry();
+    
+    if let Some(provider) = &otel_provider {
+        use opentelemetry::trace::TracerProvider;
+        let tracer = provider.tracer("mem");
+        let otel_layer = tracing_opentelemetry::layer().with_tracer(tracer);
+        tracing_subscriber::registry()
+            .with(env_filter)
+            .with(fmt_layer)
+            .with(otel_layer)
+            .init();
+    } else {
+        tracing_subscriber::registry()
+            .with(env_filter)
+            .with(fmt_layer)
+            .init();
+    }
 
     let pkb_root = PathBuf::from(mem::document_crud::expand_env_vars(&cli.pkb_root));
     let db_path = PathBuf::from(&cli.db_path);
@@ -3359,6 +3377,16 @@ async fn main() -> Result<()> {
                 graph.read().edge_count()
             );
 
+            let session_registry = mem::otel::session_registry::SessionRegistry::new();
+            
+            let prune_registry = session_registry.clone();
+            tokio::spawn(async move {
+                loop {
+                    tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
+                    prune_registry.prune_stale(std::time::Duration::from_secs(86400));
+                }
+            });
+
             // Create MCP server
             let server = mcp_server::PkbSearchServer::new(
                 store,
@@ -3367,6 +3395,7 @@ async fn main() -> Result<()> {
                 db_path.clone(),
                 graph,
             )
+            .with_session_registry(session_registry)
             .with_stale_count(stale_count);
 
             if http {
@@ -3420,6 +3449,10 @@ async fn main() -> Result<()> {
                 eprintln!("   ✓ Shutdown complete");
             }
         }
+    }
+    if otel_provider.is_some() {
+        eprintln!("   Flushing OpenTelemetry spans...");
+        opentelemetry::global::shutdown_tracer_provider();
     }
 
     Ok(())

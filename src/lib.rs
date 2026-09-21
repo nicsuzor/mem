@@ -4,6 +4,7 @@
 //! All diagnostics must go to stderr via `tracing` or `eprintln!`.
 //! Library code must never write to stdout directly.
 #![deny(clippy::print_stdout)]
+pub mod otel;
 
 pub mod batch_ops;
 pub mod bm25;
@@ -238,11 +239,13 @@ mod stdout_guard {
     //! (contains this test).
     //! lib.rs is still guarded by `#![deny(clippy::print_stdout)]`.
 
+
     #[test]
     fn no_println_in_library_sources() {
         let src_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
         // lib.rs excluded because this test module itself references print patterns.
         // lib.rs is still guarded by #![deny(clippy::print_stdout)] at compile time.
+
         let allow_list: &[&str] = &["cli.rs", "reproduction.rs", "lib.rs", "pkb_excalidraw.rs"];
 
         let mut violations = Vec::new();
