@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.95](https://github.com/nicsuzor/mem/compare/mem-v0.3.94...mem-v0.3.95) (2026-09-21)
+
+
+### Features
+
+* **ci:** add aarch64-linux build target for pkb and pkb-excalidraw ([b58bdc9](https://github.com/nicsuzor/mem/commit/b58bdc9173c96309b861ff5b216f848712d1557d))
+* **ci:** add aarch64-linux build target for pkb and pkb-excalidraw ([75457e6](https://github.com/nicsuzor/mem/commit/75457e6ca78ae9ee5a75a3a24344b63f12511896))
+* **mcp:** Add fully structured OpenTelemetry logging ([997799d](https://github.com/nicsuzor/mem/commit/997799da2cdabedbfec888968a4938df16db310e))
+* **mcp:** Add fully structured OpenTelemetry logging to the MCP server ([72df364](https://github.com/nicsuzor/mem/commit/72df36421fb303a8cc5ac12fbfb57d91917848b4))
+* **mcp:** reject new machine-specific PKB paths in note bodies ([326089b](https://github.com/nicsuzor/mem/commit/326089bb3c630729ec5e17d88caef8b89c591530))
+* **mcp:** reject new machine-specific PKB paths in note bodies ([21fa44c](https://github.com/nicsuzor/mem/commit/21fa44c66d05321c101e79fa4b2aaf9bf0f05c03))
+
 ## [0.3.94](https://github.com/nicsuzor/mem/compare/mem-v0.3.93...mem-v0.3.94) (2026-09-15)
 
 
