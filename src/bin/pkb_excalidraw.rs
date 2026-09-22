@@ -24,6 +24,9 @@ const USAGE: &str = r#"Token-cheap projections of an .excalidraw file. Stdlib on
 Usage: pkb-excalidraw FILE [summary|map|style|check|overlap|arrows-check|nodes|edges|arrows]
        pkb-excalidraw FILE inspect <id>
        pkb-excalidraw FILE get <id>
+       pkb-excalidraw FILE describe
+       pkb-excalidraw FILE query [--type <type>] [--bbox X1,Y1,X2,Y2] [--filter KEY=VAL] [--filter-json '<json>']
+       pkb-excalidraw FILE screenshot [--out <path>] [--format svg|png] [--no-background]
        pkb-excalidraw FILE1 diff FILE2
        pkb-excalidraw FILE1 struct-diff FILE2
        pkb-excalidraw FILE.excalidrawlib lib
@@ -37,7 +40,16 @@ CRUD & Mutation Commands:
        pkb-excalidraw FILE fit <id> "<new_text>"
        pkb-excalidraw FILE move-elem <id> [--to X,Y | --by DX,DY]
        pkb-excalidraw FILE delete-elem <id> [--cascade-arrows]
+       pkb-excalidraw FILE update <id> --set '<json>'
+       pkb-excalidraw FILE arrange {align|distribute|group|ungroup|lock|unlock|duplicate} [args]
+       pkb-excalidraw FILE apply <patch.json | - >
        pkb-excalidraw FILE batch <changes.json | - >
+       pkb-excalidraw FILE clear [--yes]
+
+Snapshot, Import & Export Commands:
+       pkb-excalidraw FILE snapshot {save <name>|list|restore <name>}
+       pkb-excalidraw FILE export [--out <path>] [--format json|obsidian]
+       pkb-excalidraw FILE import <src.json | src.md | - > [--replace]
 
 Theme Commands:
        pkb-excalidraw FILE theme export [out.json]
@@ -459,7 +471,76 @@ pub fn get_logical_nodes_and_edges(doc: &Value) -> (Vec<LogicalNode>, Vec<Logica
 // Atomic File Safety & Check Verification
 // ============================================================================
 
+pub fn is_obsidian_excalidraw_md(content: &str) -> bool {
+    let trimmed = content.trim_start();
+    if trimmed.starts_with('{') || trimmed.starts_with('[') {
+        return false;
+    }
+    content.contains("# Excalidraw Data") || content.contains("excalidraw-plugin:")
+}
+
+pub fn extract_scene_json_from_obsidian_md(md: &str) -> Result<String, String> {
+    if let Some(drawing_idx) = md.find("## Drawing").or_else(|| md.find("# Drawing")) {
+        let after_drawing = &md[drawing_idx..];
+        if let Some(fence_start) = after_drawing.find("```") {
+            let after_fence = &after_drawing[fence_start + 3..];
+            if let Some(newline_pos) = after_fence.find('\n') {
+                let json_content = &after_fence[newline_pos + 1..];
+                if let Some(end_fence) = json_content.find("\n```").or_else(|| json_content.find("\r\n```")) {
+                    let raw_json = json_content[..end_fence].trim();
+                    return Ok(raw_json.to_string());
+                }
+            }
+        }
+    }
+    Err("No Drawing code block found in Obsidian Excalidraw file".to_string())
+}
+
+pub fn wrap_scene_as_obsidian_md(scene: &Value) -> Result<String, String> {
+    let elements = scene
+        .get("elements")
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| "Not an Excalidraw scene: missing elements array".to_string())?;
+
+    let mut text_entries = Vec::new();
+    for el in elements {
+        let is_deleted = el.get("isDeleted").and_then(|v| v.as_bool()).unwrap_or(false);
+        if is_deleted {
+            continue;
+        }
+        let elem_type = el.get("type").and_then(|v| v.as_str()).unwrap_or("");
+        if elem_type == "text" {
+            let id = el.get("id").and_then(|v| v.as_str()).unwrap_or("");
+            let raw_text = el
+                .get("originalText")
+                .or_else(|| el.get("text"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            if !raw_text.is_empty() && !id.is_empty() {
+                text_entries.push(format!("{} ^{}", raw_text, id));
+            }
+        }
+    }
+
+    let text_section = if text_entries.is_empty() {
+        String::new()
+    } else {
+        format!("{}\n", text_entries.join("\n\n"))
+    };
+
+    let json_str = serde_json::to_string_pretty(scene).map_err(|e| e.to_string())?;
+
+    Ok(format!(
+        "---\n\nexcalidraw-plugin: parsed\ntags: [excalidraw]\n\n---\n==⚠  Switch to EXCALIDRAW VIEW in the MORE OPTIONS menu of this document. ⚠==\n\n\n# Excalidraw Data\n## Text Elements\n{}%%\n## Drawing\n```json\n{}\n```\n%%\n",
+        text_section, json_str
+    ))
+}
+
 pub fn atomic_save(file_path: &str, doc: &mut Value) -> Result<(), String> {
+    atomic_save_ex(file_path, doc, false)
+}
+
+pub fn atomic_save_ex(file_path: &str, doc: &mut Value, force_obsidian: bool) -> Result<(), String> {
     // 1. Maintain array sort order: elements.sort_by_key(|e| e.index)
     if let Some(arr) = doc.get_mut("elements").and_then(|v| v.as_array_mut()) {
         arr.sort_by(|a, b| {
@@ -483,7 +564,13 @@ pub fn atomic_save(file_path: &str, doc: &mut Value) -> Result<(), String> {
     let temp_name = format!(".tmp.{}.{}", pid, rand_val);
     let temp_path = parent.join(temp_name);
 
-    let content = serde_json::to_string_pretty(doc).map_err(|e| e.to_string())?;
+    let is_obsidian = force_obsidian || file_path.ends_with(".md");
+    let content = if is_obsidian {
+        wrap_scene_as_obsidian_md(doc)?
+    } else {
+        serde_json::to_string_pretty(doc).map_err(|e| e.to_string())?
+    };
+
     fs::write(&temp_path, content).map_err(|e| format!("failed to write temp file {:?}: {}", temp_path, e))?;
 
     // 4. Atomically rename
@@ -1494,6 +1581,476 @@ pub fn mutate_theme_apply(
     }
 
     Ok(applied_count)
+}
+
+pub fn mutate_align(
+    doc: &mut Value,
+    ids: &[String],
+    alignment: &str,
+) -> Result<usize, String> {
+    if ids.len() < 2 {
+        return Err("Need at least 2 elements to align".to_string());
+    }
+
+    let elements = doc
+        .get("elements")
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| "document missing elements array".to_string())?;
+
+    struct TargetElem {
+        id: String,
+        x: f64,
+        y: f64,
+        width: f64,
+        height: f64,
+    }
+
+    let mut targets = Vec::new();
+    for id in ids {
+        if let Some(e) = elements.iter().find(|e| e.get("id").and_then(|v| v.as_str()) == Some(id)) {
+            targets.push(TargetElem {
+                id: id.clone(),
+                x: e.get("x").and_then(|v| v.as_f64()).unwrap_or(0.0),
+                y: e.get("y").and_then(|v| v.as_f64()).unwrap_or(0.0),
+                width: e.get("width").and_then(|v| v.as_f64()).unwrap_or(0.0),
+                height: e.get("height").and_then(|v| v.as_f64()).unwrap_or(0.0),
+            });
+        }
+    }
+
+    if targets.len() < 2 {
+        return Err("Need at least 2 matching elements to align".to_string());
+    }
+
+    let mut moves: Vec<(String, f64, f64)> = Vec::new();
+
+    match alignment {
+        "left" => {
+            let min_x = targets.iter().map(|t| t.x).fold(f64::INFINITY, f64::min);
+            for t in &targets {
+                moves.push((t.id.clone(), min_x - t.x, 0.0));
+            }
+        }
+        "right" => {
+            let max_right = targets.iter().map(|t| t.x + t.width).fold(f64::NEG_INFINITY, f64::max);
+            for t in &targets {
+                moves.push((t.id.clone(), max_right - (t.x + t.width), 0.0));
+            }
+        }
+        "center" => {
+            let centers: Vec<f64> = targets.iter().map(|t| t.x + t.width / 2.0).collect();
+            let avg_center = centers.iter().sum::<f64>() / centers.len() as f64;
+            for t in &targets {
+                let target_x = avg_center - t.width / 2.0;
+                moves.push((t.id.clone(), target_x - t.x, 0.0));
+            }
+        }
+        "top" => {
+            let min_y = targets.iter().map(|t| t.y).fold(f64::INFINITY, f64::min);
+            for t in &targets {
+                moves.push((t.id.clone(), 0.0, min_y - t.y));
+            }
+        }
+        "bottom" => {
+            let max_bottom = targets.iter().map(|t| t.y + t.height).fold(f64::NEG_INFINITY, f64::max);
+            for t in &targets {
+                moves.push((t.id.clone(), 0.0, max_bottom - (t.y + t.height)));
+            }
+        }
+        "middle" => {
+            let middles: Vec<f64> = targets.iter().map(|t| t.y + t.height / 2.0).collect();
+            let avg_middle = middles.iter().sum::<f64>() / middles.len() as f64;
+            for t in &targets {
+                let target_y = avg_middle - t.height / 2.0;
+                moves.push((t.id.clone(), 0.0, target_y - t.y));
+            }
+        }
+        other => return Err(format!("Unknown alignment {other:?}; expected left|center|right|top|middle|bottom")),
+    }
+
+    let mut moved_count = 0;
+    let mut moved_ids = HashSet::new();
+
+    for (id, dx, dy) in moves {
+        if moved_ids.contains(&id) {
+            continue;
+        }
+        if dx.abs() > 0.0001 || dy.abs() > 0.0001 {
+            mutate_move_elem(doc, &id, None, Some((dx, dy)))?;
+        }
+        moved_ids.insert(id);
+        moved_count += 1;
+    }
+
+    Ok(moved_count)
+}
+
+pub fn mutate_distribute(
+    doc: &mut Value,
+    ids: &[String],
+    direction: &str,
+) -> Result<usize, String> {
+    if ids.len() < 3 {
+        return Err("Need at least 3 elements to distribute".to_string());
+    }
+
+    let elements = doc
+        .get("elements")
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| "document missing elements array".to_string())?;
+
+    struct DistElem {
+        id: String,
+        x: f64,
+        y: f64,
+        width: f64,
+        height: f64,
+    }
+
+    let mut targets = Vec::new();
+    for id in ids {
+        if let Some(e) = elements.iter().find(|e| e.get("id").and_then(|v| v.as_str()) == Some(id)) {
+            targets.push(DistElem {
+                id: id.clone(),
+                x: e.get("x").and_then(|v| v.as_f64()).unwrap_or(0.0),
+                y: e.get("y").and_then(|v| v.as_f64()).unwrap_or(0.0),
+                width: e.get("width").and_then(|v| v.as_f64()).unwrap_or(0.0),
+                height: e.get("height").and_then(|v| v.as_f64()).unwrap_or(0.0),
+            });
+        }
+    }
+
+    if targets.len() < 3 {
+        return Err("Need at least 3 matching elements to distribute".to_string());
+    }
+
+    let mut moves: Vec<(String, f64, f64)> = Vec::new();
+
+    if direction == "horizontal" {
+        targets.sort_by(|a, b| a.x.partial_cmp(&b.x).unwrap_or(std::cmp::Ordering::Equal));
+        let first = &targets[0];
+        let last = &targets[targets.len() - 1];
+        let total_span = (last.x + last.width) - first.x;
+        let total_elem_w: f64 = targets.iter().map(|t| t.width).sum();
+        let gap = (total_span - total_elem_w) / (targets.len() - 1) as f64;
+
+        let mut curr_x = first.x;
+        for t in &targets {
+            moves.push((t.id.clone(), curr_x - t.x, 0.0));
+            curr_x += t.width + gap;
+        }
+    } else if direction == "vertical" {
+        targets.sort_by(|a, b| a.y.partial_cmp(&b.y).unwrap_or(std::cmp::Ordering::Equal));
+        let first = &targets[0];
+        let last = &targets[targets.len() - 1];
+        let total_span = (last.y + last.height) - first.y;
+        let total_elem_h: f64 = targets.iter().map(|t| t.height).sum();
+        let gap = (total_span - total_elem_h) / (targets.len() - 1) as f64;
+
+        let mut curr_y = first.y;
+        for t in &targets {
+            moves.push((t.id.clone(), 0.0, curr_y - t.y));
+            curr_y += t.height + gap;
+        }
+    } else {
+        return Err(format!("Unknown direction {direction:?}; expected horizontal|vertical"));
+    }
+
+    let mut moved_count = 0;
+    for (id, dx, dy) in moves {
+        if dx.abs() > 0.0001 || dy.abs() > 0.0001 {
+            mutate_move_elem(doc, &id, None, Some((dx, dy)))?;
+        }
+        moved_count += 1;
+    }
+
+    Ok(moved_count)
+}
+
+pub fn mutate_group(
+    doc: &mut Value,
+    ids: &[String],
+) -> Result<String, String> {
+    if ids.is_empty() {
+        return Err("group requires at least one element ID".to_string());
+    }
+
+    let group_id = format!("grp_{}", new_id());
+    let elements = doc
+        .get_mut("elements")
+        .and_then(|v| v.as_array_mut())
+        .ok_or_else(|| "document missing elements array".to_string())?;
+
+    let mut count = 0;
+    for el in elements.iter_mut() {
+        if let Some(id) = el.get("id").and_then(|v| v.as_str()) {
+            if ids.contains(&id.to_string()) {
+                if let Some(obj) = el.as_object_mut() {
+                    let groups = obj.entry("groupIds").or_insert_with(|| json!([]));
+                    if let Some(arr) = groups.as_array_mut() {
+                        arr.push(json!(group_id));
+                        count += 1;
+                    }
+                }
+            }
+        }
+    }
+
+    if count == 0 {
+        return Err("No matching elements found to group".to_string());
+    }
+
+    Ok(group_id)
+}
+
+pub fn mutate_ungroup(
+    doc: &mut Value,
+    group_id: Option<&str>,
+    ids: Option<&[String]>,
+) -> Result<usize, String> {
+    let elements = doc
+        .get_mut("elements")
+        .and_then(|v| v.as_array_mut())
+        .ok_or_else(|| "document missing elements array".to_string())?;
+
+    let mut ungrouped_count = 0;
+
+    for el in elements.iter_mut() {
+        let el_id = el.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        if let Some(target_ids) = ids {
+            if !target_ids.contains(&el_id) {
+                continue;
+            }
+        }
+
+        if let Some(arr) = el.get_mut("groupIds").and_then(|v| v.as_array_mut()) {
+            if let Some(gid) = group_id {
+                let before = arr.len();
+                arr.retain(|g| g.as_str() != Some(gid));
+                if arr.len() < before {
+                    ungrouped_count += 1;
+                }
+            } else if ids.is_some() {
+                if !arr.is_empty() {
+                    arr.clear();
+                    ungrouped_count += 1;
+                }
+            }
+        }
+    }
+
+    Ok(ungrouped_count)
+}
+
+pub fn mutate_lock(
+    doc: &mut Value,
+    ids: &[String],
+    locked: bool,
+) -> Result<usize, String> {
+    let elements = doc
+        .get_mut("elements")
+        .and_then(|v| v.as_array_mut())
+        .ok_or_else(|| "document missing elements array".to_string())?;
+
+    let mut target_set: HashSet<String> = ids.iter().cloned().collect();
+
+    // Include bound text elements of targeted containers
+    for el in elements.iter() {
+        if let Some(id) = el.get("id").and_then(|v| v.as_str()) {
+            if target_set.contains(id) {
+                if let Some(bounds) = el.get("boundElements").and_then(|v| v.as_array()) {
+                    for b in bounds {
+                        if let Some(bid) = b.get("id").and_then(|v| v.as_str()) {
+                            target_set.insert(bid.to_string());
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let mut count = 0;
+    for el in elements.iter_mut() {
+        if let Some(id) = el.get("id").and_then(|v| v.as_str()) {
+            if target_set.contains(id) {
+                el["locked"] = json!(locked);
+                count += 1;
+            }
+        }
+    }
+
+    Ok(count)
+}
+
+pub fn mutate_duplicate(
+    doc: &mut Value,
+    ids: &[String],
+    offset: (f64, f64),
+) -> Result<Vec<String>, String> {
+    if ids.is_empty() {
+        return Err("duplicate requires at least one element ID".to_string());
+    }
+
+    let elements = doc
+        .get("elements")
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| "document missing elements array".to_string())?;
+
+    // Gather all target elements and auto-include bound text elements
+    let mut all_to_dup = Vec::new();
+    for id in ids {
+        if !all_to_dup.contains(id) {
+            all_to_dup.push(id.clone());
+        }
+        if let Some(el) = elements.iter().find(|e| e.get("id").and_then(|v| v.as_str()) == Some(id)) {
+            if let Some(bounds) = el.get("boundElements").and_then(|v| v.as_array()) {
+                for b in bounds {
+                    if b.get("type").and_then(|v| v.as_str()) == Some("text") {
+                        if let Some(bid) = b.get("id").and_then(|v| v.as_str()) {
+                            if !all_to_dup.contains(&bid.to_string()) {
+                                all_to_dup.push(bid.to_string());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let mut id_map = HashMap::new();
+    for id in &all_to_dup {
+        id_map.insert(id.clone(), new_id());
+    }
+
+    let max_idx = max_index_of(doc);
+    let new_indices = mint_indices(&max_idx, all_to_dup.len())?;
+
+    let mut cloned_elements = Vec::new();
+    for (i, old_id) in all_to_dup.iter().enumerate() {
+        if let Some(el) = elements.iter().find(|e| e.get("id").and_then(|v| v.as_str()) == Some(old_id)) {
+            let mut clone = el.clone();
+            let new_elem_id = &id_map[old_id];
+            clone["id"] = json!(new_elem_id);
+            clone["index"] = json!(new_indices[i]);
+
+            let curr_x = clone.get("x").and_then(|v| v.as_f64()).unwrap_or(0.0);
+            let curr_y = clone.get("y").and_then(|v| v.as_f64()).unwrap_or(0.0);
+            clone["x"] = json!(curr_x + offset.0);
+            clone["y"] = json!(curr_y + offset.1);
+
+            // Remap containerId
+            if let Some(cid) = clone.get("containerId").and_then(|v| v.as_str()) {
+                if let Some(new_cid) = id_map.get(cid) {
+                    clone["containerId"] = json!(new_cid);
+                }
+            }
+
+            // Remap boundElements
+            if let Some(bounds) = clone.get_mut("boundElements").and_then(|v| v.as_array_mut()) {
+                for b in bounds.iter_mut() {
+                    if let Some(bid) = b.get("id").and_then(|v| v.as_str()) {
+                        if let Some(new_bid) = id_map.get(bid) {
+                            b["id"] = json!(new_bid);
+                        }
+                    }
+                }
+            }
+
+            // Remap arrow startBinding / endBinding
+            if let Some(sb) = clone.get_mut("startBinding").and_then(|v| v.as_object_mut()) {
+                if let Some(eid) = sb.get("elementId").and_then(|v| v.as_str()) {
+                    if let Some(new_eid) = id_map.get(eid) {
+                        sb.insert("elementId".to_string(), json!(new_eid));
+                    }
+                }
+            }
+            if let Some(eb) = clone.get_mut("endBinding").and_then(|v| v.as_object_mut()) {
+                if let Some(eid) = eb.get("elementId").and_then(|v| v.as_str()) {
+                    if let Some(new_eid) = id_map.get(eid) {
+                        eb.insert("elementId".to_string(), json!(new_eid));
+                    }
+                }
+            }
+
+            cloned_elements.push(clone);
+        }
+    }
+
+    let elements_mut = doc
+        .get_mut("elements")
+        .and_then(|v| v.as_array_mut())
+        .unwrap();
+
+    let created_ids: Vec<String> = ids.iter().filter_map(|id| id_map.get(id).cloned()).collect();
+    for cl in cloned_elements {
+        elements_mut.push(cl);
+    }
+
+    Ok(created_ids)
+}
+
+pub fn mutate_update_elem(
+    doc: &mut Value,
+    target_id: &str,
+    updates: &Value,
+) -> Result<(), String> {
+    let updates_obj = updates
+        .as_object()
+        .ok_or_else(|| "updates must be a JSON object".to_string())?;
+
+    // Handle text update if provided
+    if let Some(new_text) = updates_obj.get("text").and_then(|v| v.as_str()) {
+        mutate_set_text(doc, target_id, new_text)?;
+    }
+
+    // Handle position update if provided
+    let to_x = updates_obj.get("x").and_then(|v| v.as_f64());
+    let to_y = updates_obj.get("y").and_then(|v| v.as_f64());
+    if to_x.is_some() || to_y.is_some() {
+        let elements = doc
+            .get("elements")
+            .and_then(|v| v.as_array())
+            .ok_or_else(|| "document missing elements array".to_string())?;
+        let el = elements
+            .iter()
+            .find(|e| e.get("id").and_then(|v| v.as_str()) == Some(target_id))
+            .ok_or_else(|| format!("element {target_id:?} not found"))?;
+        let curr_x = el.get("x").and_then(|v| v.as_f64()).unwrap_or(0.0);
+        let curr_y = el.get("y").and_then(|v| v.as_f64()).unwrap_or(0.0);
+        let tx = to_x.unwrap_or(curr_x);
+        let ty = to_y.unwrap_or(curr_y);
+        mutate_move_elem(doc, target_id, Some((tx, ty)), None)?;
+    }
+
+    // Handle other styling / geometry attributes directly
+    let elements_mut = doc
+        .get_mut("elements")
+        .and_then(|v| v.as_array_mut())
+        .ok_or_else(|| "document missing elements array".to_string())?;
+
+    let el = elements_mut
+        .iter_mut()
+        .find(|e| e.get("id").and_then(|v| v.as_str()) == Some(target_id))
+        .ok_or_else(|| format!("element {target_id:?} not found"))?;
+
+    for (k, v) in updates_obj {
+        if k == "text" || k == "x" || k == "y" || k == "id" {
+            continue;
+        }
+        el[k] = v.clone();
+    }
+
+    Ok(())
+}
+
+pub fn mutate_clear(doc: &mut Value) -> Result<usize, String> {
+    let elements = doc
+        .get_mut("elements")
+        .and_then(|v| v.as_array_mut())
+        .ok_or_else(|| "document missing elements array".to_string())?;
+    let count = elements.len();
+    elements.clear();
+    Ok(count)
 }
 
 // ============================================================================
@@ -2763,6 +3320,719 @@ pub fn cmd_item(doc: &Value, selector: &str, after: &str, at: Option<(f64, f64)>
     }
 }
 
+pub fn cmd_describe(doc: &Value) {
+    let elements = live(doc);
+    if elements.is_empty() {
+        println!("The canvas is empty. No elements to describe.");
+        return;
+    }
+
+    let mut type_counts: HashMap<&str, usize> = HashMap::new();
+    for e in &elements {
+        let t = e.get("type").and_then(|v| v.as_str()).unwrap_or("unknown");
+        *type_counts.entry(t).or_insert(0) += 1;
+    }
+    let mut sorted_types: Vec<_> = type_counts.into_iter().collect();
+    sorted_types.sort_by_key(|&(t, _)| t);
+    let types_summary = sorted_types
+        .iter()
+        .map(|(t, c)| format!("{}({})", t, c))
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    let (min_x, min_y, w, h) = extent(&elements);
+    let max_x = min_x + w;
+    let max_y = min_y + h;
+
+    let texts: HashMap<&str, &Value> = elements
+        .iter()
+        .filter(|e| e.get("type").and_then(|v| v.as_str()) == Some("text"))
+        .filter_map(|e| e.get("id").and_then(|v| v.as_str()).map(|id| (id, *e)))
+        .collect();
+
+    let mut sorted_elements = elements.clone();
+    sorted_elements.sort_by(|a, b| {
+        let ya = a.get("y").and_then(|v| v.as_f64()).unwrap_or(0.0);
+        let yb = b.get("y").and_then(|v| v.as_f64()).unwrap_or(0.0);
+        let row_a = (ya / 50.0).floor() as i64;
+        let row_b = (yb / 50.0).floor() as i64;
+        if row_a != row_b {
+            row_a.cmp(&row_b)
+        } else {
+            let xa = a.get("x").and_then(|v| v.as_f64()).unwrap_or(0.0);
+            let xb = b.get("x").and_then(|v| v.as_f64()).unwrap_or(0.0);
+            xa.partial_cmp(&xb).unwrap_or(std::cmp::Ordering::Equal)
+        }
+    });
+
+    let mut elem_descs = Vec::new();
+    for e in sorted_elements {
+        let id = e.get("id").and_then(|v| v.as_str()).unwrap_or("");
+        let elem_type = e.get("type").and_then(|v| v.as_str()).unwrap_or("");
+        let x = e.get("x").and_then(|v| v.as_f64()).unwrap_or(0.0).round() as i64;
+        let y = e.get("y").and_then(|v| v.as_f64()).unwrap_or(0.0).round() as i64;
+        let width = e.get("width").and_then(|v| v.as_f64()).unwrap_or(0.0).round() as i64;
+        let height = e.get("height").and_then(|v| v.as_f64()).unwrap_or(0.0).round() as i64;
+
+        let mut parts = Vec::new();
+        parts.push(format!("[{}] {}", id, elem_type));
+        parts.push(format!("at ({}, {})", x, y));
+        if width > 0 || height > 0 {
+            parts.push(format!("size {}x{}", width, height));
+        }
+
+        let text = element_text(e);
+        if !text.is_empty() {
+            parts.push(format!("text: {:?}", text.replace('\n', " / ")));
+        } else {
+            let lbl = label_of(e, &texts);
+            if !lbl.is_empty() {
+                parts.push(format!("label: {:?}", lbl));
+            }
+        }
+
+        if let Some(role) = e.get("customData").and_then(|cd| cd.get("role")).and_then(|v| v.as_str()) {
+            parts.push(format!("role: {}", role));
+        }
+        if let Some(bg) = e.get("backgroundColor").and_then(|v| v.as_str()) {
+            if bg != "transparent" && !bg.is_empty() {
+                parts.push(format!("bg: {}", bg));
+            }
+        }
+        if let Some(stroke) = e.get("strokeColor").and_then(|v| v.as_str()) {
+            if stroke != "#000000" && stroke != "#1e1e1e" && !stroke.is_empty() {
+                parts.push(format!("stroke: {}", stroke));
+            }
+        }
+        if e.get("locked").and_then(|v| v.as_bool()).unwrap_or(false) {
+            parts.push("(locked)".to_string());
+        }
+        if let Some(gids) = e.get("groupIds").and_then(|v| v.as_array()) {
+            let gid_strs: Vec<_> = gids.iter().filter_map(|g| g.as_str()).collect();
+            if !gid_strs.is_empty() {
+                parts.push(format!("groups: [{}]", gid_strs.join(", ")));
+            }
+        }
+
+        elem_descs.push(format!("  {}", parts.join(" | ")));
+    }
+
+    let mut connection_descs = Vec::new();
+    for e in &elements {
+        if e.get("type").and_then(|v| v.as_str()) == Some("arrow") {
+            let id = e.get("id").and_then(|v| v.as_str()).unwrap_or("");
+            let from = e.get("startBinding").and_then(|b| b.get("elementId")).and_then(|v| v.as_str()).unwrap_or("?");
+            let to = e.get("endBinding").and_then(|b| b.get("elementId")).and_then(|v| v.as_str()).unwrap_or("?");
+            let label = label_of(e, &texts);
+            if label.is_empty() {
+                connection_descs.push(format!("  {} --> {} (arrow: {})", from, to, id));
+            } else {
+                connection_descs.push(format!("  {} --> {} (arrow: {}, label: {:?})", from, to, id, label));
+            }
+        }
+    }
+
+    let mut group_map: HashMap<String, Vec<String>> = HashMap::new();
+    for e in &elements {
+        let id = e.get("id").and_then(|v| v.as_str()).unwrap_or("");
+        if let Some(gids) = e.get("groupIds").and_then(|v| v.as_array()) {
+            for gid in gids.iter().filter_map(|g| g.as_str()) {
+                group_map.entry(gid.to_string()).or_default().push(id.to_string());
+            }
+        }
+    }
+    let mut sorted_groups: Vec<_> = group_map.into_iter().collect();
+    sorted_groups.sort_by(|a, b| a.0.cmp(&b.0));
+
+    println!("## Canvas Description");
+    println!("Total elements: {}", elements.len());
+    println!("Types: {}", types_summary);
+    println!("Bounding box: ({:.0}, {:.0}) to ({:.0}, {:.0}) = {:.0}x{:.0}", min_x, min_y, max_x, max_y, w, h);
+    println!();
+    println!("### Elements (top-to-bottom, left-to-right):");
+    for line in elem_descs {
+        println!("{}", line);
+    }
+
+    if !connection_descs.is_empty() {
+        println!();
+        println!("### Connections:");
+        for line in connection_descs {
+            println!("{}", line);
+        }
+    }
+
+    if !sorted_groups.is_empty() {
+        println!();
+        println!("### Groups:");
+        for (gid, ids) in sorted_groups {
+            println!("  Group {}: [{}]", gid, ids.join(", "));
+        }
+    }
+}
+
+pub fn lookup_json_path<'a>(val: &'a Value, path: &str) -> Option<&'a Value> {
+    let mut curr = val;
+    for part in path.split('.') {
+        curr = curr.get(part)?;
+    }
+    Some(curr)
+}
+
+pub fn coerce_filter_match(actual: &Value, expected: &str) -> bool {
+    match actual {
+        Value::Bool(b) => {
+            if expected == "true" {
+                *b
+            } else if expected == "false" {
+                !*b
+            } else {
+                false
+            }
+        }
+        Value::Number(n) => {
+            if let Some(num) = n.as_f64() {
+                if let Ok(exp_num) = expected.parse::<f64>() {
+                    (num - exp_num).abs() < 0.0001
+                } else {
+                    false
+                }
+            } else {
+                false
+            }
+        }
+        Value::String(s) => s == expected,
+        Value::Array(arr) => {
+            arr.iter().any(|item| coerce_filter_match(item, expected))
+        }
+        Value::Null => expected == "null",
+        _ => false,
+    }
+}
+
+pub fn cmd_query(
+    doc: &Value,
+    elem_type: Option<&str>,
+    bbox: Option<(f64, f64, f64, f64)>,
+    filters: &[(&str, &str)],
+    filter_json: Option<&Value>,
+) {
+    let elements = live(doc);
+    let mut results = Vec::new();
+
+    for e in elements {
+        if let Some(t) = elem_type {
+            if e.get("type").and_then(|v| v.as_str()) != Some(t) {
+                continue;
+            }
+        }
+
+        if let Some((x0, y0, x1, y1)) = bbox {
+            let ex = e.get("x").and_then(|v| v.as_f64()).unwrap_or(0.0);
+            let ey = e.get("y").and_then(|v| v.as_f64()).unwrap_or(0.0);
+            let ew = e.get("width").and_then(|v| v.as_f64()).unwrap_or(0.0);
+            let eh = e.get("height").and_then(|v| v.as_f64()).unwrap_or(0.0);
+
+            if !(ex < x1 && ex + ew > x0 && ey < y1 && ey + eh > y0) {
+                continue;
+            }
+        }
+
+        let mut matches_all_filters = true;
+        for &(k, v) in filters {
+            if let Some(actual) = lookup_json_path(e, k) {
+                if !coerce_filter_match(actual, v) {
+                    matches_all_filters = false;
+                    break;
+                }
+            } else {
+                matches_all_filters = false;
+                break;
+            }
+        }
+        if !matches_all_filters {
+            continue;
+        }
+
+        if let Some(fj) = filter_json {
+            if let Some(obj) = fj.as_object() {
+                let mut matches_json = true;
+                for (k, expected_v) in obj {
+                    if let Some(actual) = lookup_json_path(e, k) {
+                        if actual != expected_v {
+                            matches_json = false;
+                            break;
+                        }
+                    } else {
+                        matches_json = false;
+                        break;
+                    }
+                }
+                if !matches_json {
+                    continue;
+                }
+            }
+        }
+
+        results.push(e.clone());
+    }
+
+    let json_str = serde_json::to_string_pretty(&results).unwrap_or_else(|_| "[]".to_string());
+    println!("{json_str}");
+}
+
+pub fn xml_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&apos;")
+}
+
+pub fn render_svg(doc: &Value, include_background: bool) -> Result<String, String> {
+    let elements = live(doc);
+    let (min_x, min_y, w, h) = if elements.is_empty() {
+        (0.0, 0.0, 800.0, 600.0)
+    } else {
+        extent(&elements)
+    };
+
+    let pad = 40.0;
+    let view_x = min_x - pad;
+    let view_y = min_y - pad;
+    let view_w = (w + 2.0 * pad).max(100.0);
+    let view_h = (h + 2.0 * pad).max(100.0);
+
+    let bg_color = doc
+        .get("appState")
+        .and_then(|a| a.get("viewBackgroundColor"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("#ffffff");
+
+    let mut svg = String::new();
+    svg.push_str(&format!(
+        r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="{:.1} {:.1} {:.1} {:.1}" width="{:.1}" height="{:.1}">"#,
+        view_x, view_y, view_w, view_h, view_w, view_h
+    ));
+    svg.push('\n');
+
+    svg.push_str(r##"  <defs>
+    <marker id="arrowhead" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M 0 1 L 10 5 L 0 9 z" fill="#404040"/>
+    </marker>
+  </defs>
+  <style>
+    text { font-family: Virgil, Segoe UI Emoji, sans-serif; }
+  </style>
+"##);
+
+    if include_background {
+        svg.push_str(&format!(
+            r#"  <rect x="{:.1}" y="{:.1}" width="{:.1}" height="{:.1}" fill="{}" />"#,
+            view_x, view_y, view_w, view_h, bg_color
+        ));
+        svg.push('\n');
+    }
+
+    for e in &elements {
+        let elem_type = e.get("type").and_then(|v| v.as_str()).unwrap_or("");
+        let x = e.get("x").and_then(|v| v.as_f64()).unwrap_or(0.0);
+        let y = e.get("y").and_then(|v| v.as_f64()).unwrap_or(0.0);
+        let width = e.get("width").and_then(|v| v.as_f64()).unwrap_or(0.0);
+        let height = e.get("height").and_then(|v| v.as_f64()).unwrap_or(0.0);
+        let stroke_color = e.get("strokeColor").and_then(|v| v.as_str()).unwrap_or("#1e1e1e");
+        let stroke_width = e.get("strokeWidth").and_then(|v| v.as_f64()).unwrap_or(2.0);
+        let stroke_style = e.get("strokeStyle").and_then(|v| v.as_str()).unwrap_or("solid");
+        let dash_attr = match stroke_style {
+            "dashed" => " stroke-dasharray=\"6,6\"",
+            "dotted" => " stroke-dasharray=\"2,4\"",
+            _ => "",
+        };
+        let opacity = e.get("opacity").and_then(|v| v.as_f64()).unwrap_or(100.0);
+        let opacity_attr = if opacity < 100.0 {
+            format!(" opacity=\"{:.2}\"", opacity / 100.0)
+        } else {
+            "".to_string()
+        };
+        let bg = e.get("backgroundColor").and_then(|v| v.as_str()).unwrap_or("transparent");
+        let fill = if bg == "transparent" || bg.is_empty() { "none" } else { bg };
+
+        match elem_type {
+            "rectangle" => {
+                let rx_attr = if e.get("roundness").is_some() && !e.get("roundness").unwrap().is_null() {
+                    " rx=\"8\" ry=\"8\""
+                } else {
+                    ""
+                };
+                svg.push_str(&format!(
+                    r#"  <rect x="{:.1}" y="{:.1}" width="{:.1}" height="{:.1}" fill="{}" stroke="{}" stroke-width="{:.1}"{}{}{} />"#,
+                    x, y, width, height, fill, stroke_color, stroke_width, rx_attr, dash_attr, opacity_attr
+                ));
+                svg.push('\n');
+            }
+            "ellipse" => {
+                let cx = x + width / 2.0;
+                let cy = y + height / 2.0;
+                let rx = width / 2.0;
+                let ry = height / 2.0;
+                svg.push_str(&format!(
+                    r#"  <ellipse cx="{:.1}" cy="{:.1}" rx="{:.1}" ry="{:.1}" fill="{}" stroke="{}" stroke-width="{:.1}"{}{} />"#,
+                    cx, cy, rx, ry, fill, stroke_color, stroke_width, dash_attr, opacity_attr
+                ));
+                svg.push('\n');
+            }
+            "diamond" => {
+                let cx = x + width / 2.0;
+                let cy = y + height / 2.0;
+                svg.push_str(&format!(
+                    r#"  <polygon points="{:.1},{:.1} {:.1},{:.1} {:.1},{:.1} {:.1},{:.1}" fill="{}" stroke="{}" stroke-width="{:.1}"{}{} />"#,
+                    cx, y, x + width, cy, cx, y + height, x, cy, fill, stroke_color, stroke_width, dash_attr, opacity_attr
+                ));
+                svg.push('\n');
+            }
+            "line" | "arrow" => {
+                let is_arrow = elem_type == "arrow";
+                let marker_attr = if is_arrow { " marker-end=\"url(#arrowhead)\"" } else { "" };
+                if let Some(pts) = e.get("points").and_then(|v| v.as_array()) {
+                    let mut pts_tuples: Vec<(f64, f64)> = Vec::new();
+                    for p in pts {
+                        if let Some(arr) = p.as_array() {
+                            if arr.len() == 2 {
+                                pts_tuples.push((x + arr[0].as_f64().unwrap_or(0.0), y + arr[1].as_f64().unwrap_or(0.0)));
+                            }
+                        } else if let Some(obj) = p.as_object() {
+                            pts_tuples.push((x + obj.get("x").and_then(|v| v.as_f64()).unwrap_or(0.0), y + obj.get("y").and_then(|v| v.as_f64()).unwrap_or(0.0)));
+                        }
+                    }
+
+                    if pts_tuples.len() == 2 {
+                        svg.push_str(&format!(
+                            r#"  <line x1="{:.1}" y1="{:.1}" x2="{:.1}" y2="{:.1}" stroke="{}" stroke-width="{:.1}"{}{}{} />"#,
+                            pts_tuples[0].0, pts_tuples[0].1, pts_tuples[1].0, pts_tuples[1].1,
+                            stroke_color, stroke_width, dash_attr, opacity_attr, marker_attr
+                        ));
+                        svg.push('\n');
+                    } else if pts_tuples.len() > 2 {
+                        let pts_str = pts_tuples.iter().map(|(px, py)| format!("{:.1},{:.1}", px, py)).collect::<Vec<_>>().join(" ");
+                        svg.push_str(&format!(
+                            r#"  <polyline points="{}" fill="none" stroke="{}" stroke-width="{:.1}"{}{}{} />"#,
+                            pts_str, stroke_color, stroke_width, dash_attr, opacity_attr, marker_attr
+                        ));
+                        svg.push('\n');
+                    }
+                }
+            }
+            "text" => {
+                let font_size = e.get("fontSize").and_then(|v| v.as_f64()).unwrap_or(20.0);
+                let text_val = element_text(e);
+                let text_align = e.get("textAlign").and_then(|v| v.as_str()).unwrap_or("left");
+                let text_anchor = match text_align {
+                    "center" => "middle",
+                    "right" => "end",
+                    _ => "start",
+                };
+                let text_x = match text_align {
+                    "center" => x + width / 2.0,
+                    "right" => x + width,
+                    _ => x,
+                };
+
+                let font_family_code = e.get("fontFamily").and_then(|v| v.as_i64()).unwrap_or(1);
+                let font_family_str = match font_family_code {
+                    2 => "Helvetica Neue, Arial, sans-serif",
+                    3 => "Cascadia Code, monospace",
+                    _ => "Virgil, Segoe UI Emoji, cursive, sans-serif",
+                };
+
+                let lines: Vec<&str> = text_val.split('\n').collect();
+                let line_height = font_size * 1.25;
+
+                svg.push_str(&format!(
+                    r#"  <text x="{:.1}" y="{:.1}" font-size="{:.1}" font-family="{}" fill="{}" text-anchor="{}"{}>"#,
+                    text_x, y + font_size * 0.8, font_size, font_family_str, stroke_color, text_anchor, opacity_attr
+                ));
+                svg.push('\n');
+                for (i, line) in lines.iter().enumerate() {
+                    let dy = if i == 0 { 0.0 } else { line_height };
+                    svg.push_str(&format!(
+                        r#"    <tspan x="{:.1}" dy="{:.1}">{}</tspan>"#,
+                        text_x, dy, xml_escape(line)
+                    ));
+                    svg.push('\n');
+                }
+                svg.push_str("  </text>\n");
+            }
+            _ => {}
+        }
+    }
+
+    svg.push_str("</svg>\n");
+    Ok(svg)
+}
+
+pub fn cmd_screenshot(doc: &Value, out_path: Option<&str>, format: Option<&str>, no_background: bool) {
+    let fmt = format.unwrap_or_else(|| {
+        if let Some(p) = out_path {
+            if p.ends_with(".png") {
+                "png"
+            } else {
+                "svg"
+            }
+        } else {
+            "svg"
+        }
+    });
+
+    let svg_content = match render_svg(doc, !no_background) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("failed to render SVG: {e}");
+            process::exit(1);
+        }
+    };
+
+    if fmt == "svg" {
+        if let Some(p) = out_path {
+            if let Err(e) = fs::write(p, &svg_content) {
+                eprintln!("failed to write SVG to {p:?}: {e}");
+                process::exit(1);
+            }
+            let res = json!({
+                "success": true,
+                "file": p,
+                "format": "svg"
+            });
+            println!("{}", serde_json::to_string_pretty(&res).unwrap());
+        } else {
+            print!("{svg_content}");
+        }
+        return;
+    }
+
+    if fmt == "png" {
+        let target_png = match out_path {
+            Some(p) => p.to_string(),
+            None => {
+                eprintln!("--format png requires --out <path.png>");
+                process::exit(1);
+            }
+        };
+
+        let temp_svg = format!("{}.tmp.svg", target_png);
+        if let Err(e) = fs::write(&temp_svg, &svg_content) {
+            eprintln!("failed to write temporary SVG: {e}");
+            process::exit(1);
+        }
+
+        let mut rasterized = false;
+        let tools = [
+            ("resvg", vec![temp_svg.as_str(), target_png.as_str()]),
+            ("rsvg-convert", vec!["-f", "png", "-o", target_png.as_str(), temp_svg.as_str()]),
+            ("magick", vec![temp_svg.as_str(), target_png.as_str()]),
+            ("convert", vec![temp_svg.as_str(), target_png.as_str()]),
+        ];
+
+        for (cmd, args) in &tools {
+            if let Ok(status) = process::Command::new(cmd).args(args).status() {
+                if status.success() {
+                    rasterized = true;
+                    break;
+                }
+            }
+        }
+
+        let _ = fs::remove_file(&temp_svg);
+
+        if rasterized {
+            let res = json!({
+                "success": true,
+                "file": target_png,
+                "format": "png"
+            });
+            println!("{}", serde_json::to_string_pretty(&res).unwrap());
+        } else {
+            let fallback_svg = format!("{}.svg", target_png.trim_end_matches(".png"));
+            let _ = fs::write(&fallback_svg, &svg_content);
+            eprintln!(
+                "Notice: PNG rasterizer not found on PATH (resvg, rsvg-convert, or ImageMagick required). Saved vector SVG to {:?} instead.",
+                fallback_svg
+            );
+            let res = json!({
+                "success": true,
+                "file": fallback_svg,
+                "format": "svg",
+                "note": "Rasterizer unavailable; saved SVG fallback"
+            });
+            println!("{}", serde_json::to_string_pretty(&res).unwrap());
+        }
+    }
+}
+
+pub fn cmd_apply(doc: &mut Value, patch_val: &Value) -> Result<(usize, usize, usize), String> {
+    let mut created_count = 0;
+    let mut updated_count = 0;
+    let mut deleted_count = 0;
+
+    let (creates, updates, deletes) = if let Some(arr) = patch_val.as_array() {
+        (Some(arr.as_slice()), None, None)
+    } else if let Some(obj) = patch_val.as_object() {
+        let c = obj.get("create").and_then(|v| v.as_array()).map(|a| a.as_slice());
+        let u = obj.get("update").and_then(|v| v.as_array()).map(|a| a.as_slice());
+        let d = obj.get("delete").and_then(|v| v.as_array()).map(|a| a.as_slice());
+        (c, u, d)
+    } else {
+        return Err("apply patch must be a JSON array or object with create/update/delete".to_string());
+    };
+
+    if let Some(create_items) = creates {
+        for item in create_items {
+            let elem_type = item.get("type").and_then(|v| v.as_str()).unwrap_or("rectangle");
+            let text = item.get("text").and_then(|v| v.as_str()).unwrap_or("");
+            let at = item.get("at").and_then(|v| v.as_array()).and_then(|a| {
+                if a.len() == 2 {
+                    Some((a[0].as_f64().unwrap_or(0.0), a[1].as_f64().unwrap_or(0.0)))
+                } else {
+                    None
+                }
+            });
+            let custom_id = item.get("id").and_then(|v| v.as_str());
+
+            if elem_type == "arrow" {
+                let from = item.get("startElementId").or_else(|| item.get("from")).and_then(|v| v.as_str()).unwrap_or("");
+                let to = item.get("endElementId").or_else(|| item.get("to")).and_then(|v| v.as_str()).unwrap_or("");
+                let label = item.get("label").or_else(|| item.get("text")).and_then(|v| v.as_str());
+                let color = item.get("color").or_else(|| item.get("strokeColor")).and_then(|v| v.as_str());
+                let curved = item.get("curved").and_then(|v| v.as_bool());
+                let stroke_style = item.get("strokeStyle").or_else(|| item.get("stroke_style")).and_then(|v| v.as_str());
+                mutate_connect(doc, from, to, label, color, curved, stroke_style)?;
+            } else if elem_type == "text" {
+                let at_pos = at.unwrap_or((100.0, 100.0));
+                let font_size = item.get("fontSize").and_then(|v| v.as_f64());
+                let color = item.get("color").or_else(|| item.get("strokeColor")).and_then(|v| v.as_str());
+                mutate_add_text(doc, text, at_pos, font_size, color)?;
+            } else {
+                let size = item.get("size").and_then(|v| v.as_array()).and_then(|a| {
+                    if a.len() == 2 {
+                        Some((a[0].as_f64().unwrap_or(0.0), a[1].as_f64().unwrap_or(0.0)))
+                    } else {
+                        None
+                    }
+                });
+                let role = item.get("role").and_then(|v| v.as_str());
+                let color = item.get("color").or_else(|| item.get("backgroundColor")).and_then(|v| v.as_str());
+                let angle = item.get("angle").and_then(|v| v.as_f64());
+                let roughness = item.get("roughness").and_then(|v| v.as_f64());
+                let fill_style = item.get("fillStyle").or_else(|| item.get("fill_style")).and_then(|v| v.as_str());
+                let preset = item.get("preset").and_then(|v| v.as_str());
+                mutate_add_node(doc, elem_type, text, at, size, role, color, None, custom_id, angle, roughness, fill_style, preset)?;
+            }
+            created_count += 1;
+        }
+    }
+
+    if let Some(update_items) = updates {
+        for item in update_items {
+            let id = item.get("id").and_then(|v| v.as_str()).ok_or_else(|| "update item missing 'id'".to_string())?;
+            let updates_map = if let Some(set_obj) = item.get("set") {
+                set_obj
+            } else {
+                item
+            };
+            mutate_update_elem(doc, id, updates_map)?;
+            updated_count += 1;
+        }
+    }
+
+    if let Some(delete_items) = deletes {
+        for item in delete_items {
+            if let Some(id) = item.as_str() {
+                mutate_delete_elem(doc, id, true)?;
+                deleted_count += 1;
+            }
+        }
+    }
+
+    Ok((created_count, updated_count, deleted_count))
+}
+
+pub fn cmd_snapshot_save(file_path: &str, doc: &Value, name: &str) -> Result<(), String> {
+    let path = std::path::Path::new(file_path);
+    let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("canvas");
+    let parent = path.parent().unwrap_or_else(|| std::path::Path::new("."));
+    let snap_dir = parent.join(format!(".snapshots_{}", stem));
+    fs::create_dir_all(&snap_dir).map_err(|e| format!("failed to create snapshot dir: {e}"))?;
+
+    let snap_file = snap_dir.join(format!("{}.json", name));
+    let elements = live(doc);
+    let snap_obj = json!({
+        "name": name,
+        "createdAt": chrono::Utc::now().to_rfc3339(),
+        "elementCount": elements.len(),
+        "elements": elements
+    });
+
+    let content = serde_json::to_string_pretty(&snap_obj).map_err(|e| e.to_string())?;
+    fs::write(&snap_file, content).map_err(|e| format!("failed to write snapshot file: {e}"))?;
+    println!("OK: saved snapshot '{name}' ({} elements)", elements.len());
+    Ok(())
+}
+
+pub fn cmd_snapshot_list(file_path: &str) -> Result<(), String> {
+    let path = std::path::Path::new(file_path);
+    let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("canvas");
+    let parent = path.parent().unwrap_or_else(|| std::path::Path::new("."));
+    let snap_dir = parent.join(format!(".snapshots_{}", stem));
+
+    if !snap_dir.exists() {
+        println!("[]");
+        return Ok(());
+    }
+
+    let mut list = Vec::new();
+    if let Ok(entries) = fs::read_dir(&snap_dir) {
+        for entry in entries.flatten() {
+            if let Ok(content) = fs::read_to_string(entry.path()) {
+                if let Ok(val) = serde_json::from_str::<Value>(&content) {
+                    list.push(json!({
+                        "name": val.get("name").unwrap_or(&Value::Null),
+                        "createdAt": val.get("createdAt").unwrap_or(&Value::Null),
+                        "elementCount": val.get("elementCount").unwrap_or(&Value::Null),
+                    }));
+                }
+            }
+        }
+    }
+
+    let json_str = serde_json::to_string_pretty(&list).map_err(|e| e.to_string())?;
+    println!("{json_str}");
+    Ok(())
+}
+
+pub fn cmd_snapshot_restore(file_path: &str, doc: &mut Value, name: &str) -> Result<(), String> {
+    let path = std::path::Path::new(file_path);
+    let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("canvas");
+    let parent = path.parent().unwrap_or_else(|| std::path::Path::new("."));
+    let snap_file = parent.join(format!(".snapshots_{}", stem)).join(format!("{}.json", name));
+
+    if !snap_file.exists() {
+        return Err(format!("Snapshot '{name}' not found at {:?}", snap_file));
+    }
+
+    let content = fs::read_to_string(&snap_file).map_err(|e| format!("failed to read snapshot: {e}"))?;
+    let snap_obj: Value = serde_json::from_str(&content).map_err(|e| format!("invalid snapshot JSON: {e}"))?;
+
+    let snap_elements = snap_obj
+        .get("elements")
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| "snapshot missing elements array".to_string())?;
+
+    doc["elements"] = json!(snap_elements);
+    let is_obsidian = is_obsidian_excalidraw_md(&fs::read_to_string(file_path).unwrap_or_default());
+    atomic_save_ex(file_path, doc, is_obsidian)?;
+    println!("OK: restored snapshot '{name}' ({} elements)", snap_elements.len());
+    Ok(())
+}
+
 // ============================================================================
 // Main CLI Dispatch
 // ============================================================================
@@ -2785,7 +4055,10 @@ fn main() {
         "summary", "map", "style", "check", "diff", "struct-diff", "lib", "item",
         "nodes", "edges", "arrows", "inspect", "get", "add-node", "add-text",
         "connect", "set-text", "fit", "move-elem", "delete-elem", "batch",
-        "theme", "overlap", "arrows-check"
+        "theme", "overlap", "arrows-check",
+        "describe", "screenshot", "arrange", "align", "distribute", "group",
+        "ungroup", "lock", "unlock", "duplicate", "update", "query", "apply",
+        "export", "import", "snapshot", "clear"
     ];
 
     let (file_path, mode, extra_args) = if known_modes.contains(&args[1].as_str()) && args.len() > 2 {
@@ -2808,7 +4081,19 @@ fn main() {
         }
     };
 
-    let mut doc: Value = match serde_json::from_str(&file_content) {
+    let (json_str, is_obsidian) = if is_obsidian_excalidraw_md(&file_content) {
+        match extract_scene_json_from_obsidian_md(&file_content) {
+            Ok(j) => (j, true),
+            Err(e) => {
+                eprintln!("failed to extract JSON from Obsidian Excalidraw file {file_path:?}: {e}");
+                process::exit(1);
+            }
+        }
+    } else {
+        (file_content.clone(), false)
+    };
+
+    let mut doc: Value = match serde_json::from_str(&json_str) {
         Ok(v) => v,
         Err(e) => {
             eprintln!("failed to parse JSON from {file_path:?}: {e}");
@@ -3017,7 +4302,7 @@ fn main() {
                 eprintln!("error updating node: {e}");
                 std::process::exit(1);
             }
-            if let Err(e) = atomic_save(file_path, &mut doc) {
+            if let Err(e) = atomic_save_ex(file_path, &mut doc, is_obsidian) {
                 eprintln!("error saving: {e}");
                 std::process::exit(1);
             }
@@ -3059,8 +4344,8 @@ fn main() {
                     let parts: Vec<&str> = opts[0].split(',').collect();
                     opts = &opts[1..];
                     if parts.len() == 2 {
-                        let w = parts[0].parse::<f64>().unwrap_or(0.0);
-                        let h = parts[1].parse::<f64>().unwrap_or(0.0);
+                        let w = parts[0].parse::<f64>().unwrap_or(100.0);
+                        let h = parts[1].parse::<f64>().unwrap_or(50.0);
                         size = Some((w, h));
                     }
                 } else if flag == "--role" && !opts.is_empty() {
@@ -3103,7 +4388,7 @@ fn main() {
                 preset.as_deref(),
             ) {
                 Ok((sid, tid)) => {
-                    if let Err(e) = atomic_save(file_path, &mut doc) {
+                    if let Err(e) = atomic_save_ex(file_path, &mut doc, is_obsidian) {
                         eprintln!("error saving file: {e}");
                         process::exit(1);
                     }
@@ -3148,7 +4433,7 @@ fn main() {
             let at_coords = at.unwrap_or((100.0, 100.0));
             match mutate_add_text(&mut doc, &text, at_coords, font_size, color.as_deref()) {
                 Ok(tid) => {
-                    if let Err(e) = atomic_save(file_path, &mut doc) {
+                    if let Err(e) = atomic_save_ex(file_path, &mut doc, is_obsidian) {
                         eprintln!("error saving file: {e}");
                         process::exit(1);
                     }
@@ -3199,7 +4484,7 @@ fn main() {
 
             match mutate_connect(&mut doc, &from_id, &to_id, label.as_deref(), color.as_deref(), curved, stroke_style.as_deref()) {
                 Ok(aid) => {
-                    if let Err(e) = atomic_save(file_path, &mut doc) {
+                    if let Err(e) = atomic_save_ex(file_path, &mut doc, is_obsidian) {
                         eprintln!("error saving file: {e}");
                         process::exit(1);
                     }
@@ -3221,7 +4506,7 @@ fn main() {
 
             match mutate_set_text(&mut doc, target_id, new_text) {
                 Ok(_) => {
-                    if let Err(e) = atomic_save(file_path, &mut doc) {
+                    if let Err(e) = atomic_save_ex(file_path, &mut doc, is_obsidian) {
                         eprintln!("error saving file: {e}");
                         process::exit(1);
                     }
@@ -3267,7 +4552,7 @@ fn main() {
 
             match mutate_move_elem(&mut doc, target_id, to, by) {
                 Ok(_) => {
-                    if let Err(e) = atomic_save(file_path, &mut doc) {
+                    if let Err(e) = atomic_save_ex(file_path, &mut doc, is_obsidian) {
                         eprintln!("error saving file: {e}");
                         process::exit(1);
                     }
@@ -3289,7 +4574,7 @@ fn main() {
 
             match mutate_delete_elem(&mut doc, target_id, cascade_arrows) {
                 Ok(_) => {
-                    if let Err(e) = atomic_save(file_path, &mut doc) {
+                    if let Err(e) = atomic_save_ex(file_path, &mut doc, is_obsidian) {
                         eprintln!("error saving file: {e}");
                         process::exit(1);
                     }
@@ -3454,6 +4739,99 @@ fn main() {
                             process::exit(1);
                         }
                     }
+                    "align" | "arrange-align" => {
+                        let ids_arr = mut_obj.get("ids").and_then(|v| v.as_array());
+                        let to = mut_obj.get("to").and_then(|v| v.as_str()).unwrap_or("left");
+                        if let Some(arr) = ids_arr {
+                            let ids_vec: Vec<String> = arr.iter().filter_map(|s| s.as_str().map(|v| v.to_string())).collect();
+                            if let Err(e) = mutate_align(&mut doc, &ids_vec, to) {
+                                eprintln!("batch mutation #{idx} (align) failed: {e}");
+                                process::exit(1);
+                            }
+                        }
+                    }
+                    "distribute" | "arrange-distribute" => {
+                        let ids_arr = mut_obj.get("ids").and_then(|v| v.as_array());
+                        let to = mut_obj.get("to").and_then(|v| v.as_str()).unwrap_or("horizontal");
+                        if let Some(arr) = ids_arr {
+                            let ids_vec: Vec<String> = arr.iter().filter_map(|s| s.as_str().map(|v| v.to_string())).collect();
+                            if let Err(e) = mutate_distribute(&mut doc, &ids_vec, to) {
+                                eprintln!("batch mutation #{idx} (distribute) failed: {e}");
+                                process::exit(1);
+                            }
+                        }
+                    }
+                    "group" | "arrange-group" => {
+                        let ids_arr = mut_obj.get("ids").and_then(|v| v.as_array());
+                        if let Some(arr) = ids_arr {
+                            let ids_vec: Vec<String> = arr.iter().filter_map(|s| s.as_str().map(|v| v.to_string())).collect();
+                            if let Err(e) = mutate_group(&mut doc, &ids_vec) {
+                                eprintln!("batch mutation #{idx} (group) failed: {e}");
+                                process::exit(1);
+                            }
+                        }
+                    }
+                    "ungroup" | "arrange-ungroup" => {
+                        let group_id = mut_obj.get("group").and_then(|v| v.as_str());
+                        let ids_arr = mut_obj.get("ids").and_then(|v| v.as_array());
+                        let ids_vec: Option<Vec<String>> = ids_arr.map(|a| a.iter().filter_map(|s| s.as_str().map(|v| v.to_string())).collect());
+                        if let Err(e) = mutate_ungroup(&mut doc, group_id, ids_vec.as_deref()) {
+                            eprintln!("batch mutation #{idx} (ungroup) failed: {e}");
+                            process::exit(1);
+                        }
+                    }
+                    "lock" | "arrange-lock" => {
+                        let ids_arr = mut_obj.get("ids").and_then(|v| v.as_array());
+                        if let Some(arr) = ids_arr {
+                            let ids_vec: Vec<String> = arr.iter().filter_map(|s| s.as_str().map(|v| v.to_string())).collect();
+                            if let Err(e) = mutate_lock(&mut doc, &ids_vec, true) {
+                                eprintln!("batch mutation #{idx} (lock) failed: {e}");
+                                process::exit(1);
+                            }
+                        }
+                    }
+                    "unlock" | "arrange-unlock" => {
+                        let ids_arr = mut_obj.get("ids").and_then(|v| v.as_array());
+                        if let Some(arr) = ids_arr {
+                            let ids_vec: Vec<String> = arr.iter().filter_map(|s| s.as_str().map(|v| v.to_string())).collect();
+                            if let Err(e) = mutate_lock(&mut doc, &ids_vec, false) {
+                                eprintln!("batch mutation #{idx} (unlock) failed: {e}");
+                                process::exit(1);
+                            }
+                        }
+                    }
+                    "duplicate" | "arrange-duplicate" => {
+                        let ids_arr = mut_obj.get("ids").and_then(|v| v.as_array());
+                        let offset = mut_obj.get("offset").and_then(|v| v.as_array()).and_then(|a| {
+                            if a.len() == 2 {
+                                Some((a[0].as_f64().unwrap_or(20.0), a[1].as_f64().unwrap_or(20.0)))
+                            } else {
+                                None
+                            }
+                        }).unwrap_or((20.0, 20.0));
+                        if let Some(arr) = ids_arr {
+                            let ids_vec: Vec<String> = arr.iter().filter_map(|s| s.as_str().map(|v| v.to_string())).collect();
+                            if let Err(e) = mutate_duplicate(&mut doc, &ids_vec, offset) {
+                                eprintln!("batch mutation #{idx} (duplicate) failed: {e}");
+                                process::exit(1);
+                            }
+                        }
+                    }
+                    "update" | "update-elem" | "update_elem" => {
+                        let target_id = mut_obj.get("id").and_then(|v| v.as_str()).unwrap_or("");
+                        let updates_map = if let Some(set_obj) = mut_obj.get("set") {
+                            set_obj
+                        } else {
+                            mut_obj
+                        };
+                        if let Err(e) = mutate_update_elem(&mut doc, target_id, updates_map) {
+                            eprintln!("batch mutation #{idx} (update) failed: {e}");
+                            process::exit(1);
+                        }
+                    }
+                    "clear" => {
+                        let _ = mutate_clear(&mut doc);
+                    }
                     other => {
                         eprintln!("unknown batch action: {other}");
                         process::exit(1);
@@ -3461,7 +4839,7 @@ fn main() {
                 }
             }
 
-            if let Err(e) = atomic_save(file_path, &mut doc) {
+            if let Err(e) = atomic_save_ex(file_path, &mut doc, is_obsidian) {
                 eprintln!("error saving batch changes: {e}");
                 process::exit(1);
             }
@@ -3533,7 +4911,7 @@ fn main() {
 
                     match mutate_theme_apply(&mut doc, &theme, target_id.as_deref(), all) {
                         Ok(count) => {
-                            if let Err(e) = atomic_save(file_path, &mut doc) {
+                            if let Err(e) = atomic_save_ex(file_path, &mut doc, is_obsidian) {
                                 eprintln!("error saving file: {e}");
                                 process::exit(1);
                             }
@@ -3551,12 +4929,492 @@ fn main() {
                 }
             }
         }
+        "describe" => {
+            cmd_describe(&doc);
+        }
+        "screenshot" => {
+            let mut opts = extra_args;
+            let mut out_path: Option<String> = None;
+            let mut format: Option<String> = None;
+            let mut no_background = false;
+
+            while !opts.is_empty() {
+                let flag = &opts[0];
+                opts = &opts[1..];
+                if flag == "--out" && !opts.is_empty() {
+                    out_path = Some(opts[0].clone());
+                    opts = &opts[1..];
+                } else if flag == "--format" && !opts.is_empty() {
+                    format = Some(opts[0].clone());
+                    opts = &opts[1..];
+                } else if flag == "--no-background" {
+                    no_background = true;
+                }
+            }
+
+            cmd_screenshot(&doc, out_path.as_deref(), format.as_deref(), no_background);
+        }
+        "arrange" | "align" | "distribute" | "group" | "ungroup" | "lock" | "unlock" | "duplicate" => {
+            let (op, opts) = if mode == "arrange" {
+                if extra_args.is_empty() {
+                    eprintln!("arrange requires a subcommand: align|distribute|group|ungroup|lock|unlock|duplicate");
+                    process::exit(1);
+                }
+                (extra_args[0].as_str(), &extra_args[1..])
+            } else {
+                (mode, extra_args)
+            };
+
+            let mut ids: Vec<String> = Vec::new();
+            let mut to: Option<String> = None;
+            let mut group_id: Option<String> = None;
+            let mut offset: (f64, f64) = (20.0, 20.0);
+
+            let mut cur_opts = opts;
+            while !cur_opts.is_empty() {
+                let flag = &cur_opts[0];
+                cur_opts = &cur_opts[1..];
+                if flag == "--ids" && !cur_opts.is_empty() {
+                    ids = cur_opts[0].split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+                    cur_opts = &cur_opts[1..];
+                } else if flag == "--to" && !cur_opts.is_empty() {
+                    to = Some(cur_opts[0].clone());
+                    cur_opts = &cur_opts[1..];
+                } else if flag == "--group" && !cur_opts.is_empty() {
+                    group_id = Some(cur_opts[0].clone());
+                    cur_opts = &cur_opts[1..];
+                } else if flag == "--offset" && !cur_opts.is_empty() {
+                    let parts: Vec<&str> = cur_opts[0].split(',').collect();
+                    if parts.len() == 2 {
+                        let dx = parts[0].trim().parse::<f64>().unwrap_or(20.0);
+                        let dy = parts[1].trim().parse::<f64>().unwrap_or(20.0);
+                        offset = (dx, dy);
+                    }
+                    cur_opts = &cur_opts[1..];
+                }
+            }
+
+            match op {
+                "align" => {
+                    let to_dir = match to {
+                        Some(d) => d,
+                        None => {
+                            eprintln!("arrange align requires --to left|center|right|top|middle|bottom");
+                            process::exit(1);
+                        }
+                    };
+                    match mutate_align(&mut doc, &ids, &to_dir) {
+                        Ok(cnt) => {
+                            atomic_save_ex(file_path, &mut doc, is_obsidian).unwrap_or_else(|e| {
+                                eprintln!("error saving: {e}");
+                                process::exit(1);
+                            });
+                            println!("OK: aligned {cnt} elements to {to_dir}");
+                        }
+                        Err(e) => {
+                            eprintln!("error aligning: {e}");
+                            process::exit(1);
+                        }
+                    }
+                }
+                "distribute" => {
+                    let to_dir = match to {
+                        Some(d) => d,
+                        None => {
+                            eprintln!("arrange distribute requires --to horizontal|vertical");
+                            process::exit(1);
+                        }
+                    };
+                    match mutate_distribute(&mut doc, &ids, &to_dir) {
+                        Ok(cnt) => {
+                            atomic_save_ex(file_path, &mut doc, is_obsidian).unwrap_or_else(|e| {
+                                eprintln!("error saving: {e}");
+                                process::exit(1);
+                            });
+                            println!("OK: distributed {cnt} elements {to_dir}");
+                        }
+                        Err(e) => {
+                            eprintln!("error distributing: {e}");
+                            process::exit(1);
+                        }
+                    }
+                }
+                "group" => {
+                    match mutate_group(&mut doc, &ids) {
+                        Ok(gid) => {
+                            atomic_save_ex(file_path, &mut doc, is_obsidian).unwrap_or_else(|e| {
+                                eprintln!("error saving: {e}");
+                                process::exit(1);
+                            });
+                            println!("OK: grouped {} elements into {gid}", ids.len());
+                        }
+                        Err(e) => {
+                            eprintln!("error grouping: {e}");
+                            process::exit(1);
+                        }
+                    }
+                }
+                "ungroup" => {
+                    let ids_opt = if ids.is_empty() { None } else { Some(ids.as_slice()) };
+                    match mutate_ungroup(&mut doc, group_id.as_deref(), ids_opt) {
+                        Ok(cnt) => {
+                            atomic_save_ex(file_path, &mut doc, is_obsidian).unwrap_or_else(|e| {
+                                eprintln!("error saving: {e}");
+                                process::exit(1);
+                            });
+                            println!("OK: ungrouped {cnt} elements");
+                        }
+                        Err(e) => {
+                            eprintln!("error ungrouping: {e}");
+                            process::exit(1);
+                        }
+                    }
+                }
+                "lock" => {
+                    match mutate_lock(&mut doc, &ids, true) {
+                        Ok(cnt) => {
+                            atomic_save_ex(file_path, &mut doc, is_obsidian).unwrap_or_else(|e| {
+                                eprintln!("error saving: {e}");
+                                process::exit(1);
+                            });
+                            println!("OK: locked {cnt} elements");
+                        }
+                        Err(e) => {
+                            eprintln!("error locking: {e}");
+                            process::exit(1);
+                        }
+                    }
+                }
+                "unlock" => {
+                    match mutate_lock(&mut doc, &ids, false) {
+                        Ok(cnt) => {
+                            atomic_save_ex(file_path, &mut doc, is_obsidian).unwrap_or_else(|e| {
+                                eprintln!("error saving: {e}");
+                                process::exit(1);
+                            });
+                            println!("OK: unlocked {cnt} elements");
+                        }
+                        Err(e) => {
+                            eprintln!("error unlocking: {e}");
+                            process::exit(1);
+                        }
+                    }
+                }
+                "duplicate" => {
+                    match mutate_duplicate(&mut doc, &ids, offset) {
+                        Ok(new_ids) => {
+                            atomic_save_ex(file_path, &mut doc, is_obsidian).unwrap_or_else(|e| {
+                                eprintln!("error saving: {e}");
+                                process::exit(1);
+                            });
+                            println!("OK: duplicated {} elements: {}", new_ids.len(), new_ids.join(", "));
+                        }
+                        Err(e) => {
+                            eprintln!("error duplicating: {e}");
+                            process::exit(1);
+                        }
+                    }
+                }
+                other => {
+                    eprintln!("unknown arrange operation {other:?}");
+                    process::exit(1);
+                }
+            }
+        }
+        "update" => {
+            if extra_args.is_empty() {
+                eprintln!("update requires <id> --set '<json>'");
+                process::exit(1);
+            }
+            let target_id = &extra_args[0];
+            let mut opts = &extra_args[1..];
+            let mut set_json: Option<String> = None;
+
+            while !opts.is_empty() {
+                let flag = &opts[0];
+                opts = &opts[1..];
+                if flag == "--set" && !opts.is_empty() {
+                    set_json = Some(opts[0].clone());
+                    opts = &opts[1..];
+                }
+            }
+
+            let updates: Value = match set_json {
+                Some(s) => serde_json::from_str(&s).unwrap_or_else(|e| {
+                    eprintln!("invalid JSON in --set: {e}");
+                    process::exit(1);
+                }),
+                None => {
+                    eprintln!("update requires --set '<json>'");
+                    process::exit(1);
+                }
+            };
+
+            match mutate_update_elem(&mut doc, target_id, &updates) {
+                Ok(_) => {
+                    atomic_save_ex(file_path, &mut doc, is_obsidian).unwrap_or_else(|e| {
+                        eprintln!("error saving: {e}");
+                        process::exit(1);
+                    });
+                    println!("OK: updated element {target_id}");
+                }
+                Err(e) => {
+                    eprintln!("error updating element: {e}");
+                    process::exit(1);
+                }
+            }
+        }
+        "query" => {
+            let mut opts = extra_args;
+            let mut elem_type: Option<String> = None;
+            let mut bbox: Option<(f64, f64, f64, f64)> = None;
+            let mut filter_strings: Vec<String> = Vec::new();
+            let mut filter_json: Option<Value> = None;
+
+            while !opts.is_empty() {
+                let flag = &opts[0];
+                opts = &opts[1..];
+                if flag == "--type" && !opts.is_empty() {
+                    elem_type = Some(opts[0].clone());
+                    opts = &opts[1..];
+                } else if flag == "--bbox" && !opts.is_empty() {
+                    let parts: Vec<&str> = opts[0].split(',').collect();
+                    if parts.len() == 4 {
+                        let x0 = parts[0].trim().parse::<f64>().unwrap_or(0.0);
+                        let y0 = parts[1].trim().parse::<f64>().unwrap_or(0.0);
+                        let x1 = parts[2].trim().parse::<f64>().unwrap_or(0.0);
+                        let y1 = parts[3].trim().parse::<f64>().unwrap_or(0.0);
+                        bbox = Some((x0, y0, x1, y1));
+                    }
+                    opts = &opts[1..];
+                } else if flag == "--filter" && !opts.is_empty() {
+                    filter_strings.push(opts[0].clone());
+                    opts = &opts[1..];
+                } else if flag == "--filter-json" && !opts.is_empty() {
+                    filter_json = serde_json::from_str(&opts[0]).ok();
+                    opts = &opts[1..];
+                }
+            }
+
+            let mut filters: Vec<(&str, &str)> = Vec::new();
+            for s in &filter_strings {
+                if let Some(eq) = s.find('=') {
+                    filters.push((&s[..eq], &s[eq + 1..]));
+                }
+            }
+
+            cmd_query(&doc, elem_type.as_deref(), bbox, &filters, filter_json.as_ref());
+        }
+        "apply" => {
+            let input_raw = if extra_args.is_empty() || extra_args[0] == "-" {
+                let mut buf = String::new();
+                std::io::stdin().read_to_string(&mut buf).unwrap_or_default();
+                buf
+            } else {
+                fs::read_to_string(&extra_args[0]).unwrap_or_default()
+            };
+
+            let patch: Value = match serde_json::from_str(&input_raw) {
+                Ok(v) => v,
+                Err(e) => {
+                    eprintln!("failed to parse apply JSON patch: {e}");
+                    process::exit(1);
+                }
+            };
+
+            match cmd_apply(&mut doc, &patch) {
+                Ok((c, u, d)) => {
+                    atomic_save_ex(file_path, &mut doc, is_obsidian).unwrap_or_else(|e| {
+                        eprintln!("error saving file: {e}");
+                        process::exit(1);
+                    });
+                    println!("OK: applied patch (created: {c}, updated: {u}, deleted: {d})");
+                }
+                Err(e) => {
+                    eprintln!("error applying patch: {e}");
+                    process::exit(1);
+                }
+            }
+        }
+        "export" => {
+            let mut opts = extra_args;
+            let mut out_path: Option<String> = None;
+            let mut format: Option<String> = None;
+
+            while !opts.is_empty() {
+                let flag = &opts[0];
+                opts = &opts[1..];
+                if flag == "--out" && !opts.is_empty() {
+                    out_path = Some(opts[0].clone());
+                    opts = &opts[1..];
+                } else if flag == "--format" && !opts.is_empty() {
+                    format = Some(opts[0].clone());
+                    opts = &opts[1..];
+                }
+            }
+
+            let is_obs = match format.as_deref() {
+                Some("obsidian") => true,
+                Some("json") => false,
+                _ => out_path.as_deref().map(|p| p.ends_with(".md")).unwrap_or(false),
+            };
+
+            let output = if is_obs {
+                wrap_scene_as_obsidian_md(&doc).unwrap_or_else(|e| {
+                    eprintln!("failed to wrap Obsidian markdown: {e}");
+                    process::exit(1);
+                })
+            } else {
+                serde_json::to_string_pretty(&doc).unwrap()
+            };
+
+            if let Some(p) = out_path {
+                if let Err(e) = fs::write(&p, output) {
+                    eprintln!("failed to write export to {p:?}: {e}");
+                    process::exit(1);
+                }
+                let res = json!({
+                    "success": true,
+                    "file": p,
+                    "elements": live(&doc).len(),
+                    "format": if is_obs { "obsidian" } else { "json" }
+                });
+                println!("{}", serde_json::to_string_pretty(&res).unwrap());
+            } else {
+                println!("{output}");
+            }
+        }
+        "import" => {
+            if extra_args.is_empty() {
+                eprintln!("import requires a file or '-' for stdin: pkb-excalidraw FILE import <file | -> [--replace]");
+                process::exit(1);
+            }
+            let src_file = &extra_args[0];
+            let replace = extra_args.iter().any(|arg| arg == "--replace");
+
+            let input_raw = if src_file == "-" {
+                let mut buf = String::new();
+                std::io::stdin().read_to_string(&mut buf).unwrap_or_default();
+                buf
+            } else {
+                fs::read_to_string(src_file).unwrap_or_else(|e| {
+                    eprintln!("failed to read import file {src_file:?}: {e}");
+                    process::exit(1);
+                })
+            };
+
+            let src_json_str = if is_obsidian_excalidraw_md(&input_raw) {
+                extract_scene_json_from_obsidian_md(&input_raw).unwrap_or_else(|e| {
+                    eprintln!("failed to extract JSON from import file: {e}");
+                    process::exit(1);
+                })
+            } else {
+                input_raw
+            };
+
+            let src_doc: Value = serde_json::from_str(&src_json_str).unwrap_or_else(|e| {
+                eprintln!("failed to parse import JSON: {e}");
+                process::exit(1);
+            });
+
+            let src_elements = src_doc
+                .get("elements")
+                .and_then(|v| v.as_array())
+                .unwrap_or_else(|| {
+                    eprintln!("import document missing elements array");
+                    process::exit(1);
+                });
+
+            if replace {
+                doc["elements"] = json!(src_elements);
+            } else {
+                let max_idx = max_index_of(&doc);
+                let new_indices = mint_indices(&max_idx, src_elements.len()).unwrap_or_else(|e| {
+                    eprintln!("failed to mint indices: {e}");
+                    process::exit(1);
+                });
+                let elements_mut = doc.get_mut("elements").and_then(|v| v.as_array_mut()).unwrap();
+                for (i, el) in src_elements.iter().enumerate() {
+                    let mut clone = el.clone();
+                    clone["index"] = json!(new_indices[i]);
+                    elements_mut.push(clone);
+                }
+            }
+
+            atomic_save_ex(file_path, &mut doc, is_obsidian).unwrap_or_else(|e| {
+                eprintln!("error saving file: {e}");
+                process::exit(1);
+            });
+            println!("OK: imported {} elements ({})", src_elements.len(), if replace { "replace" } else { "merge" });
+        }
+        "snapshot" => {
+            if extra_args.is_empty() {
+                eprintln!("snapshot requires subcommand: save <name> | list | restore <name>");
+                process::exit(1);
+            }
+            let sub = &extra_args[0];
+            match sub.as_str() {
+                "save" => {
+                    if extra_args.len() < 2 {
+                        eprintln!("snapshot save requires a name");
+                        process::exit(1);
+                    }
+                    cmd_snapshot_save(file_path, &doc, &extra_args[1]).unwrap_or_else(|e| {
+                        eprintln!("error saving snapshot: {e}");
+                        process::exit(1);
+                    });
+                }
+                "list" => {
+                    cmd_snapshot_list(file_path).unwrap_or_else(|e| {
+                        eprintln!("error listing snapshots: {e}");
+                        process::exit(1);
+                    });
+                }
+                "restore" => {
+                    if extra_args.len() < 2 {
+                        eprintln!("snapshot restore requires a name");
+                        process::exit(1);
+                    }
+                    cmd_snapshot_restore(file_path, &mut doc, &extra_args[1]).unwrap_or_else(|e| {
+                        eprintln!("error restoring snapshot: {e}");
+                        process::exit(1);
+                    });
+                }
+                other => {
+                    eprintln!("unknown snapshot subcommand {other:?}");
+                    process::exit(1);
+                }
+            }
+        }
+        "clear" => {
+            let yes = extra_args.iter().any(|a| a == "--yes");
+            if !yes {
+                eprintln!("clear wipes the entire canvas; pass --yes to confirm");
+                process::exit(1);
+            }
+            match mutate_clear(&mut doc) {
+                Ok(cnt) => {
+                    atomic_save_ex(file_path, &mut doc, is_obsidian).unwrap_or_else(|e| {
+                        eprintln!("error saving file: {e}");
+                        process::exit(1);
+                    });
+                    println!("OK: cleared canvas ({cnt} elements removed)");
+                }
+                Err(e) => {
+                    eprintln!("error clearing canvas: {e}");
+                    process::exit(1);
+                }
+            }
+        }
         _ => {
             let modes = [
                 "summary", "map", "style", "check", "diff", "struct-diff", "lib", "item",
                 "nodes", "edges", "arrows", "inspect", "get", "add-node", "add-text",
                 "connect", "set-text", "fit", "move-elem", "delete-elem", "batch",
-                "theme", "overlap", "arrows-check"
+                "theme", "overlap", "arrows-check",
+                "describe", "screenshot", "arrange", "align", "distribute", "group",
+                "ungroup", "lock", "unlock", "duplicate", "update", "query", "apply",
+                "export", "import", "snapshot", "clear"
             ];
             eprintln!(
                 "unknown mode {mode:?}; expected one of: {}",

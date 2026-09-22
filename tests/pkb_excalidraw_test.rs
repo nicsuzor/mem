@@ -2092,3 +2092,674 @@ fn test_regression_vulnerability_5_theme_apply_cascades_to_bound_text_and_contai
     let (code_chk, stdout_chk, _) = run_bin(&[path, "check"]);
     assert_eq!(code_chk, 0, "check failed: {}", stdout_chk);
 }
+
+#[test]
+fn test_describe_mode() {
+    let sample = r##"{
+        "type": "excalidraw",
+        "version": 2,
+        "elements": [
+            {
+                "id": "b1",
+                "type": "rectangle",
+                "x": 100,
+                "y": 100,
+                "width": 120,
+                "height": 60,
+                "index": "a0",
+                "isDeleted": false,
+                "boundElements": [{"id": "t1", "type": "text"}, {"id": "a1", "type": "arrow"}]
+            },
+            {
+                "id": "t1",
+                "type": "text",
+                "x": 110,
+                "y": 120,
+                "width": 100,
+                "height": 20,
+                "index": "a1",
+                "text": "Source Step",
+                "originalText": "Source Step",
+                "containerId": "b1",
+                "isDeleted": false
+            },
+            {
+                "id": "b2",
+                "type": "rectangle",
+                "x": 300,
+                "y": 100,
+                "width": 120,
+                "height": 60,
+                "index": "a2",
+                "isDeleted": false,
+                "boundElements": [{"id": "t2", "type": "text"}, {"id": "a1", "type": "arrow"}]
+            },
+            {
+                "id": "t2",
+                "type": "text",
+                "x": 310,
+                "y": 120,
+                "width": 100,
+                "height": 20,
+                "index": "a3",
+                "text": "Target Step",
+                "originalText": "Target Step",
+                "containerId": "b2",
+                "isDeleted": false
+            },
+            {
+                "id": "a1",
+                "type": "arrow",
+                "x": 220,
+                "y": 130,
+                "width": 80,
+                "height": 0,
+                "points": [[0, 0], [80, 0]],
+                "startBinding": {"elementId": "b1", "focus": 0.0, "gap": 1.0},
+                "endBinding": {"elementId": "b2", "focus": 0.0, "gap": 1.0},
+                "index": "a4",
+                "isDeleted": false
+            }
+        ]
+    }"##;
+    let file = NamedTempFile::new().unwrap();
+    fs::write(file.path(), sample).unwrap();
+    let path = file.path().to_str().unwrap();
+
+    let (code, stdout, stderr) = run_bin(&[path, "describe"]);
+    assert_eq!(code, 0, "stderr: {}", stderr);
+    assert!(stdout.contains("## Canvas Description"));
+    assert!(stdout.contains("Bounding box:"));
+    assert!(stdout.contains("Total elements: 5"));
+    assert!(stdout.contains("### Elements"));
+    assert!(stdout.contains("Source Step"));
+    assert!(stdout.contains("Target Step"));
+    assert!(stdout.contains("### Connections:"));
+    assert!(stdout.contains("b1"));
+    assert!(stdout.contains("b2"));
+}
+
+#[test]
+fn test_screenshot_mode_svg() {
+    let sample = r##"{
+        "type": "excalidraw",
+        "version": 2,
+        "elements": [
+            {
+                "id": "r1",
+                "type": "rectangle",
+                "x": 50,
+                "y": 50,
+                "width": 100,
+                "height": 60,
+                "strokeColor": "#1e1e1e",
+                "backgroundColor": "#a5d8ff",
+                "fillStyle": "solid",
+                "strokeWidth": 2,
+                "roundness": {"type": 3},
+                "index": "a0",
+                "isDeleted": false
+            },
+            {
+                "id": "t1",
+                "type": "text",
+                "x": 60,
+                "y": 70,
+                "width": 80,
+                "height": 20,
+                "text": "Test Box",
+                "originalText": "Test Box",
+                "fontSize": 16,
+                "strokeColor": "#1e1e1e",
+                "index": "a1",
+                "isDeleted": false
+            }
+        ]
+    }"##;
+    let file = NamedTempFile::new().unwrap();
+    fs::write(file.path(), sample).unwrap();
+    let path = file.path().to_str().unwrap();
+
+    // 1. Stdout screenshot
+    let (code, stdout, stderr) = run_bin(&[path, "screenshot"]);
+    assert_eq!(code, 0, "stderr: {}", stderr);
+    assert!(stdout.contains("<svg xmlns=\"http://www.w3.org/2000/svg\""));
+    assert!(stdout.contains("<marker id=\"arrowhead\""));
+    assert!(stdout.contains("<rect x=\"50.0\" y=\"50.0\""));
+    assert!(stdout.contains("Test Box"));
+    assert!(stdout.contains("</svg>"));
+
+    // 2. File export screenshot
+    let out_file = NamedTempFile::new().unwrap();
+    let out_path = out_file.path().to_str().unwrap();
+    let (code2, stdout2, stderr2) = run_bin(&[path, "screenshot", "--out", out_path]);
+    assert_eq!(code2, 0, "stderr: {}", stderr2);
+    assert!(stdout2.contains("\"success\": true"));
+    assert!(stdout2.contains(out_path));
+
+    let svg_content = fs::read_to_string(out_path).unwrap();
+    assert!(svg_content.contains("<svg xmlns=\"http://www.w3.org/2000/svg\""));
+    assert!(svg_content.contains("Test Box"));
+}
+
+#[test]
+fn test_query_mode() {
+    let sample = r##"{
+        "type": "excalidraw",
+        "version": 2,
+        "elements": [
+            {
+                "id": "r1",
+                "type": "rectangle",
+                "x": 100,
+                "y": 100,
+                "width": 100,
+                "height": 50,
+                "customData": {"role": "decision"},
+                "index": "a0",
+                "isDeleted": false
+            },
+            {
+                "id": "e1",
+                "type": "ellipse",
+                "x": 400,
+                "y": 400,
+                "width": 80,
+                "height": 80,
+                "customData": {"role": "endpoint"},
+                "index": "a1",
+                "isDeleted": false
+            }
+        ]
+    }"##;
+    let file = NamedTempFile::new().unwrap();
+    fs::write(file.path(), sample).unwrap();
+    let path = file.path().to_str().unwrap();
+
+    // Query by type
+    let (code1, stdout1, _) = run_bin(&[path, "query", "--type", "rectangle"]);
+    assert_eq!(code1, 0);
+    let res1: serde_json::Value = serde_json::from_str(&stdout1).unwrap();
+    assert_eq!(res1.as_array().unwrap().len(), 1);
+    assert_eq!(res1[0]["id"], "r1");
+
+    // Query by bbox
+    let (code2, stdout2, _) = run_bin(&[path, "query", "--bbox", "50,50,250,250"]);
+    assert_eq!(code2, 0);
+    let res2: serde_json::Value = serde_json::from_str(&stdout2).unwrap();
+    assert_eq!(res2.as_array().unwrap().len(), 1);
+    assert_eq!(res2[0]["id"], "r1");
+
+    // Query by filter role=decision
+    let (code3, stdout3, _) = run_bin(&[path, "query", "--filter", "customData.role=decision"]);
+    assert_eq!(code3, 0);
+    let res3: serde_json::Value = serde_json::from_str(&stdout3).unwrap();
+    assert_eq!(res3.as_array().unwrap().len(), 1);
+    assert_eq!(res3[0]["id"], "r1");
+
+    // Query by filter-json
+    let (code4, stdout4, _) = run_bin(&[path, "query", "--filter-json", "{\"type\": \"ellipse\"}"]);
+    assert_eq!(code4, 0);
+    let res4: serde_json::Value = serde_json::from_str(&stdout4).unwrap();
+    assert_eq!(res4.as_array().unwrap().len(), 1);
+    assert_eq!(res4[0]["id"], "e1");
+}
+
+#[test]
+fn test_update_mode() {
+    let sample = r##"{
+        "type": "excalidraw",
+        "version": 2,
+        "elements": [
+            {
+                "id": "box1",
+                "type": "rectangle",
+                "x": 100,
+                "y": 100,
+                "width": 120,
+                "height": 60,
+                "backgroundColor": "#ffffff",
+                "roughness": 0,
+                "boundElements": [{"id": "txt1", "type": "text"}],
+                "index": "a0",
+                "isDeleted": false
+            },
+            {
+                "id": "txt1",
+                "type": "text",
+                "x": 110,
+                "y": 120,
+                "width": 100,
+                "height": 20,
+                "text": "Initial Text",
+                "originalText": "Initial Text",
+                "containerId": "box1",
+                "index": "a1",
+                "isDeleted": false
+            }
+        ]
+    }"##;
+    let file = NamedTempFile::new().unwrap();
+    fs::write(file.path(), sample).unwrap();
+    let path = file.path().to_str().unwrap();
+
+    // 1. Update visual properties
+    let (code1, stdout1, stderr1) = run_bin(&[path, "update", "box1", "--set", "{\"backgroundColor\": \"#ffcc00\", \"roughness\": 2}"]);
+    assert_eq!(code1, 0, "stderr: {}", stderr1);
+    assert!(stdout1.contains("OK: updated element box1"));
+
+    let content1 = fs::read_to_string(path).unwrap();
+    let doc1: serde_json::Value = serde_json::from_str(&content1).unwrap();
+    assert_eq!(doc1["elements"][0]["backgroundColor"], "#ffcc00");
+    assert_eq!(doc1["elements"][0]["roughness"], 2);
+
+    // 2. Update text via update command on container
+    let (code2, _stdout2, stderr2) = run_bin(&[path, "update", "box1", "--set", "{\"text\": \"Updated Content\"}"]);
+    assert_eq!(code2, 0, "stderr: {}", stderr2);
+
+    let content2 = fs::read_to_string(path).unwrap();
+    let doc2: serde_json::Value = serde_json::from_str(&content2).unwrap();
+    assert_eq!(doc2["elements"][1]["text"], "Updated Content");
+    assert_eq!(doc2["elements"][1]["originalText"], "Updated Content");
+
+    let (code_chk, stdout_chk, _) = run_bin(&[path, "check"]);
+    assert_eq!(code_chk, 0, "check failed: {}", stdout_chk);
+}
+
+#[test]
+fn test_arrange_align_and_distribute() {
+    let sample = r##"{
+        "type": "excalidraw",
+        "version": 2,
+        "elements": [
+            {
+                "id": "b1",
+                "type": "rectangle",
+                "x": 100,
+                "y": 100,
+                "width": 100,
+                "height": 50,
+                "index": "a0",
+                "isDeleted": false
+            },
+            {
+                "id": "b2",
+                "type": "rectangle",
+                "x": 200,
+                "y": 200,
+                "width": 80,
+                "height": 50,
+                "index": "a1",
+                "isDeleted": false
+            },
+            {
+                "id": "b3",
+                "type": "rectangle",
+                "x": 500,
+                "y": 300,
+                "width": 100,
+                "height": 50,
+                "index": "a2",
+                "isDeleted": false
+            }
+        ]
+    }"##;
+    let file = NamedTempFile::new().unwrap();
+    fs::write(file.path(), sample).unwrap();
+    let path = file.path().to_str().unwrap();
+
+    // 1. Align left for b1 and b2
+    let (code1, stdout1, stderr1) = run_bin(&[path, "arrange", "align", "--ids", "b1,b2", "--to", "left"]);
+    assert_eq!(code1, 0, "stderr: {}", stderr1);
+    assert!(stdout1.contains("OK: aligned 2 elements to left"));
+
+    let content1 = fs::read_to_string(path).unwrap();
+    let doc1: serde_json::Value = serde_json::from_str(&content1).unwrap();
+    let b1_x = doc1["elements"][0]["x"].as_f64().unwrap();
+    let b2_x = doc1["elements"][1]["x"].as_f64().unwrap();
+    assert_eq!(b1_x, 100.0);
+    assert_eq!(b2_x, 100.0);
+
+    // 2. Distribute horizontally across b1, b2, b3
+    let (code2, stdout2, stderr2) = run_bin(&[path, "arrange", "distribute", "--ids", "b1,b2,b3", "--to", "horizontal"]);
+    assert_eq!(code2, 0, "stderr: {}", stderr2);
+    assert!(stdout2.contains("OK: distributed 3 elements horizontal"));
+
+    let content2 = fs::read_to_string(path).unwrap();
+    let doc2: serde_json::Value = serde_json::from_str(&content2).unwrap();
+    let p1_x = doc2["elements"][0]["x"].as_f64().unwrap();
+    let p2_x = doc2["elements"][1]["x"].as_f64().unwrap();
+    let p3_x = doc2["elements"][2]["x"].as_f64().unwrap();
+    // b1 (width 100) at 100, b3 (width 100) at 500. Total span = 500+100 - 100 = 500. Total width = 100+80+100 = 280.
+    // Total gap = 500 - 280 = 220 / 2 = 110 gap.
+    // p2_x should be 100 + 100 + 110 = 310.
+    assert_eq!(p1_x, 100.0);
+    assert_eq!(p2_x, 310.0);
+    assert_eq!(p3_x, 500.0);
+}
+
+#[test]
+fn test_arrange_group_ungroup_lock_duplicate() {
+    let sample = r##"{
+        "type": "excalidraw",
+        "version": 2,
+        "elements": [
+            {
+                "id": "b1",
+                "type": "rectangle",
+                "x": 100,
+                "y": 100,
+                "width": 100,
+                "height": 50,
+                "index": "a0",
+                "isDeleted": false
+            },
+            {
+                "id": "b2",
+                "type": "rectangle",
+                "x": 250,
+                "y": 100,
+                "width": 100,
+                "height": 50,
+                "index": "a1",
+                "isDeleted": false
+            }
+        ]
+    }"##;
+    let file = NamedTempFile::new().unwrap();
+    fs::write(file.path(), sample).unwrap();
+    let path = file.path().to_str().unwrap();
+
+    // 1. Group b1 and b2
+    let (code1, stdout1, stderr1) = run_bin(&[path, "arrange", "group", "--ids", "b1,b2"]);
+    assert_eq!(code1, 0, "stderr: {}", stderr1);
+    assert!(stdout1.contains("OK: grouped 2 elements"));
+
+    let content1 = fs::read_to_string(path).unwrap();
+    let doc1: serde_json::Value = serde_json::from_str(&content1).unwrap();
+    let g1 = doc1["elements"][0]["groupIds"].as_array().unwrap();
+    let g2 = doc1["elements"][1]["groupIds"].as_array().unwrap();
+    assert_eq!(g1.len(), 1);
+    assert_eq!(g1, g2);
+
+    // 2. Lock b1
+    let (code_lock, _, _) = run_bin(&[path, "arrange", "lock", "--ids", "b1"]);
+    assert_eq!(code_lock, 0);
+    let doc_locked: serde_json::Value = serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap();
+    assert_eq!(doc_locked["elements"][0]["locked"], true);
+
+    // 3. Unlock b1
+    let (code_unlock, _, _) = run_bin(&[path, "arrange", "unlock", "--ids", "b1"]);
+    assert_eq!(code_unlock, 0);
+    let doc_unlocked: serde_json::Value = serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap();
+    assert_eq!(doc_unlocked["elements"][0]["locked"], false);
+
+    // 4. Duplicate b1 with offset 40, 60
+    let (code_dup, stdout_dup, _) = run_bin(&[path, "arrange", "duplicate", "--ids", "b1", "--offset", "40,60"]);
+    assert_eq!(code_dup, 0);
+    assert!(stdout_dup.contains("OK: duplicated 1 elements"));
+
+    let doc_dup: serde_json::Value = serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap();
+    assert_eq!(doc_dup["elements"].as_array().unwrap().len(), 3);
+    let dup_elem = &doc_dup["elements"][2];
+    assert_ne!(dup_elem["id"], "b1");
+    assert_eq!(dup_elem["x"], 140.0);
+    assert_eq!(dup_elem["y"], 160.0);
+
+    // 5. Ungroup b1 and b2
+    let (code_ungroup, stdout_ungroup, _) = run_bin(&[path, "arrange", "ungroup", "--ids", "b1,b2"]);
+    assert_eq!(code_ungroup, 0);
+    assert!(stdout_ungroup.contains("OK: ungrouped 2 elements"));
+
+    let (code_chk, stdout_chk, _) = run_bin(&[path, "check"]);
+    assert_eq!(code_chk, 0, "check failed: {}", stdout_chk);
+}
+
+#[test]
+fn test_apply_transactional_patch() {
+    let sample = r##"{
+        "type": "excalidraw",
+        "version": 2,
+        "elements": [
+            {
+                "id": "old1",
+                "type": "rectangle",
+                "x": 50,
+                "y": 50,
+                "width": 100,
+                "height": 50,
+                "index": "a0",
+                "isDeleted": false
+            },
+            {
+                "id": "del1",
+                "type": "rectangle",
+                "x": 200,
+                "y": 50,
+                "width": 100,
+                "height": 50,
+                "index": "a1",
+                "isDeleted": false
+            }
+        ]
+    }"##;
+    let file = NamedTempFile::new().unwrap();
+    fs::write(file.path(), sample).unwrap();
+    let path = file.path().to_str().unwrap();
+
+    let patch = r##"{
+        "create": [
+            {
+                "type": "diamond",
+                "text": "Decision Diamond",
+                "at": [300, 100],
+                "size": [120, 80],
+                "color": "#e03131"
+            }
+        ],
+        "update": [
+            {
+                "id": "old1",
+                "set": {
+                    "backgroundColor": "#ffd43b"
+                }
+            }
+        ],
+        "delete": ["del1"]
+    }"##;
+
+    let patch_file = NamedTempFile::new().unwrap();
+    fs::write(patch_file.path(), patch).unwrap();
+    let patch_path = patch_file.path().to_str().unwrap();
+
+    let (code, stdout, stderr) = run_bin(&[path, "apply", patch_path]);
+    assert_eq!(code, 0, "stderr: {}", stderr);
+    assert!(stdout.contains("OK: applied patch (created: 1, updated: 1, deleted: 1)"));
+
+    let content = fs::read_to_string(path).unwrap();
+    let doc: serde_json::Value = serde_json::from_str(&content).unwrap();
+
+    // Check old1 updated
+    let old1 = doc["elements"].as_array().unwrap().iter().find(|e| e["id"] == "old1").unwrap();
+    assert_eq!(old1["backgroundColor"], "#ffd43b");
+
+    // Check del1 deleted
+    assert!(doc["elements"].as_array().unwrap().iter().all(|e| e["id"] != "del1" || e["isDeleted"] == true));
+
+    // Check created diamond
+    let diamond = doc["elements"].as_array().unwrap().iter().find(|e| e["type"] == "diamond").unwrap();
+    assert_eq!(diamond["x"], 300.0);
+    assert_eq!(diamond["y"], 100.0);
+
+    let (code_chk, stdout_chk, _) = run_bin(&[path, "check"]);
+    assert_eq!(code_chk, 0, "check failed: {}", stdout_chk);
+}
+
+#[test]
+fn test_obsidian_markdown_roundtrip() {
+    let obs_md = r##"---
+excalidraw-plugin: parsed
+tags: [excalidraw, test]
+---
+==Decomp and links==
+
+# Excalidraw Data
+## Text Elements
+Starting text ^t1
+
+## Drawing
+```json
+{
+  "type": "excalidraw",
+  "version": 2,
+  "source": "https://excalidraw.com",
+  "elements": [
+    {
+      "id": "b1",
+      "type": "rectangle",
+      "x": 100,
+      "y": 100,
+      "width": 140,
+      "height": 70,
+      "index": "a0",
+      "boundElements": [{"id": "t1", "type": "text"}],
+      "isDeleted": false
+    },
+    {
+      "id": "t1",
+      "type": "text",
+      "x": 110,
+      "y": 120,
+      "width": 120,
+      "height": 25,
+      "text": "Starting text",
+      "originalText": "Starting text",
+      "containerId": "b1",
+      "index": "a1",
+      "isDeleted": false
+    }
+  ]
+}
+```
+%%
+"##;
+    let file = NamedTempFile::new().unwrap();
+    fs::write(file.path(), obs_md).unwrap();
+    let path = file.path().to_str().unwrap();
+
+    // 1. Check passes on obsidian file
+    let (code_chk1, stdout_chk1, _) = run_bin(&[path, "check"]);
+    assert_eq!(code_chk1, 0, "check failed: {}", stdout_chk1);
+
+    // 2. Set text on obsidian file
+    let (code_set, stdout_set, stderr_set) = run_bin(&[path, "set-text", "b1", "Obsidian Synced Text"]);
+    assert_eq!(code_set, 0, "stderr: {}", stderr_set);
+    assert!(stdout_set.contains("OK: updated text for b1"));
+
+    // Verify raw file content preserved obsidian structure
+    let content = fs::read_to_string(path).unwrap();
+    assert!(content.contains("excalidraw-plugin: parsed"));
+    assert!(content.contains("```json"));
+    assert!(content.contains("## Text Elements"));
+    assert!(content.contains("Obsidian Synced Text ^t1"));
+
+    // 3. Add node on obsidian file
+    let (code_add, stdout_add, stderr_add) = run_bin(&[path, "add-node", "--type", "ellipse", "--text", "Vault Note", "--at", "300,100"]);
+    assert_eq!(code_add, 0, "stderr: {}", stderr_add);
+    assert!(stdout_add.contains("OK: created node"));
+
+    let content_after = fs::read_to_string(path).unwrap();
+    assert!(content_after.contains("Vault Note"));
+    assert!(content_after.contains("excalidraw-plugin: parsed"));
+
+    let (code_chk2, stdout_chk2, _) = run_bin(&[path, "check"]);
+    assert_eq!(code_chk2, 0, "check failed: {}", stdout_chk2);
+}
+
+#[test]
+fn test_snapshot_save_list_restore() {
+    let sample = r##"{
+        "type": "excalidraw",
+        "version": 2,
+        "elements": [
+            {
+                "id": "b1",
+                "type": "rectangle",
+                "x": 100,
+                "y": 100,
+                "width": 100,
+                "height": 50,
+                "index": "a0",
+                "isDeleted": false
+            }
+        ]
+    }"##;
+    let dir = tempfile::tempdir().unwrap();
+    let path_buf = dir.path().join("canvas.excalidraw");
+    fs::write(&path_buf, sample).unwrap();
+    let path = path_buf.to_str().unwrap();
+
+    // 1. Save snapshot
+    let (code_save, stdout_save, stderr_save) = run_bin(&[path, "snapshot", "save", "initial_state"]);
+    assert_eq!(code_save, 0, "stderr: {}", stderr_save);
+    assert!(stdout_save.contains("OK: saved snapshot 'initial_state'"));
+
+    // 2. List snapshots
+    let (code_list, stdout_list, stderr_list) = run_bin(&[path, "snapshot", "list"]);
+    assert_eq!(code_list, 0, "stderr: {}", stderr_list);
+    assert!(stdout_list.contains("initial_state"));
+
+    // 3. Clear canvas
+    let (code_clear, stdout_clear, _) = run_bin(&[path, "clear", "--yes"]);
+    assert_eq!(code_clear, 0);
+    assert!(stdout_clear.contains("OK: cleared canvas"));
+
+    let doc_cleared: serde_json::Value = serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap();
+    assert_eq!(doc_cleared["elements"].as_array().unwrap().len(), 0);
+
+    // 4. Restore snapshot
+    let (code_rest, stdout_rest, stderr_rest) = run_bin(&[path, "snapshot", "restore", "initial_state"]);
+    assert_eq!(code_rest, 0, "stderr: {}", stderr_rest);
+    assert!(stdout_rest.contains("OK: restored snapshot 'initial_state' (1 elements)"));
+
+    let doc_restored: serde_json::Value = serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap();
+    assert_eq!(doc_restored["elements"].as_array().unwrap().len(), 1);
+    assert_eq!(doc_restored["elements"][0]["id"], "b1");
+}
+
+#[test]
+fn test_clear_canvas_protection() {
+    let sample = r##"{
+        "type": "excalidraw",
+        "version": 2,
+        "elements": [
+            {
+                "id": "b1",
+                "type": "rectangle",
+                "x": 100,
+                "y": 100,
+                "width": 100,
+                "height": 50,
+                "index": "a0",
+                "isDeleted": false
+            }
+        ]
+    }"##;
+    let file = NamedTempFile::new().unwrap();
+    fs::write(file.path(), sample).unwrap();
+    let path = file.path().to_str().unwrap();
+
+    // 1. Clear without --yes fails
+    let (code_fail, _, stderr_fail) = run_bin(&[path, "clear"]);
+    assert_eq!(code_fail, 1);
+    assert!(stderr_fail.contains("pass --yes to confirm"));
+
+    // 2. Clear with --yes succeeds
+    let (code_ok, stdout_ok, _) = run_bin(&[path, "clear", "--yes"]);
+    assert_eq!(code_ok, 0);
+    assert!(stdout_ok.contains("OK: cleared canvas (1 elements removed)"));
+
+    let doc: serde_json::Value = serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap();
+    assert_eq!(doc["elements"].as_array().unwrap().len(), 0);
+}
+

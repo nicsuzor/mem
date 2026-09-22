@@ -94,7 +94,36 @@ Library files contain reusable component templates. `pkb-excalidraw` transparent
       [ { "id": "e1", ... }, { "id": "e2", ... } ]
     ]
   }
-  ```
+### 2.3 Obsidian Excalidraw Markdown Files (`.excalidraw.md`)
+
+Obsidian Excalidraw plugin saves drawings as Markdown files containing YAML frontmatter, an optional human-readable text elements section with block references, and a fenced JSON codeblock storing the full scene:
+
+```markdown
+---
+excalidraw-plugin: parsed
+tags: [excalidraw]
+---
+==Decomp and links==
+
+# Excalidraw Data
+## Text Elements
+API Gateway ^r1t1
+PostgreSQL Primary ^db1t1
+
+## Drawing
+```json
+{
+  "type": "excalidraw",
+  "version": 2,
+  "source": "https://excalidraw.com",
+  "elements": [ ... ]
+}
+```
+%%
+```
+
+- **Transparent Detection**: `pkb-excalidraw` automatically inspects the file header for `excalidraw-plugin:` frontmatter. If present, the drawing JSON is extracted from the ` ```json ` codeblock for reading and operations.
+- **Synchronized Preservation**: Upon atomic save, `pkb-excalidraw` regenerates the `## Text Elements` list with block reference anchors (`^<id>`), updates the JSON code block, and preserves the YAML frontmatter and surrounding markdown wrapper.
 
 ---
 
@@ -174,6 +203,9 @@ Usage:
   pkb-excalidraw FILE [summary|map|nodes|edges|arrows|style|check|overlap|arrows-check]
   pkb-excalidraw FILE inspect <id>
   pkb-excalidraw FILE get <id>
+  pkb-excalidraw FILE describe
+  pkb-excalidraw FILE query [--type <type>] [--bbox X1,Y1,X2,Y2] [--filter KEY=VAL] [--filter-json '<json>']
+  pkb-excalidraw FILE screenshot [--out <path>] [--format svg|png] [--no-background]
   pkb-excalidraw FILE1 diff FILE2
   pkb-excalidraw FILE1 struct-diff FILE2
   pkb-excalidraw FILE.excalidrawlib lib
@@ -185,7 +217,14 @@ Usage:
   pkb-excalidraw FILE fit <id> "<new_text>"
   pkb-excalidraw FILE move-elem <id> [--to X,Y | --by DX,DY]
   pkb-excalidraw FILE delete-elem <id> [--cascade-arrows]
+  pkb-excalidraw FILE update <id> --set '<json>'
+  pkb-excalidraw FILE arrange {align|distribute|group|ungroup|lock|unlock|duplicate} [args]
+  pkb-excalidraw FILE apply <patch.json | - >
   pkb-excalidraw FILE batch <changes.json | - >
+  pkb-excalidraw FILE clear [--yes]
+  pkb-excalidraw FILE snapshot {save <name>|list|restore <name>}
+  pkb-excalidraw FILE export [--out <path>] [--format json|obsidian]
+  pkb-excalidraw FILE import <src.json | src.md | - > [--replace]
   pkb-excalidraw FILE theme export [out.json]
   pkb-excalidraw FILE theme apply <theme.json | default | retro-terminal | aops-default> [--all | --id <id>]
 ```
@@ -198,6 +237,9 @@ Usage:
 | `map` | Dense TSV map of all visual shapes, arrows, and standalone text. | `r1\trectangle\t100,150\t180x60\t#8fbc8f\tAPI Gateway`<br>`a1\tarrow\tr1 -> r2\tHTTPS / JSON`<br>`t1\ttext\t100,80\tSystem Architecture` |
 | `nodes` | Filtered list of logical shapes and container nodes (folds text into node). | `r1\trectangle\t100,150\t180x60\tsuccess\tAPI Gateway` |
 | `edges` / `arrows` | Filtered list of directed arrow connections and their labels. | `a1\tr1 -> r2\tHTTPS / JSON` |
+| `describe` | Structured spatial overview for LLMs (row-bucketed nodes, coordinates, arrows, groups). | `# Canvas Summary`<br>`Bounding box: (100, 100) to (420, 160)`<br>`### Elements`<br>`### Connections:` |
+| `screenshot` | Zero-dependency high-fidelity SVG renderer or system PNG exporter. | SVG markup to stdout or file path JSON: `{"success": true, "file": "..."}` |
+| `query` | Fast element discovery by type, bounding box, or attribute dot-path. | JSON array of matched elements. |
 | `inspect <id>` | Full structural inspection of an element, including inbound/outbound arrows. | `id: r1`<br>`type: rectangle`<br>`bounds: 100,150 180x60`<br>`label: API Gateway`<br>`role: success`<br>`inbound: []`<br>`outbound: [a1]` |
 | `get <id>` | Pretty-printed raw JSON of a single element by ID. | Formatted JSON object. |
 | `style` | Statistical distribution of visual properties (roughness, fonts, colors, roundness). | `fillStyle: modal=hachure  all={'hachure': 8, 'solid': 2}`<br>`fontFamily: modal=1  all={1: 10}` |
@@ -262,6 +304,75 @@ Computes a pure semantic diff of the logical graph, completely filtering out coo
   - Recursively removes container shape and bound text.
   - If `--cascade-arrows` is passed, deletes all connected arrows and their labels.
   - If `--cascade-arrows` is omitted, cleanly unbinds connected arrows (sets bindings to `null`) and strips references from surviving nodes, maintaining the 0-bound invariant.
+- **`update`**:
+  `pkb-excalidraw FILE update <id> --set '{"backgroundColor": "#ffcc00", "roughness": 1}'`
+  - Updates arbitrary element fields while preserving element type and identity.
+  - If `"text"` is updated on a container, synchronizes the bound text element's `text` and `originalText`, re-centers within the shape, and symmetrically resizes the parent if text overflows.
+  - If position fields (`x`, `y`) are updated, translates attached container/text bindings and connected arrow endpoints accordingly.
+
+### 4.5 Visual Rendering & Spatial Summaries
+
+- **`describe`**:
+  `pkb-excalidraw FILE describe`
+  - Emits a structured spatial summary designed specifically for LLM scene perception without token bloat.
+  - Groups canvas into a global bounding box, type frequencies, row-bucketed elements (top-to-bottom, left-to-right), logical labels, arrow flows with labels, and group hierarchies.
+- **`screenshot`**:
+  `pkb-excalidraw FILE screenshot [--out <path>] [--format svg|png] [--no-background]`
+  - Zero-dependency vector SVG rendering natively supporting rounded rectangles, diamonds, ellipses, multiline text, styled strokes, and arrowhead markers.
+  - Emits SVG directly to stdout (when `--out` omitted) or saves to disk.
+  - When `--format png` is requested, outputs via available system rasterizers (`resvg`, `rsvg-convert`, or `magick`) with seamless SVG fallback.
+- **`query`**:
+  `pkb-excalidraw FILE query [--type <type>] [--bbox X1,Y1,X2,Y2] [--filter KEY=VAL] [--filter-json '<json>']`
+  - Fast attribute and bounding box discovery.
+  - Supports dot-path filters (e.g. `customData.role=decision`, `roundness.type=3`).
+
+### 4.6 Alignment & Spatial Arrangement (`arrange`)
+
+The `arrange` command suite provides automated spatial alignment, grouping, locking, and cloning:
+
+- **`arrange align`**:
+  `pkb-excalidraw FILE arrange align --ids <id1,id2,...> --to {left|center|right|top|middle|bottom}`
+  - Aligns target shapes to their collective bounding box edge or centerline.
+  - Bound text elements are shifted synchronously without double-moving.
+- **`arrange distribute`**:
+  `pkb-excalidraw FILE arrange distribute --ids <id1,id2,id3,...> --to {horizontal|vertical}`
+  - Evenly distributes 3 or more elements along the specified axis between the leftmost/rightmost (or topmost/bottommost) items.
+- **`arrange group` / `arrange ungroup`**:
+  `pkb-excalidraw FILE arrange group --ids <id1,id2>`
+  `pkb-excalidraw FILE arrange ungroup [--group <group_id>] [--ids <id1,id2>]`
+  - Assigns unique group IDs to element `groupIds` arrays or strips them.
+- **`arrange lock` / `arrange unlock`**:
+  `pkb-excalidraw FILE arrange lock --ids <id1,id2>`
+  `pkb-excalidraw FILE arrange unlock --ids <id1,id2>`
+  - Toggles the `locked: true/false` attribute on shapes and their bound text elements.
+- **`arrange duplicate`**:
+  `pkb-excalidraw FILE arrange duplicate --ids <id1,id2> [--offset DX,DY]`
+  - Deep-clones target elements with positional offset (default `20,20`).
+  - Generates new unique IDs, remaps internal container/boundElements and arrow bindings within the cloned set, and mints monotonic fractional base-62 indices.
+
+### 4.7 Transactional Patching (`apply`)
+
+- **`apply <patch.json | ->`**:
+  Executes a multi-operation delta payload consisting of `{ "create": [...], "update": [...], "delete": [...] }` in a single atomic transaction.
+  - Creates new nodes/text via `mutate_add_node` / `mutate_add_text`.
+  - Updates target elements via `mutate_update_elem`.
+  - Deletes elements via `mutate_delete_elem`.
+  - Validates full scene invariants before committing to disk.
+
+### 4.8 Canvas Lifecycle & Snapshots
+
+- **`snapshot save <name>`**:
+  Saves a named timestamped snapshot of the current live canvas into `.snapshots_<stem>/<name>.json`.
+- **`snapshot list`**:
+  Lists all saved snapshots for the file with creation timestamps and element counts.
+- **`snapshot restore <name>`**:
+  Atomically restores canvas state to a previously saved snapshot.
+- **`clear [--yes]`**:
+  Wipes all canvas elements. Requires explicit `--yes` flag to prevent accidental data loss.
+- **`export [--out <path>] [--format json|obsidian]`**:
+  Exports the scene as raw JSON or an Obsidian-compatible `.excalidraw.md` wrapper file.
+- **`import <src.json | src.md | -> [--replace]`**:
+  Imports elements from another Excalidraw JSON or Obsidian Markdown file, either merging into the existing scene (minting new monotonic indices) or replacing all elements (`--replace`).
 
 ---
 
@@ -348,6 +459,74 @@ The `batch` command executes an atomic sequence of mutations from a JSON array (
           "action": { "type": "string", "enum": ["theme-apply", "apply-theme", "apply_theme"] }
         },
         "required": ["action"]
+      },
+      {
+        "type": "object",
+        "properties": {
+          "action": { "type": "string", "enum": ["align", "arrange-align"] },
+          "ids": { "type": "array", "items": { "type": "string" }, "minItems": 2 },
+          "to": { "type": "string", "enum": ["left", "center", "right", "top", "middle", "bottom"] }
+        },
+        "required": ["action", "ids", "to"]
+      },
+      {
+        "type": "object",
+        "properties": {
+          "action": { "type": "string", "enum": ["distribute", "arrange-distribute"] },
+          "ids": { "type": "array", "items": { "type": "string" }, "minItems": 3 },
+          "to": { "type": "string", "enum": ["horizontal", "vertical"] }
+        },
+        "required": ["action", "ids", "to"]
+      },
+      {
+        "type": "object",
+        "properties": {
+          "action": { "type": "string", "enum": ["group", "arrange-group"] },
+          "ids": { "type": "array", "items": { "type": "string" }, "minItems": 2 }
+        },
+        "required": ["action", "ids"]
+      },
+      {
+        "type": "object",
+        "properties": {
+          "action": { "type": "string", "enum": ["ungroup", "arrange-ungroup"] },
+          "group_id": { "type": "string" },
+          "ids": { "type": "array", "items": { "type": "string" } }
+        },
+        "required": ["action"]
+      },
+      {
+        "type": "object",
+        "properties": {
+          "action": { "type": "string", "enum": ["lock", "unlock", "arrange-lock", "arrange-unlock"] },
+          "ids": { "type": "array", "items": { "type": "string" }, "minItems": 1 }
+        },
+        "required": ["action", "ids"]
+      },
+      {
+        "type": "object",
+        "properties": {
+          "action": { "type": "string", "enum": ["duplicate", "arrange-duplicate"] },
+          "ids": { "type": "array", "items": { "type": "string" }, "minItems": 1 },
+          "offset": { "type": "array", "items": { "type": "number" }, "minItems": 2, "maxItems": 2, "default": [20, 20] }
+        },
+        "required": ["action", "ids"]
+      },
+      {
+        "type": "object",
+        "properties": {
+          "action": { "type": "string", "enum": ["update", "update-elem", "update_elem"] },
+          "id": { "type": "string" },
+          "set": { "type": "object" }
+        },
+        "required": ["action", "id"]
+      },
+      {
+        "type": "object",
+        "properties": {
+          "action": { "type": "string", "enum": ["clear"] }
+        },
+        "required": ["action"]
       }
     ]
   }
@@ -361,8 +540,42 @@ The `batch` command executes an atomic sequence of mutations from a JSON array (
   { "action": "add-node", "id": "svc_auth", "type": "rectangle", "text": "Auth Service", "at": [100, 100], "role": "info" },
   { "action": "add-node", "id": "db_auth", "type": "rectangle", "text": "Auth DB (Postgres)", "at": [350, 100], "role": "emphasis" },
   { "action": "connect", "from": "svc_auth", "to": "db_auth", "label": "SQL / TLS" },
+  { "action": "align", "ids": ["svc_auth", "db_auth"], "to": "middle" },
   { "action": "add-text", "text": "Identity Boundary", "at": [100, 50], "fontSize": 20 }
 ]
+```
+
+### 5.3 Apply Transaction Patch Schema (`apply`)
+
+The `apply` command accepts a unified declarative delta object:
+
+```json
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "ExcalidrawApplyPatchPayload",
+  "type": "object",
+  "properties": {
+    "create": {
+      "type": "array",
+      "items": { "type": "object", "required": ["text"] }
+    },
+    "update": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "set": { "type": "object" }
+        },
+        "required": ["id", "set"]
+      }
+    },
+    "delete": {
+      "type": "array",
+      "items": { "type": "string" }
+    }
+  }
+}
 ```
 
 ---
@@ -475,7 +688,7 @@ Default properties: `font_family: 1` (Virgil), `roughness: 2`, `fill_style: "hac
 
 ## 8. Atomic I/O Contracts & Exit Codes
 
-### 8.1 Atomic Save Contract (`atomic_save`)
+### 8.1 Atomic Save Contract (`atomic_save` / `atomic_save_ex`)
 
 Every mutating operation follows a strict 4-step atomic write pipeline:
 
@@ -484,7 +697,7 @@ sequenceDiagram
     participant CLI as Mutation Pipeline
     participant Val as cmd_check Validator
     participant Disk as Filesystem (.tmp)
-    participant Target as Target File (.excalidraw)
+    participant Target as Target File (.excalidraw / .excalidraw.md)
 
     CLI->>CLI: 1. Sort elements by index key
     CLI->>Val: 2. Run structural validation check
@@ -492,7 +705,7 @@ sequenceDiagram
         Val-->>CLI: Return Err(fails)
         CLI-->>CLI: Abort mutation, target file untouched
     else Validation Passes
-        CLI->>Disk: 3. Serialize & write to .tmp.<pid>.<rand>
+        CLI->>Disk: 3. Format payload (JSON or Obsidian MD) & write to .tmp.<pid>.<rand>
         CLI->>Target: 4. Atomic fs::rename(temp, target)
         Target-->>CLI: Commit Complete (Exit 0)
     end
@@ -500,7 +713,10 @@ sequenceDiagram
 
 1. **Index Sort**: Sorts the in-memory `elements` array so array order strictly equals index order.
 2. **Integrity Validation (`cmd_check`)**: Verifies duplicate IDs, index monotonicity, text sync, and arrow topology. If validation fails, execution halts and the target file is untouched.
-3. **Temporary Write**: Serializes pretty-printed JSON to `.tmp.<pid>.<rand>` located in the same parent directory as the target file (guaranteeing identical filesystem mount).
+3. **Format-Aware Formatting & Temporary Write**:
+   - For standard `.excalidraw` files: Serializes pretty-printed JSON.
+   - For Obsidian `.excalidraw.md` files: Synchronizes `## Text Elements` with block references (`^<id>`), preserves YAML frontmatter and markdown sections, and updates the ` ```json ` codeblock.
+   - Writes to `.tmp.<pid>.<rand>` located in the same parent directory as the target file (guaranteeing identical filesystem mount).
 4. **Atomic Rename**: Atomically swaps `.tmp.<pid>.<rand>` over the target file using `fs::rename`. Cleans up the temporary file on error.
 
 ### 8.2 Process Exit Codes
