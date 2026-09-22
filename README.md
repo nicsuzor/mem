@@ -278,7 +278,9 @@ Two surfaces, documented in full in [`src/excalidraw/README.md`](src/excalidraw/
 | `pkb excalidraw diff <canvas> [--base <snapshot>] [--json]` | 3-way diff of an edited canvas against the live PKB |
 | `pkb excalidraw sync <canvas> [--base <snapshot>] [--dry-run] [--sync-edge-removals]` | Write card additions, frontmatter updates and new `depends_on`/`soft_depends_on`/`parent` edges back to markdown |
 
-`pkb-excalidraw` is the companion binary for inspecting, diffing, mutating, and validating any Excalidraw file (`.excalidraw` and `.excalidrawlib`) without touching the PKB:
+These need `ACA_DATA` set (`--pkb-root`/`--db-path` override its defaults, but the variable itself is still required for `pkb` to start).
+
+`pkb-excalidraw` is the companion binary for inspecting, diffing, mutating, and validating any Excalidraw file (`.excalidraw` and `.excalidrawlib`) without touching the PKB and without `ACA_DATA`:
 
 | Command | Description |
 |---------|-------------|
