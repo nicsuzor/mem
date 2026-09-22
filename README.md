@@ -268,9 +268,19 @@ The formula lives in `compute_urgency`, `compute_voi_term` and `compute_focus_sc
 | `pkb graph [--format json\|graphml\|mcp-index\|all] [--output path]` | Export the knowledge graph |
 | `pkb stats [--sort count\|bytes\|latency\|errors]` | Show MCP tool usage telemetry |
 
-### Excalidraw Tooling (`pkb-excalidraw`)
+### Excalidraw (`pkb excalidraw`, `pkb-excalidraw`)
 
-A high-performance CLI companion binary for inspecting, diffing, mutating, and validating Excalidraw whiteboard files (`.excalidraw` and `.excalidrawlib`):
+Two surfaces, documented in full in [`src/excalidraw/README.md`](src/excalidraw/README.md):
+
+| Command | Description |
+|---------|-------------|
+| `pkb excalidraw export <out> [--focus <id>] [--hops N]` | Export the graph (or an ego-network) as an Excalidraw canvas; merges into an existing canvas instead of overwriting |
+| `pkb excalidraw diff <canvas> [--base <snapshot>] [--json]` | 3-way diff of an edited canvas against the live PKB |
+| `pkb excalidraw sync <canvas> [--base <snapshot>] [--dry-run] [--sync-edge-removals]` | Write card additions, frontmatter updates and new `depends_on`/`soft_depends_on`/`parent` edges back to markdown |
+
+These need `ACA_DATA` set (`--pkb-root`/`--db-path` override its defaults, but the variable itself is still required for `pkb` to start).
+
+`pkb-excalidraw` is the companion binary for inspecting, diffing, mutating, and validating any Excalidraw file (`.excalidraw` and `.excalidrawlib`) without touching the PKB and without `ACA_DATA`:
 
 | Command | Description |
 |---------|-------------|
@@ -287,8 +297,7 @@ A high-performance CLI companion binary for inspecting, diffing, mutating, and v
 | `pkb-excalidraw <file> arrows-check` | Audit 2D arrow-segment box intersections |
 | `pkb-excalidraw <file> theme apply <theme>` | Apply standardized styling and semantic color roles |
 
-For technical architecture and invariants, see the [Excalidraw Tooling Specification](file:///workspace/specs/excalidraw-tooling.md).  
-For LLM coding agent patterns and copy-paste templates, see the [Excalidraw Agent Guide](file:///workspace/references/EXCALIDRAW_AGENT_GUIDE.md).
+For the node model, diff/sync semantics and known limitations, see [`src/excalidraw/README.md`](src/excalidraw/README.md). For the companion binary's invariants, see the [Excalidraw Tooling Specification](specs/excalidraw-tooling.md); for agent patterns and copy-paste templates, the [Excalidraw Agent Guide](references/EXCALIDRAW_AGENT_GUIDE.md).
 
 ## MCP Tools
 
@@ -312,7 +321,7 @@ It also provides **MCP prompts** to guide AI assistants through common search an
 | **Tasks** | `task_search`, `list_tasks`, `get_task`, `create_task`, `create_subtask`, `update_task`, `complete_task`, `release_task`, `decompose_task`, `get_dependency_tree`, `get_task_children`, `task_summary`, `get_network_metrics`, `top_n_by_metric` |
 | **Memory** | `retrieve_memory`, `search_by_tag`, `list_memories`, `delete` (pass `type: "memory"` to restrict to memory-type documents) |
 | **CRUD** | `create`, `create_memory`, `append`, `delete` |
-| **Graph** | `pkb_trace`, `pkb_orphans`, `graph_stats`, `graph_excalidraw`, `export_graph` |
+| **Graph** | `pkb_trace`, `pkb_orphans`, `graph_stats`, `graph_excalidraw`, `diff_excalidraw`, `sync_excalidraw`, `export_graph` |
 | **Batch** | `batch_update`, `batch_reparent`, `batch_archive`, `batch_merge`, `batch_create_epics`, `batch_reclassify`, `merge_node` |
 | **System** | `get_stats` |
 
