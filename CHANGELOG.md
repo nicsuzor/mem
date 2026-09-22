@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.96](https://github.com/nicsuzor/mem/compare/mem-v0.3.95...mem-v0.3.96) (2026-09-22)
+
+
+### Features
+
+* **excalidraw:** integrate mcp_excalidraw features into pkb-excalidraw ([c3ad616](https://github.com/nicsuzor/mem/commit/c3ad6168221835fc098591dc25536ed016fa547a))
+* **excalidraw:** integrate mcp_excalidraw features into pkb-excalidraw ([1dca1a7](https://github.com/nicsuzor/mem/commit/1dca1a7154da1913c8441eb2485a2edf09220aa5))
+
+
+### Documentation
+
+* **excalidraw:** address review of README (runtime facts, pointers, omissions) ([2cf7bd2](https://github.com/nicsuzor/mem/commit/2cf7bd289fc15246dbeca45c7c8000ebd72789a7))
+* **excalidraw:** rewrite src/excalidraw/README.md and fix top-level links ([2c60af0](https://github.com/nicsuzor/mem/commit/2c60af0923d881be9827616bdcffa2b6baab83ff))
+* **excalidraw:** rewrite src/excalidraw/README.md and fix top-level links ([bec01c3](https://github.com/nicsuzor/mem/commit/bec01c3d619f5bd64ef44f7a76f6eb49b7beddc1))
+
 ## [0.3.95](https://github.com/nicsuzor/mem/compare/mem-v0.3.94...mem-v0.3.95) (2026-09-21)
 
 
