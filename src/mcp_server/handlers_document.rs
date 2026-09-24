@@ -149,6 +149,11 @@ impl PkbSearchServer {
 
         let store = self.store.read();
         let mut results = store.list_documents(tag, doc_type, status, &self.pkb_root);
+        drop(store);
+
+        let graph = self.graph.read();
+        results.retain(|r| r.path.is_file() && graph.resolve(&r.id).is_some());
+        drop(graph);
 
         if let Some(ref req_tags) = tags_vec {
             results.retain(|r| {
@@ -1070,7 +1075,6 @@ impl PkbSearchServer {
         let abs_path = self.abs_path_for_node(node, Some(&graph))?;
         let label = node.label.clone();
         let node_id = node.id.clone();
-        let rel_path = node.path.to_string_lossy().to_string();
         drop(graph); // release read lock before write operations
 
         let t_total = std::time::Instant::now();
@@ -1092,7 +1096,7 @@ impl PkbSearchServer {
 
         // Remove from vector store (skipped if reindex holds the lock)
         let t = std::time::Instant::now();
-        self.try_remove_document(&rel_path);
+        self.try_remove_document(&node_id, Some(&abs_path));
         let elapsed_remove = t.elapsed();
         tracing::debug!(target: "perf::delete_document", phase = "vector_remove", elapsed_ms = elapsed_remove.as_secs_f64() * 1000.0);
 
