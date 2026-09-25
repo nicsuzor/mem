@@ -198,6 +198,42 @@ const KNOWN_KEYS: &[&str] = &[
     "journal",
 ];
 
+/// Frontmatter keys that have default values when unset.
+/// When any of these keys carries a blank value (empty string, whitespace, or null),
+/// the linter autofixes by removing the key entirely so the node relies on its default.
+pub const DEFAULT_BACKED_KEYS: &[&str] = &[
+    "intent",
+    "priority",
+    "effort",
+    "parent",
+    "tags",
+    "order",
+    "depth",
+    "leaf",
+    "complexity",
+    "consequence",
+    "severity",
+    "goal_type",
+    "assignee",
+    "due",
+    "source",
+    "stakeholder",
+    "waiting_since",
+    "depends_on",
+    "soft_depends_on",
+    "blocks",
+    "soft_blocks",
+];
+
+/// Returns true if a serde_json::Value represents a blank/empty scalar or null.
+pub fn is_blank_value(v: &serde_json::Value) -> bool {
+    match v {
+        serde_json::Value::Null => true,
+        serde_json::Value::String(s) => s.trim().is_empty(),
+        _ => false,
+    }
+}
+
 // ── Type alias resolution ────────────────────────────────────────────────
 
 /// Map unknown type values to the nearest canonical type.
@@ -662,7 +698,16 @@ fn check_frontmatter(
     }
 
     // Intent validation
-    if let Some(p) = fm.get("intent").or_else(|| fm.get("priority")) {
+    let intent_key = if fm.contains_key("intent") {
+        Some("intent")
+    } else if fm.contains_key("priority") {
+        Some("priority")
+    } else {
+        None
+    };
+
+    if let Some(key_name) = intent_key {
+        let p = fm.get(key_name).unwrap();
         if let Some(n) = p.as_i64() {
             if !graph::is_valid_intent(n as i32) {
                 diags.push(Diagnostic {
@@ -674,21 +719,29 @@ fn check_frontmatter(
                 });
             }
         } else if let Some(s) = p.as_str() {
-            // Check if it's a "p1"/"P2" style intent we can fix
+            let is_blank = s.trim().is_empty();
             let stripped = s.strip_prefix('p').or_else(|| s.strip_prefix('P'));
-            let can_fix = stripped.map(|n| n.parse::<i64>().is_ok()).unwrap_or(false);
+            let can_fix = is_blank || stripped.map(|n| n.parse::<i64>().is_ok()).unwrap_or(false);
             diags.push(Diagnostic {
                 severity: Severity::Error,
                 rule: "fm-intent-type",
-                message: format!("'intent' must be an integer (got '{}')", s),
+                message: format!("'{}' must be an integer (got '{}')", key_name, s),
                 line: None,
                 fixable: can_fix,
+            });
+        } else if p.is_null() {
+            diags.push(Diagnostic {
+                severity: Severity::Error,
+                rule: "fm-intent-type",
+                message: format!("'{}' must be an integer", key_name),
+                line: None,
+                fixable: true,
             });
         } else if !p.is_number() {
             diags.push(Diagnostic {
                 severity: Severity::Error,
                 rule: "fm-intent-type",
-                message: "'intent' must be an integer".into(),
+                message: format!("'{}' must be an integer", key_name),
                 line: None,
                 fixable: false,
             });
@@ -696,24 +749,44 @@ fn check_frontmatter(
     }
 
     // Effort validation
-    if let Some(effort) = fm.get("effort").and_then(|v| v.as_str()) {
-        if !graph::is_valid_effort(effort) {
+    if let Some(effort_val) = fm.get("effort") {
+        if effort_val.is_null() {
             diags.push(Diagnostic {
                 severity: Severity::Warning,
                 rule: "fm-invalid-effort",
-                message: format!(
-                    "Unrecognised effort value '{}' — expected duration string like '1d', '2h', '1w'",
-                    effort
-                ),
+                message: "Unrecognised effort value '' — expected duration string like '1d', '2h', '1w'".into(),
                 line: None,
-                fixable: false,
+                fixable: true,
             });
+        } else if let Some(effort) = effort_val.as_str() {
+            let is_blank = effort.trim().is_empty();
+            if is_blank || !graph::is_valid_effort(effort) {
+                diags.push(Diagnostic {
+                    severity: Severity::Warning,
+                    rule: "fm-invalid-effort",
+                    message: format!(
+                        "Unrecognised effort value '{}' — expected duration string like '1d', '2h', '1w'",
+                        effort
+                    ),
+                    line: None,
+                    fixable: is_blank,
+                });
+            }
         }
     }
 
     // Tags should be an array
     if let Some(tags) = fm.get("tags") {
-        if !tags.is_array() && !tags.is_string() {
+        let is_blank = tags.is_null() || tags.as_str().map(|s| s.trim().is_empty()).unwrap_or(false);
+        if is_blank {
+            diags.push(Diagnostic {
+                severity: Severity::Error,
+                rule: "fm-tags-type",
+                message: "'tags' must be a list or comma-separated string (got blank)".into(),
+                line: None,
+                fixable: true,
+            });
+        } else if !tags.is_array() && !tags.is_string() {
             diags.push(Diagnostic {
                 severity: Severity::Error,
                 rule: "fm-tags-type",
@@ -721,6 +794,56 @@ fn check_frontmatter(
                 line: None,
                 fixable: false,
             });
+        }
+    }
+
+    // Parent blank check
+    if let Some(parent_val) = fm.get("parent") {
+        if is_blank_value(parent_val) {
+            diags.push(Diagnostic {
+                severity: Severity::Warning,
+                rule: "ref-broken-parent",
+                message: "Parent '' not found in PKB".into(),
+                line: None,
+                fixable: true,
+            });
+        }
+    }
+
+    // Blank values on other default-backed frontmatter fields
+    const OTHER_DEFAULT_KEYS: &[(&str, &str)] = &[
+        ("order", "0"),
+        ("depth", "0"),
+        ("leaf", "true"),
+        ("complexity", "unset"),
+        ("consequence", "unset"),
+        ("severity", "unset"),
+        ("goal_type", "unset"),
+        ("assignee", "unset"),
+        ("due", "unset"),
+        ("source", "unset"),
+        ("stakeholder", "unset"),
+        ("waiting_since", "unset"),
+        ("depends_on", "empty"),
+        ("soft_depends_on", "empty"),
+        ("blocks", "empty"),
+        ("soft_blocks", "empty"),
+    ];
+
+    for (key, default_desc) in OTHER_DEFAULT_KEYS {
+        if let Some(val) = fm.get(*key) {
+            if is_blank_value(val) {
+                diags.push(Diagnostic {
+                    severity: Severity::Warning,
+                    rule: "fm-blank-field",
+                    message: format!(
+                        "'{}' has a blank value — remove key to rely on default ({})",
+                        key, default_desc
+                    ),
+                    line: None,
+                    fixable: true,
+                });
+            }
         }
     }
 
@@ -826,7 +949,7 @@ fn check_frontmatter(
     // Reference integrity: parent, depends_on, soft_depends_on
     if let Some(known_ids) = known_ids {
         if let Some(parent) = fm.get("parent").and_then(|v| v.as_str()) {
-            if !known_ids.contains(parent) {
+            if !parent.trim().is_empty() && !known_ids.contains(parent) {
                 diags.push(Diagnostic {
                     severity: Severity::Warning,
                     rule: "ref-broken-parent",
@@ -1138,9 +1261,15 @@ fn remove_key_from_frontmatter(fm_text: &str, target_key: &str) -> String {
         }
 
         if !in_target {
-            if line.starts_with(&target_prefix) {
+            let matches_target = line.starts_with(&target_prefix)
+                || (line.starts_with(target_key)
+                    && line[target_key.len()..]
+                        .trim_start()
+                        .starts_with(':'));
+            if matches_target {
                 in_target = true;
-                let after = line[target_prefix.len()..].trim();
+                let colon_pos = line.find(':').unwrap();
+                let after = line[colon_pos + 1..].trim();
                 is_block = after.starts_with('|') || after.starts_with('>') || after.is_empty();
             } else {
                 lines.push(line);
@@ -1149,6 +1278,30 @@ fn remove_key_from_frontmatter(fm_text: &str, target_key: &str) -> String {
     }
 
     lines.join("\n")
+}
+
+/// Remove one or more keys and their values from frontmatter in `result`.
+fn remove_frontmatter_keys(result: &mut String, keys: &[&str]) {
+    if keys.is_empty() {
+        return;
+    }
+    if result.starts_with("---\n") {
+        if let Some(fm_end_rel) = result[3..].find("\n---") {
+            let fm_end = fm_end_rel + 3;
+            let mut fm_section = result[4..fm_end].to_string();
+            for key in keys {
+                fm_section = remove_key_from_frontmatter(&fm_section, key);
+            }
+            let new_fm_str = if fm_section.trim().is_empty() {
+                String::new()
+            } else if fm_section.ends_with('\n') {
+                fm_section
+            } else {
+                format!("{}\n", fm_section)
+            };
+            *result = format!("---\n{}---{}", new_fm_str, &result[fm_end + 4..]);
+        }
+    }
 }
 
 /// Replace a non-canonical project alias in YAML frontmatter with the canonical slug.
@@ -1200,6 +1353,19 @@ fn apply_fixes(
 
     // ── Frontmatter fixes (only when we have a valid frontmatter object) ──
     if let Some(serde_json::Value::Object(fm)) = fm_data {
+        // Fix 0: Remove blank values on default-backed keys so they rely on defaults
+        let mut blank_keys_to_remove = Vec::new();
+        for key in DEFAULT_BACKED_KEYS {
+            if let Some(val) = fm.get(*key) {
+                if is_blank_value(val) {
+                    blank_keys_to_remove.push(*key);
+                }
+            }
+        }
+        if !blank_keys_to_remove.is_empty() {
+            remove_frontmatter_keys(&mut result, &blank_keys_to_remove);
+        }
+
         // Fix 1: Migrate task_id → id (in-place line replacement)
         if fm.contains_key("task_id") && !fm.contains_key("id") {
             result = regex::Regex::new(r"(?m)^task_id:")
@@ -1222,21 +1388,23 @@ fn apply_fixes(
         }
 
         // Fix 4: Fix "p1"/"P2" style intent → integer
-        if let Some(s) = fm
-            .get("intent")
-            .or_else(|| fm.get("priority"))
-            .and_then(|v| v.as_str())
-        {
-            let stripped = s.strip_prefix('p').or_else(|| s.strip_prefix('P'));
-            if let Some(num_str) = stripped {
-                if let Ok(n) = num_str.parse::<i64>() {
-                    let p_pattern = format!("priority: {}", s);
-                    let i_pattern = format!("intent: {}", s);
-                    let replacement = format!("intent: {}", n);
-                    if result.contains(&p_pattern) {
-                        result = result.replacen(&p_pattern, &replacement, 1);
-                    } else if result.contains(&i_pattern) {
-                        result = result.replacen(&i_pattern, &replacement, 1);
+        if !blank_keys_to_remove.contains(&"intent") && !blank_keys_to_remove.contains(&"priority") {
+            if let Some(s) = fm
+                .get("intent")
+                .or_else(|| fm.get("priority"))
+                .and_then(|v| v.as_str())
+            {
+                let stripped = s.strip_prefix('p').or_else(|| s.strip_prefix('P'));
+                if let Some(num_str) = stripped {
+                    if let Ok(n) = num_str.parse::<i64>() {
+                        let p_pattern = format!("priority: {}", s);
+                        let i_pattern = format!("intent: {}", s);
+                        let replacement = format!("intent: {}", n);
+                        if result.contains(&p_pattern) {
+                            result = result.replacen(&p_pattern, &replacement, 1);
+                        } else if result.contains(&i_pattern) {
+                            result = result.replacen(&i_pattern, &replacement, 1);
+                        }
                     }
                 }
             }
@@ -1278,21 +1446,7 @@ fn apply_fixes(
                 let body_text = body_text.to_string();
 
                 // Step 1: Remove the body: block from the frontmatter section.
-                if result.starts_with("---\n") {
-                    if let Some(fm_end_rel) = result[3..].find("\n---") {
-                        let fm_end = fm_end_rel + 3;
-                        let fm_section = result[4..fm_end].to_string();
-                        let new_fm = remove_key_from_frontmatter(&fm_section, "body");
-                        let new_fm_str = if new_fm.trim().is_empty() {
-                            String::new()
-                        } else if new_fm.ends_with('\n') {
-                            new_fm
-                        } else {
-                            format!("{}\n", new_fm)
-                        };
-                        result = format!("---\n{}---{}", new_fm_str, &result[fm_end + 4..]);
-                    }
-                }
+                remove_frontmatter_keys(&mut result, &["body"]);
 
                 // Step 2: Append body_text to the markdown section if not already present.
                 if let Some(fm_end_rel) = result[3..].find("\n---") {
@@ -1313,21 +1467,7 @@ fn apply_fixes(
         // Fix 6b: Migrate 'blocked' frontmatter key
         if fm.contains_key("blocked") {
             // First, remove the `blocked` key from the frontmatter block text
-            if result.starts_with("---\n") {
-                if let Some(fm_end_rel) = result[3..].find("\n---") {
-                    let fm_end = fm_end_rel + 3;
-                    let fm_section = result[4..fm_end].to_string();
-                    let new_fm = remove_key_from_frontmatter(&fm_section, "blocked");
-                    let new_fm_str = if new_fm.trim().is_empty() {
-                        String::new()
-                    } else if new_fm.ends_with('\n') {
-                        new_fm
-                    } else {
-                        format!("{}\n", new_fm)
-                    };
-                    result = format!("---\n{}---{}", new_fm_str, &result[fm_end + 4..]);
-                }
-            }
+            remove_frontmatter_keys(&mut result, &["blocked"]);
 
             // Now handle the value: move to `depends_on` or the body as prose.
             if let Some(blocked_val) = fm.get("blocked") {
@@ -2281,6 +2421,64 @@ mod tests {
             fixed
         );
         assert!(!fixed.contains("task_id:"), "task_id key should be removed");
+    }
+
+    #[test]
+    fn blank_intent_is_fixable_and_removed_by_fix() {
+        let content = "---\nid: task-123\ntitle: Test\ntype: task\nstatus: ready\nintent: ''\n---\n\nBody.\n";
+        let diags = lint_str(content);
+        let diag = diags.iter().find(|d| d.rule == "fm-intent-type").expect("should detect fm-intent-type");
+        assert!(diag.fixable, "blank intent must be marked fixable");
+
+        let fixed = fix_str(content);
+        assert!(!fixed.contains("intent:"), "intent key should be removed by autofix: {fixed}");
+        assert!(fixed.contains("id: task-123"));
+        assert!(fixed.contains("status: ready"));
+    }
+
+    #[test]
+    fn blank_intent_null_is_fixable_and_removed() {
+        let content = "---\nid: task-123\ntitle: Test\ntype: task\nstatus: ready\nintent:\n---\n\nBody.\n";
+        let diags = lint_str(content);
+        let diag = diags.iter().find(|d| d.rule == "fm-intent-type").expect("should detect fm-intent-type");
+        assert!(diag.fixable, "null intent must be marked fixable");
+
+        let fixed = fix_str(content);
+        assert!(!fixed.contains("intent:"), "null intent must be removed: {fixed}");
+    }
+
+    #[test]
+    fn explicit_intent_is_not_removed() {
+        let content = "---\nid: task-123\ntitle: Test\ntype: task\nstatus: ready\nintent: 2\n---\n\nBody.\n";
+        let fixed = fix_str(content);
+        assert!(fixed.contains("intent: 2"), "valid intent must be preserved: {fixed}");
+    }
+
+    #[test]
+    fn p_style_intent_is_converted_to_int() {
+        let content = "---\nid: task-123\ntitle: Test\ntype: task\nstatus: ready\nintent: p1\n---\n\nBody.\n";
+        let fixed = fix_str(content);
+        assert!(fixed.contains("intent: 1"), "p1 intent must be converted to int: {fixed}");
+    }
+
+    #[test]
+    fn blank_default_backed_fields_are_removed() {
+        let content = "---\nid: task-123\ntitle: Test\ntype: task\nstatus: ready\neffort: ''\nparent: ''\ntags: ''\norder: ''\ncomplexity: ''\nseverity: ''\n---\n\nBody.\n";
+        let diags = lint_str(content);
+        assert!(diags.iter().any(|d| d.rule == "fm-invalid-effort" && d.fixable));
+        assert!(diags.iter().any(|d| d.rule == "ref-broken-parent" && d.fixable));
+        assert!(diags.iter().any(|d| d.rule == "fm-tags-type" && d.fixable));
+        assert!(diags.iter().any(|d| d.rule == "fm-blank-field" && d.fixable));
+
+        let fixed = fix_str(content);
+        assert!(!fixed.contains("effort:"), "effort should be removed: {fixed}");
+        assert!(!fixed.contains("parent:"), "parent should be removed: {fixed}");
+        assert!(!fixed.contains("tags:"), "tags should be removed: {fixed}");
+        assert!(!fixed.contains("order:"), "order should be removed: {fixed}");
+        assert!(!fixed.contains("complexity:"), "complexity should be removed: {fixed}");
+        assert!(!fixed.contains("severity:"), "severity should be removed: {fixed}");
+        assert!(fixed.contains("id: task-123"));
+        assert!(fixed.contains("status: ready"));
     }
 
     #[test]
