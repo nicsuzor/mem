@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.97](https://github.com/nicsuzor/mem/compare/mem-v0.3.96...mem-v0.3.97) (2026-09-26)
+
+
+### Bug Fixes
+
+* **mcp:** remove vector index entry on delete and withhold orphaned search hits (task_424948a7) ([b2a4571](https://github.com/nicsuzor/mem/commit/b2a457186a5a2fbf4e1eec0b247c41b009703ad3))
+* **mcp:** remove vector index entry on delete and withhold orphaned search hits (task_424948a7) ([78abb43](https://github.com/nicsuzor/mem/commit/78abb43e14035ba577a20f3c68465d72237ba77f))
+
 ## [0.3.96](https://github.com/nicsuzor/mem/compare/mem-v0.3.95...mem-v0.3.96) (2026-09-22)
 
 
