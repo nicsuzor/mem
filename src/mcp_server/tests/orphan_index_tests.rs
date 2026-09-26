@@ -183,27 +183,36 @@ fn test_repair_index_orphans_reports_clean_store_as_clean() {
     assert_eq!(val["orphans"], json!([]));
 }
 
-// ── Goal 2: search results label the orphan in the hit itself ──
+// ── Goal 2: search results withhold the orphan and never serve title/tags (task_424948a7) ──
 
 #[test]
-fn test_pkb_search_labels_orphaned_hit_and_spares_live_hit() {
+fn test_pkb_search_withholds_orphaned_hit_and_spares_live_hit() {
     let (_tmp, server) = setup_server_with_orphaned_index_entry();
 
+    // Markdown format: querying the ghost keyword must return no results for the ghost
     let result = server
         .handle_pkb_search(&json!({"query": "zzzghostkeyword", "limit": 10}))
         .expect("search succeeds");
     let text = result_text(&result);
-
-    let blocks: Vec<&str> = text.split("### ").collect();
-    let ghost_block = blocks
-        .iter()
-        .find(|b| b.contains("`task-ghost`"))
-        .unwrap_or_else(|| panic!("expected a hit for task-ghost in: {text}"));
     assert!(
-        ghost_block.contains("ORPHANED INDEX ENTRY"),
-        "orphaned hit must be labelled: {ghost_block}"
+        !text.contains("task-ghost") && !text.contains("Ghost Task"),
+        "orphaned hit must be withheld in markdown search: {text}"
     );
 
+    // JSON format: querying the ghost keyword must not return the ghost in results
+    let result_json = server
+        .handle_pkb_search(&json!({"query": "zzzghostkeyword", "limit": 10, "format": "json"}))
+        .expect("search succeeds");
+    let val: serde_json::Value = serde_json::from_str(&result_text(&result_json)).unwrap_or_default();
+    let results_arr = val.get("results").and_then(|v| v.as_array());
+    if let Some(arr) = results_arr {
+        assert!(
+            !arr.iter().any(|item| item["id"] == "task-ghost" || item["title"] == "Ghost Task"),
+            "orphaned hit must be withheld in json search: {val}"
+        );
+    }
+
+    // Live document is returned normally
     let result2 = server
         .handle_pkb_search(&json!({"query": "zzzlivekeyword", "limit": 10}))
         .expect("search succeeds");
@@ -220,7 +229,7 @@ fn test_pkb_search_labels_orphaned_hit_and_spares_live_hit() {
 }
 
 #[test]
-fn test_search_by_tag_labels_orphaned_hit_and_spares_live_hit() {
+fn test_search_by_tag_withholds_orphaned_hit_and_spares_live_hit() {
     let (_tmp, server) = setup_server_with_orphaned_index_entry();
 
     let result = server
@@ -228,13 +237,9 @@ fn test_search_by_tag_labels_orphaned_hit_and_spares_live_hit() {
         .expect("search_by_tag succeeds");
     let text = result_text(&result);
 
-    let ghost_line = text
-        .lines()
-        .find(|l| l.contains("`task-ghost`"))
-        .unwrap_or_else(|| panic!("expected a line for task-ghost in: {text}"));
     assert!(
-        ghost_line.contains("ORPHANED INDEX ENTRY"),
-        "orphaned hit must be labelled: {ghost_line}"
+        !text.contains("task-ghost") && !text.contains("Ghost Task"),
+        "orphaned hit must be withheld from search_by_tag: {text}"
     );
 
     let live_line = text
@@ -244,6 +249,75 @@ fn test_search_by_tag_labels_orphaned_hit_and_spares_live_hit() {
     assert!(
         !live_line.contains("ORPHANED INDEX ENTRY"),
         "live hit must not be mislabelled: {live_line}"
+    );
+}
+
+#[test]
+fn test_delete_document_removes_vector_index_entry_and_leaves_zero_orphans() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    std::fs::create_dir_all(root.join("tasks")).unwrap();
+    write_test_polecat_yaml(root);
+
+    std::fs::write(
+        root.join("tasks/task-live.md"),
+        "---\nid: task-live\ntitle: Live Task\ntype: task\nstatus: active\nproject: proj-test\ntags: [deletetest]\n---\n\nLive body keyword zzzdeletetest.\n",
+    )
+    .unwrap();
+
+    let docs: Vec<crate::pkb::PkbDocument> = crate::pkb::scan_directory_all(root)
+        .into_iter()
+        .filter_map(|p| crate::pkb::parse_file_relative(&p, root))
+        .collect();
+    assert_eq!(docs.len(), 1);
+
+    let graph = GraphStore::build(&docs, root);
+    let mut store = VectorStore::new(3);
+    for doc in &docs {
+        store.insert_precomputed(doc, vec![doc.body.clone()], vec![vec![1.0, 0.0, 0.0]]);
+    }
+
+    let embedder = Embedder::new_dummy();
+    let db_path = root.join("db");
+    let server = PkbSearchServer::new(
+        Arc::new(RwLock::new(store)),
+        Arc::new(embedder),
+        root.to_path_buf(),
+        db_path,
+        Arc::new(RwLock::new(graph)),
+    );
+
+    // Initial state: 0 orphans
+    let initial_repair = server
+        .handle_repair_index_orphans(&json!({"dry_run": true}))
+        .expect("repair call succeeds");
+    let val_init: serde_json::Value = serde_json::from_str(&result_text(&initial_repair)).unwrap();
+    assert_eq!(val_init["orphan_count"], json!(0));
+
+    // Delete the task via handle_delete_document
+    let del_res = server
+        .handle_delete_document(&json!({"id": "task-live"}))
+        .expect("delete succeeds");
+    assert!(result_text(&del_res).contains("Deleted: Live Task (`task-live`)"));
+
+    // Immediately check for orphans: must be 0 orphans (no vector index entry left behind!)
+    let after_repair = server
+        .handle_repair_index_orphans(&json!({"dry_run": true}))
+        .expect("repair call succeeds");
+    let val_after: serde_json::Value = serde_json::from_str(&result_text(&after_repair)).unwrap();
+    assert_eq!(
+        val_after["orphan_count"],
+        json!(0),
+        "delete must not leave orphaned index entry behind: {val_after}"
+    );
+
+    // Search must not return the deleted document
+    let search_res = server
+        .handle_pkb_search(&json!({"query": "zzzdeletetest", "limit": 10}))
+        .expect("search succeeds");
+    assert!(
+        result_text(&search_res).contains("No results found.")
+            || !result_text(&search_res).contains("task-live")
     );
 }
 

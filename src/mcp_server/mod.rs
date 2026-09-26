@@ -1441,21 +1441,25 @@ impl PkbSearchServer {
     }
 
     /// Remove a document from the vector store if the index is not locked.
-    pub(crate) fn try_remove_document(&self, id: &str) {
+    pub(crate) fn try_remove_document(&self, id: &str, abs_path: Option<&Path>) {
         self.maybe_drain_deferred();
 
         if !self.index_lock_available() {
             // Defer the remove. Resolve to absolute so the drain step's
             // existence check works correctly (the file will be absent on
             // disk, so the drain will pick the remove path).
-            let rel_path = {
-                let graph = self.graph.read();
-                graph
-                    .resolve(id)
-                    .map(|n| n.path.clone())
-                    .unwrap_or_else(|| PathBuf::from(id))
+            let abs = if let Some(p) = abs_path {
+                p.to_path_buf()
+            } else {
+                let rel_path = {
+                    let graph = self.graph.read();
+                    graph
+                        .resolve(id)
+                        .map(|n| n.path.clone())
+                        .unwrap_or_else(|| PathBuf::from(id))
+                };
+                self.pkb_root.join(rel_path)
             };
-            let abs = self.pkb_root.join(rel_path);
             self.deferred_paths.lock().insert(abs);
             self.lock_was_held
                 .store(true, std::sync::atomic::Ordering::Relaxed);

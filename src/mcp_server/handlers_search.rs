@@ -83,6 +83,11 @@ impl PkbSearchServer {
         let mut candidates: Vec<(&crate::vectordb::SearchResult, f32)> = Vec::new();
 
         for r in &results {
+            // task_424948a7: Withhold unresolvable / orphaned index entries
+            if !r.path.is_file() || graph.resolve(&r.id).is_none() {
+                continue;
+            }
+
             let is_target = r
                 .doc_type
                 .as_deref()
@@ -178,18 +183,14 @@ impl PkbSearchServer {
                         node.scope, node.uncertainty, node.criticality
                     ));
                 }
-            } else {
-                // task_5f2c5fa6: no graph node for this id. If the index
-                // entry's own backing file is also gone, this is an
-                // orphaned index entry — label it rather than silently
-                // dropping the ID line.
-                output.push_str(&format!("**ID:** `{}`\n", r.id));
-                if !r.path.as_os_str().is_empty() && !r.path.is_file() {
-                    output.push_str(
-                        "**⚠ ORPHANED INDEX ENTRY:** no backing document on disk for this id — \
-                         get_task/get_document will not find it. Repair with `repair_index_orphans`.\n",
-                    );
+            } else if let Some(node) = graph.resolve(&r.id) {
+                let id = node.task_id.as_deref().unwrap_or(&node.id);
+                output.push_str(&format!("**ID:** `{id}`\n"));
+                if let Some(ref s) = node.status {
+                    output.push_str(&format!("**Status:** {s}\n"));
                 }
+            } else {
+                output.push_str(&format!("**ID:** `{}`\n", r.id));
             }
             output.push('\n');
         }
@@ -417,6 +418,10 @@ impl PkbSearchServer {
             });
         }
 
+        // task_424948a7: Withhold any orphaned/unresolvable index entry so a search result
+        // never serves title or tags for an id that get_task/get_document cannot resolve.
+        scored.retain(|(r, _)| r.path.is_file() && graph.resolve(&r.id).is_some());
+
         scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
 
         scored.truncate(limit);
@@ -497,12 +502,6 @@ impl PkbSearchServer {
                 .or_else(|| node.and_then(|n| n.node_type.as_deref()))
                 .unwrap_or("untyped");
             let is_task = crate::graph::TASK_TYPES.contains(&node_type);
-            // task_5f2c5fa6: an index entry can outlive its backing file (a
-            // deleted/moved document that only a full reindex — not
-            // refresh_graph — reconciles away). Label it in the hit itself
-            // so a reader doesn't chase an id that resolves nowhere; repair
-            // via repair_index_orphans.
-            let is_orphaned = !r.path.as_os_str().is_empty() && !r.path.is_file();
 
             output.push_str(&format!(
                 "### {}. {} (score: {:.3})\n",
@@ -512,12 +511,6 @@ impl PkbSearchServer {
             ));
             output.push_str(&format!("**ID:** `{display_id}`\n"));
             output.push_str(&format!("**Type:** {node_type}\n"));
-            if is_orphaned {
-                output.push_str(
-                    "**⚠ ORPHANED INDEX ENTRY:** no backing document on disk for this id — \
-                     get_task/get_document will not find it. Repair with `repair_index_orphans`.\n",
-                );
-            }
             // Only actionable task nodes carry actionable task status (AC3 / aops_9d3be3b3)
             if is_task {
                 if let Some(status) = node.and_then(|n| n.status.as_deref()) {
@@ -847,13 +840,17 @@ impl PkbSearchServer {
 
         let store = self.store.read();
         let all = store.list_documents(None, type_filter, None, &self.pkb_root);
+        drop(store);
 
+        let graph = self.graph.read();
         let mut matching: Vec<_> = all
             .into_iter()
             .filter(|r| {
                 tags.iter()
                     .all(|tag| r.tags.iter().any(|t| t.eq_ignore_ascii_case(tag)))
             })
+            // task_424948a7: Withhold unresolvable / orphaned index entries
+            .filter(|r| r.path.is_file() && graph.resolve(&r.id).is_some())
             .collect();
         matching.truncate(limit);
 
@@ -875,11 +872,6 @@ impl PkbSearchServer {
             output.push_str(&format!(" ({})", r.tags.join(", ")));
             let id = &r.id;
             output.push_str(&format!(" — `{id}`"));
-            // task_5f2c5fa6: flag an index entry whose backing document is
-            // gone rather than presenting it as an ordinary hit.
-            if !r.path.as_os_str().is_empty() && !r.path.is_file() {
-                output.push_str(" — **⚠ ORPHANED INDEX ENTRY (no backing document; repair with `repair_index_orphans`)**");
-            }
             output.push('\n');
         }
 

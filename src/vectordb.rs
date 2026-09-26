@@ -938,7 +938,24 @@ impl VectorStore {
     /// Returns true if the document was found and removed.
     pub fn remove(&mut self, id: &str) -> bool {
         self.bm25.write().remove(id);
-        self.documents.remove(id).is_some()
+        if self.documents.remove(id).is_some() {
+            true
+        } else {
+            let target_path = Path::new(id);
+            let found_id = self.documents.iter().find_map(|(k, v)| {
+                if v.id == id || v.path == target_path || v.path.to_string_lossy() == id {
+                    Some(k.clone())
+                } else {
+                    None
+                }
+            });
+            if let Some(actual_id) = found_id {
+                self.bm25.write().remove(&actual_id);
+                self.documents.remove(&actual_id).is_some()
+            } else {
+                false
+            }
+        }
     }
 
     /// Remove documents whose IDs are no longer present in the PKB.
