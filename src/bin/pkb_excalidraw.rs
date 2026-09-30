@@ -1830,11 +1830,9 @@ pub fn mutate_ungroup(
                 if arr.len() < before {
                     ungrouped_count += 1;
                 }
-            } else if ids.is_some() {
-                if !arr.is_empty() {
-                    arr.clear();
-                    ungrouped_count += 1;
-                }
+            } else if ids.is_some() && !arr.is_empty() {
+                arr.clear();
+                ungrouped_count += 1;
             }
         }
     }

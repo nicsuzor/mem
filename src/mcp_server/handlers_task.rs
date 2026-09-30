@@ -1995,6 +1995,16 @@ impl PkbSearchServer {
         // Applies when status is being set to done, cancelled, or archived.
         let new_status = updates.get("status").and_then(|v| v.as_str());
         if let Some(ns) = new_status {
+            if !crate::graph::is_valid_status(ns) {
+                return Err(McpError {
+                    code: ErrorCode::INVALID_PARAMS,
+                    message: Cow::from(format!(
+                        "Invalid status \"{ns}\". Must be one of: {}.",
+                        crate::graph::VALID_STATUSES.join(", ")
+                    )),
+                    data: None,
+                });
+            }
             if crate::graph::is_closed_for_hierarchy(Some(ns)) {
                 let recursive = args
                     .get("recursive")
@@ -2171,7 +2181,6 @@ impl PkbSearchServer {
 
         // Soft warning if setting a terminal status via update_task instead of release_task
         let terminal_statuses = [
-            "merge_ready",
             "done",
             "review",
             "blocked",

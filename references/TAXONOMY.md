@@ -220,7 +220,6 @@ The tree hierarchy is a **spanning tree** of the underlying dependency graph. It
 | `ready`       | Decomposed to leaf tasks with all hard dependencies resolved                     |
 | `queued`      | User has manually marked this task available for agent dispatch                  |
 | `in_progress` | Claimed by an agent or human — actively being worked                             |
-| `merge_ready` | Work complete and committed, waiting for review/merge                            |
 | `review`      | Awaiting human review — either mid-flight attention or post-PR changes requested |
 | `partial`     | Worker legitimately stopped at a scope seam — draft PR plus a live follow-up task. Not merge-ready, not done; the follow-up child carries the remainder |
 | `done`        | Complete — no further action required                                            |
@@ -241,7 +240,7 @@ The tree hierarchy is a **spanning tree** of the underlying dependency graph. It
 
 Framework reporting distinguishes between the **broad view** of all open work and the **narrow view** of what can be started right now:
 
-- **Actionable**: Any task that is not in a terminal state (`done`, `cancelled`, `someday`). This encompasses the entire working set: `inbox`, `ready`, `queued`, `in_progress`, `merge_ready`, `review`, `blocked`, and `paused`. Most high-level dashboards (like the `/daily` note) report actionable counts.
+- **Actionable**: Any task that is not in a terminal state (`done`, `cancelled`, `someday`). This encompasses the entire working set: `inbox`, `ready`, `queued`, `in_progress`, `review`, `blocked`, and `paused`. Most high-level dashboards (like the `/daily` note) report actionable counts.
 - **Ready**: A subset of actionable work. Strictly limited to leaf tasks that are fully decomposed and have zero unmet dependencies. Tasks in `in_progress` or `review` are actionable but are **not** ready (as they are already claimed or awaiting feedback). Execution-oriented views (like `pkb tasks ready`) focus on this narrow subset.
 
 ---
@@ -334,7 +333,7 @@ Workflows define WHAT steps to take and in WHAT order. Skills define HOW to exec
 ### Status lifecycle
 
 ```
-inbox → ready → queued → in_progress → merge_ready → done
+inbox → ready → queued → in_progress → done
                                      ↘ review
                                      ↘ blocked
                                      ↘ partial   (draft PR + live follow-up task)

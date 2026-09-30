@@ -241,7 +241,7 @@ fn run_suite(n_tasks: usize, iters: usize, use_dummy_embedder: bool) {
             .is_ok()
     });
 
-    // release_task (single) — different task, status=merge_ready.
+    // release_task (single) — different task, status=done.
     // Use upper-half range to avoid collision with complete_task.
     let release_iters = iters.min(n / 2);
     time_handler("release_task (single)", release_iters, |i| {
@@ -249,7 +249,7 @@ fn run_suite(n_tasks: usize, iters: usize, use_dummy_embedder: bool) {
         server
             .bench_release_task(&json!({
                 "id": id,
-                "status": "merge_ready",
+                "status": "done",
                 "summary": "bench release",
             }))
             .is_ok()

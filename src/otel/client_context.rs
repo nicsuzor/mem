@@ -105,7 +105,7 @@ mod tests {
         let registry = SessionRegistry::new();
         
         // 1. HTTP header takes precedence
-        let mut req = Request::builder().header("x-session-id", "header-session").body(()).unwrap();
+        let req = Request::builder().header("x-session-id", "header-session").body(()).unwrap();
         let (parts, _) = req.into_parts();
         let meta = json!({ "session_id": "meta-session" });
         
@@ -119,7 +119,7 @@ mod tests {
         assert_eq!(cx.session_id, "meta-session");
         
         // 3. MCP transport fallback
-        let mut req = Request::builder().header("mcp-session-id", "transport-session").body(()).unwrap();
+        let req = Request::builder().header("mcp-session-id", "transport-session").body(()).unwrap();
         let (parts, _) = req.into_parts();
         let cx = ClientContext::extract(Some(&parts), None, &registry);
         assert_eq!(cx.session_id, "transport-session");
@@ -129,7 +129,7 @@ mod tests {
     fn test_traceparent_extraction() {
         opentelemetry::global::set_text_map_propagator(opentelemetry_sdk::propagation::TraceContextPropagator::new());
         let registry = SessionRegistry::new();
-        let mut req = Request::builder()
+        let req = Request::builder()
             .header("traceparent", "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01")
             .body(())
             .unwrap();

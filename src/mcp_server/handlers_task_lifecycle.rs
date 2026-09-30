@@ -834,14 +834,13 @@ impl PkbSearchServer {
             .ok_or_else(|| McpError {
                 code: ErrorCode::INVALID_PARAMS,
                 message: Cow::from(
-                    "Missing required parameter: status. Must be one of: merge_ready, done, review, blocked, cancelled, partial.",
+                    "Missing required parameter: status. Must be one of: done, review, blocked, cancelled, partial.",
                 ),
                 data: None,
             })?;
 
         // Validate status enum with helpful suggestions
         let valid_statuses = [
-            "merge_ready",
             "done",
             "review",
             "blocked",
@@ -850,15 +849,14 @@ impl PkbSearchServer {
         ];
         if !valid_statuses.contains(&status) {
             let suggestion = match status {
-                "complete" | "completed" => " Did you mean \"done\"?",
-                "ready" | "merge-ready" => " Did you mean \"merge_ready\"?",
+                "complete" | "completed" | "merge_ready" | "merge-ready" => " Did you mean \"done\"?",
                 "cancel" => " Did you mean \"cancelled\"?",
                 _ => "",
             };
             return Err(McpError {
                 code: ErrorCode::INVALID_PARAMS,
                 message: Cow::from(format!(
-                    "Invalid status \"{status}\". Must be one of: merge_ready, done, review, blocked, cancelled, partial.{suggestion}\n\
+                    "Invalid status \"{status}\". Must be one of: done, review, blocked, cancelled, partial.{suggestion}\n\
                      For non-terminal updates (intent, tags, assignee), use update_task instead."
                 )),
                 data: None,
@@ -873,7 +871,7 @@ impl PkbSearchServer {
                 code: ErrorCode::INVALID_PARAMS,
                 message: Cow::from(
                     "Missing required parameter: summary (or completion_evidence). Describe what was done before releasing this task.\n\
-                     Example: release_task(id=\"task-abc\", status=\"merge_ready\", summary=\"Implemented X with Y\", pr_url=\"https://...\")",
+                     Example: release_task(id=\"task-abc\", status=\"done\", summary=\"Implemented X with Y\", pr_url=\"https://...\")",
                 ),
                 data: None,
             })?;
@@ -953,11 +951,11 @@ impl PkbSearchServer {
         }
 
         // Reject closing a task with open children unless recursive=true.
-        // Applies to terminal success statuses: done, merge_ready.
+        // Applies to terminal success statuses: done.
         // Escalation / handback statuses (blocked, cancelled, review, partial)
         // do not reject open children so escalation paths stay open.
         let recursive_close_descs: Vec<(String, std::path::PathBuf)> =
-            if status == "done" || status == "merge_ready" {
+            if status == "done" {
                 let recursive = args
                     .get("recursive")
                     .and_then(|v| v.as_bool())
@@ -1240,9 +1238,6 @@ impl PkbSearchServer {
 
         // Build response with soft warnings
         let mut warnings = Vec::new();
-        if status == "merge_ready" && pr_url.is_none() {
-            warnings.push("WARNING: No pr_url for merge_ready. Update the task with the PR URL when available.");
-        }
         if status == "blocked" && blocker.is_none_or(|b| b.trim().is_empty()) {
             warnings.push("WARNING: No blocker description. Consider updating with what's blocking this task.");
         }

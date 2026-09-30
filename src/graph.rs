@@ -628,12 +628,12 @@ pub fn create_id_verbatim(prefix: &str) -> String {
 /// Normalize legacy/alternate status values to the canonical set defined in
 /// `aops-core/TAXONOMY.md`. Canonical statuses pass through unchanged.
 ///
-/// Canonical set (12 values): `inbox, ready, queued, in_progress, merge_ready,
+/// Canonical set (11 values): `inbox, ready, queued, in_progress,
 /// review, done, blocked, paused, someday, cancelled, partial`.
 pub fn resolve_status_alias(status: &str) -> &str {
     match status {
         // Passthrough — canonical values
-        "inbox" | "ready" | "queued" | "in_progress" | "merge_ready" | "review" | "done"
+        "inbox" | "ready" | "queued" | "in_progress" | "review" | "done"
         | "blocked" | "paused" | "someday" | "cancelled" | "partial" => status,
 
         // Legacy "active" = in-flight / claimed work (per Nic 2026-06-27). The old
@@ -660,9 +660,6 @@ pub fn resolve_status_alias(status: &str) -> &str {
         | "invited"
         | "awaiting-approval"
         | "submitted" => "review",
-
-        // Merge-ready
-        "merge-ready" => "merge_ready",
 
         // Done-family: completed externally or internally
         "complete" | "completed" | "closed" | "archived" | "resolved" | "published-spir"
@@ -807,8 +804,7 @@ pub fn status_rank(status: &str) -> i32 {
         "queued" => 2,
         "in_progress" => 3,
         "review" => 4,
-        "merge_ready" => 5,
-        "done" => 6,
+        "done" => 5,
         // Side states are generally ranked low but high enough to not flag everything.
         // `partial` is a stop-gate shape (worker paused at a seam with a live child),
         // so rank it like the other side states — entering or resuming it must not
@@ -856,14 +852,13 @@ pub fn parse_effort_days(effort: &str) -> Option<i64> {
 /// All recognized canonical status values (post-alias resolution).
 /// See `aops-core/TAXONOMY.md` for semantic definitions.
 ///
-/// Lifecycle: `inbox → ready → queued → in_progress → merge_ready → done`
+/// Lifecycle: `inbox → ready → queued → in_progress → done`
 /// with branches to `review`, `blocked`, `paused`, `someday`, `cancelled`, `partial`.
 ///
 /// - **inbox**: default for new nodes — captured but not triaged
 /// - **ready**: decomposed with dependencies resolved (auto-computed)
 /// - **queued**: human-gated — available for agent dispatch (manual promotion)
 /// - **in_progress**: claimed and actively being worked
-/// - **merge_ready**: work complete and committed, awaiting merge
 /// - **review**: awaiting human review (mid-flight or post-PR)
 /// - **done**: completed successfully
 /// - **blocked**: waiting on an unresolved external dependency
@@ -879,7 +874,6 @@ pub const VALID_STATUSES: &[&str] = &[
     "ready",
     "queued",
     "in_progress",
-    "merge_ready",
     "review",
     "done",
     "blocked",
@@ -899,7 +893,6 @@ pub const ACTIVE_STATUSES: &[&str] = &[
     "ready",
     "queued",
     "in_progress",
-    "merge_ready",
     "review",
     "paused",
     "someday",
