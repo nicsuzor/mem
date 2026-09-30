@@ -389,7 +389,7 @@ use super::*;
 
         let release_res = server.handle_release_task(&json!({
             "id": reviewer_task_id,
-            "status": "merge_ready",
+            "status": "done",
             "summary": "same-identity release should not be blocked (D1)"
         }));
         assert!(
@@ -1151,9 +1151,9 @@ use super::*;
 
     #[test]
     fn test_release_task_success_status_unaffected_by_reason_gate() {
-        // merge_ready and done are not handback statuses — no reason/blocker
+        // done is not a handback status — no reason/blocker
         // is required, only `summary` (unchanged behavior).
-        for status in ["merge_ready", "done"] {
+        for status in ["done"] {
             let (_tmp, server) = build_disk_backed_server(&[(
                 "tasks/task-new.md",
                 "---\nid: task-new\ntitle: New task\ntype: task\nstatus: ready\ncreated: 2026-07-23T10:00:00+00:00\n---\n\n# New task\n",
@@ -1262,9 +1262,9 @@ use super::*;
         }
     }
 
-    // ── epic-50b5ade9.2: release_task rejects terminal status (done, merge_ready) when task has open subtasks
+    // ── epic-50b5ade9.2: release_task rejects terminal status (done) when task has open subtasks
     #[test]
-    fn test_release_task_rejects_done_and_merge_ready_with_open_children() {
+    fn test_release_task_rejects_done_with_open_children() {
         let (_tmp, server) = build_disk_backed_server(&[
             (
                 "tasks/task-parent.md",
@@ -1276,7 +1276,7 @@ use super::*;
             ),
         ]);
 
-        for terminal_status in ["done", "merge_ready"] {
+        for terminal_status in ["done"] {
             let err = server
                 .handle_release_task(&json!({
                     "id": "task-parent",
@@ -1399,7 +1399,7 @@ use super::*;
         let res_rec = server3
             .handle_release_task(&json!({
                 "id": "task-p3",
-                "status": "merge_ready",
+                "status": "done",
                 "summary": "Releasing parent and cascading to children.",
                 "recursive": true,
             }))
@@ -1720,7 +1720,7 @@ use super::*;
 
     #[test]
     fn test_release_task_reported_status_matches_persisted_status() {
-        for status in ["cancelled", "blocked", "review", "partial", "done", "merge_ready"] {
+        for status in ["cancelled", "blocked", "review", "partial", "done"] {
             let (tmp, server) = build_disk_backed_server(&[(
                 "tasks/task-new.md",
                 "---\nid: task-new\ntitle: New task\ntype: task\nstatus: ready\ncreated: 2026-07-23T10:00:00+00:00\n---\n\n# New task\n",
@@ -1778,6 +1778,57 @@ use super::*;
                 "status={status}: get_task must read back the same status release_task reported"
             );
         }
+    }
+
+    #[test]
+    fn test_setting_merge_ready_is_rejected() {
+        let (_tmp, server) = build_disk_backed_server(&[(
+            "tasks/task-test.md",
+            "---\nid: task-test\ntitle: Test task\ntype: task\nstatus: ready\ncreated: 2026-07-23T10:00:00+00:00\n---\n\n# Test task\n",
+        )]);
+
+        // 1. release_task with merge_ready must be rejected
+        let err_release = server
+            .handle_release_task(&json!({
+                "id": "task-test",
+                "status": "merge_ready",
+                "summary": "Attempting to release as merge_ready",
+            }))
+            .expect_err("release_task with status=merge_ready must be rejected");
+        assert_eq!(err_release.code, ErrorCode::INVALID_PARAMS);
+        assert!(
+            err_release.message.contains("Invalid status \"merge_ready\""),
+            "unexpected error message: {}",
+            err_release.message
+        );
+
+        // 2. update_task with merge_ready must be rejected
+        let err_update = server
+            .handle_update_task(&json!({
+                "id": "task-test",
+                "updates": { "status": "merge_ready" }
+            }))
+            .expect_err("update_task with status=merge_ready must be rejected");
+        assert_eq!(err_update.code, ErrorCode::INVALID_PARAMS);
+        assert!(
+            err_update.message.contains("Invalid status \"merge_ready\""),
+            "unexpected error message: {}",
+            err_update.message
+        );
+
+        // 3. create_task with merge_ready must be rejected
+        let err_create = server
+            .handle_create_task(&json!({
+                "title": "New task with merge_ready",
+                "parent": "task-test",
+                "status": "merge_ready",
+            }))
+            .expect_err("create_task with status=merge_ready must be rejected");
+        assert!(
+            err_create.message.contains("Invalid status: merge_ready"),
+            "unexpected error message: {}",
+            err_create.message
+        );
     }
 
     #[test]

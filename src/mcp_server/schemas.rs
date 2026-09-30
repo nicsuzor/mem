@@ -305,7 +305,7 @@ impl PkbSearchServer {
             .with_annotations(ToolAnnotations::new().destructive(true)),
             Tool::new(
                 "release_task",
-                "Release a task to a terminal or handoff status (merge_ready, done, review, blocked, cancelled, partial). Supersedes complete_task (use status='done'). Performs session handover by recording work history, linking PRs/issues, and tracking follow-up work. If 'id' is omitted, an ad-hoc session task is created (requires `project` parameter). Evidence-or-failure-reason contract: `summary` (or `completion_evidence`) is always required; releasing to blocked/cancelled/review/partial additionally requires a non-empty `reason` (or `blocker`, for `blocked`) — a handback with neither is rejected. Tasks created before this requirement shipped release under the old, optional rules.",
+                "Release a task to a terminal or handoff status (done, review, blocked, cancelled, partial). Supersedes complete_task (use status='done'). Performs session handover by recording work history, linking PRs/issues, and tracking follow-up work. If 'id' is omitted, an ad-hoc session task is created (requires `project` parameter). Evidence-or-failure-reason contract: `summary` (or `completion_evidence`) is always required; releasing to blocked/cancelled/review/partial additionally requires a non-empty `reason` (or `blocker`, for `blocked`) — a handback with neither is rejected. Tasks created before this requirement shipped release under the old, optional rules.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -313,12 +313,12 @@ impl PkbSearchServer {
                         "project": { "type": "string", "description": "Project routing slug, validated against polecat.yaml (e.g. 'aops', 'mem'). Required when 'id' is omitted (ad-hoc task creation); optional when 'id' is provided." },
                         "status": {
                             "type": "string",
-                            "enum": ["merge_ready", "done", "review", "blocked", "cancelled", "partial"],
+                            "enum": ["done", "review", "blocked", "cancelled", "partial"],
                             "description": "Target status"
                         },
                         "summary": { "type": "string", "description": "What was done and outcome. 1-3 sentences minimum. Always required (or provide completion_evidence)." },
-                        "completion_evidence": { "type": "string", "description": "Alias for summary: what was done and outcome (required when status is done/merge_ready)." },
-                        "pr_url": { "type": "string", "description": "Pull request or commit URL (recommended for merge_ready)" },
+                        "completion_evidence": { "type": "string", "description": "Alias for summary: what was done and outcome (required when status is done)." },
+                        "pr_url": { "type": "string", "description": "Pull request or commit URL" },
                         "branch": { "type": "string", "description": "Git branch name (optional)" },
                         "blocker": { "type": "string", "description": "What is blocking this task. Required (non-empty), together with `reason`, when status=blocked — at least one of the two must be given." },
                         "reason": { "type": "string", "description": "Why the task didn't ship cleanly. Required (non-empty) when status is blocked/cancelled/review/partial (for status=blocked, `blocker` may be given instead)." },
@@ -326,7 +326,7 @@ impl PkbSearchServer {
                         "issue_url": { "type": "string", "description": "External issue/ticket URL" },
                         "follow_up_tasks": { "type": "array", "items": { "type": "string" }, "description": "IDs of new tasks created as follow-ups. Validated for existence." },
                         "release_summary": { "type": "string", "description": "Detailed technical summary for the release. Warning if > 500 chars." },
-                        "recursive": { "type": "boolean", "description": "Cascade-close all open descendant tasks when releasing as done or merge_ready. Default: false." }
+                        "recursive": { "type": "boolean", "description": "Cascade-close all open descendant tasks when releasing as done. Default: false." }
                     },
                     "required": ["status", "summary"]
                 }))
@@ -346,7 +346,7 @@ impl PkbSearchServer {
                                 { "type": "string" },
                                 { "type": "array", "items": { "type": "string" } }
                             ],
-                            "description": "Filter by the node's stored frontmatter status value (exact match, case-insensitive) — never a computed set. Accepts a single status (e.g. 'ready'), a comma-separated list (e.g. 'ready,in_progress'), or an array of statuses (e.g. ['ready', 'in_progress']). One of: inbox, ready, queued, in_progress, review, merge_ready, blocked, paused, someday, partial, done, cancelled. 'ready' matches only nodes literally stored with status: ready (not a leaf/unblocked computation); 'blocked' matches only nodes literally stored with status: blocked (not the computed unmet-deps set — see the top-level `blocked` field on each row for that)."
+                            "description": "Filter by the node's stored frontmatter status value (exact match, case-insensitive) — never a computed set. Accepts a single status (e.g. 'ready'), a comma-separated list (e.g. 'ready,in_progress'), or an array of statuses (e.g. ['ready', 'in_progress']). One of: inbox, ready, queued, in_progress, review, blocked, paused, someday, partial, done, cancelled. 'ready' matches only nodes literally stored with status: ready (not a leaf/unblocked computation); 'blocked' matches only nodes literally stored with status: blocked (not the computed unmet-deps set — see the top-level `blocked` field on each row for that)."
                         },
                         "intent": { "type": "integer", "description": "Filter to tasks whose effective intent (own or any downstream task via blocks/parent) ≤ N. E.g. intent=0 returns every task that touches a P0, including its blockers." },
                         "severity": { "type": "integer", "description": "Filter by exact severity" },
@@ -452,7 +452,7 @@ impl PkbSearchServer {
             .with_annotations(ToolAnnotations::new().read_only(true)),
             Tool::new(
                 "update_task",
-                "Patch metadata fields on an existing task. Pass fields either nested as `updates: {status: \"done\"}` or flat at the top level (e.g. status=\"done\"). Use for non-terminal updates (tags, assignee, body). For state transitions (done, merge_ready, blocked, cancelled, review, partial), prefer release_task — it also enforces the evidence-or-failure-reason contract (completion_evidence for done; reason/blocker for handback statuses) that this generic patch path does not. Setting status=\"done\" here still requires a non-empty `completion_evidence` field (in updates or top-level), unchanged. A caller-supplied `intent` (or legacy `priority`) is accepted under Nic's standing delegation to agents (2026-09-10: 'allow agents to set intent on my behalf') — set it from Nic's strategic context read across the graph, never the agent's own read of its own work's importance, and never inherited or copied from a parent/sibling task.",
+                "Patch metadata fields on an existing task. Pass fields either nested as `updates: {status: \"done\"}` or flat at the top level (e.g. status=\"done\"). Use for non-terminal updates (tags, assignee, body). For state transitions (done, review, blocked, cancelled, review, partial), prefer release_task — it also enforces the evidence-or-failure-reason contract (completion_evidence for done; reason/blocker for handback statuses) that this generic patch path does not. Setting status=\"done\" here still requires a non-empty `completion_evidence` field (in updates or top-level), unchanged. A caller-supplied `intent` (or legacy `priority`) is accepted under Nic's standing delegation to agents (2026-09-10: 'allow agents to set intent on my behalf') — set it from Nic's strategic context read across the graph, never the agent's own read of its own work's importance, and never inherited or copied from a parent/sibling task.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {

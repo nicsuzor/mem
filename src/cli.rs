@@ -358,7 +358,7 @@ enum Commands {
         /// Task ID
         id: String,
 
-        /// Status (inbox, ready, queued, in_progress, review, merge_ready, blocked, paused, someday, done, cancelled, partial)
+        /// Status (inbox, ready, queued, in_progress, review, blocked, paused, someday, done, cancelled, partial)
         #[arg(short, long)]
         status: Option<String>,
 

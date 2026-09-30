@@ -224,7 +224,7 @@ pub fn node_color_style(status: Option<&str>, node_type: Option<&str>) -> Elemen
         "review" | "testing" => {
             ElementColorStyle::new("#efe8f5", "#e03131", "solid", "solid", 100)
         }
-        "done" | "completed" | "released" | "merge_ready" => {
+        "done" | "completed" | "released" => {
             ElementColorStyle::new("#ededed", "#adb5bd", "solid", "solid", 60)
         }
         "cancelled" | "abandoned" | "someday" => {

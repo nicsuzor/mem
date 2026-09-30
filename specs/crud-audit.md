@@ -112,7 +112,7 @@ Criteria rated P (pass) / W (warn) / F (fail):
 | Criterion | Rating | Notes |
 |-----------|--------|-------|
 | Predictable | W | No id → ad-hoc task auto-created (mcp_server.rs:2916-2923). Non-obvious; creates permanent artifact as side effect |
-| Idempotent | W | Re-releasing a task that's already done/cancelled returns error; merge_ready + re-release is not tested |
+| Idempotent | W | Re-releasing a task that's already done/cancelled returns error |
 | Fail-fast | P | Status enum validated with typo suggestions; summary required; follow_up_tasks existence validated |
 | Schema clarity | W | Many optional params (pr_url, branch, blocker, reason, session_id, issue_url, follow_up_tasks, release_summary) with undifferentiated semantics |
 | Ergonomic defaults | P | Ad-hoc creation handles the "I worked on something untracked" case |

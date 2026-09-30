@@ -39,8 +39,8 @@ flowchart LR
     end
 
     subgraph RELEASE["Release"]
-        R1["release_task(merge_ready)"]
-        R2["release_task(done)"]
+        R1["release_task(done)"]
+        R2["release_task(review)"]
         R3["release_task(blocked)"]
     end
 
@@ -91,11 +91,11 @@ flowchart LR
 ### State Machine
 
 ```
-inbox → ready → queued → in_progress → merge_ready (PR filed) → done (after merge)
-                                     → done (non-code task completed)
+inbox → ready → queued → in_progress → done (work complete and verified)
                                      → review (needs human attention)
                                      → blocked (external dependency)
                                      → cancelled (abandoned)
+                                     → partial (draft PR + live follow-up task)
 ```
 
 See [[aops-core/skills/remember/references/TAXONOMY.md#status-values-and-transitions]] for canonical status definitions.
@@ -158,10 +158,11 @@ release_task(id, status, summary, pr_url?, branch?, blocker?, reason?)
 
 | Target Status | summary  | pr_url    | blocker   | reason    |
 | ------------- | -------- | --------- | --------- | --------- |
-| `merge_ready` | REQUIRED | soft-warn | -         | -         |
 | `done`        | REQUIRED | optional  | -         | -         |
+| `review`      | REQUIRED | optional  | -         | REQUIRED  |
 | `blocked`     | REQUIRED | -         | soft-warn | -         |
 | `cancelled`   | REQUIRED | -         | -         | soft-warn |
+| `partial`     | REQUIRED | optional  | -         | REQUIRED  |
 
 `release_task` appends a timestamped evidence block to the task body, sets `released_at` in frontmatter, and records `pr_url`/`branch` if provided.
 

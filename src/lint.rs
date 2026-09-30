@@ -2418,12 +2418,21 @@ Body.\n",
     }
 
     #[test]
-    fn fixes_unknown_status_to_active() {
-        let fixed = fix_str("---\ntitle: Test\ntype: note\nstatus: merge_ready\n---\n\nBody.\n");
-        // merge_ready is now a canonical status, so it should stay as-is
+    fn canonical_status_stays_as_is() {
+        let fixed = fix_str("---\ntitle: Test\ntype: note\nstatus: in_progress\n---\n\nBody.\n");
         assert!(
-            fixed.contains("status: merge_ready"),
-            "merge_ready should stay merge_ready (canonical status), got: {}",
+            fixed.contains("status: in_progress"),
+            "in_progress should stay in_progress (canonical status), got: {}",
+            fixed
+        );
+    }
+
+    #[test]
+    fn fixes_retired_merge_ready_status_to_inbox() {
+        let fixed = fix_str("---\ntitle: Test\ntype: note\nstatus: merge_ready\n---\n\nBody.\n");
+        assert!(
+            fixed.contains("status: inbox"),
+            "merge_ready should be fixed to inbox as it is no longer canonical, got: {}",
             fixed
         );
     }
