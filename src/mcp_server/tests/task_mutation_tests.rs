@@ -1153,25 +1153,24 @@ use super::*;
     fn test_release_task_success_status_unaffected_by_reason_gate() {
         // done is not a handback status — no reason/blocker
         // is required, only `summary` (unchanged behavior).
-        for status in ["done"] {
-            let (_tmp, server) = build_disk_backed_server(&[(
-                "tasks/task-new.md",
-                "---\nid: task-new\ntitle: New task\ntype: task\nstatus: ready\ncreated: 2026-07-23T10:00:00+00:00\n---\n\n# New task\n",
-            )]);
-            let res = server
-                .handle_release_task(&json!({
-                    "id": "task-new",
-                    "status": status,
-                    "summary": "Shipped cleanly.",
-                }))
-                .unwrap_or_else(|e| {
-                    panic!("status={status} success path must be unaffected: {e:?}")
-                });
-            assert!(
-                !res.is_error.unwrap_or(false),
-                "status={status}: should not error: {res:?}"
-            );
-        }
+        let status = "done";
+        let (_tmp, server) = build_disk_backed_server(&[(
+            "tasks/task-new.md",
+            "---\nid: task-new\ntitle: New task\ntype: task\nstatus: ready\ncreated: 2026-07-23T10:00:00+00:00\n---\n\n# New task\n",
+        )]);
+        let res = server
+            .handle_release_task(&json!({
+                "id": "task-new",
+                "status": status,
+                "summary": "Shipped cleanly.",
+            }))
+            .unwrap_or_else(|e| {
+                panic!("status={status} success path must be unaffected: {e:?}")
+            });
+        assert!(
+            !res.is_error.unwrap_or(false),
+            "status={status}: should not error: {res:?}"
+        );
     }
 
     #[test]
@@ -1276,26 +1275,25 @@ use super::*;
             ),
         ]);
 
-        for terminal_status in ["done"] {
-            let err = server
-                .handle_release_task(&json!({
-                    "id": "task-parent",
-                    "status": terminal_status,
-                    "summary": format!("Attempting to release parent as {terminal_status}"),
-                }))
-                .expect_err(&format!("{terminal_status} must be rejected when child is open"));
+        let terminal_status = "done";
+        let err = server
+            .handle_release_task(&json!({
+                "id": "task-parent",
+                "status": terminal_status,
+                "summary": format!("Attempting to release parent as {terminal_status}"),
+            }))
+            .expect_err(&format!("{terminal_status} must be rejected when child is open"));
 
-            assert!(
-                matches!(err.code, ErrorCode::INVALID_PARAMS),
-                "status={terminal_status}: should be INVALID_PARAMS, got: {:?}",
-                err.code
-            );
-            let msg = err.message.to_string();
-            assert!(
-                msg.contains("open child task(s)") && msg.contains("task-child"),
-                "status={terminal_status}: error should name open child ID 'task-child'; got: {msg}"
-            );
-        }
+        assert!(
+            matches!(err.code, ErrorCode::INVALID_PARAMS),
+            "status={terminal_status}: should be INVALID_PARAMS, got: {:?}",
+            err.code
+        );
+        let msg = err.message.to_string();
+        assert!(
+            msg.contains("open child task(s)") && msg.contains("task-child"),
+            "status={terminal_status}: error should name open child ID 'task-child'; got: {msg}"
+        );
     }
 
     #[test]
