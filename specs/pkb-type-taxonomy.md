@@ -129,6 +129,26 @@ These never appear in task operations. They are knowledge artifacts, not work to
 | `spec`      | Specifications                                                      |
 | `knowledge` | Synthesised knowledge articles                                      |
 
+**Alias resolution** (linter auto-fixes):
+
+- `observation`, `insight`, `exploration` → `note`
+- `article`, `reading-guide`, `talk` → `reference`
+- `review-notes`, `peer-review` → `review`
+- `instructions`, `role`, `agent`, `bundle` → `document`
+- `audit` → `audit-report`
+- `design` → `spec`
+
+#### Category 3: Structural (infrastructure)
+
+Navigation and logging infrastructure. Never in task operations.
+
+| Type           | Content              |
+| -------------- | -------------------- |
+| `index`        | Map of Content files |
+| `daily`        | Daily notes          |
+| `session-log`  | Session transcripts  |
+| `audit-report` | Audit output         |
+
 ### The `capability` node type
 
 #### 1. Concept and Definition
@@ -220,26 +240,6 @@ tags:
   - nlp
 ---
 ```
-
-**Alias resolution** (linter auto-fixes):
-
-- `observation`, `insight`, `exploration` → `note`
-- `article`, `reading-guide`, `talk` → `reference`
-- `review-notes`, `peer-review` → `review`
-- `instructions`, `role`, `agent`, `bundle` → `document`
-- `audit` → `audit-report`
-- `design` → `spec`
-
-#### Category 3: Structural (infrastructure)
-
-Navigation and logging infrastructure. Never in task operations.
-
-| Type           | Content              |
-| -------------- | -------------------- |
-| `index`        | Map of Content files |
-| `daily`        | Daily notes          |
-| `session-log`  | Session transcripts  |
-| `audit-report` | Audit output         |
 
 ### The `classification` field
 
