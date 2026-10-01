@@ -5,8 +5,10 @@
 
 use crate::pkb::{fallback_id, PkbDocument};
 use regex::Regex;
+use serde::de::{self, Deserializer, Visitor};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 
@@ -176,29 +178,85 @@ pub struct Edge {
     pub edge_type: EdgeType,
 }
 
+fn deserialize_stated_weight<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    struct WeightVisitor;
+
+    impl<'de> Visitor<'de> for WeightVisitor {
+        type Value = String;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+            formatter.write_str("a string or a number")
+        }
+
+        fn visit_str<E>(self, v: &str) -> Result<Self::Value, E>
+        where
+            E: de::Error,
+        {
+            Ok(v.to_string())
+        }
+
+        fn visit_string<E>(self, v: String) -> Result<Self::Value, E>
+        where
+            E: de::Error,
+        {
+            Ok(v)
+        }
+
+        fn visit_i64<E>(self, v: i64) -> Result<Self::Value, E>
+        where
+            E: de::Error,
+        {
+            Ok(v.to_string())
+        }
+
+        fn visit_u64<E>(self, v: u64) -> Result<Self::Value, E>
+        where
+            E: de::Error,
+        {
+            Ok(v.to_string())
+        }
+
+        fn visit_f64<E>(self, v: f64) -> Result<Self::Value, E>
+        where
+            E: de::Error,
+        {
+            Ok(v.to_string())
+        }
+    }
+
+    deserializer.deserialize_any(WeightVisitor)
+}
+
 /// A contribution relationship from one node to another (strategic priority).
 ///
 /// Implements the Birnbaum importance model where weights are Renooij-Witteman
-/// verbal terms mapped to non-linear anchors.
+/// verbal terms or raw floats mapped to non-linear anchors and scaled by an optional
+/// float multiplier (passing on x * weight).
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct ContributesTo {
     /// Target node ID this node contributes to. Accepts `target:` as an alias
     /// for backward-compatibility with older PKB entries.
     #[serde(alias = "target")]
     pub to: String,
-    /// Verbal weight term (e.g. "Expected", "Probable", "Certain"). Defaults
-    /// to empty string when omitted, which is a neutral "unstated" edge —
+    /// Verbal weight term (e.g. "Expected", "Probable", "Certain") or raw numeric
+    /// float string. Defaults to empty string when omitted, which is a neutral "unstated" edge —
     /// `numeric_weight()` returns 0.0 for it, not a fabricated default. A
-    /// *non-empty* term that fails to match the recognized verbal scale is
+    /// *non-empty* term that fails to match the recognized verbal scale or parse as a float is
     /// rejected at parse time (`GraphNode::from_pkb_document` pushes a
     /// `ParseWarning`, field `contributes_to.stated_weight`) rather than
     /// silently defaulting to 0.3 — see `ContributesTo::is_recognized_weight`.
-    #[serde(alias = "weight", default)]
+    #[serde(alias = "weight", default, deserialize_with = "deserialize_stated_weight")]
     pub stated_weight: String,
     /// Single-sentence justification for the weight. Optional in parsing
     /// (present in well-formed entries; not validated at write time).
     #[serde(alias = "why", default)]
     pub justification: String,
+    /// Optional float multiplier scaling the transmitted weight (propagating x * weight).
+    #[serde(default, alias = "x", skip_serializing_if = "Option::is_none")]
+    pub multiplier: Option<f64>,
     /// Current decayed weight value (persisted, unread field; parked dormant).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub current_weight: Option<f64>,
@@ -220,7 +278,8 @@ pub struct ContributesTo {
 }
 
 impl ContributesTo {
-    /// Map verbal Renooij-Witteman terms to non-linear importance anchors.
+    /// Map verbal Renooij-Witteman terms or raw float values to non-linear importance anchors,
+    /// multiplied by the optional `multiplier` factor (propagating x * weight).
     ///
     /// Based on academicOps core calibration for strategic priority:
     /// - Certain: 1.00
@@ -231,7 +290,7 @@ impl ContributesTo {
     /// - Improbable: 0.15
     /// - Impossible: 0.00
     pub fn numeric_weight(&self) -> f64 {
-        match self.stated_weight.to_lowercase().as_str() {
+        let base_weight = match self.stated_weight.to_lowercase().as_str() {
             "certain" | "almost certain" => 1.00,
             "very probable" | "probable" | "highly likely" => 0.85,
             "expected" | "likely" => 0.75,
@@ -239,20 +298,23 @@ impl ContributesTo {
             "uncertain" | "possible" | "perhaps" | "maybe" => 0.25,
             "improbable" | "unlikely" | "very unlikely" | "almost impossible" => 0.15,
             "impossible" | "none" => 0.00,
-            // Out-of-scale input (empty, or a non-empty term that doesn't match
-            // the verbal scale) contributes zero rather than a fabricated 0.3
-            // "soft" default. A non-empty unrecognized term is additionally
-            // flagged via `ParseWarning` at parse time — see
-            // `GraphNode::from_pkb_document` and `is_recognized_weight`.
-            _ => 0.0,
+            s => s.parse::<f64>().unwrap_or(0.0),
+        };
+
+        match self.multiplier {
+            Some(m) => {
+                if !self.stated_weight.trim().is_empty() {
+                    m * base_weight
+                } else {
+                    m
+                }
+            }
+            None => base_weight,
         }
     }
 
     /// Whether `s` (already expected lowercase-trimmed by the caller) is one
-    /// of the recognized verbal contribution-weight terms. Used at parse
-    /// time to distinguish a genuine typo/garbage `stated_weight` (rejected
-    /// with a `ParseWarning`) from a deliberately empty/unstated one (silently
-    /// zero, no warning — omitting a weight is not an error).
+    /// of the recognized verbal contribution-weight terms or a parseable float.
     pub fn is_recognized_weight(s: &str) -> bool {
         matches!(
             s,
@@ -275,7 +337,7 @@ impl ContributesTo {
                 | "almost impossible"
                 | "impossible"
                 | "none"
-        )
+        ) || s.parse::<f64>().is_ok()
     }
 }
 
@@ -299,6 +361,8 @@ pub struct GraphNode {
     pub tags: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub node_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub raw_node_type: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub status: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -939,11 +1003,11 @@ pub fn status_group(status: Option<&str>) -> &'static str {
 /// Node types that represent actionable work items (shown in dashboards).
 /// `template` is intentionally excluded — templates are meta-artifacts that spawn
 /// task instances via `claim_task`; they are not themselves actionable work items.
-pub const TASK_TYPES: &[&str] = &["task", "epic", "learn", "pr"];
+pub const TASK_TYPES: &[&str] = &["task", "learn", "pr"];
 
 /// Strategic priority node types ("targets" and "goals") that must never serve as a structural
 /// parent. Work links to targets via `contributes_to` metadata, and targets connect to goals.
-/// Both are first-class canonical node types and are treated as the non-parentable strategic class.
+/// Both are treated as the non-parentable strategic class.
 pub const STRATEGIC_TARGET_TYPES: &[&str] = &["target", "goal"];
 
 /// Returns true when a `node_type` is a strategic target/goal that cannot be a
@@ -954,19 +1018,18 @@ pub fn is_strategic_target(node_type: Option<&str>) -> bool {
 
 /// All recognized canonical node type values.
 ///
-/// `project` is intentionally absent: it is retired as a node type ("project"
-/// is a polecat.yaml routing slug carried in the `project:` frontmatter
-/// field). Legacy `type: project` files are read-coerced to `epic`.
+/// `project` and `epic` are retired as node types (epic collapsed into task;
+/// project = polecat.yaml routing slug). Legacy `type: project` and `type: epic`
+/// files are read-coerced to `task`.
+/// `goal` and `capability` are collapsed into `target`.
 pub const VALID_NODE_TYPES: &[&str] = &[
     // Actionable work items (subset also in TASK_TYPES)
-    "epic",
     "task",
     "learn",
     "pr",
     // Recurring workflow templates — not actionable; claim_task() instantiates these
     "template",
     // Reference
-    "goal",
     "target",
     "note",
     "knowledge",
@@ -1291,14 +1354,16 @@ impl GraphNode {
         let raw_node_type = fm
             .as_ref()
             .and_then(|f| f.get("type").and_then(|v| v.as_str()).map(String::from));
-        // `type: project` is retired (project = polecat.yaml routing slug, not
-        // a node type). Legacy files keep parsing but are treated as epics for
-        // all structural purposes; `pkb lint` nags toward reclassification.
+        // `type: project` and `type: epic` are collapsed into `task`. Legacy
+        // files keep parsing but are treated as tasks for all structural purposes;
+        // `pkb lint` nags toward reclassification.
+        // `type: goal` and `type: capability` are collapsed into `target`.
         // If an `id:` is present on an untyped node, default to "task" and emit
         // a parse warning so it is indexed into list_tasks/ranking rather than
         // silently vanishing (mem_ef704bd4).
         let node_type = match raw_node_type.as_deref() {
-            Some("project") => Some("epic".to_string()),
+            Some("project") | Some("epic") => Some("task".to_string()),
+            Some("goal") | Some("capability") => Some("target".to_string()),
             Some(t) => Some(t.to_string()),
             None => {
                 if task_id.is_some() {
@@ -1547,7 +1612,7 @@ impl GraphNode {
                     message: format!(
                         "stated_weight \"{}\" (edge to \"{}\") is not a recognized verbal \
                          contribution-weight term {{certain, probable, expected, fifty-fifty, \
-                         uncertain, improbable, impossible}}; treated as zero contribution, not \
+                         uncertain, improbable, impossible}} or float; treated as zero contribution, not \
                          defaulted to 0.3",
                         ct.stated_weight, ct.to
                     ),
@@ -1756,6 +1821,7 @@ impl GraphNode {
             label: doc.title.clone(),
             tags: doc.tags.clone(),
             node_type,
+            raw_node_type,
             status,
             consolidated: doc.consolidated,
             consolidated_at: doc.consolidated_at.clone(),

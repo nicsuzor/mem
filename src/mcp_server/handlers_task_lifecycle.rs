@@ -576,12 +576,12 @@ impl PkbSearchServer {
             if candidate.score < CONFIDENCE_THRESHOLD {
                 break; // sorted descending — everything from here on is below threshold
             }
-            let is_epic = candidate
+            let is_container = candidate
                 .doc_type
                 .as_deref()
-                .map(|t| t.eq_ignore_ascii_case("epic"))
+                .map(|t| t.eq_ignore_ascii_case("epic") || t.eq_ignore_ascii_case("task"))
                 .unwrap_or(false);
-            if !is_epic {
+            if !is_container {
                 continue;
             }
             let status_raw = candidate
@@ -659,7 +659,7 @@ impl PkbSearchServer {
             id: Some(epic_id.clone()),
             parent: Some(crate::document_crud::ADHOC_SESSIONS_ROOT_ID.to_string()),
             project: Some("adhoc-sessions".to_string()),
-            task_type: Some("epic".to_string()),
+            task_type: Some("task".to_string()),
             tags: vec!["adhoc".to_string(), "session-epic".to_string()],
             session_id: Some(session_id.to_string()),
             ..Default::default()

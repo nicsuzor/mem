@@ -107,7 +107,7 @@ pub fn batch_create_epics(
         // Create the epic
         let fields = DocumentFields {
             title: epic_def.title.clone(),
-            doc_type: "epic".to_string(),
+            doc_type: "task".to_string(),
             id: epic_def.id.clone(),
             intent: epic_def.intent,
             parent: parent.map(String::from),

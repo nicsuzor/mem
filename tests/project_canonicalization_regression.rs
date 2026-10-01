@@ -35,14 +35,14 @@ fn setup_test_pkb() -> (tempfile::TempDir, PkbSearchServer, Arc<RwLock<GraphStor
     // Seed a root goal
     fs::write(
         root.join("goals/goal-root.md"),
-        "---\nid: goal-root\ntitle: Root Goal\ntype: goal\nstatus: ready\nproject: aops\n---\n\nRoot Goal.\n",
+        "---\nid: goal-root\ntitle: Root Goal\ntype: target\nstatus: ready\nproject: aops\n---\n\nRoot Goal.\n",
     )
     .unwrap();
 
     // Seed a root epic container under the goal
     fs::write(
         root.join("epics/epic-12345678.md"),
-        "---\nid: epic-12345678\ntitle: Root Epic\ntype: epic\nstatus: ready\nparent: goal-root\nproject: aops\n---\n\nRoot Epic.\n",
+        "---\nid: epic-12345678\ntitle: Root Epic\ntype: task\nstatus: ready\nparent: goal-root\nproject: aops\n---\n\nRoot Epic.\n",
     )
     .unwrap();
 
@@ -271,13 +271,13 @@ fn test_regression_reproduce_split_from_hand_written_variant_and_lint_fix() {
 
     fs::write(
         root.join("goals/goal-root.md"),
-        "---\nid: goal-root\ntitle: Root Goal\ntype: goal\nstatus: ready\nproject: aops\n---\n\nRoot.\n",
+        "---\nid: goal-root\ntitle: Root Goal\ntype: target\nstatus: ready\nproject: aops\n---\n\nRoot.\n",
     )
     .unwrap();
 
     fs::write(
         root.join("epics/epic-12345678.md"),
-        "---\nid: epic-12345678\ntitle: Root Epic\ntype: epic\nstatus: ready\nparent: goal-root\nproject: aops\n---\n\nRoot.\n",
+        "---\nid: epic-12345678\ntitle: Root Epic\ntype: task\nstatus: ready\nparent: goal-root\nproject: aops\n---\n\nRoot.\n\n## Acceptance criteria\n- Verified\n",
     )
     .unwrap();
 

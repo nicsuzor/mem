@@ -301,7 +301,8 @@ pub fn graph_stats(graph: &GraphStore) -> GraphStats {
         // its work-subtree — has a `contributes_to` edge resolving to a `target` or
         // `goal`. Connection is via `contributes_to`, NOT parent-ancestry: goals and
         // targets live beside the work tree, never as parents.
-        if node_type == "epic" {
+        let is_epic = node_type == "epic" || node.raw_node_type.as_deref() == Some("epic");
+        if is_epic {
             let mut visited = HashSet::new();
             if !subtree_contributes_to_outcome(graph, node, &mut visited) {
                 disconnected_epics += 1;

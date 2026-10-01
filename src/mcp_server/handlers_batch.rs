@@ -122,6 +122,10 @@ impl PkbSearchServer {
                         .as_deref()
                         .map(|t| t.eq_ignore_ascii_case(nt))
                         .unwrap_or(false)
+                        || n.raw_node_type
+                            .as_deref()
+                            .map(|t| t.eq_ignore_ascii_case(nt))
+                            .unwrap_or(false)
                 } else {
                     true
                 }

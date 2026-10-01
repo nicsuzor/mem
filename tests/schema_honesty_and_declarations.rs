@@ -103,7 +103,7 @@ fn setup_fixture_pkb() -> (PkbSearchServer, TempDir) {
 // ── 1. Schema Truthfulness: create_task required fields ──
 
 #[test]
-fn test_create_task_schema_declares_parent_required() {
+fn test_create_task_schema_parent_is_optional_after_epic_collapse() {
     let tools = PkbSearchServer::get_all_tools();
     let create_task = tools
         .iter()
@@ -122,8 +122,8 @@ fn test_create_task_schema_declares_parent_required() {
         "create_task must require 'title'"
     );
     assert!(
-        req_strings.contains(&"parent"),
-        "create_task must truthfully declare 'parent' as required (got: {req_strings:?})"
+        !req_strings.contains(&"parent"),
+        "create_task must allow root-level tasks without parent after epic collapse (got: {req_strings:?})"
     );
 }
 
@@ -204,34 +204,24 @@ fn test_update_task_setting_done_requires_completion_evidence_and_succeeds_with_
     );
 }
 
-// ── 3. Sample 2: create_task missing parent error carries corrected example ──
+// ── 3. Sample 2: create_task without parent succeeds as root task ──
 
 #[test]
-fn test_create_task_missing_parent_rejection_and_success() {
+fn test_create_task_without_parent_succeeds_as_root() {
     let (server, _tmp) = setup_fixture_pkb();
 
-    // Bare task without parent fails with clear error and example
-    let err = server
+    // Bare task without parent succeeds as a root-level task (epic collapsed into task)
+    let res = server
         .dispatch_tool_sync(
             "create_task",
             &json!({
-                "title": "A task without parent"
+                "title": "A root-level task without parent"
             }),
         )
-        .expect_err("create_task without parent must fail");
-    assert_eq!(err.code, ErrorCode::INVALID_PARAMS);
-    assert!(
-        err.message.contains("Missing required parameter: parent"),
-        "error must name missing parent parameter: {}",
-        err.message
-    );
-    assert!(
-        err.message.contains("Example:"),
-        "error must provide corrected call example: {}",
-        err.message
-    );
+        .expect("create_task without parent must succeed as root-level task");
+    assert!(!res.content.is_empty());
 
-    // Task with parent succeeds
+    // Task with parent also succeeds
     let res = server
         .dispatch_tool_sync(
             "create_task",

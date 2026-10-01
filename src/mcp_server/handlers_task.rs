@@ -341,13 +341,10 @@ impl PkbSearchServer {
                 .map(String::from),
         };
 
-        // Hierarchy validation: actionable tasks must have a parent. Strategic
-        // out-of-tree nodes (`goal`, `target`) and root-able types (`epic`,
-        // `learn`) are exempt — goals & targets live beside the work tree and are
-        // never parented (work links to them via `contributes_to`); epics may be
-        // root-level containers per the PKB type taxonomy spec.
+        // Hierarchy validation: tasks can be root-level (epic collapsed into task)
+        // or parented. Goals/targets are strategic and out-of-tree (never parented).
         let task_type_str = fields.task_type.as_deref().unwrap_or("task");
-        let root_able = matches!(task_type_str, "goal" | "target" | "epic" | "learn");
+        let root_able = matches!(task_type_str, "goal" | "target" | "epic" | "learn" | "task");
         if fields.parent.is_none() && !root_able {
             // Semantic search for candidate parents so agents can immediately see options.
             let suggested_parents: Option<serde_json::Value> = if !fields.title.is_empty() {
@@ -362,7 +359,7 @@ impl PkbSearchServer {
                             if suggestions.len() >= 5 {
                                 break;
                             }
-                            if let Some("epic") = r.doc_type.as_deref() {
+                            if matches!(r.doc_type.as_deref(), Some("epic") | Some("task")) {
                                 suggestions.push(serde_json::json!({
                                     "id": r.id,
                                     "title": r.title,

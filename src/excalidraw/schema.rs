@@ -81,7 +81,12 @@ pub fn is_red_ring(has_stakeholder: bool, status: Option<&str>) -> bool {
 
 /// Computes card width and height dimensions based on size tiers and focus score bump.
 pub fn compute_card_dimensions(node: &crate::graph::GraphNode) -> (f64, f64) {
-    let t = node.node_type.as_deref().unwrap_or("task").to_lowercase();
+    let t = node
+        .raw_node_type
+        .as_deref()
+        .or(node.node_type.as_deref())
+        .unwrap_or("task")
+        .to_lowercase();
     let is_anchor = t == "target"
         || t == "goal"
         || t == "root"
@@ -94,7 +99,10 @@ pub fn compute_card_dimensions(node: &crate::graph::GraphNode) -> (f64, f64) {
     }
 
     let p = node.effective_intent.or(node.intent).unwrap_or(3);
-    let is_container = t == "epic" || t == "area" || t == "project";
+    let is_container = t == "epic"
+        || t == "area"
+        || t == "project"
+        || !node.children.is_empty();
 
     let base_tier = if is_container {
         if p <= 2 {

@@ -948,14 +948,15 @@ pub fn collect_tree_roots<'a>(
     gs: &'a GraphStore,
     tasks: &[&'a GraphNode],
 ) -> (Vec<&'a GraphNode>, HashSet<&'a str>, HashSet<String>) {
-    let context_types = ["project", "epic", "goal"];
     let mut context_ids: HashSet<String> = HashSet::new();
 
     for task in tasks {
-        if let Some(ref t) = task.node_type {
-            if context_types.contains(&t.as_str()) {
-                context_ids.insert(task.id.clone());
-            }
+        let is_container = match task.node_type.as_deref() {
+            Some("project" | "epic" | "goal" | "target") => true,
+            _ => !task.leaf || !task.children.is_empty(),
+        };
+        if is_container {
+            context_ids.insert(task.id.clone());
         }
     }
 
@@ -971,15 +972,8 @@ pub fn collect_tree_roots<'a>(
                 break;
             }
             if let Some(parent_node) = gs.get_node(pid) {
-                if parent_node
-                    .node_type
-                    .as_deref()
-                    .map(|t| context_types.contains(&t))
-                    .unwrap_or(false)
-                {
-                    context_ids.insert(pid.to_string());
-                    visible.insert(parent_node.id.as_str());
-                }
+                context_ids.insert(pid.to_string());
+                visible.insert(parent_node.id.as_str());
                 current_id = parent_node.parent.as_deref();
             } else {
                 break;
