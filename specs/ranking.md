@@ -437,10 +437,11 @@ In addition to `focus_score`, `mem` computes several topological and network mea
 1. **Capital Valuation vs. Operational Stakes**:
    - Capabilities are durable assets, skills, or methodologies (e.g. *automatically model arguments from texts*). They carry **no `severity`** and **no `due` date**.
    - Consequently, capabilities **never enter `severity_gate`** (cannot trigger `Catastrophic`), never contribute to `urgency_term` ($S_{\text{lex}} = 0$), and never fabricate artificial `deadline_pressure_multiplier` scaling. Work on capabilities is prioritized by its positive capital value, not by synthetic deadline panic.
-2. **Standing Weight & Value Lineage**:
+2. **Standing Weight & Value Lineage (and the One-Hop Limit)**:
    - A `capability` node can be priced by Nic with a `standing_weight` $\in [0.0, 1.0]$ via the standard elicitation instrument.
    - Any actionable task or epic declaring a `contributes_to` edge pointing to a priced capability node receives `value_lineage` according to §4.11:
      $$\text{value\_lineage}(x) = K_{\text{VL}} \times \text{confidence}(x) \times \sum_{ct \,\in\, x.\text{contributes\_to}} ct.\text{numeric\_weight}() \times \text{standing\_weight}(ct.\text{target})$$
+   - **The One-Hop Limit**: `compute_value_lineage` (`src/graph_store.rs:4054`) evaluates direct `contributes_to` edges only; it does not walk transitively through multiple `contributes_to` hops. Consequently, `value_lineage` reaches capability-building work (`task -> contributes_to -> capability`) **only when Nic explicitly prices the capability itself** with a `standing_weight`. Even if a capability points via `contributes_to` to an upstream priced target, that target's standing weight does not cascade down through the capability to contributor tasks. The destination capability itself must carry an elicited `standing_weight` for value lineage to flow to its contributors.
    - This directly increases the contributing task's `cost_of_delay`, pulling capability-building tasks forward in the focus queue in direct proportion to Nic's elicited valuation of the capability.
 3. **Dual Linkage and Consumption**:
    - While `contributes_to` conveys value lineage to tasks that *build or extend* a capability, tasks that merely *consume or require* a capability (`requires_capability`) do not earn value lineage from that capability. Needing a capability is an operational dependency, not a value contribution.

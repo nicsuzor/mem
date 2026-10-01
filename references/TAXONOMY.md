@@ -128,6 +128,7 @@ The primary node types in the PKB:
 | ------------ | ------------------------------------------------------------------------------------------------------------------------------------ |
 | **goal**     | An identity-level commitment (why). Out of the work tree — never a parent, never parented. Unquantifiable: no `severity`/`consequence`/`due`. Distinct from `target` (NOT an alias). See three-tier model below. |
 | **target**   | A countable, measurable milestone (what) — done / not done. Out of the work tree — never a parent, never parented. Carries `severity` (SEV0–SEV4) + `consequence` (+ optional `due`). Distinct from `goal` (NOT an alias). See three-tier model below. |
+| **capability** | A persistent capacity, methodological competence, or technical asset co-developed by human and agent (can). Out of the work tree — never a parent, never parented. Carries `standing_weight` (capital leverage), but no `severity`/`consequence`/`due`. See taxonomy spec. |
 | **epic**     | A bundle of related work that together achieves an aim — a verb                                                                      |
 | **task**     | A discrete deliverable, completable in a single focused session                                                                      |
 | **learn**    | Observational tracking — a spike, discovery, or noted finding. Not directly actionable; resolves by decomposing into follow-up tasks |
@@ -180,9 +181,9 @@ This replaces the anti-pattern of re-using a single task body (which accumulates
 
 **Example**: `examples/templates/daily.md` in the `mem` repo.
 
-## Goals, Targets, and Work — the three tiers
+## Strategic Anchors and Work — Goals, Targets, Capabilities, and Work
 
-See [[pkb-type-taxonomy]] §"Goals, Targets, and Work — the three tiers" for the authoritative definition. Summary: `goal` (identity/why) and `target` (milestone/what) are strategic out-of-tree types connected to work only via `contributes_to`; `epic`/`task`/`learn` are the actionable work tier. Severity lives only on targets; goals carry none.
+See [[pkb-type-taxonomy]] §"Strategic Anchors and Work — Goals, Targets, Capabilities, and Work" for the authoritative definition. Summary: `goal` (identity/why), `target` (milestone/what), and `capability` (competence/can) are strategic out-of-tree types connected to work via `contributes_to` (and consumer links); `epic`/`task`/`learn`/`pr` are the actionable work tier. Severity lives only on targets; goals and capabilities carry none.
 
 ---
 

@@ -28,8 +28,8 @@ tags:
 
 The PKB separates **why / what / can / how**. `goal`, `target`, and `capability` are **strategic nodes beside the work tree** (reference tier): never parents, never in "to-do" surfaces, connected to work only by `contributes_to` (and consumer links). `epic`/`task`/`learn`/`pr` are the **work tree** and the only actionable tier.
 
-- **`goal` — identity & purpose (why).** An identity-level commitment: *who I am / how I define myself*. **Unquantifiable** — you cannot count "achievement," and there is no meaningful consequence-of-missing an identity. So a goal has **no `severity`, no `consequence`, no `due`**. Roots of meaning (~10), e.g. *World-Class Academic Profile*. Out of the work tree: never a parent, never parented.
-- **`target` — milestone & obligation (what).** A tangible, **countable, measurable** output/milestone or continuous operational baseline — *done / not done* or *met / unmet*. Carries the quantifiable stakes: **`severity` (SEV0–SEV4) + `consequence`** (+ optional `due`). The unit that propagates urgency and value lineage into the work tree, e.g. *Deliver LLB242 marks by deadline*. Out of the work tree: never a parent, never parented. Advances ≥1 goal via `contributes_to`.
+- **`goal` — identity (why).** An identity-level commitment: *who I am / how I define myself*. **Unquantifiable** — you cannot count "achievement," and there is no meaningful consequence-of-missing an identity. So a goal has **no `severity`, no `consequence`, no `due`**. Roots of meaning (~10), e.g. *World-Class Academic Profile*. Out of the work tree: never a parent, never parented.
+- **`target` — milestone (what).** A tangible, **countable, measurable** output/milestone — *done / not done*. Carries the quantifiable stakes: **`severity` (SEV0–SEV4) + `consequence`** (+ optional `due`). The unit that propagates weight into the work tree, e.g. *Deliver LLB242 marks by deadline*. Out of the work tree: never a parent, never parented. Advances ≥1 goal via `contributes_to`.
 - **`capability` — latent competence & methodological asset (can).** A durable, compoundable capacity, skill, or technical/cognitive method co-developed by human and agent (e.g. *capability to automatically model arguments from texts*, *capability to visualise argument structures*, *capability to assess logical gaps*). Unifies methods, skills, tools, and evaluators into a persistent, reusable asset. Out of the work tree: never a parent, never parented. Carries **`standing_weight`** (capital leverage), but **no `severity`, no `consequence`, no `due`** (deficits are opportunity costs, not operational failures). Advances targets and goals via `contributes_to`.
 - **`epic` / `task` / `learn` — work (how).** Verbs. The only actionable tier (`ACTIONABLE_TYPES`) and the only nodes in the parent-child tree (`EPIC → EPIC|TASK → …`). Advances outcomes and capabilities via `contributes_to` to **targets**, **capabilities**, or directly to **goals**.
 
@@ -157,7 +157,7 @@ A **capability** is a persistent, reusable cognitive, methodological, or technic
 
 Where other tiers answer:
 - **`goal`**: Why (identity-level commitment; unquantifiable; no severity or consequence).
-- **`target`**: What (countable milestone or operational baseline; carries failure severity and consequence).
+- **`target`**: What (countable milestone; carries failure severity and consequence).
 - **`epic` / `task`**: How (discrete, actionable work items that complete).
 
 **`capability`** answers: **Can** — what methods, techniques, workflows, and automated competencies exist, what state of maturity they have reached, and how work compounds them over time.
@@ -169,9 +169,9 @@ Where other tiers answer:
 ##### Rationale for First-Class Node Type:
 
 1. **Preservation of Orthogonal Strategic Axes**:
-   - In `specs/ranking.md` and `pkb-strategic-axes-calibration`, the foundational principle is keeping intent, stakes, likelihood, and capability orthogonal.
-   - `target` is explicitly defined by its quantifiable failure stakes: `severity` (SEV0–SEV4) and `consequence`. If a target fails, something breaks (e.g., student marks missed, publication pipeline halts).
-   - In contrast, a capability represents a positive asset or capacity. The absence or delay of a capability does not have a catastrophic operational failure mode (it incurs an opportunity cost, not a SEV4 emergency). Forcing capabilities into `type: target` would force authors to either invent fabricated severity numbers (corrupting `urgency` propagation across the entire graph) or allow `severity: null` targets, eroding the contract that targets carry severity.
+   - In `specs/ranking.md` (§6–§7) and `[[pkb-strategic-axes-calibration]]`, the foundational principle is keeping intent, stakes, likelihood, clock, and rationale strictly orthogonal. `[[pkb-strategic-axes-calibration]]` defines exactly five orthogonal axes: Intent (`intent`), Severity (`severity`), Likelihood (`stated_weight` on `contributes_to`), Clock (`due`), and Rationale (`consequence`), with explicit calibration norms ("Severity is an integer" representing the worst-case magnitude if a target fails).
+   - `target` is explicitly defined by its quantifiable failure stakes: `severity` (SEV0–SEV4) and `consequence`. If a target fails, something breaks (e.g., marks missed, compliance breach, pipeline halts).
+   - In contrast, a capability represents a positive, compoundable asset or capacity. The absence or delay of a capability incurs an opportunity cost rather than an operational failure or emergency (it carries no failure severity and no deadline). Forcing capabilities into `type: target` would force authors to either invent fabricated severity numbers (violating the severity calibration norms and corrupting `urgency` propagation across the entire graph) or allow `severity: null` targets, eroding the contract that targets carry failure stakes.
 2. **Dual-Directional Graph Semantics**:
    - A target only has *inbound contributors* (`task -> contributes_to -> target`). Tasks never depend on or require a target as an operational prerequisite.
    - A capability has an intrinsic **dual relationship** to work:
@@ -186,11 +186,11 @@ Where other tiers answer:
 1. **Rejected Alternative A: Capability as a Subtype or Tag on `target` (`type: target` with `target_type: capability` or tag `capability`)**:
    - *Why rejected*: Severely compromises the definition of `target`. Targets exist to bind quantifiable consequences and deadlines to work. Merging capabilities into targets creates semantic ambiguity, encourages fake severity assignments, and obscures whether an entity is an operational obligation or a technical asset.
 2. **Rejected Alternative B: Capability as Reference/Knowledge Node (`type: knowledge` or `type: note`)**:
-   - *Why rejected*: Knowledge nodes are passive documentation. They cannot legitimately anchor `contributes_to` edges from actionable work, cannot be priced with `standing_weight` under Nic's elicitation framework, and cannot flow `value_lineage` to prioritize tasks that build them. Treating capabilities as merely notes ignores that they are strategic investments.
+   - *Why rejected*: Knowledge nodes are passive documentation. They cannot legitimately anchor `contributes_to` edges from actionable work, cannot be priced with `standing_weight` under Nic's elicitation framework (`[[pkb-standing-weight-elicitation-instrument]]`), and cannot flow `value_lineage` to prioritize tasks that build them. Treating capabilities as merely notes ignores that they are strategic investments.
 3. **Rejected Alternative C: Capability as an Actionable Container (`type: epic` with `classification: capability`)**:
    - *Why rejected*: Epics belong to the actionable work tree (`EPIC -> TASK`). They represent bounded projects intended to close. Capabilities are enduring competencies that outlive individual projects and must not serve as structural containers for tasks.
 
-#### 3. Linkage Specification
+#### 3. Linkage Specification and Ranking Integration
 
 Capabilities sit outside the work tree (reference/strategic tier) and link via defined edge channels:
 
@@ -213,23 +213,31 @@ Capabilities sit outside the work tree (reference/strategic tier) and link via d
      ```
 3. **Enabling & Prerequisite (`requires_capability`)**:
    - Tasks or research projects that depend on the existence or maturity of a capability declare it via the frontmatter field `requires_capability: [<capability-id>]` or via body wikilinks (`[[cap_...]]`).
-   - In graph terms, this enables agents and planning tools (`/ida:brief`, `/ida:decompose`) to detect capability gaps before scheduling complex empirical work.
-4. **Out-of-Tree Invariant**:
+   - Tasks that merely consume or require a capability do not earn value lineage from that capability (consumption is an operational dependency, not a capital contribution).
+4. **Ranking and the One-Hop Limit**:
+   - Capabilities carry no `severity` and no `due` date; they never enter `severity_gate` and never generate artificial deadline pressure.
+   - When Nic prices a capability with a `standing_weight` $\in [0.0, 1.0]$, tasks contributing to it receive `value_lineage`, increasing their `cost_of_delay`.
+   - **One-Hop Limit**: Under `compute_value_lineage` (`src/graph_store.rs:4054`), the pricing walk evaluates direct `contributes_to` edges only; it does not walk transitively through multiple `contributes_to` hops. Consequently, `value_lineage` reaches capability-building work (`task -> contributes_to -> capability`) **only when Nic explicitly prices the capability itself** with a `standing_weight`. An upstream target's standing weight does not cascade through an unpriced capability to contributor tasks.
+5. **Out-of-Tree Invariant**:
    - Capabilities are **never parents** of actionable tasks (`reject_target_as_parent` logic generalized to all strategic nodes). Tasks must be parented by an `epic` or `task`, pointing to capabilities via `contributes_to` or `requires_capability`.
 
-#### 4. Frontmatter Schema for `type: capability`
+#### 4. Frontmatter Schema and Status Specification
+
+Canonical schema for `type: capability`:
 
 ```yaml
 ---
 id: cap_argument_modeling
 title: "Capability: Automated argument modeling from texts"
 type: capability
-status: developing       # nascent | developing | mature | deprecated
-standing_weight: 0.40   # Elicited from Nic (0.00 to 1.00); capital leverage
+status: ready            # Conforms to VALID_STATUSES (inbox | ready | paused | cancelled)
+maturity: developing     # nascent | developing | mature | deprecated
+standing_weight: 0.40    # Elicited from Nic (0.00 to 1.00); capital leverage
 contributes_to:
   - to: targ-1e7d4733
     stated_weight: probable
     justification: "Enables high-throughput empirical analysis of platform terms and legal texts."
+requires_capability: []
 backing_assets:
   - skill: analyst
   - repo: nicsuzor/mem
@@ -240,6 +248,28 @@ tags:
   - nlp
 ---
 ```
+
+**Status Semantics and Agreement with Code**:
+- The `status` field conforms to `VALID_STATUSES` in `src/graph.rs:872` and `references/TAXONOMY.md:215-230` (`ready` when active/available, `inbox` on intake, `paused` or `cancelled` if decommissioned).
+- The capability lifecycle stage is captured orthogonally in `maturity: nascent | developing | mature | deprecated`, mirroring established PKB knowledge note conventions (e.g. `pkb-strategic-axes-calibration: maturity: stable`).
+- *Alternative direct status extension*: If `status` itself is chosen to take `nascent | developing | mature | deprecated`, this requires updating `VALID_STATUSES` in `src/graph.rs:872` and the Status Values table in `references/TAXONOMY.md:215-230` (guarded by `tests::taxonomy_status_set_in_sync`).
+
+#### 5. Required Code Changes in `nicsuzor/mem`
+
+Implementing the capability node type in the codebase requires the following concrete modifications:
+
+1. **`capability` as a valid node type**:
+   - Add `"capability"` to `VALID_NODE_TYPES` in `src/graph.rs:960` under strategic/reference types (out-of-tree, non-actionable; excluded from `TASK_TYPES` / `ACTIONABLE_TYPES`).
+   - Update `references/TAXONOMY.md` Primary Node Types table to list `capability` under Strategic Anchors alongside `goal` and `target`.
+2. **Never-a-parent rule extended to `capability`**:
+   - Extend `STRATEGIC_TARGET_TYPES` in `src/graph.rs:947` from `&["target", "goal"]` to `&["target", "goal", "capability"]`.
+   - This ensures `is_strategic_target()` (`src/graph.rs:951`) returns `true` for capabilities and `reject_target_as_parent()` (`src/graph_store.rs:1169`) rejects any attempt to set a capability as a structural `parent` for an actionable task.
+3. **Reading `requires_capability` and `backing_assets`**:
+   - Currently, neither field is parsed or stored in `src/`. Code changes required:
+     - In `src/graph.rs` and `src/pkb.rs`: Add `requires_capability: Option<Vec<String>>` and `backing_assets: Option<Vec<BackingAsset>>` to `GraphNode` and `PkbDocument` with serde deserialization.
+     - In `src/graph_store.rs`: Index `requires_capability` edges/relationships or expose them in graph traversal, MCP handlers (`get_task`, `task_search`, `get_dependency_tree`), and validation passes.
+4. **Status compatibility**:
+   - If lifecycle stages (`nascent`, `developing`, `mature`, `deprecated`) are stored in `status:` rather than `maturity:`, add them to `VALID_STATUSES` in `src/graph.rs:872` and `references/TAXONOMY.md:215-230`, maintaining parity in `tests::taxonomy_status_set_in_sync` (`src/graph.rs:745`).
 
 ### The `classification` field
 
