@@ -41,8 +41,11 @@ src/
   eval.rs           — Evaluation utilities
   lint.rs           — PKB linting/validation
   path_lint.rs      — rejects new machine-specific paths to PKB files (`~/brain/...`) in bodies written via MCP
+  lsp.rs            — PKB Language Server Protocol (LSP) server (hover preview & goto-def/links)
   reproduction.rs   — Reproduction/test helpers
   lib.rs            — Library root
+editors/
+  vscode/           — VS Code LSP client extension (hover preview & open referenced files in new tab)
 ```
 
 ## MCP Tools (43)
