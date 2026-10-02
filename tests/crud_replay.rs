@@ -333,10 +333,16 @@ fn test_create_task_missing_parent_returns_suggested_parents() {
             .insert_precomputed(&doc, vec!["Root Project".into()], vec![dummy_emb]);
     }
 
-    // create_task with no parent on a plain task type must fail.
-    let err = server
+    // A plain task without parent succeeds as a root-level task (epic collapsed into task).
+    let root_task = server
         .bench_create_task(&json!({ "title": "Root Project related work" }))
-        .expect_err("create_task without parent must return an error");
+        .expect("create_task without parent must succeed as a root task");
+    assert!(!root_task.content.is_empty());
+
+    // Non-root types like `pr` without parent must fail and return suggested parents.
+    let err = server
+        .bench_create_task(&json!({ "title": "Root Project related work", "type": "pr" }))
+        .expect_err("create_task without parent on pr type must return an error");
 
     let data = err
         .data
@@ -353,15 +359,15 @@ fn test_create_task_missing_parent_returns_suggested_parents() {
 
     let has_container = suggestions
         .iter()
-        .any(|s| s.get("type").and_then(|v| v.as_str()) == Some("epic"));
+        .any(|s| s.get("type").and_then(|v| v.as_str()) == Some("epic") || s.get("type").and_then(|v| v.as_str()) == Some("task"));
     assert!(
         has_container,
-        "suggested_parents must include the seeded epic container; got: {:?}",
+        "suggested_parents must include the seeded epic/task container; got: {:?}",
         suggestions
     );
 }
 
-/// When the vector store has no matching project/epic nodes, the error data is None.
+/// When the vector store has no matching project/task nodes, the error data is None.
 #[test]
 fn test_create_task_missing_parent_empty_store_data_is_none() {
     let (tmp, db_path) = seed_pkb();
@@ -369,8 +375,8 @@ fn test_create_task_missing_parent_empty_store_data_is_none() {
     let (server, _graph) = build_server(tmp.path(), &db_path);
 
     let err = server
-        .bench_create_task(&json!({ "title": "Something unrelated" }))
-        .expect_err("create_task without parent must return an error");
+        .bench_create_task(&json!({ "title": "Something unrelated", "type": "pr" }))
+        .expect_err("create_task without parent on pr type must return an error");
 
     assert!(
         err.data.is_none(),

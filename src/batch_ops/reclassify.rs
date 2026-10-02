@@ -60,7 +60,11 @@ pub fn batch_reclassify(
             }
         };
 
-        let current_type = node.node_type.as_deref().unwrap_or("unknown");
+        let current_type = node
+            .raw_node_type
+            .as_deref()
+            .or(node.node_type.as_deref())
+            .unwrap_or("unknown");
 
         // Skip if already the correct type
         if current_type == new_type {

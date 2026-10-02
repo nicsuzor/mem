@@ -471,8 +471,20 @@ The `contributes_to.weight` (or `stated_weight`) field implements a **verbal con
 | Uncertain / Possible | `"uncertain"`, `"possible"`, `"perhaps"`, `"maybe"` | **0.25** | Exploratory or optional contribution |
 | Improbable / Unlikely | `"improbable"`, `"unlikely"`, `"very unlikely"` | **0.15** | Minor marginal contribution |
 | Impossible / None | `"impossible"`, `"none"` | **0.00** | No contribution |
-| *Unrecognized* | *any non-empty string not in this table* | **rejected** | `ParseWarning` at parse time (`GraphNode::from_pkb_document`, field `contributes_to.stated_weight`); contributes `0.0`, never a fabricated default |
+| *Direct Float* | `0.0..=1.0` | **parsed float** | Explicit numeric weight (e.g. `"0.8"`, `0.75`) |
+| *Unrecognized* | *any non-empty string not in this table or not a parseable float* | **rejected** | `ParseWarning` at parse time (`GraphNode::from_pkb_document`, field `contributes_to.stated_weight`); contributes `0.0`, never a fabricated default |
 | *Unstated* | *omitted, or empty string* | **0.00** | Not an error — a deliberately unstated edge — but still `0.0`, not a "soft" default |
+
+### 7.1. Float Multiplier ($x \times \text{weight}$) & Quantum Term Analysis
+
+The edge schema accepts an optional `multiplier` (alias `x`): a float factor scaling the edge's transmitted weight.
+
+- **Formula**: $W_{\text{effective}} = x \times W_{\text{base}}$ (where $W_{\text{base}}$ is the verbal anchor or direct float; if weight is unstated, $W_{\text{effective}} = x$).
+- **Propagation Channels**:
+  1. **Downstream Weight**: In `compute_downstream_metrics` / `build_cone_adjacency` (`src/graph_store.rs:3181`), reverse BFS edge factor is $w = \text{ct.numeric\_weight}()$, which factors in $x$.
+  2. **Urgency Propagation**: In `compute_urgency` (`src/graph_store.rs:3776`), neighbor propagation weight is $\text{ct.numeric\_weight}()$, scaling chain slack and $S_{\text{lex}}$.
+  3. **Value Lineage**: In `compute_value_lineage` (`src/graph_store.rs:4081`), transmitted value is $\text{total} += \text{ct.numeric\_weight}() \times \text{confidence} \times \text{standing\_weight}$.
+- **Quantum Term Analysis**: A separate "contribution-quantum" term alongside the multiplier was evaluated and rejected (mem_5c476567). Transmitted value along a directed edge in linear DAG propagation is $W_{\text{trans}} = W_{\text{upstream}} \times T_{uv}$. With both multiplier $x$ and quantum $q$, $T_{uv} = W_{\text{base}} \times x \times q$, which collapses into a single degree of freedom. A separate quantum term introduces parameter collinearity and elicitation ambiguity without mathematical gain; the single multiplier $x$ suffices.
 
 > **Note on Naming:** This is an **elicitation scale** for human/agent calibration. It is **not** a computational Birnbaum structural reliability model (it computes no cut sets, partial derivatives, or multi-contributor Boolean structure functions). In all agent-facing schemas and documentation, it is referred to as the **verbal contribution-weight scale**.
 
@@ -484,25 +496,25 @@ The `contributes_to.weight` (or `stated_weight`) field implements a **verbal con
 
 ## 8. Task Classification and Queue Predicates
 
-`GraphStore::classify_tasks` (`src/graph_store.rs:3351–3450`) partitions tasks into `ready`, `blocked`, and `roots`. To prevent non-actionable documentation/spec nodes from polluting actionable queues, classification is restricted to `ACTIONABLE_TYPES` (`["epic", "task", "learn", "pr"]`):
+`GraphStore::classify_tasks` (`src/graph_store.rs:3351–3450`) partitions tasks into `ready`, `blocked`, and `roots`. To prevent non-actionable documentation/spec nodes from polluting actionable queues, classification is restricted to `ACTIONABLE_TYPES` (`["task", "learn", "pr"]`, with `epic` collapsed into `task`):
 
 ### 8.1. Ready Predicate
 A task is placed in the `ready` list if and only if:
-1. It is a leaf node (`node.leaf == true`).
+1. It is a leaf node (`node.leaf == true`, i.e. has no children).
 2. Its type is in `CLAIMABLE_TYPES` (`["task"]`).
 3. Its status is actionable: either `status == "ready"`, or (`status == "inbox"` and `node.has_acceptance_criteria == true`).
 4. It is **not** directly or transitively blocked (all hard `depends_on` are in `COMPLETED_STATUSES` `{"done", "cancelled"}`, and no ancestor in the `blocks` chain is blocked).
 
 ### 8.2. Blocked Predicate
 A task is `blocked` if:
-1. Its type is in `ACTIONABLE_TYPES` (`["epic", "task", "learn", "pr"]`), and
+1. Its type is in `ACTIONABLE_TYPES` (`["task", "learn", "pr"]`), and
 2. Either:
-   a. It has $\\ge 1$ unmet `depends_on` dependency whose status is not completed, OR
+   a. It has $\ge 1$ unmet `depends_on` dependency whose status is not completed, OR
    b. Its own status is `"blocked"`, OR
    c. It is reachable via downstream propagation through `blocks` edges from any directly blocked task.
 
 ### 8.3. Roots Predicate
-Roots are defined as tasks with no parent or whose parent is not in the index, restricted to `ACTIONABLE_TYPES` (`["epic", "task", "learn", "pr"]`).
+Roots are defined as tasks with no parent or whose parent is not in the index, restricted to `ACTIONABLE_TYPES` (`["task", "learn", "pr"]`). Root-level tasks are fully supported without requiring an epic container.
 
 ### 8.4. Canonical Sort Order (`focus_cmp`)
 All flat task listings in MCP (`list_tasks`) and CLI (`pkb tasks`, `pkb list`) use the single canonical comparator `GraphStore::focus_cmp` (`src/graph_store.rs:937-949`):

@@ -34,10 +34,8 @@ Each level resolves a different kind of uncertainty:
 
 | Level   | Uncertainty resolved         | Remaining uncertainty          |
 | ------- | ---------------------------- | ------------------------------ |
-| Goal    | What success looks like      | Which bodies of work to pursue |
-| Project | Which coherent body of work  | How to decompose the work      |
-| Epic    | What to do and in what order | How to execute each step       |
-| Task    | What to execute              | Nothing — ready to act         |
+| Target  | What success looks like      | Which bodies of work to pursue |
+| Task    | What to execute / decompose  | Ready to act or sub-decompose  |
 
 **Compression principle**: Each level must be self-contained. Understanding a node should not require holding its grandparent's context in working memory. If it does, the decomposition has failed — information is leaking across compression boundaries.
 
@@ -104,19 +102,10 @@ These ranges map conventional labels to computed property values. They are **gui
 
 | Label       | Scope | Uncertainty | Typical behaviour                                     |
 | ----------- | ----- | ----------- | ----------------------------------------------------- |
-| **goal**    | > 50  | > 0.7       | Strategic commitment — defines identity & why (out-of-tree) |
-| **target**  | varies| < 0.5       | Countable, measurable milestone carrying severity (out-of-tree) |
-| **epic**    | 3–20  | < 0.5       | Sufficient statistic for execution — what to do       |
-| **task**    | 0–3   | < 0.3       | Near-zero entropy — ready to act                      |
+| **target**  | varies| < 0.5       | Strategic destination/milestone (out-of-tree; subsumes former goal/capability) |
+| **task**    | 0–20+ | < 0.5       | Actionable work container or discrete deliverable (subsumes former epic) |
 
-A node with scope 25 but clear acceptance criteria and resolved dependencies might be a well-decomposed epic. The label is a human-facing shorthand; the properties are authoritative.
-
-**Why not fixed depth?** Forcing work into exactly 4 levels causes two failure modes:
-
-- Simple work gets **over-decomposed** — phantom epics created just to satisfy the hierarchy
-- Complex work gets **under-decomposed** — months of work crammed into one "epic"
-
-Variable-rate decomposition stops when uncertainty is low enough to act — regardless of depth.
+A node with high scope and child tasks acts as a container; a leaf task is ready to act. The label is a human-facing shorthand; the properties are authoritative.
 
 ---
 
@@ -126,15 +115,13 @@ The primary node types in the PKB:
 
 | Type         | Description                                                                                                                          |
 | ------------ | ------------------------------------------------------------------------------------------------------------------------------------ |
-| **goal**     | An identity-level commitment (why). Out of the work tree — never a parent, never parented. Unquantifiable: no `severity`/`consequence`/`due`. Distinct from `target` (NOT an alias). See three-tier model below. |
-| **target**   | A countable, measurable milestone (what) — done / not done. Out of the work tree — never a parent, never parented. Carries `severity` (SEV0–SEV4) + `consequence` (+ optional `due`). Distinct from `goal` (NOT an alias). See three-tier model below. |
-| **epic**     | A bundle of related work that together achieves an aim — a verb                                                                      |
-| **task**     | A discrete deliverable, completable in a single focused session                                                                      |
-| **learn**    | Observational tracking — a spike, discovery, or noted finding. Not directly actionable; resolves by decomposing into follow-up tasks |
+| **target**   | Strategic destination or milestone (what / why). Out of the work tree — never a parent, never parented. Subsumes `goal` and `capability`. Accepts optional `severity` (SEV0–SEV4), `consequence`, `due`, and `standing_weight` (0.0..=1.0). |
+| **task**     | Actionable work item or container (how). Subsumes `epic`. Accepts optional `parent` (root-level tasks permitted without parent). Containers have children; leaves are claimable. |
+| **learn**    | Observational tracking — a spike, discovery, or noted finding. Not directly actionable; resolves by decomposing into follow-up tasks (excluded from `ready`). |
 | **pr**       | Pull request tracking node — represents an external pull request deliverable                                                         |
 | **template** | A reusable workflow template — not a work item itself. Calling `claim_task` on a template creates a datestamped task instance. Templates are never entered into the ready queue and are excluded from all actionable-work counts. |
 
-> **Note on `project`**: "Project" is an operational routing field (`project: <slug>`) and an emergent label over high-scope property ranges, not a separate structural node type in `VALID_NODE_TYPES`. Actionable work items belong to `ACTIONABLE_TYPES` (`["epic", "task", "learn", "pr"]`).
+> **Note on `project` and `epic`**: "Project" is an operational routing field (`project: <slug>`), not a node type. `epic` is collapsed into `task`. Actionable work items belong to `ACTIONABLE_TYPES` (`["task", "learn", "pr"]`).
 
 The `classification` field carries additional semantic subtypes (bug, feature, spike, chore, etc.) without multiplying top-level types.
 

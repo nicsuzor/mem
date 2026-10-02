@@ -368,15 +368,27 @@ tags:
 
     #[test]
     fn claim_task_rejects_non_template() {
-        let (server, _tmp) = setup_with_template();
+        let (server, tmp) = setup_with_template();
 
-        // Try to claim an epic (not a template, not a task)
+        let targets_dir = tmp.path().join("targets");
+        std::fs::create_dir_all(&targets_dir).unwrap();
+        std::fs::write(
+            targets_dir.join("targ-test.md"),
+            "---\nid: targ-test\ntitle: \"Test Target\"\ntype: target\nstatus: active\n---\n",
+        )
+        .unwrap();
+        {
+            let graph = GraphStore::build_from_directory(tmp.path());
+            *server.graph.write() = graph;
+        }
+
+        // Try to claim a target (not a template, not a task)
         let err = server
-            .handle_claim_task(&serde_json::json!({ "id": "proj-test" }))
+            .handle_claim_task(&serde_json::json!({ "id": "targ-test" }))
             .expect_err("should fail on non-template, non-task node");
 
         assert!(
-            err.message.contains("not 'template'"),
+            err.message.contains("not 'template' or 'task'"),
             "error should mention template type requirement; got: {}",
             err.message
         );
@@ -584,14 +596,14 @@ project: aops
             "session epic parent should have adhoc_ prefix; parent={parent}"
         );
 
-        // The session epic itself should exist in the graph as type: epic
+        // The session container itself should exist in the graph as type: task
         let epic_node = graph
             .resolve(parent)
             .expect("session epic should be in graph");
         assert_eq!(
             epic_node.node_type.as_deref(),
-            Some("epic"),
-            "session epic should have type=epic"
+            Some("task"),
+            "session epic should have type=task"
         );
         // Epic's parent should be the adhoc-sessions root
         assert_eq!(
@@ -685,14 +697,11 @@ project: aops
             parent1, parent2,
             "both tasks from the same session should share the same parent epic; parent1={parent1}, parent2={parent2}"
         );
-        // Only one SESSION epic should exist with an adhoc- prefix in the graph.
-        // The adhoc-sessions bootstrap root is itself `type: epic` now (project
-        // is no longer a node type), so exclude it from the count.
+        // Only one SESSION container should exist with the adhoc-sessions root as parent.
         let epic_count = graph
             .nodes()
             .filter(|n| {
-                n.node_type.as_deref() == Some("epic")
-                    && n.id.starts_with("adhoc_")
+                n.parent.as_deref() == Some(crate::document_crud::ADHOC_SESSIONS_ROOT_ID)
                     && n.id != crate::document_crud::ADHOC_SESSIONS_ROOT_ID
             })
             .count();

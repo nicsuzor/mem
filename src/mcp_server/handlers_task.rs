@@ -341,13 +341,10 @@ impl PkbSearchServer {
                 .map(String::from),
         };
 
-        // Hierarchy validation: actionable tasks must have a parent. Strategic
-        // out-of-tree nodes (`goal`, `target`) and root-able types (`epic`,
-        // `learn`) are exempt — goals & targets live beside the work tree and are
-        // never parented (work links to them via `contributes_to`); epics may be
-        // root-level containers per the PKB type taxonomy spec.
+        // Hierarchy validation: tasks can be root-level (epic collapsed into task)
+        // or parented. Goals/targets are strategic and out-of-tree (never parented).
         let task_type_str = fields.task_type.as_deref().unwrap_or("task");
-        let root_able = matches!(task_type_str, "goal" | "target" | "epic" | "learn");
+        let root_able = matches!(task_type_str, "goal" | "target" | "epic" | "learn" | "task");
         if fields.parent.is_none() && !root_able {
             // Semantic search for candidate parents so agents can immediately see options.
             let suggested_parents: Option<serde_json::Value> = if !fields.title.is_empty() {
@@ -362,7 +359,7 @@ impl PkbSearchServer {
                             if suggestions.len() >= 5 {
                                 break;
                             }
-                            if let Some("epic") = r.doc_type.as_deref() {
+                            if matches!(r.doc_type.as_deref(), Some("epic") | Some("task")) {
                                 suggestions.push(serde_json::json!({
                                     "id": r.id,
                                     "title": r.title,
@@ -387,8 +384,8 @@ impl PkbSearchServer {
                 code: ErrorCode::INVALID_PARAMS,
                 message: Cow::from(
                     "Missing required parameter: parent. Tasks must have a parent node. \
-                     Only goal, target, epic, and learn types can be root-level. \
-                     Example: create_task(title=\"...\", parent=\"epic-12345678\") or pass type=\"epic\".",
+                     Only target, learn, and task types can be root-level. \
+                     Example: create_task(title=\"...\", parent=\"task-12345678\").",
                 ),
                 data: suggested_parents,
             });
@@ -1317,6 +1314,10 @@ impl PkbSearchServer {
                     .as_deref()
                     .map(|d| d.eq_ignore_ascii_case(dt))
                     .unwrap_or(false)
+                    || t.raw_node_type
+                        .as_deref()
+                        .map(|d| d.eq_ignore_ascii_case(dt))
+                        .unwrap_or(false)
             });
         }
         if let Some(needle) = title_contains {

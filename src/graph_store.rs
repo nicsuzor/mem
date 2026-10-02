@@ -91,9 +91,10 @@ pub struct GraphStore {
 }
 
 /// Document types considered actionable work items in task trees and dashboards.
-/// `project` is retired as a node type (legacy `type: project` files read-coerce
-/// to `epic`); "project" is the polecat.yaml routing slug in frontmatter.
-pub const ACTIONABLE_TYPES: &[&str] = &["epic", "task", "learn", "pr"];
+/// `project` and `epic` are retired as node types (epic collapsed into task;
+/// project = polecat.yaml routing slug in frontmatter). Legacy `type: project`
+/// and `type: epic` files read-coerce to `task`.
+pub const ACTIONABLE_TYPES: &[&str] = &["task", "learn", "pr"];
 
 /// Document types that represent claimable work items — leaf tasks a worker can actually do.
 /// Excludes containers (epic) and observational types (learn).
@@ -398,17 +399,12 @@ impl GraphStore {
                 ghost.id = ref_id.clone();
                 ghost.label = ref_id.clone();
                 // Guess node type from ID prefix
-                if ref_id.starts_with("epic-") {
-                    ghost.node_type = Some("epic".to_string());
-                } else if ref_id.starts_with("task-") {
+                if ref_id.starts_with("epic-") || ref_id.starts_with("task-") || ref_id.starts_with("project-") {
                     ghost.node_type = Some("task".to_string());
-                } else if ref_id.starts_with("goal-") || ref_id.starts_with("target-") {
-                    ghost.node_type = Some("goal".to_string());
+                } else if ref_id.starts_with("goal-") || ref_id.starts_with("target-") || ref_id.starts_with("capability-") {
+                    ghost.node_type = Some("target".to_string());
                 } else if ref_id.starts_with("pr-") {
                     ghost.node_type = Some("pr".to_string());
-                } else if ref_id.starts_with("project-") {
-                    // Legacy prefix — project is no longer a node type.
-                    ghost.node_type = Some("epic".to_string());
                 }
 
                 let virtual_path = format!("/virtual/{}", ref_id);
@@ -1418,7 +1414,7 @@ impl GraphStore {
     /// Orphan-ness is **type-aware**, reflecting the two structural models the
     /// PKB uses (SSoT: `specs/pkb-server-spec.md`, "Orphan Detection"):
     ///
-    /// - **Actionable types** (`ACTIONABLE_TYPES`: task/epic/learn/pr)
+    /// - **Actionable types** (`ACTIONABLE_TYPES`: task/learn/pr)
     ///   live in a *tree* whose backbone is the `parent` field. One of these is
     ///   an orphan iff its `parent` is absent or dangling — having dependency or
     ///   link edges does NOT excuse a missing hierarchy parent. This preserves
@@ -6059,14 +6055,13 @@ mod tests {
 
     #[test]
     fn test_ready_excludes_container_types() {
-        // Epics, projects are containers — not claimable work items.
-        // With unified type system: only "task" is claimable; bug/feature/action
-        // are now type=task with a classification field.
+        // Container tasks with children, projects, and learn nodes are not claimable in ready.
+        // Leaf tasks are claimable.
         let docs = vec![
             make_doc(
                 "tasks/epic-1.md",
-                "Lone Epic",
-                "epic",
+                "Container Task",
+                "task",
                 "ready",
                 "epic-1",
                 None,
@@ -6087,7 +6082,7 @@ mod tests {
                 "task",
                 "ready",
                 "task-1",
-                None,
+                Some("epic-1"),
                 &[],
             ),
             make_doc(
@@ -6096,7 +6091,7 @@ mod tests {
                 "task",
                 "ready",
                 "task-2",
-                None,
+                Some("proj-1"),
                 &[],
             ),
             make_doc(
@@ -6114,7 +6109,7 @@ mod tests {
         let ready_ids: Vec<&str> = ready.iter().map(|n| n.id.as_str()).collect();
         assert!(
             !ready_ids.contains(&"epic-1"),
-            "epics must not appear in ready"
+            "container tasks with children must not appear in ready"
         );
         assert!(
             !ready_ids.contains(&"proj-1"),
@@ -7976,6 +7971,7 @@ mod tests {
         crate::graph::ContributesTo {
             to: to.to_string(),
             stated_weight: stated_weight.to_string(),
+            multiplier: None,
             justification: String::new(),
             current_weight: None,
             resolved_to: Some(to.to_string()),
@@ -9012,9 +9008,9 @@ mod tests {
         let n_taskb = store.get_node("task-b").expect("task-b should exist");
         assert_eq!(n_taskb.target_ancestors, vec!["epic-1", "epic-2"]);
 
-        // ghost epic-2 should exist and have correct type
+        // ghost epic-2 should exist and have correct type (epic prefix coerces to task)
         let n_epic2 = store.get_node("epic-2").expect("epic-2 ghost should exist");
-        assert_eq!(n_epic2.node_type.as_deref(), Some("epic"));
+        assert_eq!(n_epic2.node_type.as_deref(), Some("task"));
 
         // task-c ancestors: ["epic-1", "epic-2", "task-b"]
         let n_taskc = store.get_node("task-c").expect("task-c should exist");
@@ -9846,6 +9842,7 @@ mod tests {
         contributor.contributes_to = vec![crate::graph::ContributesTo {
             to: "chan-target".to_string(),
             stated_weight: "Certain".to_string(),
+            multiplier: None,
             justification: String::new(),
             current_weight: None,
             resolved_to: Some("chan-target".to_string()),
@@ -10179,8 +10176,8 @@ mod tests {
             .expect("container should exist");
         assert_eq!(
             container.node_type.as_deref(),
-            Some("epic"),
-            "legacy type: project must read-coerce to epic"
+            Some("task"),
+            "legacy type: project must read-coerce to task"
         );
         let node = store.get_node("task-tja").expect("task-tja should exist");
         assert_eq!(

@@ -138,14 +138,14 @@ impl PkbSearchServer {
             .with_annotations(ToolAnnotations::new().read_only(true)),
             Tool::new(
                 "create_task",
-                "Create a new task markdown file with YAML frontmatter. `title` and `parent` are required (only root-able types like epic, learn, goal, target may omit parent). `project` is optional — omitted tasks inherit the nearest ancestor's project. Supports the verbal contribution-weight scale via `contributes_to` and severity-based prioritization. Parent/child cycles are rejected at write time.",
+                "Create a new task markdown file with YAML frontmatter. `title` is required. `parent` is optional (omitted tasks are root-level tasks). `project` is optional — omitted tasks inherit the nearest ancestor's project. Supports the verbal contribution-weight scale via `contributes_to` and severity-based prioritization. Parent/child cycles are rejected at write time.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
                         "title": { "type": "string", "description": "Task title (also accepts `task_title` as alias)" },
                         "task_title": { "type": "string", "description": "Alias for title" },
                         "id": { "type": "string", "description": "Task ID (auto-generated if omitted)" },
-                        "parent": { "type": "string", "description": "Parent task ID (required for tasks; only epic, learn, goal, target may omit)" },
+                        "parent": { "type": "string", "description": "Parent task ID (optional; omitted tasks are root-level tasks)" },
                         "intent": { "type": "integer", "description": "Intent band 0-4 (P0 Critical / P1 Active intent / P2 Active work / P3 Planned / P4 Backlog). Default when unset: P3 (Planned). Agents may set this under Nic's standing delegation (2026-09-10: 'allow agents to set intent on my behalf') — it does not require him to direct this specific value. The band must reflect Nic's strategic context read across the graph, never the agent's own impression of its work, and must never be inherited or copied from a parent/sibling task. Leave unset when no band is warranted — that is curation-by-absence, not an omission to fix. See specs/ranking.md §2.1 and §4.6." },
                         "tags": { "type": "array", "items": { "type": "string" }, "description": "Free-form tags for search and filtering" },
                         "depends_on": { "type": "array", "items": { "type": "string" }, "description": "IDs of tasks that must complete before this one is unblocked" },
@@ -162,7 +162,7 @@ impl PkbSearchServer {
                         "waiting_since": { "type": "string", "description": "When the stakeholder started waiting (ISO date, e.g. '2026-03-20'). Falls back to created date if omitted." },
                         "due": { "type": "string", "description": "Due date (ISO date, e.g. '2026-06-01')" },
                         "project": { "type": "string", "description": "Project routing slug, validated against polecat.yaml (slug or any registered alias; canonicalized on write). Optional — omitted tasks inherit the nearest ancestor's project. Builtins 'task' and 'adhoc-sessions' are always accepted." },
-                        "type": { "type": "string", "enum": ["task", "epic", "learn", "pr", "goal", "target"], "description": "Task type (default: 'task'). Also accepts: epic, learn, pr, goal, target. `goal` and `target` are out-of-tree strategic nodes (no parent required)." },
+                        "type": { "type": "string", "enum": ["task", "learn", "pr", "target"], "description": "Task type (default: 'task'). Also accepts: learn, pr, target. `target` is an out-of-tree strategic node (no parent required)." },
                         "status": { "type": "string", "enum": ["inbox", "ready"], "description": "Task status. Real default when unset: 'inbox' (captured, untriaged). Creators legitimately set only 'inbox' or 'ready' — 'ready' means decomposed to a leaf with all hard deps resolved. The inbox→ready transition is auto-computed once a task graduates, so leaving it 'inbox' is fine. Do NOT set queued/in_progress/terminal statuses at create time. See TAXONOMY §Status Values and Transitions." },
                         "allow_missing_parent": { "type": "boolean", "description": "Allow creating under a missing parent (logs warning). Default: false." },
                         "force": { "type": "boolean", "description": "Allow creating under a closed (done/cancelled/archived) parent. Default: false." },
@@ -170,9 +170,9 @@ impl PkbSearchServer {
                         "issue_url": { "type": "string", "description": "External issue/ticket URL to link on the task" },
                         "follow_up_tasks": { "type": "array", "items": { "type": "string" }, "description": "IDs of related follow-up tasks" },
                         "release_summary": { "type": "string", "description": "Detailed technical summary, if creating this task as part of a release/handover" },
-                        "contributes_to": { "type": "array", "items": { "type": "object" }, "description": "Edges to goal/target nodes this task contributes to, e.g. [{\"target\": \"target-id\", \"stated_weight\": \"expected\"}]. `stated_weight` MUST be one of the recognized verbal contribution-weight terms: certain (1.00), probable (0.85), expected (0.75), fifty-fifty (0.50), uncertain (0.25), improbable (0.15), impossible (0.00). An unrecognized term is rejected at parse time (recorded as a parse_warning) and contributes zero weight rather than a fabricated default — omit the field entirely if genuinely unstated. Supports `inherits_from` to copy fields from a prototype edge." }
+                        "contributes_to": { "type": "array", "items": { "type": "object" }, "description": "Edges to target nodes this task contributes to, e.g. [{\"to\": \"target-id\", \"stated_weight\": \"expected\", \"multiplier\": 0.5}]. `stated_weight` accepts recognized verbal terms (certain, probable, expected, fifty-fifty, uncertain, improbable, impossible) or direct numeric float values. `multiplier` (alias `x`) is an optional float multiplier scaling the propagated weight (propagates x * weight). Supports `inherits_from` to copy fields from a prototype edge." }
                     },
-                    "required": ["title", "parent"]
+                    "required": ["title"]
                 }))
                 .unwrap(),
             )
@@ -206,7 +206,7 @@ impl PkbSearchServer {
                     "type": "object",
                     "properties": {
                         "title": { "type": "string", "description": "Document title (required)" },
-                        "type": { "type": "string", "enum": ["epic", "task", "learn", "pr", "template", "goal", "target", "note", "knowledge", "memory", "insight", "observation", "contact", "document", "reference", "review", "case", "spec", "prototype", "index"], "description": "Document type (required): note, knowledge, memory, insight, observation, task, epic, goal, target, etc." },
+                        "type": { "type": "string", "enum": ["task", "learn", "pr", "template", "target", "note", "knowledge", "memory", "insight", "observation", "contact", "document", "reference", "review", "case", "spec", "prototype", "index"], "description": "Document type (required): note, knowledge, memory, insight, observation, task, target, etc." },
                         "id": { "type": "string", "description": "Document ID (auto-generated if omitted)" },
                         "tags": { "type": "array", "items": { "type": "string" }, "description": "Free-form tags for search and filtering" },
                         "body": { "type": "string", "description": "Markdown body. Refer to other PKB files by wikilink (`[[id]]`) or PKB-root-relative path; a machine-specific path such as `~/brain/...` or `/home/nic/brain/...` is rejected with error_type `machine_specific_path`." },
@@ -219,7 +219,7 @@ impl PkbSearchServer {
                         "complexity": { "type": "string", "description": "Free-form complexity/size label (e.g. 'S', 'M', 'L'). For duration strings like '1d'/'2h', use effort instead." },
                         "effort": { "type": "string", "description": "Effort duration string: '1d', '2h', '1w' (minimum '1h'). For size labels like 'S'/'M'/'L', use complexity instead." },
                         "consequence": { "type": "string", "description": "Narrative description of what happens if this task/doc is not done or fails." },
-                        "contributes_to": { "type": "array", "items": { "type": "object" }, "description": "Edges to goal/target nodes this document contributes to, e.g. [{\"target\": \"target-id\", \"stated_weight\": \"expected\"}]. `stated_weight` MUST be one of the recognized verbal contribution-weight terms: certain (1.00), probable (0.85), expected (0.75), fifty-fifty (0.50), uncertain (0.25), improbable (0.15), impossible (0.00). An unrecognized term is rejected at parse time (recorded as a parse_warning) and contributes zero weight rather than a fabricated default — omit the field entirely if genuinely unstated." },
+                        "contributes_to": { "type": "array", "items": { "type": "object" }, "description": "Edges to target nodes this document contributes to, e.g. [{\"to\": \"target-id\", \"stated_weight\": \"expected\", \"multiplier\": 0.5}]. `stated_weight` accepts recognized verbal terms (certain, probable, expected, fifty-fifty, uncertain, improbable, impossible) or direct numeric float values. `multiplier` (alias `x`) is an optional float multiplier scaling the propagated weight (propagates x * weight)." },
                         "source": { "type": "string", "description": "Source context" },
                         "due": { "type": "string", "description": "Due date" },
                         "confidence": { "type": "number", "description": "Confidence level (0.0 - 1.0)", "minimum": 0.0, "maximum": 1.0 },
@@ -352,7 +352,7 @@ impl PkbSearchServer {
                         "severity": { "type": "integer", "description": "Filter by exact severity" },
                         "goal_type": { "type": "string", "description": "Filter by goal type" },
                         "assignee": { "type": "string", "description": "Filter by assignee" },
-                        "type": { "type": "string", "description": "Filter by document type (e.g. 'target', 'epic', 'task')" },
+                        "type": { "type": "string", "description": "Filter by document type (e.g. 'task', 'target', 'learn', 'pr')" },
                         "title_contains": { "type": "string", "description": "Filter by title substring (case-insensitive)" },
                         "complexity": { "type": "string", "description": "Filter by complexity (e.g. 'low', 'medium', 'high')" },
                         "weight_gte": { "type": "integer", "description": "Filter to tasks with downstream weight ≥ N" },

@@ -236,7 +236,9 @@ impl FilterSet {
 
         // Document type
         if let Some(ref doc_type) = self.doc_type {
-            if node.node_type.as_deref() != Some(doc_type.as_str()) {
+            let matches_type = node.node_type.as_deref() == Some(doc_type.as_str())
+                || node.raw_node_type.as_deref() == Some(doc_type.as_str());
+            if !matches_type {
                 return false;
             }
         }

@@ -204,10 +204,12 @@ const KNOWN_KEYS: &[&str] = &[
 fn resolve_type_alias(t: &str) -> &'static str {
     match t {
         // Collapsed actionable types → task
-        "bug" | "feature" | "action" | "milestone" | "subproject" => "task",
+        "bug" | "feature" | "action" | "milestone" | "subproject" | "epic" => "task",
         // Retired container type — "project" is now a polecat.yaml routing slug,
-        // not a node type. Legacy containers reclassify to epic.
-        "project" => "epic",
+        // not a node type. Legacy containers reclassify to task.
+        "project" => "task",
+        // Strategic nodes collapsed → target
+        "goal" | "capability" | "target" => "target",
         // Reference aliases
         "article" | "reading-guide" | "talk" => "reference",
         "observation" | "insight" | "exploration" => "note",
@@ -219,8 +221,6 @@ fn resolve_type_alias(t: &str) -> &'static str {
         "spec" | "design" => "spec",
         "audit" | "audit-report" => "audit-report",
         "reference" => "reference",
-        "goal" => "goal",
-        "target" => "target",
         "instructions" | "role" | "agent" | "bundle" => "document",
         _ => "document",
     }
@@ -598,8 +598,8 @@ fn check_frontmatter(
             diags.push(Diagnostic {
                 severity: Severity::Warning,
                 rule: "fm-deprecated-project-type",
-                message: "'type: project' is retired — the node is read as an epic. \
-                          Reclassify to 'epic' (e.g. via batch_reclassify); 'project' \
+                message: "'type: project' is retired — the node is read as a task. \
+                          Reclassify to 'task' (e.g. via batch_reclassify); 'project' \
                           is now the polecat.yaml routing slug in the 'project:' field."
                     .into(),
                 line: None,
@@ -2389,7 +2389,7 @@ mod tests {
 
     #[test]
     fn goal_and_target_are_distinct_types() {
-        // Goal and target are both distinct valid types.
+        // Goal is aliased to target under collapsed type taxonomy.
         let fixed_goal = fix_str(
             "---
 title: Test
@@ -2399,8 +2399,8 @@ type: goal
 Body.\n",
         );
         assert!(
-            fixed_goal.contains("type: goal"),
-            "goal should not be aliased"
+            fixed_goal.contains("type: target"),
+            "goal should be aliased to target"
         );
 
         let fixed_target = fix_str(
@@ -2915,11 +2915,11 @@ Body.\n",
             !diags.iter().any(|d| d.rule == "fm-id-format"),
             "legacy project files keep the canonical-ID exemption, got: {diags:?}"
         );
-        // --fix reclassifies to epic via resolve_type_alias.
+        // --fix reclassifies to task via resolve_type_alias.
         let fixed = fix_str(content);
         assert!(
-            fixed.contains("type: epic"),
-            "fix should rewrite type: project → epic, got:\n{fixed}"
+            fixed.contains("type: task"),
+            "fix should rewrite type: project → task, got:\n{fixed}"
         );
     }
 
@@ -2972,7 +2972,7 @@ Body.\n",
         let goal_file = root.join("goal-11223344.md");
         std::fs::write(
             &goal_file,
-            "---\nid: goal-11223344\ntitle: Root Goal\ntype: goal\nstatus: ready\nproject: aops\n---\n\nRoot.\n",
+            "---\nid: goal-11223344\ntitle: Root Goal\ntype: target\nstatus: ready\nproject: aops\n---\n\nRoot.\n",
         )
         .unwrap();
 
@@ -3027,7 +3027,7 @@ Body.\n",
         let goal_file = root.join("goal-11223355.md");
         std::fs::write(
             &goal_file,
-            "---\nid: goal-11223355\ntitle: Root Goal\ntype: goal\nstatus: ready\nproject: aops\n---\n\nRoot.\n",
+            "---\nid: goal-11223355\ntitle: Root Goal\ntype: target\nstatus: ready\nproject: aops\n---\n\nRoot.\n",
         )
         .unwrap();
 

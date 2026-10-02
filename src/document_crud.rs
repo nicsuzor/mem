@@ -214,6 +214,7 @@ pub fn create_document(root: &Path, fields: DocumentFields) -> Result<PathBuf> {
 
     let type_prefix = match fields.doc_type.as_str() {
         "task" | "epic" => "task",
+        "target" | "goal" | "capability" => "targ",
         "memory" => "mem",
         "note" => "note",
         "knowledge" => "kb",
@@ -246,6 +247,7 @@ pub fn create_document(root: &Path, fields: DocumentFields) -> Result<PathBuf> {
             .map(|d| expand_env_vars(&d))
             .unwrap_or_else(|| match fields.doc_type.as_str() {
                 "task" | "epic" | "learn" => "tasks".to_string(),
+                "target" | "goal" | "capability" => "targets".to_string(),
                 "memory" => "memories".to_string(),
                 _ => "notes".to_string(),
             });
@@ -520,7 +522,7 @@ pub fn ensure_adhoc_sessions_root(root: &Path) -> Result<()> {
     let now = chrono::Utc::now().to_rfc3339();
     let id = ADHOC_SESSIONS_ROOT_ID;
     let content = format!(
-        "---\nid: {id}\ntitle: \"Ad-hoc Sessions\"\ntype: epic\nproject: adhoc-sessions\ncreated: {now}\nmodified: {now}\nalias:\n  - \"{id}-ad-hoc-sessions\"\n  - \"{id}\"\n  - \"adhoc-sessions\"\npermalink: adhoc-sessions\nstatus: in_progress\n---\n\n# Ad-hoc Sessions\n\nRoot node for tasks created during ad-hoc agent sessions.\n"
+        "---\nid: {id}\ntitle: \"Ad-hoc Sessions\"\ntype: task\nproject: adhoc-sessions\ncreated: {now}\nmodified: {now}\nalias:\n  - \"{id}-ad-hoc-sessions\"\n  - \"{id}\"\n  - \"adhoc-sessions\"\npermalink: adhoc-sessions\nstatus: in_progress\n---\n\n# Ad-hoc Sessions\n\nRoot node for tasks created during ad-hoc agent sessions.\n"
     );
     atomic_write_file(&adhoc_path, &content, "ensure_adhoc_sessions_root")?;
     let _ = git_commit_file(&adhoc_path, "create(project): adhoc-sessions - Ad-hoc sessions root");
@@ -538,21 +540,18 @@ pub fn create_task(root: &Path, fields: TaskFields) -> Result<PathBuf> {
             anyhow::bail!("Invalid project path: must be relative and cannot contain '..'");
         }
     }
-    // parent is required for plain tasks — they must be linked to an existing
-    // node. Root-able types are exempt: goals/targets live beside the work
-    // tree (never parented), and epics/learn nodes may be tree roots. Mirrors
-    // handle_create_task's `root_able` gate for callers that bypass the MCP
-    // layer (CLI `pkb new`, direct library use).
+    // parent is optional for tasks — epic is collapsed into task, so tasks may be
+    // root-level containers or parented work items. Goals/targets live beside the work
+    // tree (never parented).
     let root_able = matches!(
         fields.task_type.as_deref().unwrap_or("task"),
-        "goal" | "target" | "epic" | "learn"
+        "goal" | "target" | "epic" | "learn" | "task"
     );
     if !root_able && fields.parent.as_deref().map(str::is_empty).unwrap_or(true) {
         anyhow::bail!(
             "parent is required: tasks must be linked to a parent node \
-             (an epic or another task). Goals and targets are strategic priorities, not \
-             structural parents — link to them via `contributes_to` instead. Only \
-             top-level types (goal, target, epic, learn) can be root-level."
+             (an existing task). Targets are strategic priorities, not \
+             structural parents — link to them via `contributes_to` instead."
         );
     }
 
@@ -4031,7 +4030,7 @@ mod tests {
             title: "Test task with metadata".to_string(),
             parent: Some("parent-001".to_string()),
             project: Some("aops".to_string()),
-            task_type: Some("epic".to_string()),
+            task_type: Some("task".to_string()),
             status: Some("in_progress".to_string()),
             ..Default::default()
         };
@@ -4040,7 +4039,7 @@ mod tests {
         let content = fs::read_to_string(&path).unwrap();
 
         assert!(
-            content.contains("type: epic"),
+            content.contains("type: task"),
             "type field should be written: {content}"
         );
         assert!(
@@ -4065,32 +4064,19 @@ mod tests {
     }
 
     #[test]
-    fn create_task_allows_root_level_epic_without_parent() {
-        // Root-able types (goal, target, epic, learn) are exempt from the
-        // parent requirement; plain tasks still hard-require one.
+    fn create_task_allows_root_level_task_without_parent() {
+        // After collapsing epic into task, tasks are allowed to be root-level (parent omitted).
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
         write_test_polecat_yaml(root, &["aops", "mem"]);
         fs::create_dir_all(root.join("tasks")).unwrap();
 
-        let epic = TaskFields {
-            title: "Root epic".to_string(),
-            task_type: Some("epic".to_string()),
-            project: Some("aops".to_string()),
-            ..Default::default()
-        };
-        create_task(root, epic).expect("root-level epic must not require a parent");
-
         let task = TaskFields {
-            title: "Plain task".to_string(),
+            title: "Plain root task".to_string(),
             project: Some("aops".to_string()),
             ..Default::default()
         };
-        let err = create_task(root, task).unwrap_err();
-        assert!(
-            err.to_string().contains("parent is required"),
-            "plain tasks still require a parent: {err}"
-        );
+        create_task(root, task).expect("root-level task must not require a parent");
     }
 
     #[test]

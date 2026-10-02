@@ -16,23 +16,25 @@ tags:
 
 # PKB Type Taxonomy: Unified Node Classification
 
-> **2026-06-03 — retire-goal reversed; goal & target are distinct out-of-tree types (Nic decision).** The unimplemented 2026-05-10 proposal to retire `goal` (alias `goal → target`) is reversed. `goal` and `target` are **distinct coexisting node types**, both **out of the work tree** (reference tier — never parents, never parented). `goal` is **not** an alias of `target`. The canonical three-tier model (Model B) below is authoritative.
+> **2026-10-01 — Simplification of Node Types & Edge Weights (mem_5c476567).**
+> 1. **Capability wound back**: PR #637 is closed unmerged and the proposed `capability` node type is completely removed from spec and code.
+> 2. **`goal`, `target`, and `capability` collapsed into `target`**: Strategic out-of-tree destinations are unified under `target`. Legacy `type: goal` and `type: capability` read-coerce in-memory to `target`.
+> 3. **`epic` collapsed into `task`**: Actionable work containers are unified under `task`. Legacy `type: epic` and `type: project` read-coerce in-memory to `task`.
+> 4. **Differing fields accepted empty**:
+>    - `target` accepts empty `severity`, `consequence`, and `due` (subsuming qualitative/aspirational goals alongside quantifiable targets).
+>    - `task` accepts empty `parent` (allowing top-level/root containers without requiring an artificial epic wrapper).
+> 5. **`contributes_to` float multiplier $x$**: Edges support an optional `multiplier` (alias `x`), scaling verbal or raw float weights ($x \times \text{weight}$) into urgency, value lineage, and downstream weight.
 >
 > **`project` is no longer a node type.** "Project" is the narrow operational name for a polecat-registered repo, carried as the `project: <slug>` metadata field on tasks. See [[TAXONOMY]] §"Project (operational routing field)" and [[areas-not-projects]].
->
-> This is **implemented in mem**: `project` is out of `VALID_NODE_TYPES`/`ACTIONABLE_TYPES` (new writes reject it; legacy `type: project` files read-coerce to `epic` and lint warns via `fm-deprecated-project-type`). `project:` frontmatter values are validated + canonicalized against the polecat.yaml registry (slug, `slug:` override, aliases, `project_aliases:`; builtins `task`/`adhoc-sessions`) at every write path, and tasks that omit the field inherit the nearest parent-chain ancestor's explicit value. See `specs/pkb-server-spec.md` §"Project registry (polecat.yaml)".
->
-> The sections below are kept for historical context. Where they reference `project` as a tree role, treat those as superseded.
 
-## Goals, Targets, and Work — the three tiers
+## Targets and Work — the Simplified Two-Tier Taxonomy
 
-The PKB separates **why / what / how**. `goal` and `target` are **strategic nodes beside the work tree** (reference tier): never parents, never in "to-do" surfaces, connected to work only by `contributes_to`. `epic`/`task`/`learn` are the **work tree** and the only actionable tier.
+The PKB simplifies the node taxonomy into two structural categories:
 
-- **`goal` — identity (why).** An identity-level commitment: *who I am / how I define myself*. **Unquantifiable** — you cannot count "achievement," and there is no meaningful consequence-of-missing an identity. So a goal has **no `severity`, no `consequence`, no `due`**. Roots of meaning (~10), e.g. *World-Class Academic Profile*. Out of the work tree: never a parent, never parented.
-- **`target` — milestone (what).** A tangible, **countable, measurable** output/milestone — *done / not done*. Carries the quantifiable stakes: **`severity` (SEV0–SEV4) + `consequence`** (+ optional `due`). The unit that propagates weight into the work tree, e.g. *Deliver LLB242 marks by deadline*. Out of the work tree: never a parent, never parented. Advances ≥1 goal via `contributes_to`.
-- **`epic` / `task` / `learn` — work (how).** Verbs. The only actionable tier (`ACTIONABLE_TYPES`) and the only nodes in the parent-child tree (`EPIC → EPIC|TASK → …`). Advances outcomes via `contributes_to` to **targets** (or directly to **goals**).
+- **`target` — strategic destination (why / what).** An out-of-tree destination (never a parent, never parented, never in "to-do" queues) subsuming former goals, targets, and capabilities. A target may be qualitative/identity-level (empty `severity`, `consequence`, and `due`) or measurable/time-bound (with `severity` SEV0–SEV4, `consequence`, and `due`). Standing value is priced via `standing_weight` (float 0.0..=1.0). Work connects to targets via `contributes_to`.
+- **`task` / `learn` / `pr` — actionable work (how).** Actionable work items. `task` subsumes all discrete deliverables and container epics: a task with no `parent` acts as a top-level root; a task with children acts as a container; a task without children acts as an executable leaf. `learn` tracks hypotheses/observations (excluded from `ready`), and `pr` tracks code changes.
 
-Linkage (out-of-tree, via `contributes_to`): `task/epic → target → goal`. The `to:` of a `contributes_to` edge may be a **target or a goal**. Linkage is metadata, not structure — never parent-child, never affects tree traversal; goals & targets are excluded from orphan detection (parentless is correct). **Severity lives only on targets** and propagates down `contributes_to` (Birnbaum); goals carry no severity. `goal` is **not** an alias of `target` — the 2026-05-10 retirement is reversed; distinct coexisting types.
+Linkage (out-of-tree, via `contributes_to`): `task → target`. Linkage is metadata, not tree structure. Target weight propagates through `contributes_to` edges scaled by the edge's stated weight and float multiplier.
 
 ## Problem
 
@@ -88,24 +90,25 @@ These appear in task operations (`list_tasks`, `task_search`, ready/blocked queu
 
 | Type    | Graph role             | Parent requirement                                         |
 | ------- | ---------------------- | ---------------------------------------------------------- |
-| `epic`  | Bundle of related work | None (root-level) or another epic                          |
-| `task`  | Discrete deliverable   | Epic or task; root-level allowed for trivial standalones   |
-| `learn` | Observational tracking | Epic or task                                               |
-| `pr`    | PR tracking deliverable| Epic or task                                               |
+| `task`  | Discrete deliverable or container | Optional (root-level allowed for containers/standalones; child of task) |
+| `learn` | Observational tracking | Optional or child of task (excluded from `ready_tasks()`)   |
+| `pr`    | PR tracking deliverable| Optional or child of task                                   |
 
-**`target` and `goal` are not tree nodes.** Target nodes (type: target) join tasks to goals (type: goal) with an impact factor. They are excluded from the work-item tree: they have no children and never serve as a parent. Work links to targets via `contributes_to` metadata (formerly `goals: []`). Targets participate in priority/severity propagation but not in tree traversal, orphan detection, or task operations.
+**`epic` is collapsed into `task`.** All containers and groupings are represented as `task` nodes. A task without a `parent` acts as a root-level container or standalone task; a task with children acts as a container; a task with no children acts as an executable leaf.
+
+**`target` is out of the work tree.** Target nodes (type: `target`) represent strategic destinations and milestones. They have no children and never serve as a parent in the work tree. Work links to targets via `contributes_to` metadata.
 
 **Removed from actionable types:**
-
-- `project` — no longer a node type; the word now refers to a polecat repo (operational routing field on tasks). See [[TAXONOMY]] §"Project (operational routing field)" and [[areas-not-projects]] for migration of existing `type: project` containers (most become root-level epics).
+- `project` — no longer a node type; refers to a polecat repo routing slug.
+- `epic` — collapsed into `task`.
 
 **Removed from type, moved to `classification`:** `bug`, `feature`, `action`, `subproject`, `milestone`.
 
 - `bug` → `type: task, classification: bug`
 - `feature` → `type: task, classification: feature`
 - `action` → `type: task, classification: action`
-- `subproject` → `type: epic` (sub-epics are just epics with an epic parent)
-- `milestone` → `type: epic, classification: milestone` (a checkpoint grouping tasks)
+- `subproject` → `type: task`
+- `milestone` → `type: task, classification: milestone`
 
 **`learn` stays as its own type** because it has distinct graph behaviour: excluded from `ready_tasks()` (not actionable work, but tracked observational items).
 
@@ -115,17 +118,20 @@ These never appear in task operations. They are knowledge artifacts, not work to
 
 | Type        | Content                                                                          |
 | ----------- | -------------------------------------------------------------------------------- |
-| `target`    | Joins tasks to goals with an impact factor (linked via `contributes_to` on epics/tasks) |
-| `goal`      | Strategic priorities/objectives                                                  |
+| `target`    | Strategic destination / outcome milestone (linked via `contributes_to` on tasks) |
 | `note`      | General knowledge, observations, insights                                        |
-| `memory`    | Agent/system memories                                               |
-| `contact`   | People                                                              |
-| `document`  | Generic documents                                                   |
-| `reference` | External reference material                                         |
-| `review`    | Review notes, reading notes                                         |
-| `case`      | Case studies, legal cases                                           |
-| `spec`      | Specifications                                                      |
-| `knowledge` | Synthesised knowledge articles                                      |
+| `memory`    | Agent/system memories                                                            |
+| `contact`   | People                                                                           |
+| `document`  | Generic documents                                                                |
+| `reference` | External reference material                                                      |
+| `review`    | Review notes, reading notes                                                      |
+| `case`      | Case studies, legal cases                                                        |
+| `spec`      | Specifications                                                                   |
+| `knowledge` | Synthesised knowledge articles                                                   |
+
+**Collapsed strategic types:**
+- `goal` → collapsed into `target` (accepts empty `severity`, `consequence`, `due`).
+- `capability` → PR #637 wound back and closed unmerged; type completely removed and read-coerced to `target`.
 
 **Alias resolution** (linter auto-fixes):
 
@@ -147,6 +153,27 @@ Navigation and logging infrastructure. Never in task operations.
 | `session-log`  | Session transcripts  |
 | `audit-report` | Audit output         |
 
+### Comprehensive Audit of Types Differing Only by Filled Fields
+
+Per task `mem_5c476567`, every node type in `VALID_NODE_TYPES` has been audited to determine whether types differing only by filled/unfilled fields should be collapsed or kept:
+
+1. **`goal` and `capability` vs. `target` — Collapsed into `target`**:
+   - *Previous state*: `goal` differed from `target` by lacking `severity`, `consequence`, and `due`. `capability` was proposed in PR #637 as another variant.
+   - *Action*: Collapsed into `target`. PR #637 wound back and closed unmerged.
+   - *Rule*: `target` nodes now permit `severity`, `consequence`, and `due` to be empty. An aspirational or identity-level target omits these fields; a quantifiable operational target includes them.
+2. **`epic` vs. `task` — Collapsed into `task`**:
+   - *Previous state*: `epic` differed from `task` primarily by being parentless (root container) or possessing children.
+   - *Action*: Collapsed into `task`.
+   - *Rule*: `task` nodes now permit empty `parent`. Container vs. leaf status is derived from children (`!children.is_empty()`) or tree depth, eliminating the need for a separate type.
+3. **`learn` vs. `task` — Kept Distinct (Explicit Justification)**:
+   - *Justification*: `learn` has distinct, load-bearing algorithmic behaviour in the graph engine: it is explicitly excluded from `ready_tasks()` (`CLAIMABLE_TYPES = ["task"]`). It represents observational inquiry rather than an executable deliverable.
+4. **`pr` vs. `task` — Kept Distinct (Explicit Justification)**:
+   - *Justification*: `pr` nodes represent external GitHub pull requests with dedicated lifecycle sync semantics (branch tracking, merge reconciliation, external review gates).
+5. **Reference Types (`note`, `memory`, `contact`, `document`, `reference`, `review`, `case`, `spec`, `knowledge`) — Kept Distinct (Explicit Justification)**:
+   - *Justification*: These types do not differ merely by empty optional fields. They represent distinct domain ontologies, semantic indexing schemas, and external entity bindings across the PKB.
+6. **Structural Types (`index`, `daily`, `session-log`, `audit-report`) — Kept Distinct (Explicit Justification)**:
+   - *Justification*: These represent infrastructure files with dedicated maintenance lifecycles and automated rollups (e.g. daily note loggers, audit tooling).
+
 ### The `classification` field
 
 Optional frontmatter field for content classification of work items. Free-form string, but common values:
@@ -163,59 +190,71 @@ This field is for display and filtering only. It has no effect on graph behaviou
 
 ### The `contributes_to` edge
 
-Optional frontmatter field on **epic**, **task**, and **learn** nodes. Each entry is an **edge object** (not a bare ID) declaring a weighted, justified belief that this work contributes to a target. Canonical schema in [[multi-parent]] §1.6.
+Optional frontmatter field on **task** and **learn** nodes. Each entry is an **edge object** declaring a weighted belief and multiplier scaling that this work contributes to a target.
 
 ```yaml
 ---
-type: epic
+type: task
 contributes_to:
-  - to: target-abc123
+  - to: targ_abc123
     stated_weight: Expected
+    multiplier: 0.5
     justification: "contractual obligation to mark by 28 Apr"
 
-  # Prototype-backed variant (recurring obligations):
-  - to: prototype-osb-vote
-    stated_weight: Certain
-    justification: "OSB voting obligation"
-    inherits_from: prototype-osb-vote
+  # Float weight variant with alias x:
+  - to: targ_xyz789
+    weight: 0.8
+    x: 1.5
+    why: "direct technical dependency"
 ---
 ```
 
-**Canonical fields**: `to` (target node ID), `stated_weight` (verbal term), `justification` (ICD 203 single sentence). The shorter aliases `weight` and `why` are accepted on read for backward compatibility (serde aliases as of mem PR #265).
+**Canonical fields**:
+- `to` / `target`: Target node ID.
+- `stated_weight` / `weight`: Verbal Renooij-Witteman term or raw float string (`0.0..=1.0`).
+- `multiplier` / `x`: Optional float factor scaling the transmitted weight ($W_{\text{effective}} = x \times W_{\text{base}}$).
+- `justification` / `why`: Rationale sentence.
 
-**Weight scale (Renooij-Witteman, verbal only — raw decimals rejected at parse):**
+**Weight scale (Renooij-Witteman verbal anchors or direct floats):**
 
 | Term | Anchor | Meaning |
 |------|--------|---------|
 | Impossible | 0.00 | This task cannot affect the target |
 | Improbable | 0.15 | Unlikely to be load-bearing |
 | Uncertain | 0.25 | Might matter |
-| Fifty-Fifty | 0.50 | Redundancy exists |
+| Fifty-Fifty | 0.50 | Moderate contribution |
 | Expected | 0.75 | Likely to matter |
 | Probable | 0.85 | Strong contribution |
 | Certain | 1.00 | Single point of failure |
+| *Direct Float* | `0.0..=1.0` | Explicit numeric weight |
 
-**Weight semantics**: Birnbaum importance — the marginal probability that missing this task guarantees failure of the target. **Not** "percent contribution".
+### Edge Weight: Float Multiplier vs. Separate Contribution-Quantum Term Analysis
 
-**Belief, not fact**: every edge is dated and re-evaluable. History lives in a side-log, not on the edge itself.
+A key question settled in this specification (mem_5c476567) is whether `contributes_to` edges require a separate "contribution-quantum" term alongside the float `multiplier`.
 
-**Properties:**
+**Verdict: A separate contribution-quantum term is NOT needed.**
 
-- Valid on any actionable node (`epic`, `task`, `learn`)
-- Many-to-many: an epic can contribute to multiple targets; a target can be served by many epics
-- Target linkage is **metadata, not structure** — it does not affect parent-child relationships, tree traversal, or orphan detection
-- Consumed by `compute_urgency` and `focus_score` (see [[multi-parent]] §2)
-- Legacy `goals: []` fields migrate to `contributes_to` with default `stated_weight: Expected` and a placeholder justification pending review
+The decision is grounded in four concrete reasons:
 
-**Tree hierarchy (strict parent-child):**
+1. **Mathematical Redundancy (Single Degree of Freedom)**:
+   In DAG edge weight propagation, the transmitted importance from node $u$ to target $v$ is linear:
+   $$W_{\text{trans}} = W_{\text{upstream}} \times T_{uv}$$
+   If an edge introduces both a continuous multiplier $x$ and a quantum term $q$, the effective transfer coefficient becomes:
+   $$T_{uv} = W_{\text{base}} \times x \times q$$
+   Mathematically, $x \cdot q$ is a single scalar factor. Splitting a single multiplicative degree of freedom into two distinct scalar terms introduces parameter redundancy without increasing mathematical expressiveness.
+2. **Cognitive Overhead and Elicitation Ambiguity**:
+   Requiring human authors or autonomous agents to specify both a "multiplier" and a "quantum" forces subjective distinction between two concepts that perform identical arithmetic operations. Agents and humans cannot reliably distinguish when to adjust the quantum versus the multiplier.
+3. **Orthogonality with Existing Node Properties**:
+   Conceptually, "quantum" is sometimes invoked to represent discrete chunks of work or deliverable sizing. However, sizing is already explicitly captured by the node's `effort` field, while confidence in whether the contribution will be realized is captured by `confidence`. Adding a quantum term to the edge conflates edge importance with task sizing.
+4. **Ergonomic Simplicity and Clean Propagation**:
+   The float `multiplier` (alias `x`) cleanly scales the verbal anchor or raw float:
+   $$W_{\text{effective}} = x \times W_{\text{base}}$$
+   This propagates seamlessly across all three engine pipelines:
+   - **Downstream Weight**: Accumulated via reverse BFS edge product: $w = \text{ct.numeric\_weight}()$.
+   - **Urgency Propagation**: Neighbor edge factor: $\text{edge\_factor} = \text{ct.numeric\_weight}()$.
+   - **Value Lineage**: Direct standing weight flow: $\text{lineage} = K_{\text{VL}} \times \text{confidence} \times \text{ct.numeric\_weight}() \times \text{standing\_weight}$.
 
-```
-EPIC → EPIC | TASK → …
-```
-
-Top-level work nodes are root-level epics (or root-level tasks for trivial standalones). Epics nest into other epics for sub-decomposition. Tasks may parent further tasks/epics where useful (most tasks are leaves).
-
-**Target linkage (many-to-many, via metadata):**
+A single float `multiplier` completely satisfies the requirements without introducing dead schema terms.
 
 ```
 Epics/tasks link to targets via contributes_to: [id1, id2] frontmatter field

@@ -470,16 +470,15 @@ impl PkbSearchServer {
                 .unwrap_or_default(),
         };
 
-        // Hierarchy validation: warn if task-like type without parent
+        // Hierarchy validation: tasks/learn/target can be root-level.
         let mut warnings = Vec::new();
-        let root_allowed = ["learn", "epic"];
-        let task_like = ["task", "epic"];
+        let root_allowed = ["learn", "target", "task"];
+        let task_like = ["pr"];
         if task_like.contains(&doc_type) && fields.parent.is_none() {
             warnings.push(format!(
-                "Hierarchy warning: Type '{}' should have a parent. \
+                "Hierarchy warning: Type '{doc_type}' should have a parent. \
                  Only {} types can be root-level. \
                  Consider assigning a parent to maintain graph hierarchy.",
-                doc_type,
                 root_allowed.join(", "),
             ));
         }

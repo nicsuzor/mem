@@ -630,14 +630,22 @@ pub fn generate_excalidraw_scene(
         let text_id = format!("text-{}", node.id);
         card_elem_map.insert(node.id.clone(), card_id.clone());
 
-        let color_style =
-            node_color_style(node.status.as_deref(), node.node_type.as_deref());
+        let color_style = node_color_style(
+            node.status.as_deref(),
+            node.raw_node_type
+                .as_deref()
+                .or(node.node_type.as_deref()),
+        );
         let red_ring = is_red_ring(node.stakeholder.is_some(), node.status.as_deref());
 
         // Card Container Shape
         let mut card_elem = ExcalidrawElement::default();
         card_elem.id = card_id.clone();
-        card_elem.element_type = match node.node_type.as_deref() {
+        card_elem.element_type = match node
+            .raw_node_type
+            .as_deref()
+            .or(node.node_type.as_deref())
+        {
             Some("target") | Some("goal") => "diamond".to_string(),
             Some("area") => "ellipse".to_string(),
             _ => "rectangle".to_string(),

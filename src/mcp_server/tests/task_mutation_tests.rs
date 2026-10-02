@@ -180,7 +180,7 @@ use super::*;
         let parent_res = server
             .handle_create_task(&json!({
                 "title": "Parent Task for Decompose",
-                "type": "epic",
+                "type": "task",
                 "project": "proj-alpha",
                 "parent": "proj-alpha"
             }))
@@ -245,7 +245,7 @@ use super::*;
         let parent_res = server
             .handle_create_task(&json!({
                 "title": "Parent Task for Decompose Intent",
-                "type": "epic",
+                "type": "task",
                 "project": "proj-alpha",
                 "parent": "proj-alpha"
             }))
@@ -289,7 +289,7 @@ use super::*;
         let parent_res = server
             .handle_create_task(&json!({
                 "title": "Parent Epic for Identity Display",
-                "type": "epic",
+                "type": "task",
                 "project": "proj-alpha",
                 "parent": "proj-alpha"
             }))
