@@ -313,7 +313,7 @@ impl PkbSearchServer {
                         "project": { "type": "string", "description": "Project routing slug, validated against polecat.yaml (e.g. 'aops', 'mem'). Required when 'id' is omitted (ad-hoc task creation); optional when 'id' is provided." },
                         "status": {
                             "type": "string",
-                            "enum": ["done", "review", "blocked", "cancelled", "partial"],
+                            "enum": ["done", "review", "cancelled", "partial"],
                             "description": "Target status"
                         },
                         "summary": { "type": "string", "description": "What was done and outcome. 1-3 sentences minimum. Always required (or provide completion_evidence)." },
