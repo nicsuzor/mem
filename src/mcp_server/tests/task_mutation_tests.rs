@@ -2824,3 +2824,87 @@ read_timestamp_utc: 2026-08-31T01:38:00.370857830Z\n";
             summary.errors[0].error
         );
     }
+
+    #[test]
+    fn test_update_task_depends_on_removal_updates_blocks_inverse() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::create_dir_all(root.join("tasks")).unwrap();
+        write_test_polecat_yaml(root);
+
+        let graph = GraphStore::build(&[], root);
+        let store = VectorStore::new(3);
+        let embedder = Embedder::new_dummy();
+        let db_path = root.join("db");
+        let server = PkbSearchServer::new(
+            Arc::new(RwLock::new(store)),
+            Arc::new(embedder),
+            root.to_path_buf(),
+            db_path,
+            Arc::new(RwLock::new(graph)),
+        );
+
+        let get_val = |res: &CallToolResult| -> serde_json::Value {
+            let text = res
+                .content
+                .iter()
+                .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+                .collect::<String>();
+            match serde_json::from_str(&text) {
+                Ok(v) => v,
+                Err(e) => {
+                    panic!("Failed to parse JSON: {}\nRaw text was: {}", e, text);
+                }
+            }
+        };
+        let get_id = |val: &serde_json::Value| -> String {
+            val.get("id").and_then(|v| v.as_str()).unwrap().to_string()
+        };
+
+        let val_a = get_val(&server.handle_create_task(&json!({
+            "title": "task-a",
+            "type": "epic",
+            "allow_missing_parent": true,
+        })).unwrap());
+        let id_a = get_id(&val_a);
+
+        let val_b = get_val(&server.handle_create_task(&json!({
+            "title": "task-b",
+            "type": "epic",
+            "allow_missing_parent": true,
+        })).unwrap());
+        let id_b = get_id(&val_b);
+
+        println!("Before adding edge:");
+        let rec_b = get_val(&server.handle_get_task(&json!({"id": id_b.clone()})).unwrap());
+        println!("is_blocked before adding edge: {}", rec_b.get("blocked").unwrap());
+
+        // Add edge
+        server.handle_update_task(&json!({
+            "id": id_b.clone(),
+            "updates": {
+                "depends_on": [id_a.clone()]
+            }
+        })).unwrap();
+
+        println!("After adding edge:");
+        let rec_b2 = get_val(&server.handle_get_task(&json!({"id": id_b.clone()})).unwrap());
+        println!("after adding edge: {}", rec_b2.get("blocked").unwrap());
+
+        // Remove edge
+        let removal_result = server.handle_update_task(&json!({
+            "id": id_b.clone(),
+            "updates": {
+                "depends_on": []
+            }
+        })).unwrap();
+        println!("Removal call reply:");
+        let text = removal_result.content.iter().filter_map(|c| c.raw.as_text().map(|t| t.text.as_str())).collect::<String>();
+        println!("{}", text);
+
+        // let removal_reply = get_val(&removal_result);
+
+        println!("After removing edge:");
+        let rec_b3 = get_val(&server.handle_get_task(&json!({"id": id_b.clone()})).unwrap());
+        println!("after removing edge: {}", rec_b3.get("blocked").unwrap());
+    }
