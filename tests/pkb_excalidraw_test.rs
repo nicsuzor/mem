@@ -14,6 +14,19 @@ fn run_bin(args: &[&str]) -> (i32, String, String) {
     (code, stdout, stderr)
 }
 
+fn run_bin_env(args: &[&str], envs: &[(&str, &str)]) -> (i32, String, String) {
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_pkb-excalidraw"));
+    cmd.args(args);
+    for (k, v) in envs {
+        cmd.env(k, v);
+    }
+    let output = cmd.output().expect("Failed to execute pkb-excalidraw binary");
+    let code = output.status.code().unwrap_or(-1);
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    (code, stdout, stderr)
+}
+
 fn run_bin_stdin(args: &[&str], input: &str) -> (i32, String, String) {
     let mut child = Command::new(env!("CARGO_BIN_EXE_pkb-excalidraw"))
         .args(args)
@@ -47,6 +60,118 @@ fn test_help_and_no_args() {
     let (code, stdout, _stderr) = run_bin(&["-h"]);
     assert_eq!(code, 0);
     assert!(stdout.contains("Usage: pkb-excalidraw"));
+
+    let (code, stdout, _stderr) = run_bin(&["help"]);
+    assert_eq!(code, 0);
+    assert!(stdout.contains("NAME"));
+}
+
+#[test]
+fn test_man_page_help_structure_and_coverage() {
+    let (code, stdout, _stderr) = run_bin(&["--help"]);
+    assert_eq!(code, 0);
+
+    // Verify all 8 required man-page sections
+    let required_sections = [
+        "NAME",
+        "SYNOPSIS",
+        "DESCRIPTION",
+        "COMMANDS",
+        "OPTIONS",
+        "EXAMPLES",
+        "EXIT STATUS",
+        "SEE ALSO",
+    ];
+    for sec in required_sections {
+        assert!(stdout.contains(sec), "Help output missing section: {sec}");
+    }
+
+    // Verify every subcommand appears in the help
+    let all_subcommands = [
+        "summary", "map", "style", "check", "diff", "struct-diff", "lib", "item",
+        "nodes", "edges", "arrows", "inspect", "get", "add-node", "update-node", "add-text",
+        "connect", "set-text", "fit", "move-elem", "delete-elem", "batch",
+        "theme", "overlap", "arrows-check",
+        "describe", "screenshot", "arrange", "align", "distribute", "group",
+        "ungroup", "lock", "unlock", "duplicate", "update", "query", "apply",
+        "export", "import", "snapshot", "clear",
+    ];
+    for cmd in all_subcommands {
+        assert!(stdout.contains(cmd), "Help output missing subcommand: {cmd}");
+    }
+
+    // Verify every flag appears in the help
+    let all_flags = [
+        "--type", "--text", "--at", "--size", "--role", "--color", "--id",
+        "--angle", "--roughness", "--fill-style", "--preset", "--font-size",
+        "--from", "--to", "--label", "--curved", "--stroke-style", "--by",
+        "--cascade-arrows", "--set", "--bbox", "--filter", "--filter-json",
+        "--out", "--format", "--no-background", "--ids", "--group", "--offset",
+        "--after", "--replace", "--yes", "--all", "--help", "--no-color",
+    ];
+    for flag in all_flags {
+        assert!(stdout.contains(flag), "Help output missing flag: {flag}");
+    }
+
+    // Verify every command has an example
+    assert!(stdout.contains("Example: pkb-excalidraw"));
+}
+
+#[test]
+fn test_subcommand_help() {
+    // help <subcommand>
+    let (code, stdout, _stderr) = run_bin(&["help", "add-node"]);
+    assert_eq!(code, 0);
+    assert!(stdout.contains("pkb-excalidraw add-node"));
+    assert!(stdout.contains("--type"));
+    assert!(stdout.contains("--role"));
+    assert!(stdout.contains("EXAMPLES"));
+    assert!(stdout.contains("pkb-excalidraw diagram.excalidraw add-node"));
+
+    // <subcommand> --help
+    let (code, stdout, _stderr) = run_bin(&["connect", "--help"]);
+    assert_eq!(code, 0);
+    assert!(stdout.contains("pkb-excalidraw connect"));
+    assert!(stdout.contains("--from"));
+    assert!(stdout.contains("--to"));
+    assert!(stdout.contains("--curved"));
+    assert!(stdout.contains("--stroke-style"));
+    assert!(stdout.contains("EXAMPLES"));
+
+    // <subcommand> -h
+    let (code, stdout, _stderr) = run_bin(&["update-node", "-h"]);
+    assert_eq!(code, 0);
+    assert!(stdout.contains("pkb-excalidraw update-node"));
+    assert!(stdout.contains("--roughness"));
+    assert!(stdout.contains("--fill-style"));
+
+    // unknown subcommand help errors with code 1
+    let (code, _stdout, stderr) = run_bin(&["help", "nonexistent-subcommand-xyz"]);
+    assert_eq!(code, 1);
+    assert!(stderr.contains("Unknown subcommand"));
+}
+
+#[test]
+fn test_help_color_handling() {
+    // Piped output must be plain text (no ANSI escape sequences)
+    let (code, stdout, _stderr) = run_bin(&["--help"]);
+    assert_eq!(code, 0);
+    assert!(!stdout.contains("\x1b["), "Piped output should NOT contain ANSI escapes");
+
+    // NO_COLOR=1 must be plain text
+    let (code, stdout, _stderr) = run_bin_env(&["--help"], &[("NO_COLOR", "1")]);
+    assert_eq!(code, 0);
+    assert!(!stdout.contains("\x1b["), "NO_COLOR=1 output should NOT contain ANSI escapes");
+
+    // --no-color flag must be plain text
+    let (code, stdout, _stderr) = run_bin(&["--no-color", "--help"]);
+    assert_eq!(code, 0);
+    assert!(!stdout.contains("\x1b["), "--no-color output should NOT contain ANSI escapes");
+
+    // --color=always must emit ANSI escapes
+    let (code, stdout, _stderr) = run_bin(&["--color=always", "--help"]);
+    assert_eq!(code, 0);
+    assert!(stdout.contains("\x1b["), "--color=always output SHOULD contain ANSI escapes");
 }
 
 #[test]

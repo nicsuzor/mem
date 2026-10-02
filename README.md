@@ -280,22 +280,18 @@ Two surfaces, documented in full in [`src/excalidraw/README.md`](src/excalidraw/
 
 These need `ACA_DATA` set (`--pkb-root`/`--db-path` override its defaults, but the variable itself is still required for `pkb` to start).
 
-`pkb-excalidraw` is the companion binary for inspecting, diffing, mutating, and validating any Excalidraw file (`.excalidraw` and `.excalidrawlib`) without touching the PKB and without `ACA_DATA`:
+`pkb-excalidraw` is the companion binary for inspecting, diffing, mutating, and validating any Excalidraw file (`.excalidraw` and `.excalidrawlib`) without touching the PKB and without `ACA_DATA`. It includes full built-in manual and subcommand help (`pkb-excalidraw --help`, `pkb-excalidraw help <subcommand>`) formatted like a Unix man page, rendered with ANSI colour on a TTY and plain text when piped or when `NO_COLOR` is set.
 
-| Command | Description |
-|---------|-------------|
-| `pkb-excalidraw <file> [summary\|map\|nodes\|edges]` | Token-cheap projections of whiteboard scenes and diagrams |
-| `pkb-excalidraw <file1> struct-diff <file2>` | Pure semantic structural diff of nodes and edges without coordinate jitter |
-| `pkb-excalidraw <file> add-node --text "T" --at X,Y` | Add container shape with bound, centered text |
-| `pkb-excalidraw <file> connect --from A --to B [--label L]` | Create 2-bound directed arrow with optional label |
-| `pkb-excalidraw <file> fit <id> "New Text"` | Symmetrical center-expanded text resize |
-| `pkb-excalidraw <file> move-elem <id> [--by DX,DY]` | Translate node, bound text, and connected arrow endpoints |
-| `pkb-excalidraw <file> delete-elem <id> [--cascade-arrows]` | Delete node and clean up bindings / cascaded arrows |
-| `pkb-excalidraw <file> batch <changes.json \| ->` | Execute atomic transactional mutation batch |
-| `pkb-excalidraw <file> check` | Verify structural integrity, index ordering, and bindings |
-| `pkb-excalidraw <file> overlap` | Audit AABB box collisions and element overlaps |
-| `pkb-excalidraw <file> arrows-check` | Audit 2D arrow-segment box intersections |
-| `pkb-excalidraw <file> theme apply <theme>` | Apply standardized styling and semantic color roles |
+| Category | Commands & Synopsis | Description |
+|----------|---------------------|-------------|
+| **Inspection & Projections** | `summary`, `map`, `nodes`, `edges`, `inspect <id>`, `get <id> <field>`, `describe`, `style`, `query [--type T] [--filter K=V]` | Token-cheap structural projections, spatial scene summaries, and element queries |
+| **Validation & Integrity** | `check`, `overlap`, `arrows-check` | Verify structural invariants, index ordering, 2D AABB box collisions, and arrow polyline intersections |
+| **Comparison & Diffs** | `diff <file2>`, `struct-diff <file2>` | Comprehensive 2-way comparison and semantic structural diffs without coordinate jitter |
+| **Mutation & CRUD** | `add-node --text "T" [OPTIONS]`, `update-node --id <id> [OPTIONS]`, `add-text --text "T"`, `connect --from A --to B [--label L] [--curved]`, `set-text <id> "T"` / `fit`, `move-elem <id> [--to\|--by]`, `delete-elem <id> [--cascade-arrows]`, `update <id> --set '<json>'`, `apply <patch.json>`, `batch <changes.json>`, `clear [--yes]` | Atomic element creation, styling, symmetrical text fitting, connected arrow routing, translation, and transactional batch patching |
+| **Arrangement & Grouping** | `arrange align --ids ... --to <dir>`, `distribute`, `group`, `ungroup`, `lock`, `unlock`, `duplicate --ids ... [--offset DX,DY]` | Bounding-box alignment, equal distribution, group management, canvas locking, and element cloning |
+| **Component Libraries** | `lib`, `item <selector> --after <index> [--at X,Y]` | Inspect `.excalidrawlib` components and extract items with re-keyed monotonic indices |
+| **Lifecycle & Export** | `snapshot <save\|list\|restore>`, `export [--format json\|obsidian]`, `import <src> [--replace]`, `screenshot [--format svg\|png]` | Snapshot checkpoints in `.pkb_snapshots/`, Obsidian markdown conversion, and zero-dependency SVG rendering |
+| **Themes & Styling** | `theme export [out.json]`, `theme apply <theme> [--all] [--id <id>]` | Export or apply semantic color roles and styling presets (`default`, `retro-terminal`, `aops-default`) |
 
 For the node model, diff/sync semantics and known limitations, see [`src/excalidraw/README.md`](src/excalidraw/README.md). For the companion binary's invariants, see the [Excalidraw Tooling Specification](specs/excalidraw-tooling.md); for agent patterns and copy-paste templates, the [Excalidraw Agent Guide](references/EXCALIDRAW_AGENT_GUIDE.md).
 
