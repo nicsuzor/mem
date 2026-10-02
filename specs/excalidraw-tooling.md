@@ -200,34 +200,94 @@ Arrows connect shapes or serve as free-floating visual indicators.
 
 ```
 Usage:
+  pkb-excalidraw [OPTIONS] FILE COMMAND [ARGS...]
+  pkb-excalidraw [OPTIONS] COMMAND FILE [ARGS...]
+  pkb-excalidraw help [COMMAND]
+  pkb-excalidraw --help [COMMAND]
+
+Projections & Inspection:
   pkb-excalidraw FILE [summary|map|nodes|edges|arrows|style|check|overlap|arrows-check]
   pkb-excalidraw FILE inspect <id>
   pkb-excalidraw FILE get <id>
   pkb-excalidraw FILE describe
   pkb-excalidraw FILE query [--type <type>] [--bbox X1,Y1,X2,Y2] [--filter KEY=VAL] [--filter-json '<json>']
   pkb-excalidraw FILE screenshot [--out <path>] [--format svg|png] [--no-background]
+
+Diffs:
   pkb-excalidraw FILE1 diff FILE2
   pkb-excalidraw FILE1 struct-diff FILE2
+
+Library:
   pkb-excalidraw FILE.excalidrawlib lib
   pkb-excalidraw FILE.excalidrawlib item SELECTOR --after INDEX [--at X,Y]
-  pkb-excalidraw FILE add-node --type <type> --text "<text>" [--at X,Y] [--size W,H] [--role <role>] [--color <hex>] [--id <custom_id>]
-  pkb-excalidraw FILE add-text --text "<text>" --at X,Y [--font-size <size>] [--color <hex>]
-  pkb-excalidraw FILE connect --from <id1> --to <id2> [--label "<label>"] [--color <hex>]
+
+CRUD & Mutation Commands:
+  pkb-excalidraw FILE add-node --type <type> --text "<text>" [--at X,Y] [--size W,H] [--role <role>] [--color <hex>] [--id <id>] [--angle <deg>] [--roughness <num>] [--fill-style <style>] [--preset <preset>]
+  pkb-excalidraw FILE update-node --id <id> [--angle <deg>] [--roughness <num>] [--fill-style <style>] [--preset <preset>]
+  pkb-excalidraw FILE add-text --text "<text>" [--at X,Y] [--font-size <size>] [--color <hex>]
+  pkb-excalidraw FILE connect --from <id1> --to <id2> [--label "<label>"] [--color <hex>] [--curved] [--stroke-style <style>]
   pkb-excalidraw FILE set-text <id> "<new_text>"
   pkb-excalidraw FILE fit <id> "<new_text>"
   pkb-excalidraw FILE move-elem <id> [--to X,Y | --by DX,DY]
   pkb-excalidraw FILE delete-elem <id> [--cascade-arrows]
   pkb-excalidraw FILE update <id> --set '<json>'
-  pkb-excalidraw FILE arrange {align|distribute|group|ungroup|lock|unlock|duplicate} [args]
   pkb-excalidraw FILE apply <patch.json | - >
   pkb-excalidraw FILE batch <changes.json | - >
   pkb-excalidraw FILE clear [--yes]
+
+Arrangement & Geometry Commands:
+  pkb-excalidraw FILE arrange {align|distribute|group|ungroup|lock|unlock|duplicate} [args]
+  pkb-excalidraw FILE align --ids <id1,id2,...> --to {left|center|right|top|middle|bottom}
+  pkb-excalidraw FILE distribute --ids <id1,id2,...> --to {horizontal|vertical}
+  pkb-excalidraw FILE group --ids <id1,id2,...>
+  pkb-excalidraw FILE ungroup [--group <group_id>] [--ids <id1,id2,...>]
+  pkb-excalidraw FILE lock --ids <id1,id2,...>
+  pkb-excalidraw FILE unlock --ids <id1,id2,...>
+  pkb-excalidraw FILE duplicate --ids <id1,id2,...> [--offset DX,DY]
+
+Snapshots & Versioning:
   pkb-excalidraw FILE snapshot {save <name>|list|restore <name>}
+
+Import & Export:
   pkb-excalidraw FILE export [--out <path>] [--format json|obsidian]
   pkb-excalidraw FILE import <src.json | src.md | - > [--replace]
+
+Theme Commands:
   pkb-excalidraw FILE theme export [out.json]
   pkb-excalidraw FILE theme apply <theme.json | default | retro-terminal | aops-default> [--all | --id <id>]
 ```
+
+### 4.0 Console Manual & Subcommand Help
+
+`pkb-excalidraw` includes a built-in console help system structured like a formal Unix man page:
+
+```bash
+# View complete manual with all commands, flags, defaults, and examples
+pkb-excalidraw --help
+pkb-excalidraw help
+
+# View targeted manual for a specific subcommand
+pkb-excalidraw help add-node
+pkb-excalidraw connect --help
+pkb-excalidraw FILE update-node --help
+```
+
+#### Man-Page Structure
+The full manual organizes documentation across standard sections:
+1. **NAME**: Binary name and summary description.
+2. **SYNOPSIS**: Universal execution grammar and position-independent command syntax.
+3. **DESCRIPTION**: Zero-dependency overview and core invariant preservation guarantees.
+4. **COMMANDS**: All 33 commands across 9 functional categories, each with syntax, options, defaults, and examples.
+5. **OPTIONS**: Global flags (`--help`, `--color <when>`, `--no-color`).
+6. **EXAMPLES**: Multi-step terminal recipes covering end-to-end workflows.
+7. **EXIT STATUS**: Exit codes (0 on success or clean check; 1 on failure or invariant violation).
+8. **SEE ALSO**: Related tools, specifications, and architecture guides.
+
+#### Terminal Color & Formatting
+- **TTY Rendering**: When stdout is connected to an interactive terminal, section headers, command names, flags, arguments, and examples are colorized with ANSI codes.
+- **Piped / Plain Output**: When stdout is piped to another process or redirected to a file, ANSI codes are suppressed.
+- **`NO_COLOR` Support**: Respects the `NO_COLOR` environment variable (per [no-color.org](https://no-color.org)), rendering plain text even on a TTY.
+- **Color Overrides**: Supports explicit `--no-color` or `--color=always|never|auto` command-line flags.
 
 ### 4.1 Projection & Inspection Modes
 
@@ -280,14 +340,26 @@ Computes a pure semantic diff of the logical graph, completely filtering out coo
   `pkb-excalidraw FILE add-node --type rectangle --text "Worker Node" --at 200,300 --size 160,60 --role info`
   - Generates container shape + bound centered text element.
   - Automatically calculates dimensions if `--size` is omitted.
-  - Applies role theme colors if `--role` is specified.
+  - Applies role theme colors if `--role` is specified (`primary`, `secondary`, `alert`, `muted`, `accent`, `highlight`).
+  - Supports `--color <hex>` background color override.
+  - Supports custom ID via `--id <id>`.
+  - Supports `--angle <deg>` (rotation angle, default `0`).
+  - Supports `--roughness <num>` (stroke roughness `0`, `1`, `2`, default `1`).
+  - Supports `--fill-style <style>` (`hachure`, `cross-hatch`, `solid`, `zigzag`, default `hachure`).
+  - Supports `--preset <preset>` (`card`, `pill`, `container`, `note`, `cloud`).
+- **`update-node`**:
+  `pkb-excalidraw FILE update-node --id rect1 --roughness 0 --fill-style solid`
+  - Updates visual and stylistic properties of an existing node without altering its geometry or text bindings.
+  - Supports `--angle <deg>`, `--roughness <num>`, `--fill-style <style>`, and `--preset <preset>`.
 - **`add-text`**:
   `pkb-excalidraw FILE add-text --text "System Architecture v2" --at 100,50 --font-size 24 --color "#333333"`
 - **`connect`**:
-  `pkb-excalidraw FILE connect --from nodeA --to nodeB --label "gRPC Call" --color "#404040"`
+  `pkb-excalidraw FILE connect --from nodeA --to nodeB --label "gRPC Call" --color "#404040" --curved --stroke-style dashed`
   - Computes center-to-center arrow endpoints.
   - Creates arrow element and updates `boundElements` on both connected nodes.
   - Generates container-bound centered text label if `--label` is provided.
+  - Supports `--curved` for curved bezier arrows instead of straight line segments.
+  - Supports `--stroke-style <style>` (`solid`, `dashed`, `dotted`, default `solid`).
 - **`set-text` / `fit`**:
   `pkb-excalidraw FILE set-text nodeA "Worker Node (Replicas: 3)"`
   - Updates both `text` and `originalText`.
@@ -374,6 +446,15 @@ The `arrange` command suite provides automated spatial alignment, grouping, lock
 - **`import <src.json | src.md | -> [--replace]`**:
   Imports elements from another Excalidraw JSON or Obsidian Markdown file, either merging into the existing scene (minting new monotonic indices) or replacing all elements (`--replace`).
 
+### 4.9 Theme & Styling Palettes
+
+- **`theme export [out.json]`**:
+  `pkb-excalidraw FILE theme export [out.json]`
+  - Exports the current theme palette (or built-in palettes like `retro-terminal` and `aops-default`) as JSON to stdout or a file.
+- **`theme apply <theme> [--all] [--id <id>]`**:
+  `pkb-excalidraw FILE theme apply retro-terminal --all`
+  - Applies a named theme (`default`, `retro-terminal`, `aops-default`, or a path to a JSON palette) across all elements (`--all`) or to a single element (`--id <id>`).
+
 ---
 
 ## 5. Formal JSON Schema for Batch Payloads
@@ -399,9 +480,25 @@ The `batch` command executes an atomic sequence of mutations from a JSON array (
           "size": { "type": "array", "items": { "type": "number" }, "minItems": 2, "maxItems": 2 },
           "role": { "type": "string", "enum": ["emphasis", "success", "info", "warning", "error", "surface", "muted"] },
           "color": { "type": "string" },
-          "id": { "type": "string" }
+          "id": { "type": "string" },
+          "angle": { "type": "number", "default": 0.0 },
+          "roughness": { "type": "number", "default": 1.0 },
+          "fillStyle": { "type": "string", "enum": ["hachure", "cross-hatch", "solid", "zigzag", "dots"], "default": "hachure" },
+          "preset": { "type": "string" }
         },
         "required": ["action", "text"]
+      },
+      {
+        "type": "object",
+        "properties": {
+          "action": { "type": "string", "enum": ["update-node", "update_node"] },
+          "id": { "type": "string" },
+          "angle": { "type": "number" },
+          "roughness": { "type": "number" },
+          "fillStyle": { "type": "string", "enum": ["hachure", "cross-hatch", "solid", "zigzag", "dots"] },
+          "preset": { "type": "string" }
+        },
+        "required": ["action", "id"]
       },
       {
         "type": "object",
@@ -421,7 +518,9 @@ The `batch` command executes an atomic sequence of mutations from a JSON array (
           "from": { "type": "string" },
           "to": { "type": "string" },
           "label": { "type": "string" },
-          "color": { "type": "string" }
+          "color": { "type": "string" },
+          "curved": { "type": "boolean", "default": false },
+          "strokeStyle": { "type": "string", "enum": ["solid", "dashed", "dotted"], "default": "solid" }
         },
         "required": ["action", "from", "to"]
       },

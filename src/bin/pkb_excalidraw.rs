@@ -13,48 +13,842 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fs;
-use std::io::Read;
+use std::io::{self, IsTerminal, Read};
 use std::process;
 
 const INDEX_ALPHABET: &[u8] = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
 const ID_ALPHABET: &[u8] = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz_-";
 
-const USAGE: &str = r#"Token-cheap projections of an .excalidraw file. Stdlib only.
+// ============================================================================
+// Terminal Color & Man-Page Help System
+// ============================================================================
 
-Usage: pkb-excalidraw FILE [summary|map|style|check|overlap|arrows-check|nodes|edges|arrows]
-       pkb-excalidraw FILE inspect <id>
-       pkb-excalidraw FILE get <id>
-       pkb-excalidraw FILE describe
-       pkb-excalidraw FILE query [--type <type>] [--bbox X1,Y1,X2,Y2] [--filter KEY=VAL] [--filter-json '<json>']
-       pkb-excalidraw FILE screenshot [--out <path>] [--format svg|png] [--no-background]
-       pkb-excalidraw FILE1 diff FILE2
-       pkb-excalidraw FILE1 struct-diff FILE2
-       pkb-excalidraw FILE.excalidrawlib lib
-       pkb-excalidraw FILE.excalidrawlib item SELECTOR --after INDEX [--at X,Y]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ColorChoice {
+    Auto,
+    Always,
+    Never,
+}
 
-CRUD & Mutation Commands:
-       pkb-excalidraw FILE add-node --type <type> --text "<text>" [--at X,Y] [--size W,H] [--role <role>] [--color <hex>] [--id <custom_id>]
-       pkb-excalidraw FILE add-text --text "<text>" --at X,Y [--font-size <size>] [--color <hex>]
-       pkb-excalidraw FILE connect --from <id1> --to <id2> [--label "<label>"] [--color <hex>]
-       pkb-excalidraw FILE set-text <id> "<new_text>"
-       pkb-excalidraw FILE fit <id> "<new_text>"
-       pkb-excalidraw FILE move-elem <id> [--to X,Y | --by DX,DY]
-       pkb-excalidraw FILE delete-elem <id> [--cascade-arrows]
-       pkb-excalidraw FILE update <id> --set '<json>'
-       pkb-excalidraw FILE arrange {align|distribute|group|ungroup|lock|unlock|duplicate} [args]
-       pkb-excalidraw FILE apply <patch.json | - >
-       pkb-excalidraw FILE batch <changes.json | - >
-       pkb-excalidraw FILE clear [--yes]
+#[derive(Clone, Copy, Debug)]
+pub struct Styler {
+    pub enabled: bool,
+    pub bold: &'static str,
+    pub dim: &'static str,
+    pub section: &'static str,
+    pub category: &'static str,
+    pub cmd: &'static str,
+    pub flag: &'static str,
+    pub arg: &'static str,
+    pub example: &'static str,
+    pub reset: &'static str,
+}
 
-Snapshot, Import & Export Commands:
-       pkb-excalidraw FILE snapshot {save <name>|list|restore <name>}
-       pkb-excalidraw FILE export [--out <path>] [--format json|obsidian]
-       pkb-excalidraw FILE import <src.json | src.md | - > [--replace]
+impl Styler {
+    pub fn new(colored: bool) -> Self {
+        if colored {
+            Self {
+                enabled: true,
+                bold: "\x1b[1m",
+                dim: "\x1b[2m",
+                section: "\x1b[1;36m",   // Bold Cyan
+                category: "\x1b[1;33m",  // Bold Yellow
+                cmd: "\x1b[1;32m",       // Bold Green
+                flag: "\x1b[33m",        // Yellow
+                arg: "\x1b[36m",         // Cyan
+                example: "\x1b[32m",     // Green
+                reset: "\x1b[0m",
+            }
+        } else {
+            Self {
+                enabled: false,
+                bold: "",
+                dim: "",
+                section: "",
+                category: "",
+                cmd: "",
+                flag: "",
+                arg: "",
+                example: "",
+                reset: "",
+            }
+        }
+    }
+}
 
-Theme Commands:
-       pkb-excalidraw FILE theme export [out.json]
-       pkb-excalidraw FILE theme apply <theme.json | default | retro-terminal | aops-default> [--all | --id <id>]
+pub fn should_color(choice: ColorChoice, is_stdout: bool) -> bool {
+    match choice {
+        ColorChoice::Always => true,
+        ColorChoice::Never => false,
+        ColorChoice::Auto => {
+            if std::env::var_os("NO_COLOR").is_some() {
+                return false;
+            }
+            if let Ok(term) = std::env::var("TERM") {
+                if term == "dumb" {
+                    return false;
+                }
+            }
+            if is_stdout {
+                io::stdout().is_terminal()
+            } else {
+                io::stderr().is_terminal()
+            }
+        }
+    }
+}
+
+pub struct CommandOption {
+    pub flag: &'static str,
+    pub default: &'static str,
+    pub description: &'static str,
+}
+
+pub struct CommandInfo {
+    pub name: &'static str,
+    pub aliases: &'static [&'static str],
+    pub category: &'static str,
+    pub synopsis: &'static str,
+    pub summary: &'static str,
+    pub description: &'static str,
+    pub options: &'static [CommandOption],
+    pub example: &'static str,
+}
+
+pub const COMMAND_REGISTRY: &[CommandInfo] = &[
+    // 1. Projections & Inspection
+    CommandInfo {
+        name: "summary",
+        aliases: &[],
+        category: "Projections & Inspection",
+        synopsis: "pkb-excalidraw FILE [summary]",
+        summary: "Print element counts, types, bounding box extents, and index ordering sanity",
+        description: "Inspects the canvas file and reports high-level metrics: total element count, counts by element type (rectangle, ellipse, arrow, text, etc.), total bounding box extents [min_x, max_x] and [min_y, max_y], the maximum fractional index, and a sanity check on whether array order matches index order.",
+        options: &[],
+        example: "pkb-excalidraw diagram.excalidraw summary",
+    },
+    CommandInfo {
+        name: "map",
+        aliases: &[],
+        category: "Projections & Inspection",
+        synopsis: "pkb-excalidraw FILE map",
+        summary: "Dense structural TSV map of shapes, text, and arrows with resolved labels",
+        description: "Outputs a token-cheap tab-separated map of all active visual elements. For shapes, outputs ID, type, coordinates (X,Y), dimensions (WxH), background color, and bound text label. For arrows, outputs ID, connection (start -> end), and resolved label. For text, outputs ID, type, coordinates, and content.",
+        options: &[],
+        example: "pkb-excalidraw diagram.excalidraw map",
+    },
+    CommandInfo {
+        name: "nodes",
+        aliases: &[],
+        category: "Projections & Inspection",
+        synopsis: "pkb-excalidraw FILE nodes",
+        summary: "Tabular listing of logical nodes (folds bound text into container shape)",
+        description: "Filters the canvas down to structural shape elements (rectangles, diamonds, ellipses), resolving container-bound text into the node's label column, and displaying ID, type, coordinates (X,Y), dimensions (WxH), semantic role, and label.",
+        options: &[],
+        example: "pkb-excalidraw diagram.excalidraw nodes",
+    },
+    CommandInfo {
+        name: "edges",
+        aliases: &["arrows"],
+        category: "Projections & Inspection",
+        synopsis: "pkb-excalidraw FILE edges",
+        summary: "Tabular listing of directed arrow connections and their resolved labels",
+        description: "Outputs a clean table of all directed arrow elements, displaying the arrow ID, source element ID, destination element ID, and any arrow label text bound to it.",
+        options: &[],
+        example: "pkb-excalidraw diagram.excalidraw edges",
+    },
+    CommandInfo {
+        name: "inspect",
+        aliases: &[],
+        category: "Projections & Inspection",
+        synopsis: "pkb-excalidraw FILE inspect <id>",
+        summary: "Deep structural inspection of an individual element by ID",
+        description: "Prints comprehensive diagnostic information for a specific canvas element: element ID, type, coordinate bounds (X,Y WxH), resolved label text, semantic role, bound text element ID, inbound arrow IDs, and outbound arrow IDs.",
+        options: &[
+            CommandOption { flag: "<id>", default: "required", description: "Target element ID to inspect" },
+        ],
+        example: "pkb-excalidraw diagram.excalidraw inspect rect1",
+    },
+    CommandInfo {
+        name: "get",
+        aliases: &[],
+        category: "Projections & Inspection",
+        synopsis: "pkb-excalidraw FILE get <id>",
+        summary: "Output formatted raw JSON for a single element by ID",
+        description: "Extracts a single element from the canvas elements array by its ID and prints its pretty-printed JSON representation to stdout.",
+        options: &[
+            CommandOption { flag: "<id>", default: "required", description: "Target element ID to extract" },
+        ],
+        example: "pkb-excalidraw diagram.excalidraw get rect1",
+    },
+    CommandInfo {
+        name: "describe",
+        aliases: &[],
+        category: "Projections & Inspection",
+        synopsis: "pkb-excalidraw FILE describe",
+        summary: "High-level spatial and semantic overview designed for LLM scene perception",
+        description: "Generates a markdown-formatted spatial summary with minimal token consumption: overall canvas bounding box, element counts, row-bucketed elements sorted top-to-bottom and left-to-right, labeled arrow flows, and group hierarchies.",
+        options: &[],
+        example: "pkb-excalidraw diagram.excalidraw describe",
+    },
+    CommandInfo {
+        name: "style",
+        aliases: &[],
+        category: "Projections & Inspection",
+        synopsis: "pkb-excalidraw FILE style",
+        summary: "Statistical distribution of styling attributes across canvas elements",
+        description: "Analyzes modal values and frequency distributions across all elements for visual properties including strokeColor, backgroundColor, fillStyle, strokeWidth, strokeStyle, roughness, opacity, and fontFamily.",
+        options: &[],
+        example: "pkb-excalidraw diagram.excalidraw style",
+    },
+    CommandInfo {
+        name: "query",
+        aliases: &[],
+        category: "Projections & Inspection",
+        synopsis: "pkb-excalidraw FILE query [OPTIONS]",
+        summary: "Search and filter canvas elements by type, bounding box, or attribute matchers",
+        description: "Queries active canvas elements matching filter criteria. Supports filtering by shape type, spatial bounding box extents, key-value property comparisons (supporting dot notation), and JSON pattern fragments.",
+        options: &[
+            CommandOption { flag: "--type <type>", default: "any", description: "Filter elements by shape type (rectangle, diamond, ellipse, arrow, text)" },
+            CommandOption { flag: "--bbox X1,Y1,X2,Y2", default: "none", description: "Filter elements contained within spatial bounding box extents" },
+            CommandOption { flag: "--filter KEY=VAL", default: "none", description: "Filter elements where property KEY equals VAL (repeatable)" },
+            CommandOption { flag: "--filter-json '<json>'", default: "none", description: "Filter elements matching JSON pattern object" },
+        ],
+        example: "pkb-excalidraw diagram.excalidraw query --type rectangle --filter backgroundColor=#ffc9c9",
+    },
+
+    // 2. Validation & Integrity
+    CommandInfo {
+        name: "check",
+        aliases: &[],
+        category: "Validation & Integrity",
+        synopsis: "pkb-excalidraw FILE check",
+        summary: "Referential integrity and invariant verification across the canvas",
+        description: "Audits the entire canvas against core Excalidraw invariants: detects duplicate element IDs, verifies that array ordering matches fractional index ordering, validates bidirectional container/text bindings, checks that arrow bindings are strictly 2-bound or 0-bound (half-bound arrows are invalid), verifies text synchronization, and checks for zero/negative bounding boxes. Exits 0 on success, 1 on errors.",
+        options: &[],
+        example: "pkb-excalidraw diagram.excalidraw check",
+    },
+    CommandInfo {
+        name: "overlap",
+        aliases: &[],
+        category: "Validation & Integrity",
+        synopsis: "pkb-excalidraw FILE overlap",
+        summary: "Detect AABB bounding-box collisions between non-nested sibling elements",
+        description: "Audits the canvas for Axis-Aligned Bounding Box (AABB) spatial overlaps between sibling elements. Skips container/bound-text pairs and nested elements. Exits 0 if no collisions detected, 1 if overlaps found.",
+        options: &[],
+        example: "pkb-excalidraw diagram.excalidraw overlap",
+    },
+    CommandInfo {
+        name: "arrows-check",
+        aliases: &[],
+        category: "Validation & Integrity",
+        synopsis: "pkb-excalidraw FILE arrows-check",
+        summary: "Audit arrow polylines to verify they do not collide with unrelated boxes",
+        description: "Performs 2D segment-box intersection tests across all arrow polylines to verify that arrows do not cut through unrelated container elements. Exits 0 if clean, 1 if collisions detected.",
+        options: &[],
+        example: "pkb-excalidraw diagram.excalidraw arrows-check",
+    },
+
+    // 3. Comparison & Diffs
+    CommandInfo {
+        name: "diff",
+        aliases: &[],
+        category: "Comparison & Diffs",
+        synopsis: "pkb-excalidraw FILE1 diff FILE2",
+        summary: "Comprehensive 2-way comparison of two canvas files",
+        description: "Compares two .excalidraw files and outputs element count deltas, added elements, deleted elements, modified element attributes (geometry, colors, text), and connection changes.",
+        options: &[
+            CommandOption { flag: "FILE2", default: "required", description: "Path to second Excalidraw file to compare against" },
+        ],
+        example: "pkb-excalidraw v1.excalidraw diff v2.excalidraw",
+    },
+    CommandInfo {
+        name: "struct-diff",
+        aliases: &[],
+        category: "Comparison & Diffs",
+        synopsis: "pkb-excalidraw FILE1 struct-diff FILE2",
+        summary: "Pure semantic structural diff of nodes and edges without coordinate jitter",
+        description: "Produces a concise semantic diff DSL focusing purely on structural changes: added nodes (+ node), deleted nodes (- node), relabeled nodes (~ node relabeled), role updates (~ node role), added edges (+ edge), deleted edges (- edge), retargeted edges (~ edge retargeted), and relabeled edges. Ignores minor coordinate floating-point noise.",
+        options: &[
+            CommandOption { flag: "FILE2", default: "required", description: "Path to second Excalidraw file for semantic structural diff" },
+        ],
+        example: "pkb-excalidraw v1.excalidraw struct-diff v2.excalidraw",
+    },
+
+    // 4. Mutation & CRUD
+    CommandInfo {
+        name: "add-node",
+        aliases: &[],
+        category: "Mutation & CRUD",
+        synopsis: "pkb-excalidraw FILE add-node --text \"<text>\" [OPTIONS]",
+        summary: "Create a shape element with a bound, centered text element",
+        description: "Creates a container shape (rectangle, diamond, or ellipse) paired with a bound, centered text element. Automatically mints a new monotonic fractional index, calculates Virgil font text geometry, centers text inside the container, sets bidirectional bindings, and commits changes atomically.",
+        options: &[
+            CommandOption { flag: "--type <type>", default: "rectangle", description: "Shape element type: rectangle, diamond, ellipse" },
+            CommandOption { flag: "--text \"<text>\"", default: "\"\"", description: "Label text displayed inside the container shape" },
+            CommandOption { flag: "--at X,Y", default: "auto/offset", description: "Top-left coordinates on canvas" },
+            CommandOption { flag: "--size W,H", default: "100,50", description: "Width and height dimensions in pixels" },
+            CommandOption { flag: "--role <role>", default: "none", description: "Semantic color role: primary, secondary, alert, muted, accent, highlight" },
+            CommandOption { flag: "--color <hex>", default: "auto", description: "Hex background color override (e.g. #ffc9c9)" },
+            CommandOption { flag: "--id <id>", default: "auto", description: "Custom element ID for the shape" },
+            CommandOption { flag: "--angle <deg>", default: "0", description: "Rotation angle in degrees" },
+            CommandOption { flag: "--roughness <num>", default: "1", description: "Stroke roughness level: 0 (architect), 1 (artist), 2 (cartoonist)" },
+            CommandOption { flag: "--fill-style <style>", default: "hachure", description: "Fill pattern: hachure, cross-hatch, solid, zigzag" },
+            CommandOption { flag: "--preset <preset>", default: "none", description: "Shape preset styling: card, pill, container, note, cloud" },
+        ],
+        example: "pkb-excalidraw diagram.excalidraw add-node --type rectangle --text \"API Gateway\" --at 200,300 --size 160,60 --role primary",
+    },
+    CommandInfo {
+        name: "update-node",
+        aliases: &[],
+        category: "Mutation & CRUD",
+        synopsis: "pkb-excalidraw FILE update-node --id <id> [OPTIONS]",
+        summary: "Update styling, roughness, angle, fill style, or preset of an existing node",
+        description: "Updates visual and stylistic properties of an existing node shape without changing its geometry or text bindings. Modifies angle, roughness, fill style, or applies a shape preset.",
+        options: &[
+            CommandOption { flag: "--id <id>", default: "required", description: "Target element ID of the node to update" },
+            CommandOption { flag: "--angle <deg>", default: "unchanged", description: "Set rotation angle in degrees" },
+            CommandOption { flag: "--roughness <num>", default: "unchanged", description: "Set stroke roughness level (0, 1, 2)" },
+            CommandOption { flag: "--fill-style <style>", default: "unchanged", description: "Set fill pattern: hachure, cross-hatch, solid, zigzag" },
+            CommandOption { flag: "--preset <preset>", default: "unchanged", description: "Apply shape preset styling: card, pill, container, note, cloud" },
+        ],
+        example: "pkb-excalidraw diagram.excalidraw update-node --id rect1 --roughness 0 --fill-style solid",
+    },
+    CommandInfo {
+        name: "add-text",
+        aliases: &[],
+        category: "Mutation & CRUD",
+        synopsis: "pkb-excalidraw FILE add-text --text \"<text>\" [OPTIONS]",
+        summary: "Create a standalone unbound text element",
+        description: "Creates an independent text element on the canvas (such as a diagram title or floating annotation). Automatically computes width, height, line height, baseline, and mints a fractional index.",
+        options: &[
+            CommandOption { flag: "--text \"<text>\"", default: "required", description: "Text content to display" },
+            CommandOption { flag: "--at X,Y", default: "100,100", description: "Top-left placement coordinates on canvas" },
+            CommandOption { flag: "--font-size <size>", default: "16", description: "Font size in pixels" },
+            CommandOption { flag: "--color <hex>", default: "#1e1e1e", description: "Text stroke color in hex" },
+        ],
+        example: "pkb-excalidraw diagram.excalidraw add-text --text \"System Architecture v2\" --at 150,50 --font-size 24",
+    },
+    CommandInfo {
+        name: "connect",
+        aliases: &[],
+        category: "Mutation & CRUD",
+        synopsis: "pkb-excalidraw FILE connect --from <id1> --to <id2> [OPTIONS]",
+        summary: "Create a 2-way bound directed arrow connecting two elements",
+        description: "Connects two canvas elements with a directed arrow. Computes boundary attachment points, generates an arrow element with startBinding and endBinding, registers the arrow in boundElements on both shapes, and optionally creates a centered bound text label.",
+        options: &[
+            CommandOption { flag: "--from <id1>", default: "required", description: "Source element ID" },
+            CommandOption { flag: "--to <id2>", default: "required", description: "Destination element ID" },
+            CommandOption { flag: "--label \"<label>\"", default: "none", description: "Text label displayed along the arrow midpoint" },
+            CommandOption { flag: "--color <hex>", default: "#1e1e1e", description: "Arrow stroke color in hex" },
+            CommandOption { flag: "--curved", default: "false", description: "Use curved bezier line instead of straight segment" },
+            CommandOption { flag: "--stroke-style <style>", default: "solid", description: "Stroke line pattern: solid, dashed, dotted" },
+        ],
+        example: "pkb-excalidraw diagram.excalidraw connect --from nodeA --to nodeB --label \"HTTPS / JSON\" --stroke-style dashed --curved",
+    },
+    CommandInfo {
+        name: "set-text",
+        aliases: &["fit"],
+        category: "Mutation & CRUD",
+        synopsis: "pkb-excalidraw FILE set-text <id> \"<new_text>\"",
+        summary: "Update element text with dual-layer sync and symmetrical container expansion",
+        description: "Updates the text on a node, arrow, or standalone text element. Synchronizes text and originalText identically, recalculates font bounding boxes, re-centers text within its parent container, and expands the container symmetrically around its center point if the new text exceeds existing dimensions.",
+        options: &[
+            CommandOption { flag: "<id>", default: "required", description: "Target shape, arrow, or text element ID" },
+            CommandOption { flag: "\"<new_text>\"", default: "required", description: "New text label content" },
+        ],
+        example: "pkb-excalidraw diagram.excalidraw set-text rect1 \"Worker Node (Replicas: 3)\"",
+    },
+    CommandInfo {
+        name: "move-elem",
+        aliases: &[],
+        category: "Mutation & CRUD",
+        synopsis: "pkb-excalidraw FILE move-elem <id> [--to X,Y | --by DX,DY]",
+        summary: "Translate element by offset or absolute position, cascading to bound text and arrows",
+        description: "Translates a canvas element either to absolute coordinates (--to) or by a relative displacement delta (--by). Cascades translation to bound text elements and dynamically updates the endpoints of connected arrows and midpoint labels.",
+        options: &[
+            CommandOption { flag: "<id>", default: "required", description: "Target element ID to move" },
+            CommandOption { flag: "--to X,Y", default: "none", description: "Absolute destination coordinates" },
+            CommandOption { flag: "--by DX,DY", default: "none", description: "Relative displacement offset (e.g. 50,100 or -20,0)" },
+        ],
+        example: "pkb-excalidraw diagram.excalidraw move-elem rect1 --by 50,100",
+    },
+    CommandInfo {
+        name: "delete-elem",
+        aliases: &[],
+        category: "Mutation & CRUD",
+        synopsis: "pkb-excalidraw FILE delete-elem <id> [--cascade-arrows]",
+        summary: "Delete an element and its bound text pair, cleanly unbinding or deleting arrows",
+        description: "Removes an element from the canvas. If the element is a container with bound text, deletes the bound text as well. If --cascade-arrows is specified, connected arrows and their labels are also deleted. Otherwise, connected arrows are cleanly unbound (0-bound invariant preserved).",
+        options: &[
+            CommandOption { flag: "<id>", default: "required", description: "Target element ID to delete" },
+            CommandOption { flag: "--cascade-arrows", default: "false", description: "Also delete connected arrows instead of unbinding them" },
+        ],
+        example: "pkb-excalidraw diagram.excalidraw delete-elem rect1 --cascade-arrows",
+    },
+    CommandInfo {
+        name: "update",
+        aliases: &[],
+        category: "Mutation & CRUD",
+        synopsis: "pkb-excalidraw FILE update <id> --set '<json>'",
+        summary: "Patch arbitrary Excalidraw element properties using a JSON object",
+        description: "Applies raw JSON field updates to a target element. If text is updated, synchronizes text and originalText and re-centers. If coordinates (x, y) are updated, cascades position shifts to bound text and connected arrow endpoints.",
+        options: &[
+            CommandOption { flag: "<id>", default: "required", description: "Target element ID to update" },
+            CommandOption { flag: "--set '<json>'", default: "required", description: "JSON object containing properties to update" },
+        ],
+        example: "pkb-excalidraw diagram.excalidraw update rect1 --set '{\"backgroundColor\": \"#ffcc00\", \"roughness\": 0}'",
+    },
+    CommandInfo {
+        name: "apply",
+        aliases: &[],
+        category: "Mutation & CRUD",
+        synopsis: "pkb-excalidraw FILE apply <patch.json | - >",
+        summary: "Apply a structured JSON patch containing created, updated, and deleted elements",
+        description: "Applies a high-level patch JSON with \"create\", \"update\", and \"delete\" arrays atomically to the canvas. Validates integrity and commits changes to disk only if all operations succeed.",
+        options: &[
+            CommandOption { flag: "<patch.json | - >", default: "required", description: "Path to patch JSON file or '-' to read from stdin" },
+        ],
+        example: "pkb-excalidraw diagram.excalidraw apply patch.json",
+    },
+    CommandInfo {
+        name: "batch",
+        aliases: &[],
+        category: "Mutation & CRUD",
+        synopsis: "pkb-excalidraw FILE batch <changes.json | - >",
+        summary: "Atomically execute an array of mutation commands from JSON or stdin",
+        description: "Executes a batch array of mutation objects in a single atomic transaction. Supported actions include: add-node, update-node, add-text, connect, set-text, move-elem, delete-elem, update, apply-theme, align, distribute, group, ungroup, lock, unlock, duplicate, and clear. If any mutation fails, the transaction is aborted with no changes written.",
+        options: &[
+            CommandOption { flag: "<changes.json | - >", default: "required", description: "Path to batch mutation JSON file or '-' to read from stdin" },
+        ],
+        example: "pkb-excalidraw diagram.excalidraw batch changes.json",
+    },
+    CommandInfo {
+        name: "clear",
+        aliases: &[],
+        category: "Mutation & CRUD",
+        synopsis: "pkb-excalidraw FILE clear [--yes]",
+        summary: "Remove all live elements from the canvas",
+        description: "Wipes all active elements from the canvas file while preserving file wrapper, frontmatter, and metadata. Requires the --yes flag to confirm irreversible erasure.",
+        options: &[
+            CommandOption { flag: "--yes", default: "required", description: "Confirm deletion of all canvas elements" },
+        ],
+        example: "pkb-excalidraw diagram.excalidraw clear --yes",
+    },
+
+    // 5. Arrangement & Alignment
+    CommandInfo {
+        name: "arrange",
+        aliases: &[],
+        category: "Arrangement & Alignment",
+        synopsis: "pkb-excalidraw FILE arrange <align|distribute|group|ungroup|lock|unlock|duplicate> [OPTIONS]",
+        summary: "Spatial arrangement, alignment, grouping, locking, and cloning suite",
+        description: "Provides spatial layout and element grouping commands. Can be invoked as 'arrange <op> [args]' or directly as '<op> [args]'.",
+        options: &[
+            CommandOption { flag: "<subcommand>", default: "required", description: "Arrangement operation: align, distribute, group, ungroup, lock, unlock, duplicate" },
+        ],
+        example: "pkb-excalidraw diagram.excalidraw arrange align --ids a,b,c --to left",
+    },
+    CommandInfo {
+        name: "align",
+        aliases: &[],
+        category: "Arrangement & Alignment",
+        synopsis: "pkb-excalidraw FILE align --ids <id1,id2,...> --to <dir>",
+        summary: "Align multiple elements to a shared edge or centerline",
+        description: "Aligns target shapes along a common axis or boundary based on their collective bounding box: left, center, right, top, middle, or bottom. Synchronously moves bound text elements.",
+        options: &[
+            CommandOption { flag: "--ids <id1,id2,...>", default: "required", description: "Comma-separated list of element IDs to align" },
+            CommandOption { flag: "--to <dir>", default: "required", description: "Alignment edge or centerline: left, center, right, top, middle, bottom" },
+        ],
+        example: "pkb-excalidraw diagram.excalidraw align --ids node1,node2,node3 --to left",
+    },
+    CommandInfo {
+        name: "distribute",
+        aliases: &[],
+        category: "Arrangement & Alignment",
+        synopsis: "pkb-excalidraw FILE distribute --ids <id1,id2,...> --to <dir>",
+        summary: "Distribute multiple elements with equal spacing along an axis",
+        description: "Evenly spaces three or more elements along the horizontal or vertical axis between the outermost boundary elements.",
+        options: &[
+            CommandOption { flag: "--ids <id1,id2,...>", default: "required", description: "Comma-separated list of element IDs to distribute" },
+            CommandOption { flag: "--to <dir>", default: "required", description: "Distribution direction: horizontal, vertical" },
+        ],
+        example: "pkb-excalidraw diagram.excalidraw distribute --ids node1,node2,node3 --to horizontal",
+    },
+    CommandInfo {
+        name: "group",
+        aliases: &[],
+        category: "Arrangement & Alignment",
+        synopsis: "pkb-excalidraw FILE group --ids <id1,id2,...>",
+        summary: "Bundle multiple elements into a persistent Excalidraw group",
+        description: "Creates a new unique group ID and assigns it to the groupIds array of each specified element, allowing them to be manipulated together in the UI.",
+        options: &[
+            CommandOption { flag: "--ids <id1,id2,...>", default: "required", description: "Comma-separated list of element IDs to group" },
+        ],
+        example: "pkb-excalidraw diagram.excalidraw group --ids node1,node2",
+    },
+    CommandInfo {
+        name: "ungroup",
+        aliases: &[],
+        category: "Arrangement & Alignment",
+        synopsis: "pkb-excalidraw FILE ungroup [--group <group_id>] [--ids <id1,id2,...>]",
+        summary: "Disband a group or remove specific elements from their groups",
+        description: "Removes elements from their containing group. Either pass a specific --group ID to dissolve the entire group, or specify --ids to remove individual elements.",
+        options: &[
+            CommandOption { flag: "--group <group_id>", default: "none", description: "Dissolve specified group ID across all member elements" },
+            CommandOption { flag: "--ids <id1,id2,...>", default: "none", description: "Remove specified element IDs from their current groups" },
+        ],
+        example: "pkb-excalidraw diagram.excalidraw ungroup --ids node1,node2",
+    },
+    CommandInfo {
+        name: "lock",
+        aliases: &[],
+        category: "Arrangement & Alignment",
+        synopsis: "pkb-excalidraw FILE lock --ids <id1,id2,...>",
+        summary: "Lock elements to prevent accidental UI dragging or editing",
+        description: "Sets locked: true on specified elements and their bound text containers, freezing them in place on the Excalidraw canvas.",
+        options: &[
+            CommandOption { flag: "--ids <id1,id2,...>", default: "required", description: "Comma-separated list of element IDs to lock" },
+        ],
+        example: "pkb-excalidraw diagram.excalidraw lock --ids background_box",
+    },
+    CommandInfo {
+        name: "unlock",
+        aliases: &[],
+        category: "Arrangement & Alignment",
+        synopsis: "pkb-excalidraw FILE unlock --ids <id1,id2,...>",
+        summary: "Unlock locked elements to restore editing and dragging",
+        description: "Sets locked: false on specified elements and their bound text containers, allowing normal interaction and modification.",
+        options: &[
+            CommandOption { flag: "--ids <id1,id2,...>", default: "required", description: "Comma-separated list of element IDs to unlock" },
+        ],
+        example: "pkb-excalidraw diagram.excalidraw unlock --ids background_box",
+    },
+    CommandInfo {
+        name: "duplicate",
+        aliases: &[],
+        category: "Arrangement & Alignment",
+        synopsis: "pkb-excalidraw FILE duplicate --ids <id1,id2,...> [--offset DX,DY]",
+        summary: "Clone elements and bound text with newly minted IDs and indices",
+        description: "Deep-clones target elements with a positional displacement offset. Generates new unique IDs, remaps internal container/boundElements references within the cloned set, and mints new fractional base-62 indices.",
+        options: &[
+            CommandOption { flag: "--ids <id1,id2,...>", default: "required", description: "Comma-separated list of element IDs to duplicate" },
+            CommandOption { flag: "--offset DX,DY", default: "20,20", description: "Displacement offset in pixels for cloned elements" },
+        ],
+        example: "pkb-excalidraw diagram.excalidraw duplicate --ids card1 --offset 30,30",
+    },
+
+    // 6. Library & Components
+    CommandInfo {
+        name: "lib",
+        aliases: &[],
+        category: "Library & Components",
+        synopsis: "pkb-excalidraw FILE.excalidrawlib lib",
+        summary: "Inspect components in an .excalidrawlib file (v1 or v2 format)",
+        description: "Reads an Excalidraw component library file and lists all reusable items: item index (#N), component name/title, element count, bounding dimensions (WxH), and constituent element types.",
+        options: &[],
+        example: "pkb-excalidraw components.excalidrawlib lib",
+    },
+    CommandInfo {
+        name: "item",
+        aliases: &[],
+        category: "Library & Components",
+        synopsis: "pkb-excalidraw FILE.excalidrawlib item <selector> --after <index> [--at X,Y]",
+        summary: "Extract a library item with re-indexed elements for target insertion",
+        description: "Extracts a component template from an .excalidrawlib library file by name substring or #N index. Remints all internal IDs, mints monotonic fractional indices ordered after the target file's max index (--after), optionally translates coordinates to --at X,Y, and prints the ready-to-insert JSON array.",
+        options: &[
+            CommandOption { flag: "<selector>", default: "required", description: "Component name substring or index (e.g. #0 or Database)" },
+            CommandOption { flag: "--after <index>", default: "required", description: "Target file's maximum fractional index (from summary)" },
+            CommandOption { flag: "--at X,Y", default: "original", description: "Target canvas coordinates to place extracted component" },
+        ],
+        example: "pkb-excalidraw components.excalidrawlib item \"#0\" --after a5 --at 200,300",
+    },
+
+    // 7. Snapshots & Versioning
+    CommandInfo {
+        name: "snapshot",
+        aliases: &[],
+        category: "Snapshots & Versioning",
+        synopsis: "pkb-excalidraw FILE snapshot <save <name> | list | restore <name>>",
+        summary: "Manage local version snapshots in .pkb_snapshots/ directory",
+        description: "Maintains local revision snapshots of a canvas file alongside the file in a hidden .pkb_snapshots/ folder. Allows saving named checkpoints before making experimental changes and restoring them if needed.",
+        options: &[
+            CommandOption { flag: "save <name>", default: "none", description: "Save current canvas state as a named snapshot checkpoint" },
+            CommandOption { flag: "list", default: "none", description: "List all available snapshots with timestamps and element counts" },
+            CommandOption { flag: "restore <name>", default: "none", description: "Restore canvas state to a previously saved snapshot" },
+        ],
+        example: "pkb-excalidraw diagram.excalidraw snapshot save checkpoint1",
+    },
+
+    // 8. Import, Export & Screenshot
+    CommandInfo {
+        name: "export",
+        aliases: &[],
+        category: "Import, Export & Screenshot",
+        synopsis: "pkb-excalidraw FILE export [OPTIONS]",
+        summary: "Export canvas to stdout or file in JSON or Obsidian Excalidraw Markdown",
+        description: "Exports the canvas elements and metadata. Supports outputting either clean standalone Excalidraw JSON or Obsidian-compatible .excalidraw.md markdown format (with YAML frontmatter, text elements list, and drawing JSON block).",
+        options: &[
+            CommandOption { flag: "--out <path>", default: "stdout", description: "Output destination file path (inferred format if .md)" },
+            CommandOption { flag: "--format json|obsidian", default: "json", description: "Target export format: json or obsidian" },
+        ],
+        example: "pkb-excalidraw diagram.excalidraw export --out diagram.md --format obsidian",
+    },
+    CommandInfo {
+        name: "import",
+        aliases: &[],
+        category: "Import, Export & Screenshot",
+        synopsis: "pkb-excalidraw FILE import <src.json | src.md | - > [--replace]",
+        summary: "Import elements from another scene JSON or Obsidian Markdown file",
+        description: "Imports elements from an external Excalidraw JSON file, Obsidian .excalidraw.md file, or stdin. By default, appends imported elements and mints new monotonic fractional indices. With --replace, overwrites all existing canvas elements.",
+        options: &[
+            CommandOption { flag: "<src>", default: "required", description: "Source file path or '-' for stdin" },
+            CommandOption { flag: "--replace", default: "false", description: "Replace all canvas elements instead of merging/appending" },
+        ],
+        example: "pkb-excalidraw diagram.excalidraw import scene.json --replace",
+    },
+    CommandInfo {
+        name: "screenshot",
+        aliases: &[],
+        category: "Import, Export & Screenshot",
+        synopsis: "pkb-excalidraw FILE screenshot [OPTIONS]",
+        summary: "Render zero-dependency SVG or system PNG image of the canvas",
+        description: "Renders visual whiteboard elements into a standalone image. Supports zero-dependency vector SVG generation with embedded styling and arrowheads, or rasterized PNG output via system utilities (resvg, rsvg-convert, or ImageMagick).",
+        options: &[
+            CommandOption { flag: "--out <path>", default: "stdout", description: "Output destination image path" },
+            CommandOption { flag: "--format svg|png", default: "svg", description: "Output image format: svg or png" },
+            CommandOption { flag: "--no-background", default: "false", description: "Omit canvas background color (transparent background)" },
+        ],
+        example: "pkb-excalidraw diagram.excalidraw screenshot --out diagram.svg --format svg",
+    },
+
+    // 9. Themes & Styling
+    CommandInfo {
+        name: "theme",
+        aliases: &[],
+        category: "Themes & Styling",
+        synopsis: "pkb-excalidraw FILE theme <export [out.json] | apply <palette> [OPTIONS]>",
+        summary: "Export or apply semantic color and styling palettes across canvas elements",
+        description: "Manages visual palettes and semantic roles. Allows exporting built-in themes (such as retro-terminal or aops-default) or applying them across all elements or a specific element ID.",
+        options: &[
+            CommandOption { flag: "export [out.json]", default: "none", description: "Export theme palette JSON to file or stdout" },
+            CommandOption { flag: "apply <theme>", default: "none", description: "Apply palette: default, retro-terminal, aops-default, or theme.json" },
+            CommandOption { flag: "--all", default: "true", description: "Apply theme palette to all canvas elements" },
+            CommandOption { flag: "--id <id>", default: "none", description: "Apply theme palette to a single specific element ID" },
+        ],
+        example: "pkb-excalidraw diagram.excalidraw theme apply retro-terminal --all",
+    },
+];
+
+pub fn is_known_subcommand(name: &str) -> bool {
+    COMMAND_REGISTRY.iter().any(|c| c.name == name || c.aliases.contains(&name))
+}
+
+pub fn render_full_man_page(styler: &Styler) -> String {
+    let mut out = String::new();
+    let s = styler;
+
+    // NAME
+    out.push_str(&format!("{}NAME{}\n", s.section, s.reset));
+    out.push_str("    pkb-excalidraw - companion CLI for inspecting, diffing, mutating, and validating Excalidraw whiteboards\n\n");
+
+    // SYNOPSIS
+    out.push_str(&format!("{}SYNOPSIS{}\n", s.section, s.reset));
+    out.push_str(&format!("    {}Usage:{} {}pkb-excalidraw{} [OPTIONS] {}FILE{} {}COMMAND{} [ARGS...]\n", s.bold, s.reset, s.cmd, s.reset, s.arg, s.reset, s.cmd, s.reset));
+    out.push_str(&format!("           {}pkb-excalidraw{} [OPTIONS] {}COMMAND{} {}FILE{} [ARGS...]\n", s.cmd, s.reset, s.cmd, s.reset, s.arg, s.reset));
+    out.push_str(&format!("           {}pkb-excalidraw{} {}help{} [COMMAND]\n", s.cmd, s.reset, s.arg, s.reset));
+    out.push_str(&format!("           {}pkb-excalidraw{} {}--help{} [COMMAND]\n\n", s.cmd, s.reset, s.flag, s.reset));
+
+    // DESCRIPTION
+    out.push_str(&format!("{}DESCRIPTION{}\n", s.section, s.reset));
+    out.push_str("    pkb-excalidraw is a zero-dependency (stdlib + serde) companion tool for Excalidraw\n");
+    out.push_str("    whiteboard files (.excalidraw and Obsidian .excalidraw.md) and component library\n");
+    out.push_str("    files (.excalidrawlib). It operates directly on whiteboard scenes and diagrams\n");
+    out.push_str("    without requiring a browser, running server, or active PKB database connection.\n\n");
+    out.push_str("    Commands support both prefix syntax (pkb-excalidraw FILE COMMAND ...) and\n");
+    out.push_str("    command-first syntax (pkb-excalidraw COMMAND FILE ...) interchangeably.\n\n");
+    out.push_str("    Core Invariant Guarantees:\n");
+    out.push_str("      1. Dual-Layer Text Sync: text and originalText are kept byte-identical across all mutations.\n");
+    out.push_str("      2. Monotonic Indexing: New elements receive lexicographically ordered fractional base-62 indices.\n");
+    out.push_str("      3. Referential Integrity: Container shapes and text elements maintain valid bidirectional bindings.\n");
+    out.push_str("      4. Symmetrical Bounding Box Fit: Shapes resize outward from their center to prevent text clipping.\n");
+    out.push_str("      5. Atomic Writes: Changes stage through temporary files and commit via atomic filesystem rename.\n\n");
+
+    // COMMANDS
+    out.push_str(&format!("{}COMMANDS{}\n", s.section, s.reset));
+    let mut current_category = "";
+    for cmd in COMMAND_REGISTRY {
+        if cmd.category != current_category {
+            current_category = cmd.category;
+            out.push_str(&format!("  {}{}{}\n\n", s.category, current_category.to_uppercase(), s.reset));
+        }
+
+        out.push_str(&format!("    {}{}{}", s.cmd, cmd.name, s.reset));
+        if !cmd.aliases.is_empty() {
+            out.push_str(&format!(" {}[alias: {}]{}", s.dim, cmd.aliases.join(", "), s.reset));
+        }
+        out.push('\n');
+        out.push_str(&format!("        {}\n", cmd.summary));
+        out.push_str(&format!("        {}Syntax:{} {}\n", s.bold, s.reset, cmd.synopsis));
+        if !cmd.options.is_empty() {
+            out.push_str(&format!("        {}Options:{}\n", s.bold, s.reset));
+            for opt in cmd.options {
+                if opt.default != "none" && opt.default != "required" && !opt.default.is_empty() {
+                    out.push_str(&format!("          {}{:<24}{} {} (default: {})\n", s.flag, opt.flag, s.reset, opt.description, opt.default));
+                } else if opt.default == "required" {
+                    out.push_str(&format!("          {}{:<24}{} {} [required]\n", s.flag, opt.flag, s.reset, opt.description));
+                } else {
+                    out.push_str(&format!("          {}{:<24}{} {}\n", s.flag, opt.flag, s.reset, opt.description));
+                }
+            }
+        }
+        out.push_str(&format!("        {}Example:{} {}{}{}\n\n", s.bold, s.reset, s.example, cmd.example, s.reset));
+    }
+
+    // OPTIONS
+    out.push_str(&format!("{}OPTIONS{}\n", s.section, s.reset));
+    out.push_str(&format!("    {}--help{}, {}-h{}\n", s.flag, s.reset, s.flag, s.reset));
+    out.push_str("        Print this manual or help for a specific command.\n\n");
+    out.push_str(&format!("    {}--color{} <when>\n", s.flag, s.reset));
+    out.push_str("        Control colored output: auto (default), always, never.\n\n");
+    out.push_str(&format!("    {}--no-color{}\n", s.flag, s.reset));
+    out.push_str("        Disable color output (equivalent to --color=never or setting NO_COLOR=1).\n\n");
+
+    // EXAMPLES
+    out.push_str(&format!("{}EXAMPLES{}\n", s.section, s.reset));
+    out.push_str("    1. Inspecting and validating an existing diagram:\n");
+    out.push_str(&format!("       {}pkb-excalidraw diagram.excalidraw summary{}\n", s.example, s.reset));
+    out.push_str(&format!("       {}pkb-excalidraw diagram.excalidraw map{}\n", s.example, s.reset));
+    out.push_str(&format!("       {}pkb-excalidraw diagram.excalidraw check{}\n", s.example, s.reset));
+    out.push_str(&format!("       {}pkb-excalidraw diagram.excalidraw overlap{}\n\n", s.example, s.reset));
+
+    out.push_str("    2. Adding nodes and connecting them with a labeled arrow:\n");
+    out.push_str(&format!("       {}pkb-excalidraw diagram.excalidraw add-node --type rectangle --text \"API Gateway\" --at 100,200 --role primary{}\n", s.example, s.reset));
+    out.push_str(&format!("       {}pkb-excalidraw diagram.excalidraw add-node --type rectangle --text \"Auth Service\" --at 360,200 --role secondary{}\n", s.example, s.reset));
+    out.push_str(&format!("       {}pkb-excalidraw diagram.excalidraw connect --from r1 --to r2 --label \"Verify Token\" --stroke-style dashed{}\n\n", s.example, s.reset));
+
+    out.push_str("    3. Updating text and resizing container symmetrically:\n");
+    out.push_str(&format!("       {}pkb-excalidraw diagram.excalidraw set-text r1 \"API Gateway (v2 Cluster)\"{}\n\n", s.example, s.reset));
+
+    out.push_str("    4. Arranging and aligning nodes:\n");
+    out.push_str(&format!("       {}pkb-excalidraw diagram.excalidraw align --ids r1,r2,r3 --to top{}\n", s.example, s.reset));
+    out.push_str(&format!("       {}pkb-excalidraw diagram.excalidraw distribute --ids r1,r2,r3 --to horizontal{}\n\n", s.example, s.reset));
+
+    out.push_str("    5. Executing an atomic batch mutation transaction:\n");
+    out.push_str(&format!("       {}cat mutations.json | pkb-excalidraw diagram.excalidraw batch -{}\n\n", s.example, s.reset));
+
+    out.push_str("    6. Version snapshotting and recovery:\n");
+    out.push_str(&format!("       {}pkb-excalidraw diagram.excalidraw snapshot save checkpoint-pre-cleanup{}\n", s.example, s.reset));
+    out.push_str(&format!("       {}pkb-excalidraw diagram.excalidraw snapshot list{}\n", s.example, s.reset));
+    out.push_str(&format!("       {}pkb-excalidraw diagram.excalidraw snapshot restore checkpoint-pre-cleanup{}\n\n", s.example, s.reset));
+
+    out.push_str("    7. Exporting to Obsidian Markdown and rendering an SVG:\n");
+    out.push_str(&format!("       {}pkb-excalidraw diagram.excalidraw export --out diagram.md --format obsidian{}\n", s.example, s.reset));
+    out.push_str(&format!("       {}pkb-excalidraw diagram.excalidraw screenshot --out diagram.svg --format svg{}\n\n", s.example, s.reset));
+
+    // EXIT STATUS
+    out.push_str(&format!("{}EXIT STATUS{}\n", s.section, s.reset));
+    out.push_str("    0    Success; validation checks passed; diffs identical or cleanly computed.\n");
+    out.push_str("    1    Error occurred (syntax error, file I/O failure, JSON parse failure,\n");
+    out.push_str("         invariant check failure from 'check', AABB overlap detected from 'overlap',\n");
+    out.push_str("         or arrow polyline collision detected from 'arrows-check').\n\n");
+
+    // SEE ALSO
+    out.push_str(&format!("{}SEE ALSO{}\n", s.section, s.reset));
+    out.push_str("    pkb(1), specs/excalidraw-tooling.md, src/excalidraw/README.md, references/EXCALIDRAW_AGENT_GUIDE.md\n");
+
+    out
+}
+
+pub fn render_subcommand_help(name: &str, styler: &Styler) -> Option<String> {
+    let cmd = COMMAND_REGISTRY.iter().find(|c| c.name == name || c.aliases.contains(&name))?;
+    let s = styler;
+    let mut out = String::new();
+
+    // NAME
+    out.push_str(&format!("{}NAME{}\n", s.section, s.reset));
+    out.push_str(&format!("    {}pkb-excalidraw {}{} - {}\n\n", s.cmd, cmd.name, s.reset, cmd.summary));
+
+    // SYNOPSIS
+    out.push_str(&format!("{}SYNOPSIS{}\n", s.section, s.reset));
+    out.push_str(&format!("    {}\n\n", cmd.synopsis));
+
+    // DESCRIPTION
+    out.push_str(&format!("{}DESCRIPTION{}\n", s.section, s.reset));
+    out.push_str(&format!("    {}\n\n", cmd.description));
+
+    // OPTIONS
+    if !cmd.options.is_empty() {
+        out.push_str(&format!("{}OPTIONS{}\n", s.section, s.reset));
+        for opt in cmd.options {
+            if opt.default != "none" && opt.default != "required" && !opt.default.is_empty() {
+                out.push_str(&format!("    {}{:<24}{} {} (default: {})\n", s.flag, opt.flag, s.reset, opt.description, opt.default));
+            } else if opt.default == "required" {
+                out.push_str(&format!("    {}{:<24}{} {} [required]\n", s.flag, opt.flag, s.reset, opt.description));
+            } else {
+                out.push_str(&format!("    {}{:<24}{} {}\n", s.flag, opt.flag, s.reset, opt.description));
+            }
+        }
+        out.push('\n');
+    }
+
+    // EXAMPLES
+    out.push_str(&format!("{}EXAMPLES{}\n", s.section, s.reset));
+    out.push_str(&format!("    {}{}{}\n\n", s.example, cmd.example, s.reset));
+
+    // SEE ALSO
+    out.push_str(&format!("{}SEE ALSO{}\n", s.section, s.reset));
+    out.push_str("    pkb-excalidraw(1), pkb-excalidraw --help\n");
+
+    Some(out)
+}
+
+pub fn render_brief_usage(styler: &Styler) -> String {
+    let s = styler;
+    let mut out = String::new();
+    out.push_str(&format!("    {}Usage:{} {}pkb-excalidraw{} [OPTIONS] {}FILE{} {}COMMAND{} [ARGS...]\n", s.bold, s.reset, s.cmd, s.reset, s.arg, s.reset, s.cmd, s.reset));
+    out.push_str(&format!("           {}pkb-excalidraw{} [OPTIONS] {}COMMAND{} {}FILE{} [ARGS...]\n", s.cmd, s.reset, s.cmd, s.reset, s.arg, s.reset));
+    out.push_str(&format!("           {}pkb-excalidraw{} {}help{} [COMMAND]\n", s.cmd, s.reset, s.arg, s.reset));
+    out.push_str(&format!("           {}pkb-excalidraw{} {}--help{} [COMMAND]\n\n", s.cmd, s.reset, s.flag, s.reset));
+
+    out.push_str("Token-cheap projections, structural diffs, and mutations for .excalidraw files.\n\n");
+    out.push_str(&format!("{}Commands:{}\n", s.bold, s.reset));
+    out.push_str("  Projections:     summary, map, nodes, edges, inspect, get, describe, style, query\n");
+    out.push_str("  Validation:      check, overlap, arrows-check\n");
+    out.push_str("  Diffing:         diff, struct-diff\n");
+    out.push_str("  Mutations:       add-node, update-node, add-text, connect, set-text, fit, move-elem,\n");
+    out.push_str("                   delete-elem, update, apply, batch, clear\n");
+    out.push_str("  Arrangement:     arrange (align, distribute, group, ungroup, lock, unlock, duplicate)\n");
+    out.push_str("  Library:         lib, item\n");
+    out.push_str("  Snapshots:       snapshot (save, list, restore)\n");
+    out.push_str("  Import/Export:   export, import, screenshot\n");
+    out.push_str("  Theme:           theme (export, apply)\n\n");
+    out.push_str("Run 'pkb-excalidraw --help' for the complete manual, or 'pkb-excalidraw help <command>' for command details.\n");
+    out
+}
+
+pub const USAGE: &str = r#"Usage: pkb-excalidraw [OPTIONS] FILE COMMAND [ARGS...]
+       pkb-excalidraw [OPTIONS] COMMAND FILE [ARGS...]
+       pkb-excalidraw help [COMMAND]
+       pkb-excalidraw --help [COMMAND]
+
+Token-cheap projections, structural diffs, and mutations for .excalidraw files.
+
+Commands:
+  Projections:     summary, map, nodes, edges, inspect, get, describe, style, query
+  Validation:      check, overlap, arrows-check
+  Diffing:         diff, struct-diff
+  Mutations:       add-node, update-node, add-text, connect, set-text, fit, move-elem,
+                   delete-elem, update, apply, batch, clear
+  Arrangement:     arrange (align, distribute, group, ungroup, lock, unlock, duplicate)
+  Library:         lib, item
+  Snapshots:       snapshot (save, list, restore)
+  Import/Export:   export, import, screenshot
+  Theme:           theme (export, apply)
+
+Run 'pkb-excalidraw --help' for the complete manual, or 'pkb-excalidraw help <command>' for command details.
 "#;
+
 
 // ============================================================================
 // Core Helper Functions & Projections
@@ -4036,14 +4830,71 @@ pub fn cmd_snapshot_restore(file_path: &str, doc: &mut Value, name: &str) -> Res
 // ============================================================================
 
 fn main() {
-    let args: Vec<String> = std::env::args().collect();
-    if args.len() < 2 {
-        eprintln!("{USAGE}");
+    let raw_args: Vec<String> = std::env::args().collect();
+    if raw_args.is_empty() {
         process::exit(1);
     }
 
-    if args.len() == 2 && (args[1] == "--help" || args[1] == "-h") {
-        print!("{USAGE}");
+    let mut color_choice = ColorChoice::Auto;
+    let mut args: Vec<String> = Vec::with_capacity(raw_args.len());
+
+    for a in raw_args {
+        if a == "--no-color" {
+            color_choice = ColorChoice::Never;
+        } else if a == "--color=always" || a == "--color=true" {
+            color_choice = ColorChoice::Always;
+        } else if a == "--color=never" || a == "--color=false" {
+            color_choice = ColorChoice::Never;
+        } else if a == "--color=auto" {
+            color_choice = ColorChoice::Auto;
+        } else {
+            args.push(a);
+        }
+    }
+
+    if args.len() < 2 {
+        let styler = Styler::new(should_color(color_choice, false));
+        eprintln!("{}", render_brief_usage(&styler));
+        process::exit(1);
+    }
+
+    // Check for help flags
+    let is_help_arg = |s: &str| s == "--help" || s == "-h" || s == "help";
+    let has_help = args.iter().skip(1).any(|a| is_help_arg(a));
+
+    if has_help {
+        let styler = Styler::new(should_color(color_choice, true));
+        let non_help_args: Vec<&str> = args.iter().skip(1).filter(|a| !is_help_arg(a)).map(|s| s.as_str()).collect();
+
+        if non_help_args.is_empty() {
+            print!("{}", render_full_man_page(&styler));
+            process::exit(0);
+        }
+
+        // Check if one of the non-help args is a known command
+        let target_cmd = non_help_args.iter().find(|&&a| is_known_subcommand(a));
+        if let Some(&cmd) = target_cmd {
+            if let Some(help_text) = render_subcommand_help(cmd, &styler) {
+                print!("{help_text}");
+                process::exit(0);
+            }
+        }
+
+        // If invoked as `pkb-excalidraw help <subcmd>` or `pkb-excalidraw --help <subcmd>`
+        if args[1] == "help" || args[1] == "--help" || args[1] == "-h" {
+            let req = non_help_args[0];
+            if let Some(help_text) = render_subcommand_help(req, &styler) {
+                print!("{help_text}");
+                process::exit(0);
+            } else {
+                eprintln!("{}Unknown subcommand: {req}{}", styler.bold, styler.reset);
+                eprintln!("\nRun 'pkb-excalidraw --help' for the complete list of available commands.");
+                process::exit(1);
+            }
+        }
+
+        // Otherwise (e.g. `pkb-excalidraw FILE --help` where FILE is not a command)
+        print!("{}", render_full_man_page(&styler));
         process::exit(0);
     }
 
@@ -4051,7 +4902,7 @@ fn main() {
     // Support both `pkb-excalidraw FILE COMMAND [args]` and `pkb-excalidraw COMMAND FILE [args]`
     let known_modes = [
         "summary", "map", "style", "check", "diff", "struct-diff", "lib", "item",
-        "nodes", "edges", "arrows", "inspect", "get", "add-node", "add-text",
+        "nodes", "edges", "arrows", "inspect", "get", "add-node", "update-node", "add-text",
         "connect", "set-text", "fit", "move-elem", "delete-elem", "batch",
         "theme", "overlap", "arrows-check",
         "describe", "screenshot", "arrange", "align", "distribute", "group",
@@ -4070,6 +4921,7 @@ fn main() {
         let extra = if args.len() > 3 { &args[3..] } else { &[] as &[String] };
         (f, m, extra)
     };
+
 
     let file_content = match fs::read_to_string(file_path) {
         Ok(c) => c,
@@ -5407,7 +6259,7 @@ fn main() {
         _ => {
             let modes = [
                 "summary", "map", "style", "check", "diff", "struct-diff", "lib", "item",
-                "nodes", "edges", "arrows", "inspect", "get", "add-node", "add-text",
+                "nodes", "edges", "arrows", "inspect", "get", "add-node", "update-node", "add-text",
                 "connect", "set-text", "fit", "move-elem", "delete-elem", "batch",
                 "theme", "overlap", "arrows-check",
                 "describe", "screenshot", "arrange", "align", "distribute", "group",
