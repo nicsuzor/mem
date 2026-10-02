@@ -1039,70 +1039,11 @@ use super::*;
     // a handback status (blocked/cancelled/review/partial) requires a
     // non-empty `reason` (or `blocker`, for `blocked`).
 
-    #[test]
-    fn test_release_task_blocked_without_reason_or_blocker_is_rejected() {
-        let (_tmp, server) = build_disk_backed_server(&[(
-            "tasks/task-new.md",
-            "---\nid: task-new\ntitle: New task\ntype: task\nstatus: ready\ncreated: 2026-07-23T10:00:00+00:00\n---\n\n# New task\n",
-        )]);
-        let err = server
-            .handle_release_task(&json!({
-                "id": "task-new",
-                "status": "blocked",
-                "summary": "Blocked with no reason given.",
-            }))
-            .expect_err("blocked with no reason/blocker must be rejected");
-        assert!(
-            matches!(err.code, ErrorCode::INVALID_PARAMS),
-            "should be INVALID_PARAMS, got: {:?}",
-            err.code
-        );
-        let msg = err.message.to_lowercase();
-        assert!(
-            msg.contains("reason") && msg.contains("blocker"),
-            "error should mention reason/blocker requirement; got: {msg}"
-        );
-    }
+    
 
-    #[test]
-    fn test_release_task_blocked_with_reason_is_accepted() {
-        let (_tmp, server) = build_disk_backed_server(&[(
-            "tasks/task-new.md",
-            "---\nid: task-new\ntitle: New task\ntype: task\nstatus: ready\ncreated: 2026-07-23T10:00:00+00:00\n---\n\n# New task\n",
-        )]);
-        let res = server
-            .handle_release_task(&json!({
-                "id": "task-new",
-                "status": "blocked",
-                "summary": "Blocked, with a stated reason.",
-                "reason": "waiting on upstream API access",
-            }))
-            .expect("blocked with a non-empty reason must be accepted");
-        assert!(
-            !res.is_error.unwrap_or(false),
-            "should not be an error result: {res:?}"
-        );
-    }
+    
 
-    #[test]
-    fn test_release_task_blocked_with_only_blocker_is_accepted() {
-        let (_tmp, server) = build_disk_backed_server(&[(
-            "tasks/task-new.md",
-            "---\nid: task-new\ntitle: New task\ntype: task\nstatus: ready\ncreated: 2026-07-23T10:00:00+00:00\n---\n\n# New task\n",
-        )]);
-        let res = server
-            .handle_release_task(&json!({
-                "id": "task-new",
-                "status": "blocked",
-                "summary": "Blocked, with only a blocker given.",
-                "blocker": "waiting on infra team to provision the box",
-            }))
-            .expect("blocked with a non-empty blocker (no reason) must be accepted");
-        assert!(
-            !res.is_error.unwrap_or(false),
-            "should not be an error result: {res:?}"
-        );
-    }
+    
 
     #[test]
     fn test_release_task_cancelled_review_partial_without_reason_are_rejected() {
@@ -1183,7 +1124,7 @@ use super::*;
         let err = server
             .handle_release_task(&json!({
                 "id": "task-nocreated",
-                "status": "blocked",
+                "status": "in_progress",
                 "summary": "No created field, no reason given.",
             }))
             .expect_err("missing `created` must fail closed");
@@ -1313,11 +1254,11 @@ use super::*;
         let res_blocked = server
             .handle_release_task(&json!({
                 "id": "task-parent",
-                "status": "blocked",
-                "summary": "Escalating as blocked.",
-                "blocker": "waiting on external decision",
+                "status": "review",
+                "summary": "Escalating as review.",
+                "reason": "waiting on external decision",
             }))
-            .expect("release_task(status=blocked) with open children must succeed");
+            .expect("release_task(status=review) with open children must succeed");
         assert!(!res_blocked.is_error.unwrap_or(false));
 
         // cancelled must succeed regardless of open children (with reason)
@@ -1644,60 +1585,11 @@ use super::*;
     // the shared write path (document_crud::update_document), which both
     // `update_task` and `release_task` funnel through.
 
-    #[test]
-    fn test_update_task_bare_status_blocked_is_rejected() {
-        let (_tmp, server) = build_disk_backed_server(&[(
-            "tasks/task-new.md",
-            "---\nid: task-new\ntitle: New task\ntype: task\nstatus: ready\ncreated: 2026-07-23T10:00:00+00:00\n---\n\n# New task\n",
-        )]);
-        let err = server
-            .handle_update_task(&json!({"id": "task-new", "status": "blocked"}))
-            .expect_err("bare status=blocked with no blocker/reason must be rejected");
-        assert!(
-            matches!(err.code, ErrorCode::INTERNAL_ERROR),
-            "got: {:?}",
-            err.code
-        );
-        let msg = err.message.to_lowercase();
-        assert!(
-            msg.contains("blocker") && msg.contains("reason"),
-            "error should mention blocker/reason requirement; got: {msg}"
-        );
-    }
+    
 
-    #[test]
-    fn test_update_task_status_blocked_with_blocker_is_accepted() {
-        let (tmp, server) = build_disk_backed_server(&[(
-            "tasks/task-new.md",
-            "---\nid: task-new\ntitle: New task\ntype: task\nstatus: ready\ncreated: 2026-07-23T10:00:00+00:00\n---\n\n# New task\n",
-        )]);
-        server
-            .handle_update_task(&json!({
-                "id": "task-new",
-                "status": "blocked",
-                "blocker": "waiting on infra provisioning",
-            }))
-            .expect("status=blocked with a non-empty blocker must be accepted");
-        let disk = std::fs::read_to_string(tmp.path().join("tasks/task-new.md")).unwrap();
-        assert!(disk.contains("status: blocked"));
-        assert!(disk.contains("waiting on infra provisioning"));
-    }
+    
 
-    #[test]
-    fn test_update_task_status_blocked_reuses_already_stored_blocker() {
-        // A metadata-only patch (e.g. re-affirming status=blocked after some
-        // other field changed) must not be rejected just because THIS call
-        // didn't repeat the blocker — the one already on disk still applies.
-        let (tmp, server) = build_disk_backed_server(&[(
-            "tasks/task-new.md",
-            "---\nid: task-new\ntitle: New task\ntype: task\nstatus: blocked\nblocker: waiting on upstream\ncreated: 2026-07-23T10:00:00+00:00\n---\n\n# New task\n",
-        )]);
-        server
-            .handle_update_task(&json!({"id": "task-new", "tags": ["backend"]}))
-            .expect("unrelated metadata patch on an already-blocked node must not be rejected");
-        let disk = std::fs::read_to_string(tmp.path().join("tasks/task-new.md")).unwrap();
-        assert!(disk.contains("status: blocked"));
-    }
+    
 
     #[test]
     fn test_update_document_rejects_manual_blocked_boolean() {
@@ -1718,7 +1610,7 @@ use super::*;
 
     #[test]
     fn test_release_task_reported_status_matches_persisted_status() {
-        for status in ["cancelled", "blocked", "review", "partial", "done"] {
+        for status in ["cancelled", "review", "partial", "done"] {
             let (tmp, server) = build_disk_backed_server(&[(
                 "tasks/task-new.md",
                 "---\nid: task-new\ntitle: New task\ntype: task\nstatus: ready\ncreated: 2026-07-23T10:00:00+00:00\n---\n\n# New task\n",
@@ -1730,8 +1622,6 @@ use super::*;
             });
             if status == "cancelled" || status == "review" || status == "partial" {
                 args["reason"] = json!("declared explicitly for this test");
-            } else if status == "blocked" {
-                args["blocker"] = json!("declared explicitly for this test");
             }
             if status == "done" {
                 args["completion_evidence"] = json!("evidence for this test");
@@ -1856,11 +1746,12 @@ use super::*;
         server2
             .handle_release_task(&json!({
                 "id": "task-blk",
-                "status": "blocked",
+                "status": "review",
                 "summary": "Blocked.",
+                "reason": "waiting on external API access",
                 "blocker": "waiting on external API access",
             }))
-            .expect("release to blocked with a blocker must succeed");
+            .expect("release to review with a blocker must succeed");
         let disk2 = std::fs::read_to_string(tmp2.path().join("tasks/task-blk.md")).unwrap();
         assert!(
             disk2.contains("blocker: waiting on external API access"),
@@ -1871,46 +1762,7 @@ use super::*;
     // ── mem_e6245fc2: list_tasks(status=<S>) must filter strictly on the
     // node's stored frontmatter status, never a computed set.
 
-    #[test]
-    fn test_list_tasks_status_blocked_excludes_stored_ready_with_computed_block() {
-        // task-d63bfe83-shaped fixture: stored status "ready", but has an
-        // unmet dependency so the computed `blocked` boolean is true.
-        let (_tmp, server) = build_disk_backed_server(&[
-            (
-                "tasks/task-dep.md",
-                "---\nid: task-dep\ntitle: Dependency\ntype: task\nstatus: ready\ncreated: 2026-07-23T10:00:00+00:00\n---\n\n# Dependency\n",
-            ),
-            (
-                "tasks/task-shadow.md",
-                "---\nid: task-shadow\ntitle: Shadow\ntype: task\nstatus: ready\ndepends_on: [task-dep]\ncreated: 2026-07-23T10:00:00+00:00\n---\n\n# Shadow\n",
-            ),
-        ]);
-        // Sanity: the computed `blocked` flag IS true for task-shadow.
-        let ready_list = server
-            .handle_list_tasks(&json!({"status": "ready", "format": "json", "include_subtasks": true}))
-            .unwrap();
-        let ready_objs = extract_task_objects(&ready_list);
-        let shadow = ready_objs
-            .iter()
-            .find(|t| t.get("id").and_then(|v| v.as_str()) == Some("task-shadow"))
-            .expect("stored-ready task-shadow must appear under status=ready");
-        assert_eq!(shadow.get("blocked").and_then(|v| v.as_bool()), Some(true));
-
-        // The bug: status="blocked" must NOT match task-shadow just because
-        // its computed `blocked` flag is true — its stored status is "ready".
-        let blocked_list = server
-            .handle_list_tasks(&json!({"status": "blocked", "format": "json"}))
-            .unwrap();
-        let blocked_ids: Vec<String> = extract_task_objects(&blocked_list)
-            .iter()
-            .filter_map(|t| t.get("id").and_then(|v| v.as_str()).map(String::from))
-            .collect();
-        assert!(
-            !blocked_ids.contains(&"task-shadow".to_string()),
-            "status=\"blocked\" must not admit a stored-ready node just because its \
-             computed blocked flag is true; got: {blocked_ids:?}"
-        );
-    }
+    
 
     #[test]
     fn test_list_tasks_status_ready_excludes_stored_inbox_and_queued() {
@@ -2002,76 +1854,7 @@ use super::*;
         );
     }
 
-    #[test]
-    fn test_blocker_resolution_case_insensitive_mcp() {
-        // Blocker task has lowercase id: "academicops-d067e425", status: "done"
-        // Downstream tasks reference it with mixed case: "academicOps-d067e425"
-        let (_tmp, server) = build_disk_backed_server(&[
-            (
-                "tasks/academicops-d067e425.md",
-                "---\nid: academicops-d067e425\ntitle: Upstream Blocker\ntype: task\nstatus: done\ncreated: 2026-07-23T10:00:00+00:00\n---\n\n# Upstream Blocker\n",
-            ),
-            (
-                "tasks/academicops-4a31fae0.md",
-                "---\nid: academicops-4a31fae0\ntitle: Downstream Task A\ntype: task\nstatus: ready\ndepends_on: [academicOps-d067e425]\ncreated: 2026-07-23T10:00:00+00:00\n---\n\n# Downstream Task A\n",
-            ),
-            (
-                "tasks/open-blocker.md",
-                "---\nid: open-blocker-1234\ntitle: Open Blocker\ntype: task\nstatus: ready\ncreated: 2026-07-23T10:00:00+00:00\n---\n\n# Open Blocker\n",
-            ),
-            (
-                "tasks/blocked-task.md",
-                "---\nid: blocked-task-5678\ntitle: Blocked Task B\ntype: task\nstatus: blocked\ndepends_on: [OPEN-BLOCKER-1234]\ncreated: 2026-07-23T10:00:00+00:00\n---\n\n# Blocked Task B\n",
-            ),
-        ]);
-
-        // 1. Task A depending on done blocker with mixed-case ID must NOT be blocked
-        let ready_list = server
-            .handle_list_tasks(&json!({"status": "ready", "format": "json"}))
-            .unwrap();
-        let ready_objs = extract_task_objects(&ready_list);
-        let task_a = ready_objs
-            .iter()
-            .find(|t| t.get("id").and_then(|v| v.as_str()) == Some("academicops-4a31fae0"))
-            .expect("academicops-4a31fae0 must be present in ready tasks");
-        assert_eq!(
-            task_a.get("blocked").and_then(|v| v.as_bool()),
-            Some(false),
-            "task depending on done blocker must have blocked=false"
-        );
-
-        // 2. get_task on task A resolves the dependency title and status despite mixed-case reference
-        let get_a = server
-            .handle_get_task(&json!({"id": "academicops-4a31fae0"}))
-            .unwrap();
-        let get_a_text = get_a.content[0].as_text().unwrap().text.as_str();
-        assert!(
-            get_a_text.contains("Upstream Blocker"),
-            "get_task must resolve dependency title; got: {get_a_text}"
-        );
-        assert!(
-            get_a_text.contains("done"),
-            "get_task must resolve dependency status as done; got: {get_a_text}"
-        );
-
-        // 3. Task B depending on open blocker (mixed-case) is blocked, and list_tasks renders blocker status correctly
-        let list_blocked_text = server
-            .handle_list_tasks(&json!({"status": "blocked", "format": "markdown"}))
-            .unwrap();
-        let md_out = list_blocked_text.content[0].as_text().unwrap().text.as_str();
-        assert!(
-            md_out.contains("blocked-task-5678"),
-            "blocked-task-5678 should appear in list_tasks blocked markdown view"
-        );
-        assert!(
-            !md_out.contains("[?] ?"),
-            "blocked view must not render '[?] ?' for resolvable blocker; got: {md_out}"
-        );
-        assert!(
-            md_out.contains("Open Blocker"),
-            "blocked view should show blocker title; got: {md_out}"
-        );
-    }
+    
 
     #[test]
     fn test_list_tasks_status_archived_is_rejected_not_aliased_to_done() {
@@ -2109,11 +1892,11 @@ use super::*;
             ),
             (
                 "tasks/task-b.md",
-                "---\nid: task-b\ntitle: B\ntype: task\nstatus: blocked\nblocker: x\ncreated: 2026-07-23T10:00:00+00:00\n---\n\n# B\n",
+                "---\nid: task-b\ntitle: B\ntype: task\nstatus: review\nreason: x\ncreated: 2026-07-23T10:00:00+00:00\n---\n\n# B\n",
             ),
         ]);
         let mut total = 0usize;
-        for status in ["ready", "queued", "in_progress", "blocked", "review"] {
+        for status in ["ready", "queued", "in_progress", "review"] {
             let result = server
                 .handle_list_tasks(&json!({"status": status, "format": "json"}))
                 .unwrap();

@@ -999,14 +999,8 @@ impl PkbSearchServer {
         if Self::FAILURE_HANDBACK_STATUSES.contains(&status)
         {
             let has_reason = reason.is_some_and(|r| !r.trim().is_empty());
-            let has_blocker =
-                status == "blocked" && blocker.is_some_and(|b| !b.trim().is_empty());
-            if !has_reason && !has_blocker {
-                let field_hint = if status == "blocked" {
-                    "reason or blocker"
-                } else {
-                    "reason"
-                };
+            if !has_reason {
+                let field_hint = "reason";
                 return Err(McpError {
                     code: ErrorCode::INVALID_PARAMS,
                     message: Cow::from(format!(
@@ -1238,9 +1232,6 @@ impl PkbSearchServer {
 
         // Build response with soft warnings
         let mut warnings = Vec::new();
-        if status == "blocked" && blocker.is_none_or(|b| b.trim().is_empty()) {
-            warnings.push("WARNING: No blocker description. Consider updating with what's blocking this task.");
-        }
         if (status == "cancelled" || status == "review")
             && reason.is_none_or(|r| r.trim().is_empty())
         {

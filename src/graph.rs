@@ -698,7 +698,7 @@ pub fn resolve_status_alias(status: &str) -> &str {
     match status {
         // Passthrough — canonical values
         "inbox" | "ready" | "queued" | "in_progress" | "review" | "done"
-        | "blocked" | "paused" | "someday" | "cancelled" | "partial" => status,
+        | "paused" | "someday" | "cancelled" | "partial" => status,
 
         // Legacy "active" = in-flight / claimed work (per Nic 2026-06-27). The old
         // taxonomy collapsed ready/queued/in_progress into one "active" label, but
@@ -873,7 +873,7 @@ pub fn status_rank(status: &str) -> i32 {
         // `partial` is a stop-gate shape (worker paused at a seam with a live child),
         // so rank it like the other side states — entering or resuming it must not
         // trip the backwards-transition warning.
-        "blocked" | "paused" | "someday" | "cancelled" | "partial" => -1,
+        "paused" | "someday" | "cancelled" | "partial" => -1,
         _ => 0,
     }
 }
@@ -940,7 +940,6 @@ pub const VALID_STATUSES: &[&str] = &[
     "in_progress",
     "review",
     "done",
-    "blocked",
     "paused",
     "someday",
     "cancelled",
@@ -963,18 +962,15 @@ pub const ACTIVE_STATUSES: &[&str] = &[
     "partial",
 ];
 
-/// Statuses that represent blocked work.
-pub const BLOCKED_STATUSES: &[&str] = &["blocked"];
-
 /// Statuses that are a handback rather than a clean success. Releasing to one
-/// of these requires a stated failure reason (or `blocker`, for `blocked`) —
+/// of these requires a stated failure reason —
 /// the "evidence or a stated failure reason" contract's failure-path half.
 /// Canonical home for this list: both `release_task` (single-node MCP path,
 /// via `PkbSearchServer::FAILURE_HANDBACK_STATUSES`, aliased to this const)
 /// and `batch_update` (bulk path, `mem_84b21efc`) enforce against the same
 /// list so a bulk write cannot silently produce a terminal node with no
 /// record of why when the single-node path would have refused it.
-pub const FAILURE_HANDBACK_STATUSES: &[&str] = &["blocked", "cancelled", "review", "partial"];
+pub const FAILURE_HANDBACK_STATUSES: &[&str] = &["cancelled", "review", "partial"];
 
 /// Returns true if the status represents a completed/finished state.
 pub fn is_completed(status: Option<&str>) -> bool {
@@ -989,13 +985,12 @@ pub fn is_closed_for_hierarchy(status: Option<&str>) -> bool {
     matches!(status, Some("done") | Some("cancelled") | Some("archived"))
 }
 
-/// Returns the coarse status group (`"active"`, `"blocked"`, or `"completed"`)
+/// Returns the coarse status group (`"active"` or `"completed"`)
 /// for a given status. Note: the `"active"` group name is a coarse bucket
 /// meaning "open work" — it is NOT the retired `active` status value.
 pub fn status_group(status: Option<&str>) -> &'static str {
     match status {
         Some(s) if COMPLETED_STATUSES.contains(&s) => "completed",
-        Some(s) if BLOCKED_STATUSES.contains(&s) => "blocked",
         _ => "active",
     }
 }

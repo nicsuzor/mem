@@ -3325,8 +3325,7 @@ fn compute_effectively_blocked(
             .depends_on
             .iter()
             .any(|d| !completed_ids.contains(&d.to_lowercase()));
-        let explicit = n.status.as_deref() == Some("blocked");
-        if has_unmet || explicit {
+        if has_unmet {
             blocked[i] = true;
             queue.push_back(i);
         }
@@ -4349,7 +4348,7 @@ fn classify_tasks(nodes: &HashMap<String, GraphNode>) -> (Vec<String>, Vec<Strin
             .depends_on
             .iter()
             .any(|d| !completed_ids.contains(&d.to_lowercase()));
-        if has_unmet || status == "blocked" {
+        if has_unmet {
             directly_blocked.insert(id.clone());
         }
     }
@@ -8533,9 +8532,12 @@ mod tests {
                 if let Some(ref mut fm) = doc.frontmatter {
                     fm.as_object_mut()
                         .unwrap()
-                        .insert("status".to_string(), serde_json::json!("blocked"));
+                        .insert("status".to_string(), serde_json::json!("inbox"));
+                    fm.as_object_mut()
+                        .unwrap()
+                        .insert("depends_on".to_string(), serde_json::json!(["unmet-dep"]));
                 }
-                doc.status = Some("blocked".to_string());
+                doc.status = Some("inbox".to_string());
                 doc
             },
         ];

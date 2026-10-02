@@ -264,7 +264,6 @@ pub fn create_document(root: &Path, fields: DocumentFields) -> Result<PathBuf> {
     }
 
     let now = chrono::Utc::now().to_rfc3339();
-    let local_now = chrono::Local::now().to_rfc3339();
 
     // Build YAML frontmatter
     let mut fm = String::from("---\n");
@@ -276,7 +275,6 @@ pub fn create_document(root: &Path, fields: DocumentFields) -> Result<PathBuf> {
     fm.push_str(&format!("type: {}\n", fields.doc_type));
     fm.push_str(&format!("created: {}\n", now));
     fm.push_str(&format!("modified: {}\n", now));
-    fm.push_str(&format!("last_modified: {}\n", local_now));
 
     // Alias and permalink
     let slug = title_to_snake_case(&fields.title);
@@ -466,7 +464,6 @@ pub fn create_subtask(root: &Path, fields: SubtaskFields) -> Result<PathBuf> {
     }
 
     let now = chrono::Utc::now().to_rfc3339();
-    let local_now = chrono::Local::now().to_rfc3339();
 
     let mut fm = String::from("---\n");
     fm.push_str(&format!("id: {}\n", id));
@@ -477,7 +474,6 @@ pub fn create_subtask(root: &Path, fields: SubtaskFields) -> Result<PathBuf> {
     fm.push_str("type: subtask\n");
     fm.push_str(&format!("created: {}\n", now));
     fm.push_str(&format!("modified: {}\n", now));
-    fm.push_str(&format!("last_modified: {}\n", local_now));
     // New captures default to `inbox` (canonical), matching create_task; the
     // computed ready-gate graduates it once it has AC and resolved deps.
     fm.push_str("status: inbox\n");
@@ -524,10 +520,9 @@ pub fn ensure_adhoc_sessions_root(root: &Path) -> Result<()> {
     // plus the alias entry both register "adhoc-sessions" in the id_map so
     // tasks written with either form resolve to the same node.
     let now = chrono::Utc::now().to_rfc3339();
-    let local_now = chrono::Local::now().to_rfc3339();
     let id = ADHOC_SESSIONS_ROOT_ID;
     let content = format!(
-        "---\nid: {id}\ntitle: \"Ad-hoc Sessions\"\ntype: task\nproject: adhoc-sessions\ncreated: {now}\nmodified: {now}\nlast_modified: {local_now}\nalias:\n  - \"{id}-ad-hoc-sessions\"\n  - \"{id}\"\n  - \"adhoc-sessions\"\npermalink: adhoc-sessions\nstatus: in_progress\n---\n\n# Ad-hoc Sessions\n\nRoot node for tasks created during ad-hoc agent sessions.\n"
+        "---\nid: {id}\ntitle: \"Ad-hoc Sessions\"\ntype: task\nproject: adhoc-sessions\ncreated: {now}\nmodified: {now}\nalias:\n  - \"{id}-ad-hoc-sessions\"\n  - \"{id}\"\n  - \"adhoc-sessions\"\npermalink: adhoc-sessions\nstatus: in_progress\n---\n\n# Ad-hoc Sessions\n\nRoot node for tasks created during ad-hoc agent sessions.\n"
     );
     atomic_write_file(&adhoc_path, &content, "ensure_adhoc_sessions_root")?;
     let _ = git_commit_file(&adhoc_path, "create(project): adhoc-sessions - Ad-hoc sessions root");
@@ -694,7 +689,6 @@ pub fn create_task(root: &Path, fields: TaskFields) -> Result<PathBuf> {
     }
 
     let now = chrono::Utc::now().to_rfc3339();
-    let local_now = chrono::Local::now().to_rfc3339();
 
     // Build YAML frontmatter
     let mut fm = String::from("---\n");
@@ -709,7 +703,6 @@ pub fn create_task(root: &Path, fields: TaskFields) -> Result<PathBuf> {
     ));
     fm.push_str(&format!("created: {}\n", now));
     fm.push_str(&format!("modified: {}\n", now));
-    fm.push_str(&format!("last_modified: {}\n", local_now));
 
     // Alias and permalink
     let slug = title_to_snake_case(&fields.title);
@@ -1072,10 +1065,6 @@ pub fn claim_template_instance(root: &Path, fields: TemplateInstanceFields) -> R
     ));
     fm.push_str(&format!("created: {}\n", created_at));
     fm.push_str(&format!("modified: {}\n", created_at));
-    fm.push_str(&format!(
-        "last_modified: {}\n",
-        chrono::Local::now().to_rfc3339()
-    ));
 
     let slug = slugify(&instance_title);
     fm.push_str("alias:\n");
@@ -1193,7 +1182,6 @@ pub fn create_memory(root: &Path, fields: MemoryFields) -> Result<PathBuf> {
     }
 
     let now = chrono::Utc::now().to_rfc3339();
-    let local_now = chrono::Local::now().to_rfc3339();
 
     // Build YAML frontmatter
     let mut fm = String::from("---\n");
@@ -1208,7 +1196,6 @@ pub fn create_memory(root: &Path, fields: MemoryFields) -> Result<PathBuf> {
     }
     fm.push_str(&format!("created: {}\n", now));
     fm.push_str(&format!("modified: {}\n", now));
-    fm.push_str(&format!("last_modified: {}\n", local_now));
 
     let slug = title_to_snake_case(&fields.title);
     fm.push_str("alias:\n");
@@ -1678,51 +1665,7 @@ pub fn update_document(path: &Path, updates: HashMap<String, serde_json::Value>)
         }
     }
 
-    // mem_2ecf862b: `status: "blocked"` must not be a bare hand-write that
-    // silently shadows a `depends_on`-derived computed block (the `blocked:`
-    // boolean, rejected below, already covers that fact once — a status write
-    // that carries no new information is just a second, staler copy of it).
-    // `release_task`'s failure-reason-mandatory gate already requires
-    // `blocker`/`reason` on this transition; enforce the same contract here,
-    // at the single write path every caller (including the generic
-    // `update_task` patch path) funnels through, so the gate cannot be
-    // bypassed by calling `update_document` directly instead of
-    // `release_task`. A blocker/reason already on disk (e.g. a prior
-    // `release_task` call) satisfies a later metadata-only patch.
-    if let Some(new_status) = updates.get("status").and_then(|v| v.as_str()) {
-        if new_status == "blocked" {
-            let incoming_blocker = updates
-                .get("blocker")
-                .and_then(|v| v.as_str())
-                .map(|s| !s.trim().is_empty())
-                .unwrap_or(false);
-            let incoming_reason = updates
-                .get("reason")
-                .and_then(|v| v.as_str())
-                .map(|s| !s.trim().is_empty())
-                .unwrap_or(false);
-            let stored_blocker = fm
-                .get("blocker")
-                .and_then(|v| v.as_str())
-                .map(|s| !s.trim().is_empty())
-                .unwrap_or(false);
-            let stored_reason = fm
-                .get("reason")
-                .and_then(|v| v.as_str())
-                .map(|s| !s.trim().is_empty())
-                .unwrap_or(false);
-            if !(incoming_blocker || incoming_reason || stored_blocker || stored_reason) {
-                anyhow::bail!(
-                    "Refusing to set status: \"blocked\" on {} without a non-empty 'blocker' or \
-                     'reason' — a bare status write duplicates what 'depends_on' plus the computed \
-                     'blocked' flag already say, and goes stale silently. Use release_task(status=\"blocked\", \
-                     blocker=\"...\") to record the specific external blocker, or set 'depends_on' \
-                     if this is a graph dependency.",
-                    path.display()
-                );
-            }
-        }
-    }
+    // `blocked` is no longer a valid writable status. It is computed via `depends_on`.
 
     // Apply updates, routing body/content keys to the markdown body instead of frontmatter
     let mut new_body_text: Option<String> = None;
@@ -1824,10 +1767,7 @@ pub fn update_document(path: &Path, updates: HashMap<String, serde_json::Value>)
         "modified".to_string(),
         serde_json::Value::String(chrono::Utc::now().to_rfc3339()),
     );
-    fm.insert(
-        "last_modified".to_string(),
-        serde_json::Value::String(chrono::Local::now().to_rfc3339()),
-    );
+    fm.remove("last_modified");
 
     // Rebuild the file
     let yaml = serde_yaml::to_string(&fm).context("Failed to serialize frontmatter")?;
@@ -2318,7 +2258,8 @@ pub fn add_observations(
 
     if let Some(expected) = expected_modified {
         let actual = fm.get("modified").and_then(|v| v.as_str()).unwrap_or("");
-        if actual != expected {
+        let actual_lm = fm.get("last_modified").and_then(|v| v.as_str());
+        if actual != expected && actual_lm != Some(expected) {
             return Err(StaleWrite {
                 expected_modified: expected.to_string(),
                 actual_modified: actual.to_string(),
@@ -2334,10 +2275,7 @@ pub fn add_observations(
             "modified".to_string(),
             serde_json::Value::String(new_modified.clone()),
         );
-        fm.insert(
-            "last_modified".to_string(),
-            serde_json::Value::String(chrono::Local::now().to_rfc3339()),
-        );
+        fm.remove("last_modified");
     }
 
     let body_chars_before = body.len();
@@ -2534,7 +2472,8 @@ pub fn delete_observations(
 
     if let Some(expected) = expected_modified {
         let actual = fm.get("modified").and_then(|v| v.as_str()).unwrap_or("");
-        if actual != expected {
+        let actual_lm = fm.get("last_modified").and_then(|v| v.as_str());
+        if actual != expected && actual_lm != Some(expected) {
             return Err(StaleWrite {
                 expected_modified: expected.to_string(),
                 actual_modified: actual.to_string(),
@@ -2550,10 +2489,7 @@ pub fn delete_observations(
             "modified".to_string(),
             serde_json::Value::String(new_modified.clone()),
         );
-        fm.insert(
-            "last_modified".to_string(),
-            serde_json::Value::String(chrono::Local::now().to_rfc3339()),
-        );
+        fm.remove("last_modified");
     }
 
     let body_chars_before = body.len();
@@ -2692,8 +2628,8 @@ pub struct EditBodyResult {
 
 /// Apply unified-diff hunks to the body of an existing document (Aider-compatible).
 ///
-/// Preserves YAML frontmatter and updates the `modified` and `last_modified`
-/// timestamps. Supports optional CAS precondition via `expected_modified` and
+/// Preserves YAML frontmatter and updates the `modified`
+/// timestamp. Supports optional CAS precondition via `expected_modified` and
 /// non-destructive validation via `dry_run`.
 pub fn edit_body(
     path: &Path,
@@ -2782,7 +2718,8 @@ pub fn edit_body(
 
     if let Some(expected) = expected_modified {
         let actual = fm.get("modified").and_then(|v| v.as_str()).unwrap_or("");
-        if actual != expected {
+        let actual_lm = fm.get("last_modified").and_then(|v| v.as_str());
+        if actual != expected && actual_lm != Some(expected) {
             return Err(StaleWrite {
                 expected_modified: expected.to_string(),
                 actual_modified: actual.to_string(),
@@ -2812,10 +2749,7 @@ pub fn edit_body(
         "modified".to_string(),
         serde_json::Value::String(new_modified.clone()),
     );
-    fm.insert(
-        "last_modified".to_string(),
-        serde_json::Value::String(chrono::Local::now().to_rfc3339()),
-    );
+    fm.remove("last_modified");
 
     let yaml = serde_yaml::to_string(&fm).context("Failed to serialize frontmatter")?;
     let new_content = if trimmed_body.is_empty() {
@@ -2850,7 +2784,7 @@ pub fn edit_body(
 /// Rewrite the entire body of an existing document.
 ///
 /// Preserves YAML frontmatter by default. If `preserve_frontmatter` is true,
-/// updates `modified` and `last_modified` in frontmatter.
+/// updates `modified` in frontmatter.
 ///
 /// `expected_modified`: optional compare-and-swap precondition. When `Some`,
 /// the write is rejected with [`StaleWrite`] (and nothing is written to disk)
@@ -2945,7 +2879,8 @@ pub fn rewrite_body(
 
         if let Some(expected) = expected_modified {
             let actual = fm.get("modified").and_then(|v| v.as_str()).unwrap_or("");
-            if actual != expected {
+            let actual_lm = fm.get("last_modified").and_then(|v| v.as_str());
+            if actual != expected && actual_lm != Some(expected) {
                 return Err(StaleWrite {
                     expected_modified: expected.to_string(),
                     actual_modified: actual.to_string(),
@@ -2959,10 +2894,7 @@ pub fn rewrite_body(
             "modified".to_string(),
             serde_json::Value::String(new_modified.clone()),
         );
-        fm.insert(
-            "last_modified".to_string(),
-            serde_json::Value::String(chrono::Local::now().to_rfc3339()),
-        );
+        fm.remove("last_modified");
 
         let yaml = serde_yaml::to_string(&fm).context("Failed to serialize frontmatter")?;
         let body_chars_after = trimmed_body.len();
@@ -3079,7 +3011,8 @@ pub fn append_to_document(
 
     if let Some(expected) = expected_modified {
         let actual = fm.get("modified").and_then(|v| v.as_str()).unwrap_or("");
-        if actual != expected {
+        let actual_lm = fm.get("last_modified").and_then(|v| v.as_str());
+        if actual != expected && actual_lm != Some(expected) {
             return Err(StaleWrite {
                 expected_modified: expected.to_string(),
                 actual_modified: actual.to_string(),
@@ -3093,10 +3026,7 @@ pub fn append_to_document(
         "modified".to_string(),
         serde_json::Value::String(new_modified.clone()),
     );
-    fm.insert(
-        "last_modified".to_string(),
-        serde_json::Value::String(chrono::Local::now().to_rfc3339()),
-    );
+    fm.remove("last_modified");
 
     let yaml = serde_yaml::to_string(&fm).context("Failed to serialize frontmatter")?;
 
@@ -3973,42 +3903,110 @@ mod tests {
     }
 
     #[test]
-    fn create_task_last_modified_has_explicit_offset() {
-        // `last_modified` must carry an explicit numeric UTC offset (e.g. "+10:00"
-        // or "+00:00"), never a bare "Z". A bare "Z" would mean the value collapsed
-        // to `chrono::Utc` formatting and lost the "local timezone" semantics this
-        // field exists for, even if the host's local offset happens to be zero.
+    fn create_task_does_not_write_last_modified() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
         write_test_polecat_yaml(root, &["aops", "mem"]);
         fs::create_dir_all(root.join("tasks")).unwrap();
 
         let fields = TaskFields {
-            title: "Offset check".to_string(),
+            title: "No last_modified check".to_string(),
             parent: Some("parent-001".to_string()),
             project: Some("aops".to_string()),
             ..Default::default()
         };
         let path = create_task(root, fields).unwrap();
         let content = fs::read_to_string(&path).unwrap();
-        let last_modified_line = content
-            .lines()
-            .find(|l| l.starts_with("last_modified:"))
-            .expect("last_modified field must be present");
-        // The date portion always contains '-', so isolate the time-of-day
-        // portion (after 'T') where '-' or '+' can only appear as an offset sign.
-        let time_part = last_modified_line
-            .split('T')
-            .nth(1)
-            .expect("last_modified must be a full RFC3339 timestamp with a 'T' separator");
         assert!(
-            !time_part.trim_end().ends_with('Z'),
-            "last_modified must use an explicit offset, not 'Z': {last_modified_line}"
+            content.lines().any(|l| l.starts_with("modified:")),
+            "modified field must be present: {content}"
         );
         assert!(
-            time_part.contains('+') || time_part.contains('-'),
-            "last_modified must contain a numeric UTC offset: {last_modified_line}"
+            content.lines().any(|l| l.starts_with("created:")),
+            "created field must be present: {content}"
         );
+        assert!(
+            !content.lines().any(|l| l.starts_with("last_modified:")),
+            "last_modified field must NOT be written: {content}"
+        );
+    }
+
+    #[test]
+    fn update_document_strips_legacy_last_modified() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file_path = tmp.path().join("legacy.md");
+        fs::write(
+            &file_path,
+            "---\nid: legacy-001\ntitle: Legacy Doc\ntype: note\ncreated: 2026-01-01T00:00:00Z\nmodified: 2026-01-01T00:00:00Z\nlast_modified: 2026-01-01T10:00:00+10:00\n---\n\nLegacy body.\n",
+        )
+        .unwrap();
+
+        let mut updates = std::collections::HashMap::new();
+        updates.insert(
+            "title".to_string(),
+            serde_json::Value::String("Updated Legacy Doc".to_string()),
+        );
+        update_document(&file_path, updates).unwrap();
+
+        let content = fs::read_to_string(&file_path).unwrap();
+        assert!(
+            !content.lines().any(|l| l.starts_with("last_modified:")),
+            "update_document must strip legacy last_modified: {content}"
+        );
+        assert!(
+            content.lines().any(|l| l.starts_with("modified:")),
+            "modified must be preserved and updated: {content}"
+        );
+    }
+
+    #[test]
+    fn cas_accepts_legacy_last_modified_pin_and_avoids_stale_rejection() {
+        // Issue #648 reproduction:
+        // A document has differing modified (UTC) and last_modified (local) timestamps.
+        // Pinning to `last_modified` must succeed rather than being rejected as stale.
+        let tmp = tempfile::tempdir().unwrap();
+        let file_path = tmp.path().join("task_issue_648.md");
+        let utc_mod = "2026-10-01T04:00:00.123456Z";
+        let local_last_mod = "2026-10-01T14:00:00.123458+10:00";
+
+        fs::write(
+            &file_path,
+            format!(
+                "---\nid: task_648\ntitle: Test Issue 648\ntype: task\ncreated: {utc_mod}\nmodified: {utc_mod}\nlast_modified: {local_last_mod}\n---\n\nInitial body.\n"
+            ),
+        )
+        .unwrap();
+
+        // 1. rewrite_body with expected_modified matching `last_modified`
+        rewrite_body(&file_path, "New body via last_modified pin.", true, Some(local_last_mod))
+            .expect("CAS pinning to last_modified must be accepted, not rejected as stale (issue #648)");
+
+        let content_after = fs::read_to_string(&file_path).unwrap();
+        assert!(
+            !content_after.lines().any(|l| l.starts_with("last_modified:")),
+            "rewrite_body must strip legacy last_modified: {content_after}"
+        );
+        assert!(content_after.contains("New body via last_modified pin."));
+
+        // 2. append_to_document on another document with legacy last_modified pin
+        let file_path2 = tmp.path().join("task_issue_648_append.md");
+        fs::write(
+            &file_path2,
+            format!(
+                "---\nid: task_648_append\ntitle: Test Issue 648 Append\ntype: task\ncreated: {utc_mod}\nmodified: {utc_mod}\nlast_modified: {local_last_mod}\n---\n\nInitial body.\n"
+            ),
+        )
+        .unwrap();
+
+        append_to_document(&file_path2, "Appended text.", None, Some(local_last_mod))
+            .expect("append_to_document CAS pinning to last_modified must be accepted (issue #648)");
+
+        let content_after2 = fs::read_to_string(&file_path2).unwrap();
+        assert!(
+            !content_after2.lines().any(|l| l.starts_with("last_modified:")),
+            "append_to_document must strip legacy last_modified: {content_after2}"
+        );
+        assert!(content_after2.contains("Appended text."));
     }
 
     #[test]
