@@ -5,6 +5,29 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.97](https://github.com/nicsuzor/mem/compare/mem-v0.3.96...mem-v0.3.97) (2026-10-02)
+
+
+### Features
+
+* **excalidraw:** add complete man-page console help with colour and update docs ([e8bb36b](https://github.com/nicsuzor/mem/commit/e8bb36b89542d21b3428da3ba33570bffbfc801e))
+* **excalidraw:** complete man-page console help with colour and docs ([1c0ed8f](https://github.com/nicsuzor/mem/commit/1c0ed8f5c6904a60aab3904634fb3936aa6fb8b8))
+* **task:** drop merge_ready from PKB status vocabulary (mem_d6032649) ([dcaee8f](https://github.com/nicsuzor/mem/commit/dcaee8fe893092f610e711b2473ccb89c88651c7))
+* **task:** drop merge_ready from PKB status vocabulary (mem_d6032649) ([ff447b5](https://github.com/nicsuzor/mem/commit/ff447b506c010f4e2a1f38c52cdd395d02f7503a))
+* **types:** collapse epic into task, goal/capability into target, and add contributes_to multiplier ([689b567](https://github.com/nicsuzor/mem/commit/689b5678860726e53478214594ae21612858a44e))
+* **types:** simplify node taxonomy (collapse epic into task, goal/capability into target) and add contributes_to multiplier ([4fd79b3](https://github.com/nicsuzor/mem/commit/4fd79b3411934a02e688ed458f62a3d88f20d364))
+
+
+### Bug Fixes
+
+* **clippy:** resolve single-element loops, unused muts, and collapsible if ([230c168](https://github.com/nicsuzor/mem/commit/230c168c1db78be41021edae5bc73d517752531e))
+* **document_crud:** remove redundant last_modified and resolve stale CAS rejections ([#648](https://github.com/nicsuzor/mem/issues/648)) ([596e3cf](https://github.com/nicsuzor/mem/commit/596e3cff9340b7803a67586892d5baccea737e29))
+* **mcp:** remove vector index entry on delete and withhold orphaned search hits (task_424948a7) ([b2a4571](https://github.com/nicsuzor/mem/commit/b2a457186a5a2fbf4e1eec0b247c41b009703ad3))
+* **mcp:** remove vector index entry on delete and withhold orphaned search hits (task_424948a7) ([78abb43](https://github.com/nicsuzor/mem/commit/78abb43e14035ba577a20f3c68465d72237ba77f))
+* remove blocked from enum in schemas.rs ([d1bbb8a](https://github.com/nicsuzor/mem/commit/d1bbb8abb59f26eb77d6140eeb373924ca22b35d))
+* remove redundant last_modified and resolve stale CAS rejections ([#648](https://github.com/nicsuzor/mem/issues/648)) ([68dd242](https://github.com/nicsuzor/mem/commit/68dd242fd8023132185296886ec4b3407c63a0e9))
+* **types:** address strategic review feedback for PR [#643](https://github.com/nicsuzor/mem/issues/643) ([537cbab](https://github.com/nicsuzor/mem/commit/537cbabc076994d66be27a267316b8e1ebcd17df))
+
 ## [0.3.96](https://github.com/nicsuzor/mem/compare/mem-v0.3.95...mem-v0.3.96) (2026-09-22)
 
 
