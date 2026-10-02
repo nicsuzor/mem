@@ -1679,51 +1679,7 @@ pub fn update_document(path: &Path, updates: HashMap<String, serde_json::Value>)
         }
     }
 
-    // mem_2ecf862b: `status: "blocked"` must not be a bare hand-write that
-    // silently shadows a `depends_on`-derived computed block (the `blocked:`
-    // boolean, rejected below, already covers that fact once — a status write
-    // that carries no new information is just a second, staler copy of it).
-    // `release_task`'s failure-reason-mandatory gate already requires
-    // `blocker`/`reason` on this transition; enforce the same contract here,
-    // at the single write path every caller (including the generic
-    // `update_task` patch path) funnels through, so the gate cannot be
-    // bypassed by calling `update_document` directly instead of
-    // `release_task`. A blocker/reason already on disk (e.g. a prior
-    // `release_task` call) satisfies a later metadata-only patch.
-    if let Some(new_status) = updates.get("status").and_then(|v| v.as_str()) {
-        if new_status == "blocked" {
-            let incoming_blocker = updates
-                .get("blocker")
-                .and_then(|v| v.as_str())
-                .map(|s| !s.trim().is_empty())
-                .unwrap_or(false);
-            let incoming_reason = updates
-                .get("reason")
-                .and_then(|v| v.as_str())
-                .map(|s| !s.trim().is_empty())
-                .unwrap_or(false);
-            let stored_blocker = fm
-                .get("blocker")
-                .and_then(|v| v.as_str())
-                .map(|s| !s.trim().is_empty())
-                .unwrap_or(false);
-            let stored_reason = fm
-                .get("reason")
-                .and_then(|v| v.as_str())
-                .map(|s| !s.trim().is_empty())
-                .unwrap_or(false);
-            if !(incoming_blocker || incoming_reason || stored_blocker || stored_reason) {
-                anyhow::bail!(
-                    "Refusing to set status: \"blocked\" on {} without a non-empty 'blocker' or \
-                     'reason' — a bare status write duplicates what 'depends_on' plus the computed \
-                     'blocked' flag already say, and goes stale silently. Use release_task(status=\"blocked\", \
-                     blocker=\"...\") to record the specific external blocker, or set 'depends_on' \
-                     if this is a graph dependency.",
-                    path.display()
-                );
-            }
-        }
-    }
+    // `blocked` is no longer a valid writable status. It is computed via `depends_on`.
 
     // Apply updates, routing body/content keys to the markdown body instead of frontmatter
     let mut new_body_text: Option<String> = None;

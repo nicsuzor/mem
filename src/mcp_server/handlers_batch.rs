@@ -1150,11 +1150,11 @@ mod batch_finalize_tests {
         );
 
         // Run a batch update that flips status to "blocked". mem_2ecf862b:
-        // a bare status="blocked" write is rejected — carry a blocker so
+        // a bare status="review" write is rejected — carry a blocker so
         // this exercises the batch-update path, not the guard.
         let args = json!({
             "ids": task_ids,
-            "updates": { "status": "blocked", "blocker": "test fixture: awaiting upstream" },
+            "updates": { "status": "in_progress", "blocker": "test fixture: awaiting upstream" },
             "dry_run": false
         });
         let result = server.handle_batch_update(&args).expect("batch_update");
@@ -1187,8 +1187,8 @@ mod batch_finalize_tests {
                 .unwrap_or_else(|| panic!("entry {id} missing after batch_update"));
             assert_eq!(
                 status.as_deref(),
-                Some("blocked"),
-                "entry {id} should carry status=blocked in vector store; got {status:?}"
+                Some("in_progress"),
+                "entry {id} should carry status=in_progress in vector store; got {status:?}"
             );
         }
     }
@@ -1294,7 +1294,7 @@ mod batch_finalize_tests {
         // Run batch update as dry-run
         let args = json!({
             "ids": task_ids,
-            "updates": { "status": "blocked" },
+            "updates": { "status": "in_progress" },
             "dry_run": true
         });
         let result = server.handle_batch_update(&args).expect("batch_update");
@@ -1374,7 +1374,7 @@ mod batch_finalize_tests {
             (
                 "batch_update",
                 PkbSearchServer::handle_batch_update,
-                json!({ "ids": ["t1", "t2"], "updates": { "status": "blocked", "blocker": "dry-run cover" } }),
+                json!({ "ids": ["t1", "t2"], "updates": { "status": "in_progress", "blocker": "dry-run cover" } }),
                 "\"dry_run\": true",
             ),
             (
@@ -1419,7 +1419,7 @@ mod batch_finalize_tests {
             (
                 "apply_consolidation_batch",
                 PkbSearchServer::handle_apply_consolidation_batch,
-                json!({ "seed_id": "t1", "updates": { "t1": { "status": "done" }, "t2": { "status": "blocked", "blocker": "dry-run cover" } } }),
+                json!({ "seed_id": "t1", "updates": { "t1": { "status": "done" }, "t2": { "status": "in_progress", "blocker": "dry-run cover" } } }),
                 "\"dry_run\": true",
             ),
         ];
