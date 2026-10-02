@@ -66,18 +66,8 @@ pub fn batch_update(
                         .and_then(|v| v.as_str())
                         .map(|s| !s.trim().is_empty())
                         .unwrap_or(false);
-                    let has_blocker = status == "blocked"
-                        && m
-                            .get("blocker")
-                            .and_then(|v| v.as_str())
-                            .map(|s| !s.trim().is_empty())
-                            .unwrap_or(false);
-                    if !has_reason && !has_blocker {
-                        let field_hint = if status == "blocked" {
-                            "reason or blocker"
-                        } else {
-                            "reason"
-                        };
+                    if !has_reason {
+                        let field_hint = "reason";
                         summary.errors.push(TaskError {
                             id: "".to_string(),
                             error: format!(

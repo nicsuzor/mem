@@ -223,7 +223,6 @@ The tree hierarchy is a **spanning tree** of the underlying dependency graph. It
 | `review`      | Awaiting human review — either mid-flight attention or post-PR changes requested |
 | `partial`     | Worker legitimately stopped at a scope seam — draft PR plus a live follow-up task. Not merge-ready, not done; the follow-up child carries the remainder |
 | `done`        | Complete — no further action required                                            |
-| `blocked`     | Waiting on an external dependency that cannot be resolved internally             |
 | `paused`      | Intentionally stopped with intent to resume — work was in-flight but deferred    |
 | `someday`     | Parked idea — may never be worked; differs from `inbox` by explicit deferral     |
 | `cancelled`   | Will not be done — decision made to drop                                         |
@@ -240,7 +239,7 @@ The tree hierarchy is a **spanning tree** of the underlying dependency graph. It
 
 Framework reporting distinguishes between the **broad view** of all open work and the **narrow view** of what can be started right now:
 
-- **Actionable**: Any task that is not in a terminal state (`done`, `cancelled`, `someday`). This encompasses the entire working set: `inbox`, `ready`, `queued`, `in_progress`, `review`, `blocked`, and `paused`. Most high-level dashboards (like the `/daily` note) report actionable counts.
+- **Actionable**: Any task that is not in a terminal state (`done`, `cancelled`, `someday`). This encompasses the entire working set: `inbox`, `ready`, `queued`, `in_progress`, `review`, and `paused`. Most high-level dashboards (like the `/daily` note) report actionable counts.
 - **Ready**: A subset of actionable work. Strictly limited to leaf tasks that are fully decomposed and have zero unmet dependencies. Tasks in `in_progress` or `review` are actionable but are **not** ready (as they are already claimed or awaiting feedback). Execution-oriented views (like `pkb tasks ready`) focus on this narrow subset.
 
 ---
@@ -304,7 +303,7 @@ If A blocks B and B blocks A, the decomposition is wrong. Restructure — either
 
 ### 4. Ready means all blockers resolved
 
-A task is ready when every one of its DependsOn edges points to a completed node, it is not transitively downstream of anything blocked, its status is not `blocked`, it is a leaf, its status is `ready`/`queued` (or `inbox` with acceptance criteria), and its type is claimable. "Leaf" alone is not sufficient. Uncertainty is **not** part of the predicate — `classify_tasks` never consults it.
+A task is ready when every one of its DependsOn edges points to a completed node, it is not transitively downstream of anything blocked, it is a leaf, its status is `ready`/`queued` (or `inbox` with acceptance criteria), and its type is claimable. "Leaf" alone is not sufficient. Uncertainty is **not** part of the predicate — `classify_tasks` never consults it.
 
 ### 5. The hierarchy provides context
 
@@ -335,7 +334,6 @@ Workflows define WHAT steps to take and in WHAT order. Skills define HOW to exec
 ```
 inbox → ready → queued → in_progress → done
                                      ↘ review
-                                     ↘ blocked
                                      ↘ partial   (draft PR + live follow-up task)
                                      ↘ cancelled
 ```
