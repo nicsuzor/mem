@@ -84,24 +84,28 @@ impl PkbSearchServer {
 
         for r in &results {
             // task_424948a7: Withhold unresolvable / orphaned index entries
-            if !r.path.is_file() || graph.resolve(&r.id).is_none() {
+            if !r.path.is_file() {
                 continue;
             }
+            let node = match graph.get_node(&r.id).or_else(|| graph.resolve(&r.id)) {
+                Some(n) => n,
+                None => continue,
+            };
 
-            let is_target = r
-                .doc_type
-                .as_deref()
-                .map(|t| t.eq_ignore_ascii_case("target"))
-                .unwrap_or(false);
+            let effective_type = node.node_type.as_deref().or(r.doc_type.as_deref());
+
+            let is_target = effective_type == Some("target")
+                || r.doc_type
+                    .as_deref()
+                    .map(|t| t.eq_ignore_ascii_case("target") || t.eq_ignore_ascii_case("goal") || t.eq_ignore_ascii_case("capability"))
+                    .unwrap_or(false);
             let explicit_target = is_target
                 && type_filter
                     .as_ref()
-                    .map(|f| f.contains("target"))
+                    .map(|f| f.iter().any(|t| t.eq_ignore_ascii_case("target") || t.eq_ignore_ascii_case("goal")))
                     .unwrap_or(false);
 
-            let is_task = r
-                .doc_type
-                .as_deref()
+            let is_task = effective_type
                 .map(|t| crate::graph_store::ACTIONABLE_TYPES.contains(&t))
                 .unwrap_or(false)
                 || explicit_target;
@@ -109,11 +113,13 @@ impl PkbSearchServer {
             if !is_task {
                 continue;
             }
-            let is_subtask = r
-                .doc_type
-                .as_deref()
+            let is_subtask = effective_type
                 .map(|t| t.eq_ignore_ascii_case("subtask"))
-                .unwrap_or(false);
+                .unwrap_or(false)
+                || r.doc_type
+                    .as_deref()
+                    .map(|t| t.eq_ignore_ascii_case("subtask"))
+                    .unwrap_or(false);
             let subtask_allowed = include_subtasks
                 || type_filter
                     .as_ref()
@@ -123,11 +129,11 @@ impl PkbSearchServer {
                 continue;
             }
             if let Some(ref filter) = type_filter {
-                let matches = r
-                    .doc_type
-                    .as_deref()
-                    .map(|t| filter.iter().any(|f| t.eq_ignore_ascii_case(f)))
-                    .unwrap_or(false);
+                let matches = filter.iter().any(|f| {
+                    effective_type.map(|t| t.eq_ignore_ascii_case(f)).unwrap_or(false)
+                        || r.doc_type.as_deref().map(|t| t.eq_ignore_ascii_case(f)).unwrap_or(false)
+                        || node.raw_node_type.as_deref().map(|t| t.eq_ignore_ascii_case(f)).unwrap_or(false)
+                });
                 if !matches {
                     continue;
                 }
@@ -136,12 +142,10 @@ impl PkbSearchServer {
             // Closed-status filter (default on): hide done/cancelled unless the
             // caller explicitly asked for them via include_done.
             if !include_done {
-                if let Some(node) = graph.get_node(&r.id) {
-                    if let Some(status) = node.status.as_deref() {
-                        let s = status.to_ascii_lowercase();
-                        if s == "done" || s == "cancelled" || s == "canceled" {
-                            continue;
-                        }
+                if let Some(status) = node.status.as_deref() {
+                    let s = status.to_ascii_lowercase();
+                    if s == "done" || s == "cancelled" || s == "canceled" {
+                        continue;
                     }
                 }
             }

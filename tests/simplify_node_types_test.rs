@@ -1,12 +1,15 @@
 //! Dedicated integration tests verifying the collapse and simplification of PKB node types
 //! and contributes_to float multiplier propagation (mem_5c476567).
 
+use mem::batch_ops::filters::FilterSet;
+use mem::batch_ops::reclassify::batch_reclassify;
+use mem::batch_ops::stats::graph_stats;
+use mem::embeddings::Embedder;
 use mem::graph::{is_valid_node_type, ContributesTo, GraphNode, VALID_NODE_TYPES};
 use mem::graph_store::GraphStore;
 use mem::lint::lint_directory;
 use mem::mcp_server::PkbSearchServer;
 use mem::vectordb::VectorStore;
-use mem::embeddings::Embedder;
 use parking_lot::RwLock;
 use serde_json::json;
 use std::fs;
@@ -237,4 +240,190 @@ fn test_contributes_to_multiplier_graph_store_propagation() {
     assert!(task_half.value_lineage > 0.0);
     assert!((task_one.value_lineage - 2.0 * task_half.value_lineage).abs() < 1e-4);
 }
+
+#[test]
+fn test_bounded_float_weights_and_multiplier_reject_nan_inf() {
+    assert!(!ContributesTo::is_recognized_weight("NaN"));
+    assert!(!ContributesTo::is_recognized_weight("inf"));
+    assert!(!ContributesTo::is_recognized_weight("-inf"));
+    assert!(!ContributesTo::is_recognized_weight("-0.5"));
+    assert!(!ContributesTo::is_recognized_weight("1.5"));
+    assert!(ContributesTo::is_recognized_weight("0.75"));
+    assert!(ContributesTo::is_recognized_weight("0.0"));
+    assert!(ContributesTo::is_recognized_weight("1.0"));
+
+    let c_nan = ContributesTo {
+        to: "targ_001".to_string(),
+        stated_weight: "NaN".to_string(),
+        justification: String::new(),
+        multiplier: None,
+        current_weight: None,
+        resolved_to: None,
+        inherits_from: None,
+        brier_history: vec![],
+        last_interacted: None,
+        anomaly_flag: false,
+    };
+    assert_eq!(c_nan.numeric_weight(), 0.0);
+
+    let c_inf = ContributesTo {
+        to: "targ_001".to_string(),
+        stated_weight: "inf".to_string(),
+        justification: String::new(),
+        multiplier: None,
+        current_weight: None,
+        resolved_to: None,
+        inherits_from: None,
+        brier_history: vec![],
+        last_interacted: None,
+        anomaly_flag: false,
+    };
+    assert_eq!(c_inf.numeric_weight(), 0.0);
+
+    let c_neg_mult = ContributesTo {
+        to: "targ_001".to_string(),
+        stated_weight: "fifty-fifty".to_string(),
+        justification: String::new(),
+        multiplier: Some(-1.5),
+        current_weight: None,
+        resolved_to: None,
+        inherits_from: None,
+        brier_history: vec![],
+        last_interacted: None,
+        anomaly_flag: false,
+    };
+    assert_eq!(c_neg_mult.numeric_weight(), 0.5);
+
+    let c_nan_mult = ContributesTo {
+        to: "targ_001".to_string(),
+        stated_weight: "fifty-fifty".to_string(),
+        justification: String::new(),
+        multiplier: Some(f64::NAN),
+        current_weight: None,
+        resolved_to: None,
+        inherits_from: None,
+        brier_history: vec![],
+        last_interacted: None,
+        anomaly_flag: false,
+    };
+    assert_eq!(c_nan_mult.numeric_weight(), 0.5);
+}
+
+#[test]
+fn test_batch_reclassify_legacy_epic_to_task() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().to_path_buf();
+    fs::create_dir_all(root.join("epics")).unwrap();
+
+    let epic_file = root.join("epics/epic_legacy.md");
+    fs::write(
+        &epic_file,
+        "---\nid: epic_legacy\ntitle: Legacy Epic Title\ntype: epic\nstatus: ready\n---\nEpic body.\n",
+    )
+    .unwrap();
+
+    let graph = GraphStore::build_from_directory(&root);
+    let filters = FilterSet {
+        doc_type: Some("epic".to_string()),
+        ..Default::default()
+    };
+    let summary = batch_reclassify(&graph, &root, &filters, "task", false);
+    assert_eq!(summary.matched, 1);
+    assert_eq!(summary.changed, 1);
+    assert_eq!(summary.skipped, 0);
+
+    let content = fs::read_to_string(root.join("tasks/epic_legacy.md"))
+        .or_else(|_| fs::read_to_string(&epic_file))
+        .unwrap();
+    assert!(content.contains("type: task"), "Reclassified file must have type: task on disk: {content}");
+}
+
+#[test]
+fn test_legacy_epic_in_task_search_and_list_tasks() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().to_path_buf();
+    let db_path = root.join("pkb_vectors.bin");
+    fs::create_dir_all(root.join("epics")).unwrap();
+
+    fs::write(
+        root.join("epics/epic_findme.md"),
+        "---\nid: epic_findme\ntitle: Searchable Legacy Epic\ntype: epic\nstatus: ready\n---\nEpic body content.\n",
+    )
+    .unwrap();
+
+    let store = Arc::new(RwLock::new(VectorStore::new(3)));
+    let embedder = Arc::new(Embedder::new_dummy());
+    mem::index_pkb(&root, &db_path, &store, &embedder, false);
+
+    let graph_store = GraphStore::build_from_directory(&root);
+    let graph = Arc::new(RwLock::new(graph_store));
+
+    let server = PkbSearchServer::new(store, embedder, root.clone(), db_path, graph);
+
+    // 1. list_tasks with type="epic" finds the legacy epic
+    let res_epic = server.dispatch_tool_sync("list_tasks", &json!({"type": "epic"})).unwrap();
+    let text_epic = res_epic.content[0].raw.as_text().unwrap().text.as_str();
+    assert!(text_epic.contains("Searchable Legacy Epic"), "list_tasks(type=epic) must find legacy epic: {text_epic}");
+
+    // 2. list_tasks with type="task" finds the legacy epic (due to read coercion)
+    let res_task = server.dispatch_tool_sync("list_tasks", &json!({"type": "task"})).unwrap();
+    let text_task = res_task.content[0].raw.as_text().unwrap().text.as_str();
+    assert!(text_task.contains("Searchable Legacy Epic"), "list_tasks(type=task) must include coerced legacy epic: {text_task}");
+
+    // 3. task_search finds the legacy epic
+    let res_search = server.dispatch_tool_sync("task_search", &json!({"query": "Searchable Legacy Epic"})).unwrap();
+    let text_search = res_search.content[0].raw.as_text().unwrap().text.as_str();
+    assert!(text_search.contains("Searchable Legacy Epic"), "task_search must find legacy epic: {text_search}");
+}
+
+#[test]
+fn test_create_task_missing_parent_error_message() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().to_path_buf();
+    let db_path = root.join("pkb_vectors.bin");
+    fs::create_dir_all(root.join("tasks")).unwrap();
+
+    let graph_store = GraphStore::build_from_directory(&root);
+    let graph = Arc::new(RwLock::new(graph_store));
+    let store = Arc::new(RwLock::new(VectorStore::new(3)));
+    let embedder = Arc::new(Embedder::new_dummy());
+
+    let server = PkbSearchServer::new(store, embedder, root.clone(), db_path, graph);
+
+    let err = server
+        .dispatch_tool_sync("create_task", &json!({
+            "title": "PR Item",
+            "type": "pr"
+        }))
+        .expect_err("create_task with type=pr without parent must fail");
+
+    assert!(!err.message.contains("type=\"epic\""), "Error message must NOT recommend retired type=epic: {}", err.message);
+    assert!(err.message.contains("task types can be root-level"), "Error message must mention task can be root-level: {}", err.message);
+    assert!(err.message.contains("parent=\"task-"), "Error message must provide parent=\"task-...\" example: {}", err.message);
+}
+
+#[test]
+fn test_stats_disconnected_epics_root_containers() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().to_path_buf();
+    fs::create_dir_all(root.join("tasks")).unwrap();
+
+    // Root container task (parent None, children exist, no contributes_to)
+    fs::write(
+        root.join("tasks/task_root.md"),
+        "---\nid: task_root\ntitle: Root Container Task\ntype: task\nstatus: ready\n---\nContainer.\n",
+    )
+    .unwrap();
+
+    fs::write(
+        root.join("tasks/task_child.md"),
+        "---\nid: task_child\ntitle: Child Task\ntype: task\nstatus: ready\nparent: task_root\n---\nChild.\n",
+    )
+    .unwrap();
+
+    let graph = GraphStore::build_from_directory(&root);
+    let stats = graph_stats(&graph);
+    assert_eq!(stats.disconnected_epics, 1, "Root container task without target contribution must be counted in disconnected_epics");
+}
+
 

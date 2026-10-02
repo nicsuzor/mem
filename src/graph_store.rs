@@ -1414,7 +1414,7 @@ impl GraphStore {
     /// Orphan-ness is **type-aware**, reflecting the two structural models the
     /// PKB uses (SSoT: `specs/pkb-server-spec.md`, "Orphan Detection"):
     ///
-    /// - **Actionable types** (`ACTIONABLE_TYPES`: task/epic/learn/pr)
+    /// - **Actionable types** (`ACTIONABLE_TYPES`: task/learn/pr)
     ///   live in a *tree* whose backbone is the `parent` field. One of these is
     ///   an orphan iff its `parent` is absent or dangling — having dependency or
     ///   link edges does NOT excuse a missing hierarchy parent. This preserves

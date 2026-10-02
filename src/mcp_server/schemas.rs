@@ -352,7 +352,7 @@ impl PkbSearchServer {
                         "severity": { "type": "integer", "description": "Filter by exact severity" },
                         "goal_type": { "type": "string", "description": "Filter by goal type" },
                         "assignee": { "type": "string", "description": "Filter by assignee" },
-                        "type": { "type": "string", "description": "Filter by document type (e.g. 'target', 'epic', 'task')" },
+                        "type": { "type": "string", "description": "Filter by document type (e.g. 'task', 'target', 'learn', 'pr')" },
                         "title_contains": { "type": "string", "description": "Filter by title substring (case-insensitive)" },
                         "complexity": { "type": "string", "description": "Filter by complexity (e.g. 'low', 'medium', 'high')" },
                         "weight_gte": { "type": "integer", "description": "Filter to tasks with downstream weight ≥ N" },

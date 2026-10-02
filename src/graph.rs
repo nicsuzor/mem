@@ -298,18 +298,23 @@ impl ContributesTo {
             "uncertain" | "possible" | "perhaps" | "maybe" => 0.25,
             "improbable" | "unlikely" | "very unlikely" | "almost impossible" => 0.15,
             "impossible" | "none" => 0.00,
-            s => s.parse::<f64>().unwrap_or(0.0),
+            s => s
+                .parse::<f64>()
+                .ok()
+                .filter(|v| v.is_finite() && *v >= 0.0)
+                .map(|v| v.min(1.0))
+                .unwrap_or(0.0),
         };
 
         match self.multiplier {
-            Some(m) => {
+            Some(m) if m.is_finite() && m >= 0.0 => {
                 if !self.stated_weight.trim().is_empty() {
                     m * base_weight
                 } else {
                     m
                 }
             }
-            None => base_weight,
+            _ => base_weight,
         }
     }
 
@@ -337,7 +342,10 @@ impl ContributesTo {
                 | "almost impossible"
                 | "impossible"
                 | "none"
-        ) || s.parse::<f64>().is_ok()
+        ) || s
+            .parse::<f64>()
+            .map(|v| v.is_finite() && (0.0..=1.0).contains(&v))
+            .unwrap_or(false)
     }
 }
 

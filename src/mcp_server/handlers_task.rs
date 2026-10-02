@@ -384,8 +384,8 @@ impl PkbSearchServer {
                 code: ErrorCode::INVALID_PARAMS,
                 message: Cow::from(
                     "Missing required parameter: parent. Tasks must have a parent node. \
-                     Only goal, target, epic, and learn types can be root-level. \
-                     Example: create_task(title=\"...\", parent=\"epic-12345678\") or pass type=\"epic\".",
+                     Only target, learn, and task types can be root-level. \
+                     Example: create_task(title=\"...\", parent=\"task-12345678\").",
                 ),
                 data: suggested_parents,
             });
@@ -1314,6 +1314,10 @@ impl PkbSearchServer {
                     .as_deref()
                     .map(|d| d.eq_ignore_ascii_case(dt))
                     .unwrap_or(false)
+                    || t.raw_node_type
+                        .as_deref()
+                        .map(|d| d.eq_ignore_ascii_case(dt))
+                        .unwrap_or(false)
             });
         }
         if let Some(needle) = title_contains {

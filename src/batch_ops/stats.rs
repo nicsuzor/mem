@@ -300,8 +300,11 @@ pub fn graph_stats(graph: &GraphStore) -> GraphStats {
         // Disconnected epics (Model B): an epic is connected iff it — or any node in
         // its work-subtree — has a `contributes_to` edge resolving to a `target` or
         // `goal`. Connection is via `contributes_to`, NOT parent-ancestry: goals and
-        // targets live beside the work tree, never as parents.
-        let is_epic = node_type == "epic" || node.raw_node_type.as_deref() == Some("epic");
+        // targets live beside the work tree, never as parents. Also checks root-level
+        // container tasks post-epic-collapse (!node.leaf && node.parent.is_none()).
+        let is_epic = node_type == "epic"
+            || node.raw_node_type.as_deref() == Some("epic")
+            || (!node.leaf && node.parent.is_none());
         if is_epic {
             let mut visited = HashSet::new();
             if !subtree_contributes_to_outcome(graph, node, &mut visited) {
