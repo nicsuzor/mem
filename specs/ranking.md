@@ -521,6 +521,14 @@ All flat task listings in MCP (`list_tasks`) and CLI (`pkb tasks`, `pkb list`) u
 1. **`focus_tuple` DESC** — nodes carrying a tuple sort by it (reversed `cmp`, so the "largest" tuple sorts first); a node with `None` (filtered/unscored — e.g. `affordable_loss: false`, or completed) sorts after any node that has a tuple. This is the §1 tuple, **not** `focus_score` — the two are demonstrably not the same sort key (§1).
 2. **Only when *both* nodes have no tuple** (both filtered/unscored) does the comparator fall through to a secondary chain: `effective_intent` **ASC** (§4.6) → `order` **ASC** (manual sequence order) → `id` **ASC** (guarantees a deterministic, total order). This fallback exists so unscored nodes still sort deterministically relative to each other; it never runs when either node has a real tuple.
 
+### 8.5. Exported Ranking (`export_graph` JSON)
+`export_graph` with `format: "json"` (`GraphStore::output_json_filtered`, also written to `graph.json` by the CLI) emits each node's ranking alongside its serialized fields, so consumers such as the overwhelm dashboard's `/api/graph` read the engine's order rather than re-deriving it. On every exported node that has a `focus_tuple`:
+- **`cost_of_delay`** (integer) — the tuple's `cost_of_delay` (§1, §2).
+- **`severity_gate`** (string, `"Normal"` | `"Catastrophic"`) — the tuple's `severity_gate` (§6).
+- **`queue_rank`** (integer, 1 = highest priority) — the node's position when the exported nodes that have a `focus_tuple` are sorted by `focus_cmp` (§8.4). Ranks are computed over the exported set after the `focus`, `project`, and `include_done` filters, so they are unique and contiguous `1..N` within each response.
+
+Nodes without a `focus_tuple` (completed, or otherwise unscored) omit all three fields.
+
 ---
 
 ## 9. Testing vs. Validation Distinction
@@ -552,6 +560,7 @@ All flat task listings in MCP (`list_tasks`) and CLI (`pkb tasks`, `pkb list`) u
 | `standing_weight` | Read by `compute_value_lineage`; elicited/written only via hand-edited frontmatter as of this phase (no MCP write-tool wiring — out of scope, elicitation session not yet run). |
 | `voi_value` | `compute_focus_scores`, `get_task` / `list_tasks` `signals: {}`. |
 | `uncertainty` | `compute_voi_term`, `get_task` / `list_tasks` `signals: {}`. |
+| `focus_tuple` | `focus_cmp` (§8.4) for `list_tasks`, `focus_picks`, CLI listings; `export_graph` JSON `cost_of_delay` / `severity_gate` / `queue_rank` (§8.5). |
 | `effective_intent` | `intent_pressure` in `cost_of_delay` (§2.1), `focus_cmp` fallback tie-breaker (§8.4, unscored nodes only), `classify_tasks` ready sorting, `list_tasks` filter. |
 | `scope` | `get_task` / `list_tasks` `signals: {}`. |
 | `pagerank` | `compute_criticality`, `top_n_by_metric`, `get_network_metrics`. |
