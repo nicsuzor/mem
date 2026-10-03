@@ -141,11 +141,13 @@ pub const COMMAND_REGISTRY: &[CommandInfo] = &[
         name: "nodes",
         aliases: &[],
         category: "Projections & Inspection",
-        synopsis: "pkb-excalidraw FILE nodes",
+        synopsis: "pkb-excalidraw FILE nodes [--label-only]",
         summary: "Tabular listing of logical nodes (folds bound text into container shape)",
-        description: "Filters the canvas down to structural shape elements (rectangles, diamonds, ellipses), resolving container-bound text into the node's label column, and displaying ID, type, coordinates (X,Y), dimensions (WxH), semantic role, and label.",
-        options: &[],
-        example: "pkb-excalidraw diagram.excalidraw nodes",
+        description: "Filters the canvas down to structural shape elements (rectangles, diamonds, ellipses), resolving container-bound text into the node's label column, and displaying ID, type, coordinates (X,Y), dimensions (WxH), semantic role, and label. With --label-only, prints a low-token structural projection instead: one line per node holding only its ID and resolved label (tab-separated), indented two spaces per level of spatial containment (a node nests under the smallest node whose bounds enclose it).",
+        options: &[
+            CommandOption { flag: "--label-only", default: "false", description: "Print only IDs, containment (indentation) and resolved labels; omit type, geometry and role" },
+        ],
+        example: "pkb-excalidraw diagram.excalidraw nodes --label-only",
     },
     CommandInfo {
         name: "edges",
@@ -2969,6 +2971,48 @@ pub fn cmd_nodes(doc: &Value) {
     }
 }
 
+/// Prints logical nodes as an indented containment tree of `id<TAB>label` lines.
+/// A node's parent is the smallest other node whose bounding box encloses it;
+/// identical boxes nest in document order so the parent relation stays acyclic.
+pub fn cmd_nodes_label_only(doc: &Value) {
+    let (nodes, _) = get_logical_nodes_and_edges(doc);
+    let rect = |n: &LogicalNode| (n.x, n.y, n.width, n.height);
+    let area = |n: &LogicalNode| n.width * n.height;
+
+    let parents: Vec<Option<usize>> = (0..nodes.len())
+        .map(|i| {
+            let n = &nodes[i];
+            (0..nodes.len())
+                .filter(|&j| j != i)
+                .filter(|&j| rect_contains(rect(&nodes[j]), rect(n)))
+                .filter(|&j| area(&nodes[j]) > area(n) || (area(&nodes[j]) == area(n) && j < i))
+                .min_by(|&a, &b| {
+                    area(&nodes[a])
+                        .partial_cmp(&area(&nodes[b]))
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                        .then(b.cmp(&a))
+                })
+        })
+        .collect();
+
+    fn emit(i: usize, depth: usize, nodes: &[LogicalNode], parents: &[Option<usize>]) {
+        let lbl = nodes[i].label.replace('\n', " / ");
+        let indent = "  ".repeat(depth);
+        if lbl.is_empty() {
+            println!("{indent}{}", nodes[i].id);
+        } else {
+            println!("{indent}{}\t{lbl}", nodes[i].id);
+        }
+        for c in (0..nodes.len()).filter(|&c| parents[c] == Some(i)) {
+            emit(c, depth + 1, nodes, parents);
+        }
+    }
+
+    for i in (0..nodes.len()).filter(|&i| parents[i].is_none()) {
+        emit(i, 0, &nodes, &parents);
+    }
+}
+
 pub fn cmd_edges(doc: &Value) {
     let (_, edges) = get_logical_nodes_and_edges(doc);
     for e in edges {
@@ -4954,7 +4998,13 @@ fn main() {
     match mode {
         "summary" => cmd_summary(&doc),
         "map" => cmd_map(&doc),
-        "nodes" => cmd_nodes(&doc),
+        "nodes" => {
+            if extra_args.iter().any(|a| a == "--label-only") {
+                cmd_nodes_label_only(&doc);
+            } else {
+                cmd_nodes(&doc);
+            }
+        }
         "edges" | "arrows" => cmd_edges(&doc),
         "inspect" => {
             if extra_args.is_empty() {

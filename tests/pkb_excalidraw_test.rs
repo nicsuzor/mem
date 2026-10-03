@@ -2888,3 +2888,85 @@ fn test_clear_canvas_protection() {
     assert_eq!(doc["elements"].as_array().unwrap().len(), 0);
 }
 
+
+const LABEL_ONLY_SAMPLE: &str = r##"{
+    "type": "excalidraw",
+    "elements": [
+        {
+            "id": "grp", "type": "rectangle", "x": 0, "y": 0, "width": 400, "height": 300, "index": "a0",
+            "customData": { "role": "muted" },
+            "boundElements": [{ "id": "grp_txt", "type": "text" }]
+        },
+        {
+            "id": "grp_txt", "type": "text", "x": 10, "y": 10, "width": 80, "height": 20, "index": "a1",
+            "containerId": "grp", "text": "Backend", "originalText": "Backend"
+        },
+        {
+            "id": "srv", "type": "rectangle", "x": 20, "y": 40, "width": 200, "height": 120, "index": "a2",
+            "customData": { "role": "primary" },
+            "boundElements": [{ "id": "srv_txt", "type": "text" }, { "id": "arr", "type": "arrow" }]
+        },
+        {
+            "id": "srv_txt", "type": "text", "x": 30, "y": 50, "width": 80, "height": 20, "index": "a3",
+            "containerId": "srv", "text": "Server\nCore", "originalText": "Server\nCore"
+        },
+        { "id": "chip", "type": "ellipse", "x": 40, "y": 80, "width": 30, "height": 30, "index": "a4" },
+        {
+            "id": "note", "type": "text", "x": 250, "y": 200, "width": 60, "height": 20, "index": "a5",
+            "text": "remember", "originalText": "remember"
+        },
+        {
+            "id": "db", "type": "diamond", "x": 500, "y": 0, "width": 80, "height": 80, "index": "a6",
+            "boundElements": [{ "id": "db_txt", "type": "text" }, { "id": "arr", "type": "arrow" }]
+        },
+        {
+            "id": "db_txt", "type": "text", "x": 510, "y": 30, "width": 60, "height": 20, "index": "a7",
+            "containerId": "db", "text": "Data Store", "originalText": "Data Store"
+        },
+        {
+            "id": "arr", "type": "arrow", "x": 220, "y": 100, "width": 280, "height": 0, "index": "a8",
+            "startBinding": { "elementId": "srv" }, "endBinding": { "elementId": "db" }
+        }
+    ]
+}"##;
+
+#[test]
+fn test_nodes_label_only_projection_task_1e1c963d() {
+    let file = NamedTempFile::new().unwrap();
+    fs::write(file.path(), LABEL_ONLY_SAMPLE).unwrap();
+    let path = file.path().to_str().unwrap();
+
+    let (code, stdout, stderr) = run_bin(&[path, "nodes", "--label-only"]);
+    assert_eq!(code, 0, "stderr: {stderr}");
+    // Ids, containment (two-space indent per nesting level) and resolved labels only:
+    // no types, coordinates, dimensions or roles; bound text folded into its container.
+    assert_eq!(
+        stdout,
+        "grp\tBackend\n  srv\tServer / Core\n    chip\n  note\tremember\ndb\tData Store\n"
+    );
+}
+
+#[test]
+fn test_nodes_default_output_unchanged_task_1e1c963d() {
+    let file = NamedTempFile::new().unwrap();
+    fs::write(file.path(), LABEL_ONLY_SAMPLE).unwrap();
+    let path = file.path().to_str().unwrap();
+
+    let (code, stdout, stderr) = run_bin(&[path, "nodes"]);
+    assert_eq!(code, 0, "stderr: {stderr}");
+    assert_eq!(
+        stdout,
+        "grp\trectangle\t0,0\t400x300\tmuted\tBackend\n\
+         srv\trectangle\t20,40\t200x120\tprimary\tServer / Core\n\
+         chip\tellipse\t40,80\t30x30\t\t\n\
+         note\ttext\t250,200\t60x20\t\tremember\n\
+         db\tdiamond\t500,0\t80x80\t\tData Store\n"
+    );
+}
+
+#[test]
+fn test_nodes_help_documents_label_only_task_1e1c963d() {
+    let (code, stdout, _stderr) = run_bin(&["help", "nodes"]);
+    assert_eq!(code, 0);
+    assert!(stdout.contains("--label-only"), "help nodes output:\n{stdout}");
+}

@@ -296,6 +296,7 @@ The full manual organizes documentation across standard sections:
 | `summary` | Canvas overview, element counts, bounding box extents, index health. | `elements: 12  types: {'rectangle': 6, 'arrow': 4, 'text': 2}`<br>`extents: x [100, 850]  y [150, 600]`<br>`max index: a5`<br>`array order == index order: True` |
 | `map` | Dense TSV map of all visual shapes, arrows, and standalone text. | `r1\trectangle\t100,150\t180x60\t#8fbc8f\tAPI Gateway`<br>`a1\tarrow\tr1 -> r2\tHTTPS / JSON`<br>`t1\ttext\t100,80\tSystem Architecture` |
 | `nodes` | Filtered list of logical shapes and container nodes (folds text into node). | `r1\trectangle\t100,150\t180x60\tsuccess\tAPI Gateway` |
+| `nodes --label-only` | Structural projection: IDs and resolved labels only, indented two spaces per level of spatial containment (smallest enclosing node is the parent); no type, geometry or role. | `grp\tBackend`<br>`  srv\tServer Core` |
 | `edges` / `arrows` | Filtered list of directed arrow connections and their labels. | `a1\tr1 -> r2\tHTTPS / JSON` |
 | `describe` | Structured spatial overview for LLMs (row-bucketed nodes, coordinates, arrows, groups). | `# Canvas Summary`<br>`Bounding box: (100, 100) to (420, 160)`<br>`### Elements`<br>`### Connections:` |
 | `screenshot` | Zero-dependency high-fidelity SVG renderer or system PNG exporter. | SVG markup to stdout or file path JSON: `{"success": true, "file": "..."}` |
