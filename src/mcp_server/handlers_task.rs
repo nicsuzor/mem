@@ -1203,10 +1203,10 @@ impl PkbSearchServer {
             }
         });
 
-        // Computed before taking the graph read lock below: list_staleness_signal
-        // takes its own read lock internally, and parking_lot's RwLock is not
-        // safe to read-lock reentrantly on the same thread (aops_fb137646 AC2).
-        let staleness = self.list_staleness_signal();
+        // Before taking the graph read lock below: ensure_graph_fresh takes its
+        // own locks internally, and parking_lot's RwLock is not safe to
+        // read-lock reentrantly on the same thread (aops_fb137646 AC2).
+        self.ensure_graph_fresh();
 
         let graph = self.graph.read();
 
@@ -1394,14 +1394,6 @@ impl PkbSearchServer {
             } else {
                 "No tasks found matching filters."
             };
-            let label = match staleness {
-                Some((disk_count, index_count)) => format!(
-                    "{label}\n\nWARNING: the in-memory index ({index_count} nodes) disagrees \
-                     with disk ({disk_count} files) — this empty result may be wrong. \
-                     Call refresh_graph and retry before trusting it."
-                ),
-                None => label.to_string(),
-            };
             return Ok(CallToolResult::success(vec![Content::text(label)]));
         }
 
@@ -1456,23 +1448,11 @@ impl PkbSearchServer {
                     }
                 }
             }
-            let mut result = serde_json::json!({
+            let result = serde_json::json!({
                 "total": total,
                 "showing": tasks.len(),
                 "tasks": tasks_val,
             });
-            if let Some((disk_count, index_count)) = staleness {
-                if let Some(obj) = result.as_object_mut() {
-                    obj.insert(
-                        "index_warning".to_string(),
-                        serde_json::json!({
-                            "message": "the in-memory index disagrees with disk; results above may under- or over-count. Call refresh_graph and retry.",
-                            "disk_file_count": disk_count,
-                            "index_node_count": index_count,
-                        }),
-                    );
-                }
-            }
             return Ok(CallToolResult::success(vec![Content::text(
                 serde_json::to_string_pretty(&result).unwrap_or_default(),
             )]));
@@ -1487,13 +1467,6 @@ impl PkbSearchServer {
                 format!("\n\n  {} tasks", total)
             };
             out.push_str(&count_label);
-            if let Some((disk_count, index_count)) = staleness {
-                out.push_str(&format!(
-                    "\n\nWARNING: the in-memory index ({index_count} nodes) disagrees \
-                     with disk ({disk_count} files) — results above may under- or over-count. \
-                     Call refresh_graph and retry."
-                ));
-            }
             return Ok(CallToolResult::success(vec![Content::text(out)]));
         }
 
@@ -1560,23 +1533,11 @@ impl PkbSearchServer {
                     obj
                 })
                 .collect();
-            let mut result = serde_json::json!({
+            let result = serde_json::json!({
                 "total": total,
                 "showing": tasks.len(),
                 "tasks": json_tasks,
             });
-            if let Some((disk_count, index_count)) = staleness {
-                if let Some(obj) = result.as_object_mut() {
-                    obj.insert(
-                        "index_warning".to_string(),
-                        serde_json::json!({
-                            "message": "the in-memory index disagrees with disk; results above may under- or over-count. Call refresh_graph and retry.",
-                            "disk_file_count": disk_count,
-                            "index_node_count": index_count,
-                        }),
-                    );
-                }
-            }
             return Ok(CallToolResult::success(vec![Content::text(
                 serde_json::to_string_pretty(&result).unwrap_or_default(),
             )]));
@@ -1749,15 +1710,6 @@ impl PkbSearchServer {
                 }
             }
             out
-        };
-
-        let output = match staleness {
-            Some((disk_count, index_count)) => format!(
-                "WARNING: the in-memory index ({index_count} nodes) disagrees with disk \
-                 ({disk_count} files) — this list may be missing or misreporting tasks. \
-                 Call refresh_graph and retry before trusting it.\n\n{output}"
-            ),
-            None => output,
         };
 
         Ok(CallToolResult::success(vec![Content::text(output)]))
@@ -2251,11 +2203,9 @@ impl PkbSearchServer {
                 .and_then(|reg| reg.resolve(p))
         });
 
-        // Computed before the graph read lock below — see list_staleness_signal's
-        // docs on parking_lot RwLock reentrancy (aops_fb137646 AC2). A reconcile
-        // sweep leans on these counts as ground truth, so this surface gets the
-        // same signal as list_tasks.
-        let staleness = self.list_staleness_signal();
+        // Before the graph read lock below — see ensure_graph_fresh's use in
+        // list_tasks on parking_lot RwLock reentrancy (aops_fb137646 AC2).
+        self.ensure_graph_fresh();
 
         let graph = self.graph.read();
         let ready = graph.ready_tasks();
@@ -2336,7 +2286,7 @@ impl PkbSearchServer {
             }
         }
 
-        let mut summary = serde_json::json!({
+        let summary = serde_json::json!({
             "ready": ready.len(),
             "blocked": blocked.len(),
             "by_intent": {
@@ -2351,18 +2301,6 @@ impl PkbSearchServer {
                 "due_this_week": due_this_week,
             }
         });
-        if let Some((disk_count, index_count)) = staleness {
-            if let Some(obj) = summary.as_object_mut() {
-                obj.insert(
-                    "index_warning".to_string(),
-                    serde_json::json!({
-                        "message": "the in-memory index disagrees with disk; these counts may be wrong. Call refresh_graph and retry.",
-                        "disk_file_count": disk_count,
-                        "index_node_count": index_count,
-                    }),
-                );
-            }
-        }
 
         Ok(CallToolResult::success(vec![Content::text(
             serde_json::to_string_pretty(&summary).unwrap_or_default(),

@@ -341,17 +341,11 @@ impl PkbSearchServer {
         }
     }
 
-    /// Cheap staleness signal for list/filter surfaces.
-    ///
-    /// Validates disk freshness via `ensure_graph_fresh`, guaranteeing
-    /// that reads reflect disk ground truth.
-    pub(crate) fn list_staleness_signal(&self) -> Option<(usize, usize)> {
-        self.ensure_graph_fresh();
+    /// Markdown files on disk vs. file-backed nodes in the in-memory index,
+    /// as `(disk_file_count, indexed_file_count)`. Diagnostic only: reported
+    /// by `status`, never appended to list/search responses.
+    pub(crate) fn index_disk_counts(&self) -> (usize, usize) {
         let disk_count = crate::pkb::scan_directory(&self.pkb_root).len();
-        let last_stats = *self.last_rebuild_stats.read();
-        if disk_count == last_stats.scanned_files {
-            return None;
-        }
         let index_count = self
             .graph
             .read()
@@ -359,11 +353,7 @@ impl PkbSearchServer {
             .values()
             .filter(|n| !n.path.as_os_str().is_empty())
             .count();
-        if disk_count == index_count {
-            None
-        } else {
-            Some((disk_count, index_count))
-        }
+        (disk_count, index_count)
     }
 
     /// Reconstruct an absolute path from a (possibly relative) graph node path.
