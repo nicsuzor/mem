@@ -140,6 +140,16 @@ Served over stdio or Streamable HTTP at `/mcp` ([`cli.rs:3431`](../cli.rs#L3431)
 | `diff_excalidraw` | `canvas` (required, JSON string), `base` (optional snapshot JSON) | yes | `GraphDiff` JSON |
 | `sync_excalidraw` | `canvas` (required), `base`, `dry_run` (default `false`), `sync_edge_removals` (default `false`) | **no** | dry run: `{dry_run, diff, message}`; live: `{success, created_nodes[{id,filename}], updated_nodes, updated_edges, rejected_cycles, warnings}` |
 
+Canvas files stored in the PKB are reached by PKB-relative path, not by graph id ([`files.rs`](files.rs)). They are not graph nodes and are never indexed: the markdown scan only picks up `.md` files ([`pkb.rs:213`](../pkb.rs#L213)), so `search` and `get_document` cannot find them.
+
+| Tool | Parameters | Read-only | Returns |
+|------|------------|-----------|---------|
+| `list_excalidraw` | `dir` (optional PKB-relative directory) | yes | `{count, canvases[{path, bytes, modified}]}`, sorted by path; same ignore rules as the markdown scan (hidden dirs, `.gitignore`) |
+| `get_excalidraw` | `path` (required) | yes | The file verbatim |
+| `write_excalidraw` | `path`, `content` (both required) | **no** | `{path, bytes, created, warning_count, warnings}`; creates parent dirs, overwrites an existing file |
+
+Paths must be relative, end in `.excalidraw`, and contain no `..` or hidden components. A path that a symlink carries outside the PKB root is rejected. `write_excalidraw` runs `content` through the same two gates as `parse_canvas` (see Validation gate below) and writes atomically, so a rejected write leaves the file untouched.
+
 Typical agent loop: `graph_excalidraw` → save the JSON as both `canvas.excalidraw` and `base.json` → human edits `canvas.excalidraw` → `diff_excalidraw(canvas, base)` to review → `sync_excalidraw(canvas, base, dry_run: true)` → `sync_excalidraw(canvas, base)`.
 
 ### Export semantics

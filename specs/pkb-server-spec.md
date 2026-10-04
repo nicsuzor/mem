@@ -312,6 +312,8 @@ parent: parent-id
 Markdown body content.
 ```
 
+Excalidraw canvases (`*.excalidraw`) may sit beside the markdown. They are files, not documents: they carry no frontmatter, are not graph nodes, and are never indexed. MCP clients reach them by PKB-relative path through `list_excalidraw`, `get_excalidraw` and `write_excalidraw`. Writes are validated as Excalidraw scenes and are atomic.
+
 ### Vector Store
 
 Binary vector database at `$ACA_DATA/pkb_vectors.bin`. Contains BGE-M3 embeddings (1024 dimensions). This is a derived cache — can be rebuilt from files at any time.

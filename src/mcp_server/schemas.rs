@@ -652,6 +652,48 @@ impl PkbSearchServer {
             .with_title("Sync Excalidraw Canvas to PKB")
             .with_annotations(ToolAnnotations::new().read_only(false)),
             Tool::new(
+                "list_excalidraw",
+                "List the raw .excalidraw canvas files stored in the PKB, by PKB-relative path, with size and modified time. Canvases are files, not graph nodes: they are not indexed or searchable, so use this (not search/get_document) to find them, then get_excalidraw to read one.",
+                serde_json::from_value::<JsonObject>(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "dir": { "type": "string", "description": "Only list canvases under this PKB-relative directory (e.g. 'knowledge/framework')." }
+                    }
+                }))
+                .unwrap(),
+            )
+            .with_title("List Excalidraw Files")
+            .with_annotations(ToolAnnotations::new().read_only(true)),
+            Tool::new(
+                "get_excalidraw",
+                "Read a .excalidraw canvas file from the PKB verbatim, by PKB-relative path as returned by list_excalidraw. Returns the raw Excalidraw JSON.",
+                serde_json::from_value::<JsonObject>(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "path": { "type": "string", "description": "PKB-relative path ending in .excalidraw (e.g. 'knowledge/framework/academicops.excalidraw')." }
+                    },
+                    "required": ["path"]
+                }))
+                .unwrap(),
+            )
+            .with_title("Read Excalidraw File")
+            .with_annotations(ToolAnnotations::new().read_only(true)),
+            Tool::new(
+                "write_excalidraw",
+                "Write a .excalidraw canvas file into the PKB at a PKB-relative path, creating it (and parent directories) or overwriting it. Content must be a valid Excalidraw scene; it is validated before an atomic write and is not indexed. This stores the file as-is; to push canvas edits into PKB notes use sync_excalidraw.",
+                serde_json::from_value::<JsonObject>(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "path": { "type": "string", "description": "PKB-relative path ending in .excalidraw." },
+                        "content": { "type": "string", "description": "Full Excalidraw scene JSON (top-level type 'excalidraw' and an elements array)." }
+                    },
+                    "required": ["path", "content"]
+                }))
+                .unwrap(),
+            )
+            .with_title("Write Excalidraw File")
+            .with_annotations(ToolAnnotations::new().read_only(false).destructive(true)),
+            Tool::new(
                 "task_summary",
                 "Get high-level dashboard metrics: counts of 'ready' vs 'blocked' tasks, and intent breakdowns. Use for situational awareness.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
