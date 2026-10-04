@@ -304,6 +304,23 @@ impl PkbSearchServer {
             .with_title("Delete Document")
             .with_annotations(ToolAnnotations::new().destructive(true)),
             Tool::new(
+                "convert_document",
+                "Convert an existing document in place, keeping its ID: replace its frontmatter `type`, then move and rename the same file to `<dir>/<id>_<title-slug>.md` and reindex it. Use to turn a note or capture into a task (or any other retype) without creating a new file. The ID is written into frontmatter before the rename, so a document whose ID was only its filename stem keeps it. Converting to a task type sets a valid task status (`status`, else the existing status, else `inbox`). Re-running with the same arguments is a no-op. Set parent, project, and other fields afterwards with update_task.",
+                serde_json::from_value::<JsonObject>(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "id": { "type": "string", "description": "Document ID (task ID, memory ID, filename stem, or title). Uses flexible resolution." },
+                        "type": { "type": "string", "description": "New frontmatter type, e.g. 'task'." },
+                        "dir": { "type": "string", "description": "Target subdirectory relative to the PKB root. Default by type: task/learn → tasks, target → targets, memory → memories, everything else → notes." },
+                        "status": { "type": "string", "description": "Status to set in the same write. Required when converting to a task type and the existing status is not a valid task status." }
+                    },
+                    "required": ["id", "type"]
+                }))
+                .unwrap(),
+            )
+            .with_title("Convert Document In Place")
+            .with_annotations(ToolAnnotations::new().read_only(false).destructive(false)),
+            Tool::new(
                 "release_task",
                 "Release a task to a terminal or handoff status (done, review, blocked, cancelled, partial). Supersedes complete_task (use status='done'). Performs session handover by recording work history, linking PRs/issues, and tracking follow-up work. If 'id' is omitted, an ad-hoc session task is created (requires `project` parameter). Evidence-or-failure-reason contract: `summary` (or `completion_evidence`) is always required; releasing to blocked/cancelled/review/partial additionally requires a non-empty `reason` (or `blocker`, for `blocked`) — a handback with neither is rejected. Tasks created before this requirement shipped release under the old, optional rules.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({

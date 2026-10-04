@@ -2,7 +2,7 @@ use rmcp::model::*;
 use rmcp::ErrorData as McpError;
 use serde_json::Value as JsonValue;
 use std::borrow::Cow;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use super::{PkbSearchServer, MAX_RESULTS};
 
@@ -1125,6 +1125,88 @@ impl PkbSearchServer {
             label,
             node_id
         ))]))
+    }
+
+    pub(crate) fn handle_convert_document(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+        let required = |key: &str| {
+            args.get(key)
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.trim().is_empty())
+                .ok_or_else(|| McpError {
+                    code: ErrorCode::INVALID_PARAMS,
+                    message: Cow::from(format!("Missing required parameter: {key}")),
+                    data: None,
+                })
+        };
+        let id = required("id")?;
+        let new_type = required("type")?;
+        let dir = args.get("dir").and_then(|v| v.as_str());
+        let status = args.get("status").and_then(|v| v.as_str());
+
+        let (abs_path, node_id, label) = {
+            let graph = self.graph.read();
+            let node = graph.resolve(id).ok_or_else(|| McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from(format!("Document not found: {id}")),
+                data: None,
+            })?;
+            (
+                self.abs_path_for_node(node, Some(&graph))?,
+                node.id.clone(),
+                node.label.clone(),
+            )
+        };
+
+        let result = crate::document_crud::convert_document(
+            &self.pkb_root,
+            &abs_path,
+            &node_id,
+            &label,
+            new_type,
+            dir,
+            status,
+        )
+        .map_err(|e| McpError {
+            code: ErrorCode::INVALID_PARAMS,
+            message: Cow::from(format!("Failed to convert document: {e}")),
+            data: None,
+        })?;
+
+        // The vector entry carries the file path, so a moved document is
+        // dropped and re-embedded under its new path.
+        if result.moved {
+            self.try_remove_document(&node_id, Some(&result.old_path));
+        }
+        if let Some(doc) = crate::pkb::parse_file_relative(&result.new_path, &self.pkb_root) {
+            self.rebuild_graph_for_pkb_document(&doc);
+            self.try_upsert_document(&doc);
+        } else {
+            tracing::warn!(
+                "Incremental parse failed for {:?}, doing full rebuild",
+                result.new_path
+            );
+            self.rebuild_graph();
+        }
+
+        let rel = |p: &Path| {
+            p.strip_prefix(&self.pkb_root)
+                .unwrap_or(p)
+                .to_string_lossy()
+                .into_owned()
+        };
+        let payload = serde_json::json!({
+            "ok": true,
+            "id": result.id,
+            "title": label,
+            "old_type": result.old_type,
+            "type": result.new_type,
+            "status": result.status,
+            "old_path": rel(&result.old_path),
+            "path": rel(&result.new_path),
+            "retyped": result.retyped,
+            "moved": result.moved,
+        });
+        Ok(CallToolResult::success(vec![Content::text(payload.to_string())]))
     }
 
     /// Build the compact "mutation neighborhood" returned by `complete_task` and
