@@ -18,6 +18,24 @@ use std::path::Path;
 // Output graph (for JSON serialization)
 // ===========================================================================
 
+/// One node as emitted by `export_graph` JSON: the node's serialized fields
+/// plus the engine's ranking, so consumers never re-derive it.
+#[derive(Serialize, Deserialize, Debug)]
+pub struct ExportNode {
+    #[serde(flatten)]
+    pub node: GraphNode,
+    /// `FocusTuple.severity_gate`; absent when the node has no focus tuple.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub severity_gate: Option<crate::graph::SeverityGate>,
+    /// `FocusTuple.cost_of_delay`; absent when the node has no focus tuple.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost_of_delay: Option<i64>,
+    /// 1-based position among the exported nodes that have a focus tuple,
+    /// ordered by [`GraphStore::focus_cmp`] (1 = highest priority).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub queue_rank: Option<usize>,
+}
+
 #[derive(Serialize, Deserialize, Debug)]
 pub struct OutputGraph {
     pub nodes: Vec<GraphNode>,
@@ -29,6 +47,22 @@ pub struct OutputGraph {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub roots: Vec<String>,
     /// Top focus picks: ready tasks ranked by priority + deadline + staleness + downstream weight.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub focus: Vec<String>,
+}
+
+/// `export_graph` JSON document: [`OutputGraph`] with ranked [`ExportNode`]s.
+#[derive(Serialize, Deserialize, Debug)]
+pub struct ExportGraph {
+    pub nodes: Vec<ExportNode>,
+    pub edges: Vec<Edge>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ready: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub blocked: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub roots: Vec<String>,
+    /// Top focus picks (`GraphStore::focus_picks`, max 50) within the exported set.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub focus: Vec<String>,
 }
@@ -2209,7 +2243,32 @@ impl GraphStore {
             .filter(|id| placed_ids.contains(id.as_str()))
             .collect();
 
-        let graph = OutputGraph {
+        let mut ranked: Vec<&GraphNode> =
+            nodes.iter().filter(|n| n.focus_tuple.is_some()).collect();
+        Self::sort_by_focus(&mut ranked);
+        let ranks: HashMap<String, usize> = ranked
+            .iter()
+            .enumerate()
+            .map(|(i, n)| (n.id.clone(), i + 1))
+            .collect();
+        let nodes: Vec<ExportNode> = nodes
+            .into_iter()
+            .map(|node| {
+                let queue_rank = ranks.get(&node.id).copied();
+                let (severity_gate, cost_of_delay) = match node.focus_tuple.as_ref() {
+                    Some(ft) => (Some(ft.severity_gate), Some(ft.cost_of_delay)),
+                    None => (None, None),
+                };
+                ExportNode {
+                    node,
+                    severity_gate,
+                    cost_of_delay,
+                    queue_rank,
+                }
+            })
+            .collect();
+
+        let graph = ExportGraph {
             nodes,
             edges,
             ready,
