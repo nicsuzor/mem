@@ -174,7 +174,7 @@ release_task(id, status, summary, pr_url?, branch?, blocker?, reason?)
 
 `update_task` historically required a nested `updates={...}` JSON object, which agents frequently serialized as a string instead of an object, dropped fields on retry, or forgot entirely. While it now supports flat parameters for convenience, `release_task` remains preferred for terminal transitions because it uses flat string parameters and always requires a summary, making it harder to lose information than to capture it.
 
-`update_task` remains for non-terminal field changes (tags, assignee, body). It soft-hints toward `release_task` when a terminal status is detected. It accepts a caller-supplied `intent`/`priority` under Nic's standing delegation to agents (2026-09-10: "allow agents to set intent on my behalf") — see [[kb_ccc17177]] Mechanism 1. A band must reflect Nic's strategic context read across the graph, never the agent's own impression of its work, and must never be inherited or copied from a parent/sibling task.
+`update_task` remains for non-terminal field changes (tags, assignee, body). It soft-hints toward `release_task` when a terminal status is detected. It accepts a caller-supplied `intent`/`priority` under Nic's standing delegation to agents (2026-09-10: "allow agents to set intent on my behalf") — see `specs/pkb-rules.md` §6.3. A band must reflect Nic's strategic context read across the graph, never the agent's own impression of its work, and must never be inherited or copied from a parent/sibling task.
 
 ### Statuses
 
@@ -202,7 +202,7 @@ mcp__pkb__create_task(
 )
 ```
 
-`priority` (aka `intent`) defaults to P3 when left unset. Agents may set a non-default band on `create_task`, `create`, `update_task`, `batch_update`, and `decompose_task` under Nic's standing delegation (2026-09-10: "allow agents to set intent on my behalf") — see [[kb_ccc17177]] Mechanism 1. A band must be read from Nic's strategic context across the graph, never the agent's own impression of the work's importance, and must never be inherited from a parent or copied across siblings. Leave it unset where no band is warranted; that is curation-by-absence, not a gap to fill.
+`priority` (aka `intent`) defaults to P4 when left unset. Agents may set a non-default band on `create_task`, `create`, `update_task`, `batch_update`, and `decompose_task` under Nic's standing delegation (2026-09-10: "allow agents to set intent on my behalf") — see `specs/pkb-rules.md` §6.3. A band must be read from Nic's strategic context across the graph, never the agent's own impression of the work's importance, and must never be inherited from a parent or copied across siblings. Leave it unset where no band is warranted; that is curation-by-absence, not a gap to fill.
 
 ## Dependencies
 
