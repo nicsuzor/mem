@@ -2779,6 +2779,12 @@ read_timestamp_utc: 2026-08-31T01:38:00.370857830Z\n";
             "error should explain DAG cycle: {}",
             summary.errors[0].error
         );
+        // A rejected merge must write nothing: the source keeps its status.
+        let c_disk = std::fs::read_to_string(tmp.path().join("tasks/task-c.md")).unwrap();
+        assert!(
+            c_disk.contains("status: ready"),
+            "rejected merge must not archive the source, got:\n{c_disk}"
+        );
     }
 
     #[test]
