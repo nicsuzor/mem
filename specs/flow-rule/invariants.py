@@ -30,9 +30,11 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 FIXTURE = os.path.join(HERE, "fixtures", "live-2026-10-05.json")
 
 
-def load(default_quantum: float = 0.0, wikilinks: bool = False, date_shift: int = 0):
+def load(default_quantum: float = 0.0, wikilinks: bool = False, date_shift: int = 0,
+         part_of: float | None = None):
     """The live graph. Unvalued edges take `default_quantum`; wikilinks are not
-    edges of the model unless `wikilinks` is set; `date_shift` moves every date."""
+    edges of the model unless `wikilinks` is set; `date_shift` moves every date;
+    `part_of`, if given, overrides the quantum on every part_of edge (Q1)."""
     d = json.load(open(FIXTURE))
     g = flow.Graph()
     meta = {}
@@ -44,6 +46,8 @@ def load(default_quantum: float = 0.0, wikilinks: bool = False, date_shift: int 
     for src, dst, label, q in d["edges"]:
         if label == "relates" and not wikilinks:
             continue
+        if label == "part_of" and part_of is not None:
+            q = part_of
         g.link(src, dst, default_quantum if q is None else q, label=label)
     return g, meta, d["today_rank"]
 
@@ -227,6 +231,8 @@ def inv7():
     w5 = flow.worth_all(g5)
     gl, _, _ = load(default_quantum=0.05, wikilinks=True)
     wl = flow.worth_all(gl)
+    gp, _, _ = load(part_of=0.0)
+    wp = flow.worth_all(gp)
     return {
         "claim": "a node linked to nothing priced carries the default and nothing more",
         "nodes": ["academic-b738bdc7", "task_d5f610e6"],
@@ -238,7 +244,8 @@ def inv7():
                     "unvalued typed edges": sum(1 for e in json.load(open(FIXTURE))["edges"] if e[3] is None and e[2] != "relates"),
                     "open nodes carrying worth, default quantum 0.05 on unvalued edges": sum(1 for r in w5.values() if total(r)),
                     "same, if every wikilink also became an edge at 0.05": sum(1 for r in wl.values() if total(r)),
-                    "nodes on loops then": len(flow.on_loops(gl))},
+                    "nodes on loops then": len(flow.on_loops(gl)),
+                    "open nodes carrying worth, part_of at quantum 0 (Q1)": sum(1 for r in wp.values() if total(r))},
         "pass": all(total(W[u]) == 0 for u in zero) and total(W["academic-b738bdc7"]) == 0,
     }
 

@@ -155,6 +155,8 @@ def main() -> None:
     occ.link("P2", "H", 1.0, effect=flow.HARMS)
     print("P with a second, done, full protection P2: avoidance form %.3f" % flow.worth_all(occ)["P"].loss_averted)
     # Occurrence form: harm happens unless prevented; preventers combine as either-suffices.
+    # It has no term for causes, so Q is undefined; X has no link to H.
+    print("P alone under the occurrence form: %.3f" % (0.5 * (1.0 - (1 - 0.8))))
     harm_left_without_p = 1.0 * (1 - 1.0)  # P2 already prevents it all
     harm_left_with_p = (1 - 0.8) * (1 - 1.0)
     print("P with P2 under the occurrence form: %.3f" % (0.5 * (harm_left_without_p - harm_left_with_p)))
