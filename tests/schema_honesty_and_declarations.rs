@@ -521,6 +521,11 @@ fn test_every_tool_rejects_when_any_required_field_is_missing() {
     valid_samples.insert("get_semantic_neighbors", json!({ "id": "task-seed1" }));
     valid_samples.insert("diff_excalidraw", json!({ "canvas": "{}" }));
     valid_samples.insert("sync_excalidraw", json!({ "canvas": "{}" }));
+    valid_samples.insert("get_excalidraw", json!({ "path": "c.excalidraw" }));
+    valid_samples.insert(
+        "write_excalidraw",
+        json!({ "path": "c.excalidraw", "content": r#"{"type":"excalidraw","elements":[]}"# }),
+    );
     valid_samples.insert(
         "batch_merge",
         json!({ "canonical": "task-seed1", "merge_ids": ["task-seed2"] }),

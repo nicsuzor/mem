@@ -95,6 +95,13 @@ editors/
 - `refresh_graph` — synchronously rebuild in-memory graph index from disk (no ONNX re-embed)
 - `repair_index_orphans` — detect (`dry_run: true`, default) or purge (`dry_run: false`) semantic-index entries whose backing document is gone; `refresh_graph` cannot fix these, since it rebuilds the graph from disk but never touches the vector index (`task_5f2c5fa6`)
 
+### Excalidraw canvas files
+- `list_excalidraw` — list `.excalidraw` files by PKB-relative path (optional `dir`)
+- `get_excalidraw` — read one canvas verbatim by path
+- `write_excalidraw` — validate and atomically write a canvas by path (create or overwrite)
+
+Canvases are files, not graph nodes, and are never indexed (the scan only reads `.md`).
+
 ### Batch Operations
 - `batch_update` — bulk update frontmatter fields
 - `batch_reparent` — bulk reparent tasks
