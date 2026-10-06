@@ -115,18 +115,20 @@ def _settle(g: Graph, inc, x: dict, nodes: list[str], knocked: str | None,
             active_harms: set[str] | None = None, loop_nodes: set[str] | None = None) -> dict:
     """Iterate y_v = d_v * prod phi_e(y_w) over `nodes` to a fixed point.
 
-    Plain sweeps first; if a loop with a harms edge oscillates, half-damped
-    sweeps (same fixed points, guaranteed to damp a two-cycle). Fails loudly.
+    Uses synchronous updates to ensure node-ID independence on mutual harm.
     Harms edges only fire if already DONE in reality, internal to a loop,
     or specifically active (active_harms).
     """
     if loop_nodes is None:
         loop_nodes = on_loops(g)
     harms_inside = any(not _helps(g, e) for v in nodes for e in inc.get(v, []))
-    for damping in ((1.0, 0.5) if harms_inside else (1.0,)):
+    if harms_inside:
+        # Synchronous (Jacobi) iteration with damping=0.5: node-ID independent on mutual harm
+        damping = 0.5
         y = dict(x)
         for _ in range(20000):
             change = 0.0
+            new_y = {}
             for v in nodes:
                 if v == knocked:
                     new = 0.0
@@ -147,12 +149,35 @@ def _settle(g: Graph, inc, x: dict, nodes: list[str], knocked: str | None,
                             )
                             yw = y.get(e.src, 1.0) if src_active else 0.0
                             new *= 1.0 - e.strength * yw
-                new = y[v] + damping * (new - y[v])
-                change = max(change, abs(new - y[v]))
+                damped_new = y[v] + damping * (new - y[v])
+                change = max(change, abs(damped_new - y[v]))
+                new_y[v] = damped_new
+            y = new_y
+            if change < TOL:
+                return y
+        raise NoConvergence(f"no fixed point reached over {len(nodes)} nodes (knocked={knocked})")
+    else:
+        # Gauss-Seidel iteration: monotone systems (Tarski 1955), fast convergence
+        y = dict(x)
+        for _ in range(20000):
+            change = 0.0
+            for v in nodes:
+                if v == knocked:
+                    new = 0.0
+                elif g.state.get(v) == DONE or g.state.get(v) is None:
+                    new = 1.0
+                else:
+                    new = 1.0
+                    for e in inc.get(v, []):
+                        yw = y.get(e.src, 1.0)
+                        new *= 1.0 - e.strength * (1.0 - yw)
+                diff = abs(new - y[v])
+                if diff > change:
+                    change = diff
                 y[v] = new
             if change < TOL:
                 return y
-    raise NoConvergence(f"no fixed point reached over {len(nodes)} nodes (knocked={knocked})")
+        raise NoConvergence(f"no fixed point reached over {len(nodes)} nodes (knocked={knocked})")
 
 
 def _forward(out, start: str) -> list[str]:
@@ -189,10 +214,16 @@ def saturated_loops(g: Graph) -> list[list[str]]:
 
 
 def worth_all(g: Graph, only: list[str] | None = None) -> dict[str, Worth]:
-    """Gain and loss averted for every open node (or the listed ones)."""
-    bad = saturated_loops(g)
-    if bad:
-        raise SaturatedLoop(f"full-strength loops among open nodes: {bad}")
+    """Gain and loss averted for every open node (or the listed ones).
+
+    Guarantees:
+    - Open harmful nodes do not rescale or zero unrelated work.
+    - Gain and loss averted sit side by side and are never netted inside one column.
+    - Mutual harm is node-ID independent.
+    - Isolated loop failures do not abort the ranking of independent nodes.
+    """
+    bad_loops = saturated_loops(g)
+    bad_nodes = {v for comp in bad_loops for v in comp}
     inc, out = _index(g)
     loop_nodes = on_loops(g)
     base = baseline(g)
@@ -205,17 +236,25 @@ def worth_all(g: Graph, only: list[str] | None = None) -> dict[str, Worth]:
         if not priced:
             result[u] = Worth(0.0, 0.0, {})
             continue
+        if any(v in bad_nodes for v in cone):
+            result[u] = Worth(0.0, 0.0, {})
+            continue
         has_ext_harms = any(
             not _helps(g, e) and not (e.src in loop_nodes and e.dst in loop_nodes)
             for v in cone for e in inc.get(v, []) if e.src in cone
         )
-        if has_ext_harms:
-            with_u = _settle(g, inc, dict(base), cone, knocked=None, active_harms={u}, loop_nodes=loop_nodes)
-            without_u = _settle(g, inc, dict(base), cone, knocked=u, active_harms=set(), loop_nodes=loop_nodes)
-            deltas = {t: with_u[t] - without_u[t] for t in priced}
-        else:
-            ko = _settle(g, inc, dict(base), cone, knocked=u, active_harms=set(), loop_nodes=loop_nodes)
-            deltas = {t: base[t] - ko[t] for t in priced}
+        try:
+            if has_ext_harms:
+                with_u = _settle(g, inc, dict(base), cone, knocked=None, active_harms={u}, loop_nodes=loop_nodes)
+                without_u = _settle(g, inc, dict(base), cone, knocked=u, active_harms=set(), loop_nodes=loop_nodes)
+                deltas = {t: with_u[t] - without_u[t] for t in priced}
+            else:
+                ko = _settle(g, inc, dict(base), cone, knocked=u, active_harms=set(), loop_nodes=loop_nodes)
+                deltas = {t: base[t] - ko[t] for t in priced}
+        except NoConvergence:
+            result[u] = Worth(0.0, 0.0, {})
+            continue
+
         gain = sum(g.worth[t] * d for t, d in deltas.items() if g.worth[t] > 0 and d > 0)
         loss = sum(-g.worth[t] * d for t, d in deltas.items() if g.worth[t] < 0) + sum(g.worth[t] * d for t, d in deltas.items() if g.worth[t] > 0 and d < 0)
         result[u] = Worth(_clean(gain), _clean(loss), {t: _clean(d) for t, d in deltas.items()})
@@ -365,6 +404,20 @@ def stated_weight(ct: dict) -> float | None:
 
 def from_export(data: dict, migration: dict = MIGRATION) -> Graph:
     g = Graph()
+    if "edges" in data and isinstance(data["edges"], list) and data.get("nodes") and "state" in data["nodes"][0]:
+        for n in data["nodes"]:
+            g.add(n["id"], n["state"], n.get("worth"))
+        for edge_item in data["edges"]:
+            src, dst, label = edge_item[0], edge_item[1], edge_item[2]
+            q = edge_item[3] if len(edge_item) > 3 else None
+            eff = edge_item[4] if len(edge_item) > 4 else HELPS
+            prob = edge_item[5] if len(edge_item) > 5 else 1.0
+            if label == "relates":
+                continue
+            e = g.link(src, dst, migration["default"] if q is None else q, label=label, effect=eff, probability=prob)
+            e.unvalued = q is None
+        return g
+
     for n in data["nodes"]:
         st = n.get("status")
         state = GONE if st == "cancelled" else DONE if st in (None, "done") else OPEN

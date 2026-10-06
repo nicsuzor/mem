@@ -2,6 +2,8 @@
 """Regression tests for the three defects in epic_a463f704 Verdicts:
 1. Harms edges rescaling or zeroing unrelated work, and splitting changing unrelated numbers.
 2. Gain and loss netted inside one column when harming a positive target.
+3. Mutual harm node ID dependence and near-saturated loops aborting whole ranking.
+4. flow.py live on committed fixture printing 0 nodes.
 
 Each test fails at head 15e43e9 and passes with the fixes.
 """
@@ -15,6 +17,8 @@ import unittest
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import flow
+
+FIXTURE = os.path.join(HERE, "fixtures", "live-2026-10-05.json")
 
 
 class TestDefect1HarmsGuarantees(unittest.TestCase):
@@ -88,6 +92,54 @@ class TestDefect2GainLossSeparation(unittest.TestCase):
                             msg="Work with equal positive gain and harm to positive target was netted to (0, 0)")
         self.assertAlmostEqual(w["U"].gain, 0.6, places=6)
         self.assertAlmostEqual(w["U"].loss_averted, -0.6, places=6)
+
+
+class TestDefect3LoopHandling(unittest.TestCase):
+    def test_mutual_harm_is_node_id_independent(self):
+        """Defect 3: Mutual harm at full strength gives results that depend on node IDs (flow.py:121-139)."""
+        g = flow.Graph()
+        g.add("A")
+        g.add("B")
+        g.link("A", "B", 1.0, effect=flow.HARMS)
+        g.link("B", "A", 1.0, effect=flow.HARMS)
+        inc, _ = flow._index(g)
+
+        res_ab = flow._settle(g, inc, {"A": 1.0, "B": 1.0}, ["A", "B"], None)
+        res_ba = flow._settle(g, inc, {"A": 1.0, "B": 1.0}, ["B", "A"], None)
+
+        self.assertAlmostEqual(res_ab["A"], res_ab["B"], places=6,
+                               msg=f"Mutual harm gave asymmetric results under [A, B]: A={res_ab['A']}, B={res_ab['B']}")
+        self.assertAlmostEqual(res_ab["A"], res_ba["A"], places=6,
+                               msg=f"Results depend on node ID sweep order: [A, B]->{res_ab} vs [B, A]->{res_ba}")
+
+    def test_loop_failure_does_not_abort_whole_ranking(self):
+        """Defect 3: An ill-conditioned loop must not abort the ranking of independent nodes."""
+        g = flow.Graph()
+        g.add("CLEAN_TARGET", worth=1.0)
+        g.add("CLEAN_TASK")
+        g.link("CLEAN_TASK", "CLEAN_TARGET", 1.0)
+
+        # Add a saturated loop
+        g.add("L1")
+        g.add("L2")
+        g.link("L1", "L2", 1.0)
+        g.link("L2", "L1", 1.0)
+
+        # worth_all should rank CLEAN_TASK even if the loop component is ill-conditioned
+        w = flow.worth_all(g)
+        self.assertIn("CLEAN_TASK", w)
+        self.assertAlmostEqual(w["CLEAN_TASK"].gain, 1.0, places=6)
+
+
+class TestDefect6FlowLiveFixture(unittest.TestCase):
+    def test_flow_live_reads_committed_fixture(self):
+        """Defect 6: flow.py live on committed fixture must not print zero nodes."""
+        with open(FIXTURE) as f:
+            data = json.load(f)
+        g = flow.from_export(data)
+        self.assertGreater(len(g.state), 0, "Graph loaded 0 nodes from fixture")
+        self.assertGreater(len(g.worth), 0, "Graph loaded 0 priced targets from fixture")
+        self.assertGreater(len(g.edges), 0, "Graph loaded 0 edges from fixture")
 
 
 if __name__ == "__main__":
