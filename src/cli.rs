@@ -1241,6 +1241,11 @@ async fn main() -> Result<()> {
                 std::process::exit(1);
             }
 
+            if let Err(e) = mem::date_filter::DateFilter::parse(since.as_deref(), before.as_deref()) {
+                eprintln!("Error: {e}");
+                std::process::exit(1);
+            }
+
             let query_embedding = embedder.encode_query(&query_text)?;
             let reranker =
                 mem::rerank::CrossEncoderReranker::new(mem::rerank::RerankerConfig::default());

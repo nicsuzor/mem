@@ -9,6 +9,7 @@ pub mod otel;
 pub mod batch_ops;
 pub mod bm25;
 pub mod cmd;
+pub mod date_filter;
 pub mod distance;
 pub mod document_crud;
 pub mod embeddings;
