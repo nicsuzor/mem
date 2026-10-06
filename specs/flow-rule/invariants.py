@@ -436,14 +436,26 @@ def inv15():
     g2 = copy.deepcopy(G)
     g2.add("harm_equal", flow.OPEN, -total(W[u]))
     g2.link(u, "harm_equal", 1.0, label="serves")
-    w2 = flow.worth_all(g2, only=[u, z])
+    # Also test positive-target harm: serves pos_target1 (1.0) at 0.6 and harms pos_target2 (1.0) at 0.6
+    g2.add("pos_target1", flow.OPEN, 1.0)
+    g2.add("pos_target2", flow.OPEN, 1.0)
+    g2.add("pos_harm_task", flow.OPEN)
+    g2.link("pos_harm_task", "pos_target1", 0.6)
+    g2.link("pos_harm_task", "pos_target2", 0.6, effect=flow.HARMS)
+    w2 = flow.worth_all(g2, only=[u, z, "pos_harm_task"])
     return {
         "claim": "a large gain with an equal large loss is distinguishable from a task linked to nothing",
-        "nodes": [u, z], "assumed": "%s also brings about a harm target priced at minus its gain" % u,
-        "numbers": {"%s (gain, loss averted)" % u: [r3(w2[u].gain), r3(w2[u].loss_averted)],
-                    "%s (gain, loss averted)" % z: [r3(w2[z].gain), r3(w2[z].loss_averted)],
-                    "netted, both would read": [r3(total(w2[u])), r3(total(w2[z]))]},
-        "pass": (w2[u].gain, w2[u].loss_averted) != (w2[z].gain, w2[z].loss_averted),
+        "nodes": [u, z, "pos_harm_task"],
+        "assumed": "%s brings about a harm target priced at minus its gain; pos_harm_task serves pos_target1 at 0.6 and harms pos_target2 at 0.6" % u,
+        "numbers": {
+            "%s (gain, loss averted)" % u: [r3(w2[u].gain), r3(w2[u].loss_averted)],
+            "pos_harm_task (gain, loss averted)": [r3(w2["pos_harm_task"].gain), r3(w2["pos_harm_task"].loss_averted)],
+            "%s (gain, loss averted)" % z: [r3(w2[z].gain), r3(w2[z].loss_averted)],
+            "netted, all would read": [r3(total(w2[u])), r3(total(w2["pos_harm_task"])), r3(total(w2[z]))],
+        },
+        "pass": (w2[u].gain, w2[u].loss_averted) != (w2[z].gain, w2[z].loss_averted)
+        and (w2["pos_harm_task"].gain, w2["pos_harm_task"].loss_averted) != (0.0, 0.0)
+        and abs(w2["pos_harm_task"].gain - 0.6) < 1e-9 and abs(w2["pos_harm_task"].loss_averted - (-0.6)) < 1e-9,
     }
 
 

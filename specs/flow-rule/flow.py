@@ -111,12 +111,17 @@ def _index(g: Graph):
     return inc, out
 
 
-def _settle(g: Graph, inc, x: dict, nodes: list[str], knocked: str | None) -> dict:
+def _settle(g: Graph, inc, x: dict, nodes: list[str], knocked: str | None,
+            active_harms: set[str] | None = None, loop_nodes: set[str] | None = None) -> dict:
     """Iterate y_v = d_v * prod phi_e(y_w) over `nodes` to a fixed point.
 
     Plain sweeps first; if a loop with a harms edge oscillates, half-damped
     sweeps (same fixed points, guaranteed to damp a two-cycle). Fails loudly.
+    Harms edges only fire if already DONE in reality, internal to a loop,
+    or specifically active (active_harms).
     """
+    if loop_nodes is None:
+        loop_nodes = on_loops(g)
     harms_inside = any(not _helps(g, e) for v in nodes for e in inc.get(v, []))
     for damping in ((1.0, 0.5) if harms_inside else (1.0,)):
         y = dict(x)
@@ -130,8 +135,18 @@ def _settle(g: Graph, inc, x: dict, nodes: list[str], knocked: str | None) -> di
                 else:
                     new = 1.0
                     for e in inc.get(v, []):
-                        yw = y.get(e.src, 1.0)
-                        new *= 1.0 - e.strength * ((1.0 - yw) if _helps(g, e) else yw)
+                        if _helps(g, e):
+                            yw = y.get(e.src, 1.0)
+                            new *= 1.0 - e.strength * (1.0 - yw)
+                        else:
+                            src_active = (
+                                (g.state.get(e.src) == DONE)
+                                or (e.src in loop_nodes and e.dst in loop_nodes)
+                                or (active_harms is None)
+                                or (e.src in active_harms)
+                            )
+                            yw = y.get(e.src, 1.0) if src_active else 0.0
+                            new *= 1.0 - e.strength * yw
                 new = y[v] + damping * (new - y[v])
                 change = max(change, abs(new - y[v]))
                 y[v] = new
@@ -154,7 +169,8 @@ def _forward(out, start: str) -> list[str]:
 def baseline(g: Graph) -> dict:
     inc, _ = _index(g)
     nodes = sorted(g.state)
-    return _settle(g, inc, {v: 1.0 for v in nodes}, nodes, None)
+    loop_nodes = on_loops(g)
+    return _settle(g, inc, {v: 1.0 for v in nodes}, nodes, None, active_harms=set(), loop_nodes=loop_nodes)
 
 
 @dataclass
@@ -178,6 +194,7 @@ def worth_all(g: Graph, only: list[str] | None = None) -> dict[str, Worth]:
     if bad:
         raise SaturatedLoop(f"full-strength loops among open nodes: {bad}")
     inc, out = _index(g)
+    loop_nodes = on_loops(g)
     base = baseline(g)
     result = {}
     for u in only if only is not None else sorted(g.state):
@@ -188,10 +205,19 @@ def worth_all(g: Graph, only: list[str] | None = None) -> dict[str, Worth]:
         if not priced:
             result[u] = Worth(0.0, 0.0, {})
             continue
-        ko = _settle(g, inc, dict(base), cone, u)
-        deltas = {t: base[t] - ko[t] for t in priced}
-        gain = sum(g.worth[t] * d for t, d in deltas.items() if g.worth[t] > 0)
-        loss = sum(-g.worth[t] * d for t, d in deltas.items() if g.worth[t] < 0)
+        has_ext_harms = any(
+            not _helps(g, e) and not (e.src in loop_nodes and e.dst in loop_nodes)
+            for v in cone for e in inc.get(v, []) if e.src in cone
+        )
+        if has_ext_harms:
+            with_u = _settle(g, inc, dict(base), cone, knocked=None, active_harms={u}, loop_nodes=loop_nodes)
+            without_u = _settle(g, inc, dict(base), cone, knocked=u, active_harms=set(), loop_nodes=loop_nodes)
+            deltas = {t: with_u[t] - without_u[t] for t in priced}
+        else:
+            ko = _settle(g, inc, dict(base), cone, knocked=u, active_harms=set(), loop_nodes=loop_nodes)
+            deltas = {t: base[t] - ko[t] for t in priced}
+        gain = sum(g.worth[t] * d for t, d in deltas.items() if g.worth[t] > 0 and d > 0)
+        loss = sum(-g.worth[t] * d for t, d in deltas.items() if g.worth[t] < 0) + sum(g.worth[t] * d for t, d in deltas.items() if g.worth[t] > 0 and d < 0)
         result[u] = Worth(_clean(gain), _clean(loss), {t: _clean(d) for t, d in deltas.items()})
     return result
 
