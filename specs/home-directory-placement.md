@@ -24,7 +24,7 @@ Nic, 2026-10-06: *"when we save notes that clearly belong to a subproject, they 
 
 On 2026-10-06 an agent created two notes, `note_0e1c112e` (Joel's PhD mindmap argument structure) and `note_6ca5834f` (popularity vs availability as Argdown), with `create`, `type: note`, `parent: hdr-982d610d`. Both landed in `notes/`.
 
-Both notes were derived from `hdr/joel/Joel PhD Mindmap 261006.excalidraw`. Both bodies name that canvas as their source. Five other Joel canvases already live in `hdr/joel/` (`list_excalidraw dir=hdr`). So Joel's material had a directory, and the notes were saved somewhere else.
+Both notes were derived from `hdr/joel/Joel PhD Mindmap 261006.excalidraw`. Both bodies name that canvas as their source. Five other Joel canvases already live in `hdr/joel/`. These are live-PKB facts, observed on 2026-10-06 via `get_document` and `list_excalidraw dir=hdr` against server 0.3.97; the repo cannot show them. So Joel's material had a directory, and the notes were saved somewhere else.
 
 ### 1.3 Why it happened
 
@@ -77,7 +77,7 @@ Placement inference applies only when `default_subdir_for_type(type) == "notes"`
 create(args)
   └─ handle_create_document                       (handlers_document.rs)
        ├─ build DocumentFields (unchanged)
-       ├─ placement = resolve_placement(&pkb_root, &graph, &fields)   ◄─ NEW
+       ├─ placement = resolve_placement(&pkb_root, &graph, &fields, &slugs)  ◄─ NEW
        │     1. fields.dir is Some             → (dir,            Explicit)
        │     2. type not in scope (§2.2)       → (type default,   TypeDefault)
        │     3. source names a file under root,
@@ -87,10 +87,10 @@ create(args)
        │     5. otherwise                       → (type default,  TypeDefault)
        ├─ fields.dir = Some(placement.dir)
        ├─ create_document(&pkb_root, fields)      (unchanged write path)
-       └─ response text includes placement.dir and placement.reason
+       └─ response text: directory of the path actually written + placement.reason
 ```
 
-Only the handler changes. `create_document` already honours `fields.dir` and validates it with `is_safe_relative_path`. Placement is resolved before the write, so the existing write, git-commit and incremental-index path runs unchanged.
+Three files change. `document_crud.rs` gains `resolve_placement` and `is_routing_dir` (§4.1). `handlers_document.rs` calls `resolve_placement` and reports the outcome. `schemas.rs` gets the updated descriptions (§4.2). `create_document` itself is unchanged: it already honours `fields.dir` and validates it with `is_safe_relative_path`. Placement is resolved before the write, so the existing write, git-commit and incremental-index path runs as it does today.
 
 ### 3.1 Source resolution (step 3)
 
@@ -99,17 +99,17 @@ Only the handler changes. `create_document` already honours `fields.dir` and val
 - it contains no URL scheme (`://`) and does not start with `/` or `~`
 - `is_safe_relative_path(source)` is true
 - `pkb_root.join(source)` is an existing regular file
-- after canonicalisation, that file is still inside `pkb_root`, so a symlink cannot escape
+- with both the file and `pkb_root` canonicalised, the file is still inside the root, so a symlink cannot escape
 - the file's parent directory, relative to the root, is a home directory (§2.1)
 
 The source file can be of any kind (`.excalidraw`, `.pdf`, `.md`, …). It does not need to be a graph node.
 
 ### 3.2 Ancestor walk (step 4)
 
-- Start at `fields.parent`. Resolve each ID with the graph (`GraphStore::resolve`) and read `GraphNode.path`.
+- Start at `fields.parent`. Resolve each ID with the graph (`GraphStore::resolve`) and read `GraphNode.path`. `path` is a plain `PathBuf` that may be absolute, so strip the `pkb_root` prefix before running the routing-directory check.
 - If the node's directory is a home directory, return it with reason `Ancestor(<node id>)`.
 - Otherwise move to that node's `parent` and repeat.
-- Stop, falling through to step 5, on any of these: an ID that does not resolve, a node with no parent, a node seen before (cycle), or 16 steps.
+- Stop, falling through to step 5, on any of these: an ID that does not resolve, a node with no parent, a node seen before (cycle), or 16 nodes examined. The 16-node cap applies even if a home directory exists further up.
 - The walk only reads the in-memory graph. It does not scan the filesystem.
 
 ### 3.3 Precedence rationale
@@ -162,7 +162,7 @@ to
 Document created: `<filename>` (`<id>`) in `<dir>/` — placed by <reason>
 ```
 
-`<reason>` is one of `dir`, `source`, `parent <ancestor-id>`, `type default`. Any existing warning lines follow unchanged.
+`<dir>` is the directory of the file actually written, relative to the PKB root, after `create_document`'s env-var expansion. It is not the raw placement string, so `dir: "notes/"` reports `notes/`, not `notes//`. `<reason>` is one of `dir`, `source`, `parent <ancestor-id>`, `type default`. Any existing warning lines follow unchanged.
 
 ### 4.3 Spec sync
 
@@ -182,6 +182,9 @@ mem/t3.md                        id: t3              type: task   parent: hdr-ep
 notes/existing.md                id: existing        type: note
 tasks/ca.md                      id: ca              type: task   parent: cb   (cycle)
 tasks/cb.md                      id: cb              type: task   parent: ca
+tasks/d01.md … tasks/d17.md      chain: d01 → parent d02 → … → d17 → parent deep-epic
+deep/deep.md                     id: deep-epic       type: epic   (home dir `deep`; 18th node from d01)
+memories/                        (empty directory)
 polecat.yaml                     projects: { mem: … }
 ```
 
@@ -191,17 +194,17 @@ Each criterion is falsifiable by its test.
 |---|---|---|
 | AC1 | A note with `source: hdr/joel/mindmap.excalidraw` and no `dir` is written to `hdr/joel/<id>_<slug>.md`. | `source_file_places_in_its_directory`: assert the file exists at that path and not in `notes/`. |
 | AC2 | An explicit `dir` wins over every signal: `dir: notes`, `source: hdr/joel/mindmap.excalidraw`, `parent: joel-epic` → `notes/`. | `explicit_dir_wins` |
-| AC3 | A `source` that is a URL, an absolute path, contains `..`, names a missing file, or names a file in a routing directory (`notes/existing.md`) has no effect on placement and raises no error. | `non_file_sources_fall_through`: one case per form; each lands at the next applicable rule. |
+| AC3 | A `source` that is a URL, an absolute path, contains `..`, names a missing file, or names a file in a routing directory (`notes/existing.md`) has no effect on placement and raises no error. | `non_file_sources_fall_through`: one case per form (`https://example.org/x`, `/etc/hosts`, `../x`, `hdr/joel/missing.excalidraw`, `notes/existing.md`), all with no `parent`; each lands in `notes/` with reason `type default`. |
 | AC4 | A note with `parent: joel-epic` and no `source` → `hdr/joel/`; reason `parent joel-epic`. | `parent_home_directory` |
 | AC5 | The nearest home ancestor wins: `parent: t1` (in `tasks/`) → walk passes `t1`, stops at `joel-epic` → `hdr/joel/`, not `hdr/`. | `nearest_home_ancestor_wins` |
 | AC6 | Routing directories are never chosen by the ancestor rule: `parent: t2` → `notes/`; `parent: t3` (in project dir `mem/`) skips `mem/` and reaches `hdr-epic` → `hdr/`. | `routing_dirs_skipped` |
-| AC7 | The walk terminates and falls back to the type default without error for `parent: ca` (cycle), `parent: no-such-id` (unresolvable; `create` does not validate `parent` today), and a 20-deep chain of tasks in `tasks/`. | `walk_terminates`: three cases; the test finishes in < 1 s. |
+| AC7 | The walk terminates and falls back to the type default without error for `parent: ca` (cycle), `parent: no-such-id` (unresolvable; `create` does not validate `parent` today), and `parent: d01`, whose only home ancestor (`deep-epic`) is the 18th node. | `walk_terminates`: three cases, each → `notes/`, reason `type default`. The `d01` case fails if the 16-node cap is missing, because it would reach `deep/`. |
 | AC8 | Source beats ancestor: `source: hdr/joel/mindmap.excalidraw`, `parent: hdr-epic` → `hdr/joel/`. | `source_beats_parent` |
-| AC9 | Out-of-scope types keep today's placement: `type: task, parent: joel-epic` → same directory as before this change. A `memory` created through `create` → `memories/`. | `out_of_scope_types_unchanged`: compare against the 0.3.97 routing table. |
+| AC9 | Out-of-scope types keep today's placement: `type: task, parent: joel-epic` → `tasks/`. `type: memory, parent: joel-epic` → `memories/`. `type: target, parent: joel-epic` → `targets/`. These are today's `default_subdir_for_type` results. | `out_of_scope_types_unchanged` |
 | AC10 | With no signals, a note goes to `notes/`. This is a regression guard. | `no_signal_defaults_to_notes` |
 | AC11 | Every create response states the directory and reason in the §4.2 format. | Asserted as a regex in AC1, AC2, AC4, AC10. |
-| AC12 | Inference never creates a directory. The directory set under the root is identical before and after AC1–AC10, except for the explicit `dir` in AC2, which already exists. | `no_directories_created` |
-| AC13 | A document placed in a nested home directory is immediately retrievable: `get_document(id)` returns it, and `search` finds it by title, with no rebuild call. | `nested_placement_is_indexed` |
+| AC12 | Inference never creates a directory. | `no_directories_created`: in one fixture PKB, record the set of directories, then run the AC1, AC4, AC5, AC6 and AC8 creates plus a `memory` create. Assert the set is unchanged. `memories/` is pre-created in the fixture. |
+| AC13 | A document placed in a nested home directory is in the graph immediately, with no rebuild call. | `nested_placement_is_indexed`: after the AC1 create, `get_document(id)` returns the body, and the graph node's path is `hdr/joel/<id>_<slug>.md`. No embedder is needed, because neither call goes through vector search. |
 | AC14 | The `create` schema descriptions match §4.2, and `pkb-server-spec.md` no longer claims type-only routing. | Extend `tests/schema_doc_integrity.rs`: assert the `source` description contains "saved in that file's directory" and the spec routing line links this file. |
 
 ### 5.1 Verification beyond unit tests
