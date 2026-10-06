@@ -107,7 +107,7 @@ See [[aops-core/skills/remember/references/TAXONOMY.md#status-values-and-transit
 3. No high-uncertainty blockers (blockers must be explicit `depends_on` links, not vague body text)
 4. Either leaf (no children) OR decomposed into subtasks where all children are beyond `inbox`
 
-Tasks created via `create_task` default to `inbox`. They graduate to `ready` automatically once decomposition and dependency resolution are complete. The human then manually promotes `ready → queued` to make them available for agent dispatch.
+Tasks created via `create_task` default to `inbox`. They graduate to `ready` automatically once decomposition and dependency resolution are complete. The human then promotes `ready → queued` to make them available for agent dispatch; a direct request from the human for the work counts as that promotion.
 
 This gate exists to prevent agents from picking up half-baked tasks before they have been properly planned. See [[specs/orchestrator-boundary.md]] for context.
 
@@ -180,7 +180,7 @@ release_task(id, status, summary, pr_url?, branch?, blocker?, reason?)
 
 Statuses are canonical — see [[aops-core/skills/remember/references/TAXONOMY.md#status-values-and-transitions]]. The work-management subsystem uses the canonical set without extensions.
 
-**Default on create**: `inbox`. Tasks graduate to `ready` once decomposition and dependency resolution are complete. The human manually promotes `ready → queued` to make tasks available for agent dispatch. Agents pull only from `queued`.
+**Default on create**: `inbox`. Tasks graduate to `ready` once decomposition and dependency resolution are complete. The human promotes `ready → queued` to make tasks available for agent dispatch; a direct request from the human for the work counts as that promotion, and agents never write `queued` on work nobody asked for. Agents pull only from `queued`.
 
 ## Multi-Project Organization
 
