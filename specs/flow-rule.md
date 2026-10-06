@@ -53,7 +53,7 @@ Traceability tags used throughout:
 3. Open decisions use one extra small rule, the value of finding out (section 6).
 4. You supply about 154 numbers before deadline classes: 19 target prices, 134 migrated link values to confirm, and one default for parent links (section 8). Agents propose them in batches of fifty.
 
-**Decisions waiting on you:** twenty questions in section 15, ordered by consequence. The first three matter most:
+**Decisions waiting on you:** thirty-one questions in section 15, ordered by consequence. Every choice the brief left open is listed; none is decided silently. The first three matter most:
 
 - **Q1.** Do containment (parent) links carry quantum 1.0 or the default? This decides whether every open child of a priced project carries the project's full worth. On today's graph, 246 open items carry worth with parent links at 1.0, and 49 with them at zero.
 - **Q2.** Is the default quantum zero, or "very low" (0.05)? Almost no typed link is unvalued today, so this matters mostly for links added later. If wikilinks were also treated as links at 0.05, 604 items would come off zero instead of 246.
@@ -138,20 +138,24 @@ edges touching a cancelled node, and decision-label edges (§6), are not read
 
 An edge's effect is read reversed at each end that is a target to avoid (worth < 0). This is how a negative target "flows like any other" (S12): it is computed as the positive target "avoid it" and reported in the loss-averted column.
 
-For each open node `u`, let `y⁰` be the fixed point with nothing knocked out and `yᵘ` the fixed point with `d_u = 0`:
+**Baseline and harms semantics.** In the baseline counterfactual ($y^0$), open harmful edges do not fire: open harmful work is a hazard/risk that has not occurred. Only harms that are already completed in reality (`status: done`) or internal regulatory edges within feedback loops fire in the baseline. When evaluating an open node $u$, $u$'s harms are activated ($y^{\text{with } u}$) and compared to $u$ not done ($y^{\text{without } u}$). This guarantees that open harmful work never rescales or zeroes unrelated work (P4, I2, I9).
+
+For each open node $u$, let $y^{\text{with } u}$ be the fixed point with $u$ done and its harms active, and $y^{\text{without } u}$ be the fixed point with $u$ knocked out:
 
 ```text
-δ_t(u)          = y⁰_t − yᵘ_t                       share of target t at stake on u, in [−1, 1]
-gain(u)         = Σ_{t : W_t > 0}  W_t  · δ_t(u)
-loss_averted(u) = Σ_{t : W_t < 0} |W_t| · δ_t(u)
+δ_t(u)          = y^{with u}_t − y^{without u}_t          share of target t at stake on u, in [−1, 1]
+gain(u)         = Σ_{t : W_t > 0, δ_t(u) > 0}  W_t  · δ_t(u)
+loss_averted(u) = Σ_{t : W_t < 0} |W_t| · δ_t(u) + Σ_{t : W_t > 0, δ_t(u) < 0} W_t · δ_t(u)
 ```
+
+Gains toward positive targets and losses (whether averting negative targets, or causing losses to positive targets) are carried strictly side by side and never netted inside one column (S16, I15). A task that gains 0.6 on one target and harms another at 0.6 reads `(0.600, -0.600)`, never `(0, 0)`.
 
 **Fixed point.**
 
-- **Helps-only systems.** The map is monotone, and knocking out `u` can only lower values. A greatest fixed point below `y⁰` exists (Tarski 1955), and iteration from `y⁰` descends towards it. It converges in the limit, not in a fixed number of steps: the error shrinks by about the loop's strength per pass.
-- **Full-strength loops are rejected.** A loop of open nodes in which every edge is a full-strength helps edge (strength 1) has no stable answer. Each node needs the next entirely, so any loss collapses the whole loop. A feeder of quantum 0.001 would then carry the loop's full worth, while a feeder of 0 carries nothing. The rule therefore rejects such loops (`SaturatedLoop`, `flow.py:179`), just as cycles over hard dependencies and parents are already reported as decomposition errors (`pkb-arch-framework` §4). There are none among open nodes on today's graph. Whether to cap loop strength lower is Q15.
-- **Loops containing a harms edge.** The map is not monotone. Iteration uses half-damped (Krasnosel'skii–Mann) steps (Krasnosel'skii 1955; Mann 1953). These have the same fixed points, and they converge for nonexpansive maps (Bauschke & Combettes 2017, Thm 5.15). The map here is not proven nonexpansive, so convergence is checked, not assumed.
-- **No fixed point within the iteration cap.** The run fails loudly (`NoConvergence`, `flow.py:140`) and the linter flags the loop. It never fails silently.
+- **Helps-only systems.** The map is monotone, and knocking out $u$ can only lower values. A greatest fixed point exists (Tarski 1955). Iteration uses Gauss-Seidel sweeps with damping 1.0, converging rapidly in topological order.
+- **Full-strength loops are rejected.** A loop of open nodes in which the cycle product of edge strengths reaches 1.0 has no stable answer. Any loss collapses the whole loop. The rule rejects such loops (`SaturatedLoop`, `flow.py:179`, S15, A19). An isolated saturated loop or failure in one component does not abort the ranking of independent clean components.
+- **Loops containing a harms edge.** The map is not monotone. Iteration uses synchronous (Jacobi) damped steps with damping 0.5 (Krasnosel'skii 1955; Mann 1953; Bauschke & Combettes 2017). Synchronous updates guarantee that mutual harm results are strictly symmetric and independent of node ID ordering.
+- **No fixed point within the iteration cap.** The run fails loudly (`NoConvergence`, `flow.py:155`) for the affected component, while unaffected components remain ranked.
 
 The live graph converges for every node (I13). The worst live-shaped harmful loop, a pure negative-feedback loop at quantum 1, also converges (I16).
 
@@ -507,9 +511,16 @@ Every measure in `ranking.md` is mapped to one of three outcomes:
 | standing weight (`:421-431`) | produced | the target worth input, now signed |
 | verbal contribution scale (`:461-476`) | produced | split into quantum (§5.4) and probability (§5.5) |
 | `multiplier` / `x` (`:478-487`) | dropped | quantum is stated directly |
-| ready / blocked / roots (`:497-517`) | moved | ready-leaf filter (display) |
+| `goal_type` gating (`:128`, `:330`, `:426`, `:453`, `:455`) | dropped | in `ranking.md`, `goal_type == "committed"` gated SEV4 lexicographic overrides (`severity_gate`, `S_lex`, overdue-pin guard); ordinary pricing was not gated on `goal_type` (`:426`). Under the new model, target pricing operates directly on priced targets without category gating, and hard deadlines form the cliff lane regardless of goal_type |
+| `waiting_since` timestamp anchor (`:219`) | dropped | in `ranking.md`, `waiting_since` (or `created`) was the timestamp anchor for the stakeholder waiting clock; dropped because stakeholder waiting is removed from the maths (a waiting person is handled in agent triage or via explicit target pricing) |
+| cone depth cap `MAX_CONE_DEPTH = 20` (`:304`, `:333`, `:354`) | dropped | the old engine bounded BFS downstream cone expansion and urgency relaxation to 20 hops; the flow rule computes global fixed points across all hops without an artificial depth cutoff |
+| ready / blocked / roots (`:497-517`) | moved | ready-leaf filter (display); actionable views restricted to claimable task leaves |
+| ready predicate: `ACTIONABLE_TYPES` (`["task", "learn", "pr"]`) and `CLAIMABLE_TYPES` (`["task"]`) (`:499-504`) | moved | display ready-leaf filter (Q31) |
+| ready predicate: `has_acceptance_criteria` gate for `inbox` status (`:505`) | moved | display ready-leaf filter (Q31) |
+| ready predicate: `COMPLETED_STATUSES` `{"done", "cancelled"}` (`:506`) | moved | node state mapping in maths (done nodes have $y=1$, cancelled nodes excluded) |
+| ready predicate: transitive dependency checking across `blocks` chains (`:506`, `:514`) | moved / produced | replaced by `needs` edges where blocked work passes worth to unblockers (I5) |
 | `focus_cmp`, `queue_rank` (`:519-530`) | moved | ordering is display |
-| severity ladder (`:449-457`) | dropped | severity is not read; it prompts pricing |
+| severity ladder (`:449-457`) | dropped | severity is not read; it prompts pricing (Q24) |
 | `blocking_urgency` (pipeline stage `:46`; `src/graph_store.rs:503`) | dropped | a blocker carries the full worth of what it unblocks (I5); urgency by date is the cliff lane |
 | `stakeholder_exposure` (input to criticality, `:318`) | moved | display, with `criticality` |
 | `deadline_pressure_active` flag (`:152`) | dropped | no date term in the maths (I11); display reads `due` and `deadline_class` directly |
@@ -552,8 +563,8 @@ Every measure in `ranking.md` is mapped to one of three outcomes:
 | 12 | Every number is explained as routes to priced sources | 269 (node, target) pairs | 0 below the strongest route; 0 above the combined routes without a loop; 1 above by loop reinforcement, shown as such (`n_d663317dd7`: 0.9712 against 0.9449); 162 single-route pairs equal their route. Example: `admin-3e02c20b`: `task_b3f01c80` × 1.00 and `targ_4e2cc92a` × 0.85, both via `proj-f8b942d5` → `brain_bf2be9d8` | pass |
 | 13 | Runs over the live graph; differences explained | 3,710 nodes, 1,502 open, 1,502 flow edges (by coincidence equal), 7 priced targets | every open node in under 0.5 s; section 11 | pass |
 | 14 | Protection against a negative target carries positive weight by the same rule | `targ_safety` priced +0.35 vs restated as −0.35 harm (**assumed**); `proj-db6ded3c`, `proj-76fbc546`, `personal_344a9ec6` | gain column 0.2625 / 0.2625 / 0.2822 = loss-averted column 0.2625 / 0.2625 / 0.2822 | pass |
-| 15 | Large gain with equal loss ≠ linked to nothing | `proj-76fbc546` also brings about a −0.95 harm (**assumed**) vs `academic-b738bdc7` | (0.95, −0.95) vs (0, 0); netted, both would read 0 | pass |
-| 16 | A loop with a harmful edge settles | the live loop of row 4 with its closing edge as harms (**assumed**) | live quantum: feeder 0.0396, loop settles at 0.3878 / 0.3878 / 0.8163; pure negative loop at quantum 1: 0.0156, settles at 0.2308 / 0.2308 / 0.7692 | pass |
+| 15 | Large gain with equal loss ≠ linked to nothing | `proj-76fbc546` also brings about a −0.95 harm (**assumed**); `pos_harm_task` serves `pos_target1` (1.0) at 0.6 and harms `pos_target2` (1.0) at 0.6 vs `academic-b738bdc7` | (0.95, −0.95) and (0.60, −0.60) vs (0, 0); netted, all would read 0 | pass |
+| 16 | A loop with a harmful edge settles | the live loop of row 4 with its closing edge as harms (**assumed**) | synchronous damped iteration (damping 0.5): feeder 0.0396, loop settles at 0.3878 / 0.3878 / 0.8163; pure negative loop at quantum 1: 0.0156, settles symmetrically at 0.2308 / 0.2308 / 0.7692 | pass |
 | 17 | A hard deadline surfaces its work as the date nears; fake or soft never | `task_d5f610e6` hard, due 2026-10-05, worth 0; `n_c2e542fd02` fake, worth 0; `n_2dcb93a9c8` soft, worth 0.35 (**assumed** classes) | hard: 1,493rd on 1 Sep, 1st from 25 Sep; fake: never on the cliff (1,169th–1,170th); soft: never on the cliff (51st–52nd) | pass |
 
 ---
@@ -700,7 +711,7 @@ The questions are ordered by consequence. Brief gap numbers are given where the 
 6. **Q5. Hard blocks (gap 4).** Is a hard block its own label (`needs`), or a `serves` link at quantum 1.0 with the ready filter reading something else?
 7. **Q6. Quantum words.** Are the five quantum words and numbers in §5.4 right?
 8. **Q7. Worth anchors (gap 6).** Do the five standing-weight anchors stay, mirrored for losses (§5.6)?
-9. **Q20. Harmful work in the baseline.** The rule assumes all open work gets done, including work that harms something. That lowers the baseline of what it harms, and so the worth of everything else serving it. Is that right, or should harmful work be assumed not done?
+9. **Q20. Harmful work in the baseline.** Open harmful work is assumed not done in the baseline ($y^0$), so an open hazard does not deflate or zero unrelated work. When evaluating the harmful node itself, its harms activate ($y^{\text{with } u}$). Does Nic confirm this baseline semantics?
 10. **Q8. Decisions modelled as parents.** May migration relabel a decision's children as `alternative`, each inheriting the decision's edges (section 6)?
 11. **Q15. Loop strength cap.** Full-strength loops are rejected (§3.2). Should the linter also cap loop strength lower, say 0.9, given how strongly a near-1 loop amplifies a weak feeder (§4.2)?
 12. **Q16. Real reinforcing loops (gap 9).** Are the two loops on today's graph real reinforcement, or modelling artefacts? Calibration against real loops is low priority (S15).
@@ -712,6 +723,17 @@ The questions are ordered by consequence. Brief gap numbers are given where the 
 18. **Q12. Effort (gap 8).** Does effort stay out of the maths, as here, used only for benefit per effort in display?
 19. **Q13. Ripeness (gap 10).** Who tells the graph an opportunity is no longer ripe?
 20. **Q14. Soft to hard (gap 11).** By what rule does a soft deadline become hard? Here it is a deliberate agent step, specified in the skills spec.
+21. **Q21. Label set.** §5.2 proposes six labels (`serves`, `needs`, `part_of`, `supports`, `alternative`, `settles`). Is this the right canonical set, or should any label be added, renamed, or omitted?
+22. **Q22. Migration values.** §8 defaults unvalued migrated edges: `part_of` → 1.0, `needs` → 1.0, `supports` → 0.3, unvalued `serves` → 0.0. Does Nic confirm these migration defaults?
+23. **Q23. Wikilinks excluded from flow.** §8 excludes wikilinks from the flow model (1,876 wikilinks ignored). If treated as weak flow edges at 0.05, 604 nodes carry worth and 932 nodes sit on loops. Should wikilinks remain excluded from the flow model?
+24. **Q24. Retiring the severity ladder.** §9 drops the 0–4 severity scale from ranking maths. Does Nic approve retiring severity from ranking, or should it be retained as a display badge or triage tag?
+25. **Q25. Retiring stakeholder waiting points.** §9 drops the flat/ramped stakeholder bonus. Should stakeholder waiting be handled purely in agent triage and target pricing, or surfaced as a display sort/filter?
+26. **Q26. Cliff trigger condition.** §7 defines the cliff lane as `days_left <= effort_days + buffer`. Is `days_left <= effort_days + buffer` the right cliff trigger, or should lead time or chain slack be incorporated?
+27. **Q27. Probability scale words.** §5.5 adopts the 7 Renooij–Witteman words (`certain`: 1.0, `probable`: 0.85, `expected`: 0.75, `fifty-fifty`: 0.50, `uncertain`: 0.25, `improbable`: 0.15, `impossible`: 0.00). Does Nic approve this scale?
+28. **Q28. Negative targets scale.** §5.6 proposes mirroring the 5 standing-weight anchors for losses (`Catastrophic` −1.0, `Severe` −0.6, `Substantial` −0.35, `Moderate` −0.15, `Minor` −0.05). Does Nic approve this negative worth scale?
+29. **Q29. Blast radius (`downstream_weight`) removal.** §9 drops `downstream_weight`. The brief listed this under "Leaning, not settled". Does Nic confirm dropping downstream blast radius in favor of worth passing to unblockers?
+30. **Q30. Retiring `supersedes` from the flow.** §8 excludes `supersedes` edges from the flow model. Does Nic agree that `supersedes` belongs purely to agent lifecycle logic?
+31. **Q31. Actionable and claimable types in ready filter.** `ranking.md:499-504` restricted ready tasks to `CLAIMABLE_TYPES` (`["task"]`) and actionable types (`["task", "learn", "pr"]`) with an acceptance criteria gate on `inbox` status. Should display preserve these exact filter rules?
 
 ## 16. Files
 
