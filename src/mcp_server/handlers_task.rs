@@ -199,7 +199,7 @@ impl PkbSearchServer {
                 .copied()
                 .filter(|k| !KNOWN_KEYS.contains(k))
                 .collect();
-            tracing::info!(
+            tracing::debug!(
                 target: "pkb::create_task",
                 title = %title,
                 received_keys = ?received,

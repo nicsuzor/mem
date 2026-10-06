@@ -341,11 +341,27 @@ In-memory graph built from frontmatter relationships and wikilinks on each start
 | Variable              | Default   | Purpose                                             |
 | --------------------- | --------- | --------------------------------------------------- |
 | `ACA_DATA`            | `~/brain` | PKB root directory (the files)                      |
-| `RUST_LOG`            | `info`    | Log level                                           |
+| `RUST_LOG`            | `info`    | Log filter (see Logging)                            |
 | `AOPS_OFFLINE`        | `false`   | Disable model auto-download                         |
 | `AOPS_DUMMY_EMBEDDER` | `false`   | Use zero-vector dummy embedder (for tests/offline)  |
 | `AOPS_POLECAT_CONFIG` | unset     | Explicit path to polecat.yaml (project registry)    |
 | `AOPS_SESSIONS`       | unset     | Sessions repo; fallback home of polecat.yaml        |
+
+### Logging
+
+`pkb mcp` logs to stderr. With `RUST_LOG` unset the filter is `info,rmcp=warn`,
+and each MCP tool call emits exactly one INFO line on target `pkb::tool_call`:
+
+```
+INFO pkb::tool_call: tool call tool=create_task status=ok latency_ms=54 response_bytes=1800 session=<id>
+```
+
+Per-request and per-write detail is DEBUG: rmcp session handshakes,
+`create_task invocation` key dumps, `adhoc_grouping` routing, `git commit
+succeeded`, `Saved vector store`, and cross-process index-lock deferrals.
+Startup, reload, and drain events stay INFO; failures stay WARN/ERROR.
+`RUST_LOG=info,mem=debug,pkb=debug,adhoc_grouping=debug` restores the detail.
+Covered by `tests/server_log_levels.rs`.
 
 ### Project registry (polecat.yaml)
 

@@ -856,7 +856,7 @@ impl PkbSearchServer {
                             );
                         }
                         Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                            tracing::info!(
+                            tracing::debug!(
                                 "Vector store lock held by another process — disk save deferred"
                             );
                             tracing::debug!(
@@ -1059,7 +1059,7 @@ impl PkbSearchServer {
             self.deferred_paths.lock().insert(abs);
             self.lock_was_held
                 .store(true, std::sync::atomic::Ordering::Relaxed);
-            tracing::info!(
+            tracing::debug!(
                 "Index locked by another process — deferring in-memory upsert for {}",
                 doc.path.display()
             );
@@ -1285,7 +1285,7 @@ impl PkbSearchServer {
                                 }
                             }
                             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                                tracing::info!(
+                                tracing::debug!(
                                     "Vector store lock held by another process — disk save deferred"
                                 );
                             }
@@ -1345,7 +1345,7 @@ impl PkbSearchServer {
         }
 
         if !self.index_lock_available() {
-            tracing::info!(
+            tracing::debug!(
                 "Index locked by another process — skipping in-memory finalize for batch ({} modified, {} removed)",
                 modified_paths.len(),
                 removed_paths.len()
@@ -1464,7 +1464,7 @@ impl PkbSearchServer {
             self.deferred_paths.lock().insert(abs);
             self.lock_was_held
                 .store(true, std::sync::atomic::Ordering::Relaxed);
-            tracing::info!("Index locked by another process — deferring in-memory remove for {id}");
+            tracing::debug!("Index locked by another process — deferring in-memory remove for {id}");
             return;
         }
         if let Err(e) = crate::vectordb::VectorStore::append_wal_record(
@@ -1593,6 +1593,7 @@ impl ServerHandler for PkbSearchServer {
         if let Some(ref mcp_id) = client_context.mcp_session_id {
             self.session_registry.update_activity(mcp_id, Some(client_context.session_id.clone()));
         }
+        let session_id = client_context.session_id.clone();
 
         let this = self.clone();
         async move {
@@ -1694,6 +1695,17 @@ impl ServerHandler for PkbSearchServer {
             };
 
             crate::telemetry::record_call(&effective_name, response_bytes, latency, is_error);
+
+            // The one INFO line per transaction; per-step detail is DEBUG.
+            tracing::info!(
+                target: "pkb::tool_call",
+                tool = %effective_name,
+                status = %if is_error { "error" } else { "ok" },
+                latency_ms = latency as u64,
+                response_bytes,
+                session = %session_id,
+                "tool call"
+            );
 
             result
         }
