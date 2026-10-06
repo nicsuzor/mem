@@ -39,13 +39,13 @@ Traceability tags follow `flow-rule.md`:
 **What it checks:**
 
 1. **Targets.** Each target without a price gets a warning. Today 19 of your 26 targets have none, including `targ_safety` and `qut-f71664e8` ("Meet QUT employment obligations"). A price outside −1 to +1, or a price on something that is not a target, is an error.
-2. **Links.** A label, sign, quantum or probability the maths cannot read is an error. Today the stated weights "high", "medium" and "Marginal" sit on live links and silently score zero. Links pointing at deleted or cancelled nodes, and two links joining the same pair, are warnings. A link with no value is just noted, because the default is a legitimate answer (S7).
+2. **Links.** A label, sign, quantum or probability the maths cannot read is an error. Today the stated weights "high", "medium" and "Marginal" sit on live links. Each scores zero, with only a parse warning that nothing acts on. Links pointing at deleted or cancelled nodes, and two links joining the same pair, are warnings. A link with no value is just noted, because the default is a legitimate answer (S7).
 3. **Loops.** Loops are allowed, and the live graph has three. A loop is an error only when every link in it is full strength and every node on it is open. Such a loop has no stable answer, and the maths refuses it. Today's cycle check misses one live case of this shape, a child that depends on its own parent. It also flags loops the maths would accept.
 4. **Decisions.** A decision with only one option is a warning, and so is "finding out" work pointed at something that is not a decision. Neither earns anything.
 5. **Deadlines.** A due date with no class (fake, soft or hard) is a warning, and it is read as fake until classed. All six open due dates today have no class.
 6. **Coverage.** Open work with no route to any priced target is noted, not warned. That is 1,255 of 1,502 open items, and for most of them zero is the right answer (U8, U9).
 
-**Who may fix what.** Agents fix only mechanical things unasked, such as letter case in a scale word. Anything that sets a value (a price, a quantum, a deadline class) can only be proposed by an agent and changes nothing until you approve it. Anything that needs a judgement about the world, such as where an orphaned link should point or how to break a loop, is left for you.
+**Who may fix what.** Agents fix only mechanical things unasked, such as stray spaces around a scale word (L10). Anything that sets a value (a price, a quantum, a deadline class) can only be proposed by an agent and changes nothing until you approve it. Anything that needs a judgement about the world, such as where an orphaned link should point or how to break a loop, is left for you.
 
 **What retires.** The `parent-cycle` and `dep-hard-cycle` errors are replaced by the full-strength loop check. The broken-reference warnings become one dangling-link check. The parentless-task check retires. The checks on `severity`, `goal_type` and the old weight words go once migration removes those fields. Section 7 lists every change.
 
@@ -167,19 +167,21 @@ An **assumed** example edits a real node hypothetically, because the live graph 
 
 ### 5.2. Edge fields: labels and signs
 
+**Matching.** Words (labels, effects, scale words, deadline classes) match regardless of letter case, as weight words do today (`src/graph.rs:293`). Case is never a defect. A word padded with spaces does not match, as today (`pkb-rules.md` §6.4). Whether agents may trim the padding unasked is L10. The "yes" entries below that depend on it say so.
+
 | Rule | Fires when | Severity | Real example | Agent may fix unasked? | Traces to |
 |---|---|---|---|---|---|
-| `flow-edge-label-invalid` | `label` is not one of `serves`, `needs`, `part_of`, `supports`, `alternative`, `settles` | error | **Assumed:** `label: blocks` on `aops_epic_task_lifecycle → spec_a98d0e11`. `blocks` is a computed inverse, not a label (§5.2) | yes, if the only difference is letter case or whitespace; otherwise no | S2, S3, §5.2 |
+| `flow-edge-label-invalid` | `label` is not one of `serves`, `needs`, `part_of`, `supports`, `alternative`, `settles` | error | **Assumed:** `label: blocks` on `aops_epic_task_lifecycle → spec_a98d0e11`. `blocks` is a computed inverse, not a label (§5.2) | yes, if only padding differs (L10); otherwise no | S2, S3, §5.2 |
 | `flow-edge-effect-invalid` | `effect` is not `helps` or `harms` | error | **Assumed:** `effect: negative` on `proj-db6ded3c → targ_safety` | no | S12, §5.1 |
 | `flow-edge-negative` | `quantum` or `probability` is below 0. The sign belongs in `effect` | error | **Assumed:** `quantum: -0.3` on `proj-db6ded3c → targ_safety`, meant as "puts safety at risk" | no: `-0.3` may be a typo or a harm, and choosing between them is a judgement | S12, §5.1 |
-| `flow-edge-effect-ignored` | `effect: harms` on an `alternative` or `settles` edge. The flow does not read these edges, so the sign has no effect | warning | **Assumed:** `personal_92d5909f → brain_bf2be9d8` as `settles` with `effect: harms` | no | §3.2, §6 |
+| `flow-edge-effect-ignored` | `effect: harms` on an `alternative` or `settles` edge. The flow does not read these edges, so the sign has no effect | warning | **Assumed:** `personal_92d5909f → brain_bf2be9d8` as `settles` with `effect: harms` | no | S2, S3, §3.2, §6 |
 
 ### 5.3. Edge fields: values
 
 | Rule | Fires when | Severity | Real example | Agent may fix unasked? | Traces to |
 |---|---|---|---|---|---|
-| `flow-edge-quantum-invalid` | `quantum` is not a number in 0..=1, nor a §5.4 word. This includes values above 1 and old-scale likelihood words such as `probable`, which now belong on probability | error | **Observed (live):** `mem_5622c5a7 → aops_epic_worker_environments` with `stated_weight: high`; `aops_investigate_a45_hail_damage_claim → personal-66647271` with `medium`; `personal_eb03659a → aops-f770fe8a` with `Marginal`. Each scores zero today with only a parse warning (`src/graph.rs:1613`) | yes, if only letter case differs from a §5.4 word; otherwise propose | S2, S7, §5.4 |
-| `flow-edge-probability-invalid` | `probability` is not a number in 0..=1, nor a word `numeric_weight()` accepts (`src/graph.rs:292-318`) | error | **Assumed:** `probability: 85%` on `personal_344a9ec6 → targ_safety` | yes, if only letter case differs; otherwise propose | S2, §5.5 |
+| `flow-edge-quantum-invalid` | `quantum` is not a number in 0..=1, nor a §5.4 word. This includes values above 1 and old-scale likelihood words such as `probable`, which now belong on probability | error | **Observed today in the legacy field; assumed after migration.** Live: `mem_5622c5a7 → aops_epic_worker_environments` with `stated_weight: high`; `aops_investigate_a45_hail_damage_claim → personal-66647271` with `medium`; `personal_eb03659a → aops-f770fe8a` with `Marginal`. Each scores zero today with only a parse warning (`src/graph.rs:1613`). Carried into `quantum` unchanged, `high` is not a §5.4 word. Left in `stated_weight`, it trips `flow-legacy-field` instead. Which happens is the migration spec's choice | yes, if only padding differs (L10); otherwise propose | S2, S7, §5.4 |
+| `flow-edge-probability-invalid` | `probability` is not a number in 0..=1, nor a word `numeric_weight()` accepts (`src/graph.rs:292-318`) | error | **Assumed:** `probability: 85%` on `personal_344a9ec6 → targ_safety` | yes, if only padding differs (L10); otherwise propose | S2, §5.5 |
 | `flow-edge-unvalued` | An edge states no quantum, so it is read at the default | style | **Observed:** fixture `n_9e0d1da5d4 → n_9da86d3306` (`serves`), the only typed edge with no stated value. Live: `aops_3a319150 → aops_8745d500` | propose | S7, U20, §5.3 |
 | `flow-edge-set-by-invalid` | `set_by` is not `nic`, `agent-proposed` or `migrated` | error | **Assumed:** `set_by: ida` on `proj-76fbc546 → targ_4e2cc92a` | no | U20, §5.1, §8 |
 | `flow-edge-proposal-unjustified` | An `agent-proposed` edge has no `justification` | warning | **Assumed:** a densify batch proposes `quantum: some` on `admin-3e02c20b → task_b3f01c80` with no justification | no: only the proposer can say why | U20, §8; `pkb-rules.md` §6.4 |
@@ -201,7 +203,7 @@ A loop is a set of nodes that reach each other along flow edges (§3.2). The bri
 |---|---|---|---|---|---|
 | `flow-loop-saturated` | Every node on a loop is open and every edge in it is a full-strength helps edge (strength 1.0). The maths refuses it (`SaturatedLoop`, §3.2), and its nodes get no worth | error | **Observed shape, assumed state:** fixture loop `n_22a3f9be31 ⇄ n_7ef3b3deee`, `part_of` 1.0 one way and `needs` 1.0 the other: a child that depends on its own parent. Live example of the same shape: `aops_services_user_level_verify` depends on its parent `aops_services_user_level`. The loop is accepted today only because the child is done. **Assumed** reopened, the flow refuses it. Today's `dep-hard-cycle` finds 0 cycles either way (`examples.py`, "Loops") | no | S15, I4, §13 A19 |
 | `flow-loop-no-convergence` | A loop containing a harms edge does not settle within the iteration cap (`NoConvergence`, §3.2) | error | **None possible on the live graph.** Every live node converges (I13), and so does the worst harmful loop tested, a pure negative loop at quantum 1 (I16). The test uses a constructed graph | no | I16, §12 failure contract |
-| `flow-loop` | Any other loop, which the maths accepts | style | **Observed:** `aops_epic_task_lifecycle ⇄ spec_a98d0e11` (`needs` 1.0, `serves` 0.5; strongest cycle product 0.50). Also `aops_twin_cost_monitor → aops_bootstrap_dogfood → aops_otel_full_text_container_spans → aops_twin_cost_monitor`, all open (product 0.22), which shares a component with one done node | not applicable: nothing is wrong; Nic judges whether a loop is real (Q16) | S8, I4, Q16 |
+| `flow-loop` | Any other loop, which the maths accepts | style | **Observed:** `aops_epic_task_lifecycle ⇄ spec_a98d0e11` (`needs` 1.0, `serves` 0.5; strongest cycle product 0.50). Also a four-node component: the open loop `aops_twin_cost_monitor → aops_bootstrap_dogfood → aops_otel_full_text_container_spans → aops_twin_cost_monitor` (product 0.22), plus the done node `n_13b44e9a94` | not applicable: nothing is wrong; Nic judges whether a loop is real (Q16) | S8, I4, Q16 |
 
 **Loops that are errors, and loops that are allowed:**
 
@@ -221,7 +223,7 @@ A loop is a set of nodes that reach each other along flow edges (§3.2). The bri
 | Rule | Fires when | Severity | Real example | Agent may fix unasked? | Traces to |
 |---|---|---|---|---|---|
 | `flow-deadline-unclassed` | An open node has `due` and no `deadline_class`. It is read as `fake` until classed (Q18) | warning | **Observed:** all 6 open nodes with a due date, e.g. `task_d5f610e6` (due 2026-10-05) and `proj-76fbc546` (due 2026-09-30) | propose | S5, U15, I17, §7 |
-| `flow-deadline-class-invalid` | `deadline_class` is not `fake`, `soft` or `hard` | error | **Assumed:** `deadline_class: firm` on `brain_61467de3` | yes, if only letter case differs; otherwise no | S5, S13, §7 |
+| `flow-deadline-class-invalid` | `deadline_class` is not `fake`, `soft` or `hard` | error | **Assumed:** `deadline_class: firm` on `brain_61467de3` | yes, if only padding differs (L10); otherwise no | S5, S13, §7 |
 | `flow-deadline-class-no-due` | `deadline_class` is set but `due` is not | warning | **Assumed:** `deadline_class: hard` on `task_d5f610e6` after its `due` is removed | no | S5, §7 |
 
 **Left out on purpose.** A hard deadline with no `effort` stops the cliff lane timing it well (§7). Checking for that would tie a lint rule to the cliff trigger, which is open (Q26) and sits outside the maths. Whether to add it is L9.
@@ -230,7 +232,7 @@ A loop is a set of nodes that reach each other along flow edges (§3.2). The bri
 
 | Rule | Fires when | Severity | Real example | Agent may fix unasked? | Traces to |
 |---|---|---|---|---|---|
-| `flow-no-route` | Open work has no route to any priced target, so its worth is exactly 0 | style | **Observed:** 1,255 of 1,502 open nodes, e.g. `academic-b738bdc7` (§10 row 7) | propose: a link via the densify routine | S7, I7, U7, U8, U9, U20 |
+| `flow-no-route` | Open work has no route to any priced target along edges of nonzero strength, so its worth is exactly 0. A route made only of zero-quantum edges counts as no route, as in the flow (`flow-rule/flow.py:73-82`) | style | **Observed:** 1,255 of 1,502 open nodes, e.g. `academic-b738bdc7` (§10 row 7) | propose: a link via the densify routine | S7, I7, U7, U8, U9, U20 |
 | `flow-legacy-field` | A field the migration spec retires is still present after migration, e.g. `stated_weight`, `multiplier`, or `standing_weight` in place of `worth` | warning | **Observed (live):** `stated_weight: high` on `mem_5622c5a7 → aops_epic_worker_environments` | yes, but only by running the migration routine; otherwise no | S2, S11; migration spec (`epic_d1679d4b`) |
 
 **Volume.** In text output `flow-no-route` prints one summary line: the count, plus the first ten node ids. JSON output lists every node (L6). This changes how lint output is shown, not how the graph is shown.
@@ -253,7 +255,7 @@ A loop is a set of nodes that reach each other along flow edges (§3.2). The bri
 | `dep-hard-cycle` (error) | `src/lint.rs:1622-1717` | **Retired.** Replaced by `flow-loop-saturated`. It errs both ways: it misses a child that depends on its parent (section 5.5), and it flags hard cycles through done nodes, which the flow accepts |
 | `parent-cycle` (error) | `src/lint.rs:1689`, `:1721-1800` | **Retired.** Replaced by `flow-loop-saturated` while `part_of` carries 1.0. The self-parent case becomes `flow-edge-self`. If Q1 lowers `part_of`, see L1 |
 | Write-time cycle rejection: `would_create_parent_cycle`, `would_create_hard_cycle` | `src/mcp_server/handlers_task.rs:452`, `:469`, `:1924`, `:1970`; `handlers_task_lifecycle.rs:1487` | **Replaced.** Same check as `flow-loop-saturated`, run on the proposed graph. Whether writes are refused or only linted is L4; the engine and tools spec builds it |
-| `ref-broken-parent`, `ref-broken-dep` (warning) | `src/lint.rs:832`, `:846`, `:866` | **Replaced** by `flow-edge-dangling` for every edge of the model. `ref-broken-dep` stays for `supersedes`, which is not an edge of the model (§8) |
+| `ref-broken-parent`, `ref-broken-dep` (warning) | `src/lint.rs:832`, `:846`, `:866` | **Replaced** by `flow-edge-dangling` for every edge of the model. `ref-broken-dep` stays for `supersedes`, which is not an edge of the model (§8). Until migration removes stored `blocks` and `soft_blocks` (`src/lint.rs:839`), it stays for them too |
 | `task-no-parent` (style or warning) | `src/lint.rs:932-958` | **Retired.** A parentless node is not a defect (S7, U9). What matters is `flow-no-route` |
 | Parse warning `contributes_to.stated_weight` | `src/graph.rs:1613` | **Replaced** by `flow-edge-quantum-invalid` and `flow-edge-probability-invalid` (error) |
 | Parse warnings `standing_weight` range and type | `src/graph.rs:1486`, `:1495` | **Replaced** by `flow-worth-invalid` |
@@ -315,9 +317,9 @@ Each criterion is something an observer can check by running `pkb lint --refs --
 | G1 | An open target with no `worth` yields one `flow-target-unpriced` warning with `agent_fix: propose`; pricing it removes the warning | S14, U20 | `lint_flow_target_unpriced` |
 | G2 | `worth` of `high`, `6` or `-1.5` yields `flow-worth-invalid` (error, exit 1); `-1.0` and `1.0` pass | S12, S14 | `lint_flow_worth_invalid` |
 | G3 | `worth` on a task yields `flow-worth-not-target` (error) | S14 | `lint_flow_worth_not_target` |
-| G4 | Each of `label: blocks`, `effect: negative`, `quantum: -0.3` yields its own error; `label: Serves` is fixed to `serves` by `--fix` and nothing else is changed | S2, S12 | `lint_flow_edge_label_sign` |
-| G5 | `effect: harms` on a `settles` edge yields `flow-edge-effect-ignored` (warning) | §6 | `lint_flow_edge_effect_ignored` |
-| G6 | `quantum: high`, `quantum: 1.5` and `quantum: probable` each yield `flow-edge-quantum-invalid` (error); `quantum: Most` is fixed to `most`; `probability: 85%` yields `flow-edge-probability-invalid` | S2, S7 | `lint_flow_edge_values` |
+| G4 | Each of `label: blocks`, `effect: negative`, `quantum: -0.3` yields its own error; `label: Serves` yields no diagnostic; `label: "serves "` yields an error whose `agent_fix` is `yes` if L10 is answered yes, and `no` otherwise | S2, S12 | `lint_flow_edge_label_sign` |
+| G5 | `effect: harms` on a `settles` edge yields `flow-edge-effect-ignored` (warning) | S2, S3 | `lint_flow_edge_effect_ignored` |
+| G6 | `quantum: high`, `quantum: 1.5` and `quantum: probable` each yield `flow-edge-quantum-invalid` (error); `quantum: Most` yields no diagnostic; `probability: 85%` yields `flow-edge-probability-invalid` | S2, S7 | `lint_flow_edge_values` |
 | G7 | An edge with no quantum yields `flow-edge-unvalued` (style, exit 0, `agent_fix: propose`) | S7, U20 | `lint_flow_edge_unvalued` |
 | G8 | `set_by: ida` yields an error; `agent-proposed` with no justification yields a warning | U20, §8 | `lint_flow_edge_provenance` |
 | G9 | An edge to a missing id yields `flow-edge-dangling`; an edge from open work to a cancelled node yields `flow-edge-to-cancelled`; neither is emitted for a done source | I12, U19 | `lint_flow_edge_endpoints` |
@@ -327,12 +329,12 @@ Each criterion is something an observer can check by running `pkb lint --refs --
 | G13 | A two-node loop at strengths 1.0 and 0.5 yields `flow-loop` with cycle product 0.50 | S8, I4 | `lint_flow_loop_allowed` |
 | G14 | A loop forced not to converge (iteration cap set to 1 in the test) yields `flow-loop-no-convergence` naming the loop, and nodes outside it are still linted | I16 | `lint_flow_loop_no_convergence` |
 | G15 | One `alternative` into an open node yields `flow-decision-one-option`; a `settles` edge to it yields `flow-settles-no-decision`; adding a second alternative clears both | I10, U12 | `lint_flow_decisions` |
-| G16 | An open node with `due` and no class yields `flow-deadline-unclassed` (warning, propose); `firm` yields an error; `Hard` is fixed to `hard`; a class with no `due` yields a warning | S5, S13, U15 | `lint_flow_deadlines` |
+| G16 | An open node with `due` and no class yields `flow-deadline-unclassed` (warning, propose); `firm` yields an error; `Hard` yields no diagnostic; a class with no `due` yields a warning | S5, S13, U15 | `lint_flow_deadlines` |
 | G17 | Open work with no route to a priced target yields `flow-no-route` (style); text output shows one summary line | S7, I7, U9 | `lint_flow_no_route` |
-| G18 | No retired rule id (`dep-hard-cycle`, `parent-cycle`, `task-no-parent`, `ref-broken-parent`) is emitted, and `ref-broken-dep` is emitted only for `supersedes` | section 7 | `lint_retired_rules_absent` |
-| G19 | Lint output is byte-identical under every display configuration and every value of today's date, and the lint module imports no display code | S1, I6, I11 | `T-display` (`lint_display_independent`) |
-| G20 | Running `--fix` changes no `worth`, `quantum`, `probability` or `deadline_class` value except by letter case, and never adds one | §8, `pkb-rules.md` §6.5 | `lint_fix_never_values` |
-| G21 | `examples.py` reproduces every observed fixture number in section 5 | brief §D | `python3 specs/graph-lint/examples.py` |
+| G18 | No retired rule id (`dep-hard-cycle`, `parent-cycle`, `task-no-parent`, `ref-broken-parent`) is emitted, and `ref-broken-dep` is emitted only for `supersedes` and, before migration, stored `blocks` and `soft_blocks` | S3, S15, U9 | `lint_retired_rules_absent` |
+| G19 | Lint output is byte-identical under every display configuration in `flow-rule/display.py` and with the system date set to 2026-01-01 and to 2027-06-01, and the lint module imports no display code | S1, I6, I11 | `T-display` (`lint_display_independent`) |
+| G20 | Running `--fix` changes no `worth`, `quantum`, `probability` or `deadline_class` value except by trimming padding (if L10 allows), and never adds one | §8, `pkb-rules.md` §6.5 | `lint_fix_never_values` |
+| G21 | `examples.py` reproduces every observed fixture number in section 5 | brief §D, the evidence standard; no S, I or U number applies | `python3 specs/graph-lint/examples.py` |
 
 ---
 
@@ -348,7 +350,7 @@ The questions are ordered by consequence.
 6. **L7. Strong loops (Q15).** If you cap loop strength, say at 0.9, should a loop at or above the cap be a warning?
 7. **L8. Targets serving targets (Q17).** If a target's price already includes what it does for other targets, should an edge between two priced targets be a warning?
 8. **L9. Hard deadline with no effort.** Should this be an agent check instead of a lint rule, given that it depends on the open cliff trigger (Q26)? Three of the six open due dates have no effort.
-9. **L10. Letter-case fixes.** May agents fix letter case in scale words and labels unasked? Today, matching forgives case only (`pkb-rules.md` §6.4).
+9. **L10. Padding fixes.** Words already match regardless of case, as today. A word padded with spaces does not match and scores zero (`pkb-rules.md` §6.4). May agents trim the padding unasked? Proposed: yes, since it changes no meaning.
 10. **L6. Volume of `flow-no-route`.** Is a summary line in text output, with the full list in JSON, the right default for 1,255 items?
 11. **L11. Intent checks (Q10).** If `intent` is dropped, its two checks go too. Until then they stay.
 12. **L12. Unclassed dates (Q18).** If an unclassed date is read as `fake`, is a warning right, or should it be style until a hard deadline is missed?
