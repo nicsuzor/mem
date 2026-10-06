@@ -482,6 +482,10 @@ fn test_every_tool_rejects_when_any_required_field_is_missing() {
     );
     valid_samples.insert("delete", json!({ "id": "task-seed1" }));
     valid_samples.insert(
+        "convert_document",
+        json!({ "id": "task-seed1", "type": "task" }),
+    );
+    valid_samples.insert(
         "complete_task",
         json!({ "id": "task-seed1", "completion_evidence": "Done with tests" }),
     );

@@ -238,7 +238,7 @@ use super::*;
     #[test]
     fn test_decompose_task_accepts_agent_intent() {
         // Agent-set subtask intent is accepted under Nic's standing delegation
-        // (kb_ccc17177 Mechanism 1, aops_intent_delegation_tooling).
+        // (specs/pkb-rules.md §6.3, aops_intent_delegation_tooling).
         let server = build_test_server();
         std::fs::create_dir_all("/tmp/test-pkb-project/tasks").unwrap();
 
@@ -465,7 +465,7 @@ use super::*;
         );
     }
 
-    // ── update_task: agent-set intent under Nic's standing delegation (kb_ccc17177 Mechanism 1, aops_intent_delegation_tooling) ──
+    // ── update_task: agent-set intent under Nic's standing delegation (specs/pkb-rules.md §6.3, aops_intent_delegation_tooling) ──
 
     #[test]
     fn test_update_task_accepts_agent_intent_nested() {

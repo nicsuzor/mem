@@ -26,7 +26,7 @@ Semantic search + knowledge graph MCP server for a personal knowledge base (PKB)
 ```
 src/
   cli.rs            — main() for pkb binary (CLI + MCP server via `pkb mcp`)
-  mcp_server.rs     — MCP ServerHandler: 38 tools, dispatch, tool registrations
+  mcp_server.rs     — MCP ServerHandler: 44 tools, dispatch, tool registrations
   graph_store.rs    — GraphStore: builds/queries knowledge graph from PKB docs
   graph.rs          — GraphNode (fields include stakeholder, waiting_since), Edge, EdgeType, link resolution helpers
   graph_display.rs  — Graph rendering/display utilities
@@ -41,11 +41,14 @@ src/
   eval.rs           — Evaluation utilities
   lint.rs           — PKB linting/validation
   path_lint.rs      — rejects new machine-specific paths to PKB files (`~/brain/...`) in bodies written via MCP
+  lsp.rs            — PKB Language Server Protocol (LSP) server (hover preview & goto-def/links)
   reproduction.rs   — Reproduction/test helpers
   lib.rs            — Library root
+editors/
+  vscode/           — VS Code LSP client extension (hover preview & open referenced files in new tab)
 ```
 
-## MCP Tools (38)
+## MCP Tools (44)
 
 ### Search
 - `search` — hybrid semantic + graph-proximity
@@ -79,6 +82,7 @@ src/
 - `create` — generic document creation (any doc type: notes, specs, goals, targets, contacts, etc. — not just tasks/memories)
 - `append` — timestamped append to existing doc
 - `update_body` — atomically rewrite a document's prose body, preserving frontmatter
+- `convert_document` — convert an existing doc in place, keeping its ID: replace frontmatter `type`, move + rename the same file to `<dir>/<id>_<slug>.md` (default dir by type), reindex. Retype and rename are separate git commits so history shows a rename. Built for capture intake (note → task)
 - `delete` — remove doc from disk + index; optional `type` param guards deletion to a matching node type (e.g. `type: "memory"` restricts to memory/note/insight/observation, replacing the old dedicated `delete_memory` tool)
 
 ### Knowledge Graph

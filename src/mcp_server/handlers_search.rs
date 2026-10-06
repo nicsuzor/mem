@@ -45,6 +45,8 @@ impl PkbSearchServer {
                     .collect()
             });
 
+        let _date_filter = crate::date_filter::DateFilter::from_args(args)?;
+
         let query_embedding = self.embedder.encode_query(query).map_err(|e| McpError {
             code: ErrorCode::INTERNAL_ERROR,
             message: Cow::from(format!("Embedding error: {e}")),
@@ -335,6 +337,8 @@ impl PkbSearchServer {
             .get("format")
             .and_then(|v| v.as_str())
             .unwrap_or("markdown");
+
+        let _date_filter = crate::date_filter::DateFilter::from_args(args)?;
 
         let query_embedding = self.embedder.encode_query(query).map_err(|e| McpError {
             code: ErrorCode::INTERNAL_ERROR,
