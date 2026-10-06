@@ -19,6 +19,7 @@ pub mod graph;
 pub mod graph_display;
 pub mod graph_store;
 pub mod lint;
+pub mod lsp;
 pub mod mcp_server;
 pub mod metrics;
 pub mod migrations;

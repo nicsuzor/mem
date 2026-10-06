@@ -1,0 +1,73 @@
+{
+  "name": "mem-vscode",
+  "displayName": "Mem PKB Language Server",
+  "description": "VS Code extension backed by pkb lsp for previewing PKB references on mouseover and opening referenced files in a new tab",
+  "version": "0.1.0",
+  "publisher": "nicsuzor",
+  "engines": {
+    "vscode": "^1.80.0"
+  },
+  "categories": [
+    "Programming Languages",
+    "Other"
+  ],
+  "activationEvents": [
+    "onLanguage:markdown"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "mem.openReference",
+        "title": "Mem: Open PKB Reference in New Tab"
+      },
+      {
+        "command": "mem.openReferenceAtCursor",
+        "title": "Mem: Open Reference at Cursor in New Tab"
+      },
+      {
+        "command": "mem.restartServer",
+        "title": "Mem: Restart PKB LSP Server"
+      }
+    ],
+    "configuration": {
+      "title": "Mem PKB LSP",
+      "properties": {
+        "mem.lsp.executable": {
+          "type": "string",
+          "default": "pkb",
+          "description": "Path to the pkb binary"
+        },
+        "mem.lsp.pkbRoot": {
+          "type": "string",
+          "default": "",
+          "description": "Path to the PKB root directory (defaults to workspace folder or ACA_DATA)"
+        },
+        "mem.lsp.trace.server": {
+          "type": "string",
+          "enum": [
+            "off",
+            "messages",
+            "verbose"
+          ],
+          "default": "off",
+          "description": "Traces the communication between VS Code and the PKB language server"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "test": "node ./out/test/runner.js"
+  },
+  "dependencies": {
+    "vscode-languageclient": "^10.1.2"
+  },
+  "devDependencies": {
+    "@types/mocha": "^10.0.10",
+    "@types/node": "^26.6.3",
+    "@types/vscode": "^1.138.0",
+    "typescript": "^7.0.2"
+  }
+}
