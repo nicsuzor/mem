@@ -1198,7 +1198,7 @@ mod batch_finalize_tests {
     }
 
     /// Agent-set `intent` (or legacy `priority`) via `batch_update` is accepted
-    /// under Nic's standing delegation to agents (kb_ccc17177 Mechanism 1,
+    /// under Nic's standing delegation to agents (specs/pkb-rules.md §6.3,
     /// aops_intent_delegation_tooling) — the range check (`is_valid_intent`)
     /// still applies, but there is no longer an authority guard.
     #[test]

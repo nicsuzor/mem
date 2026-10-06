@@ -170,8 +170,8 @@ Without this term, an overdue `due` date presses harder without limit, forever, 
                                   // the SEV1 floor (~100)
       OR intent < 2               // Nic-curated P0/P1 override (§2.1)
   ```
-  A node escapes decay the instant it acquires any of these through a channel the model already treats as authoritative: becoming a real blocker, being named a stakeholder, being wired to a severity-bearing target via `contributes_to`, or being promoted by Nic. `stated_weight` and `intent` are themselves closed to agents — pauli/Nic only, per `kb_pauli_prioritisation_doctrine` §5 — so a task cannot quietly game itself out of decay by editing its own frontmatter.
-  - **`severity` and `consequence` are deliberately excluded from this gate.** `kb_pauli_prioritisation_doctrine` §4 is explicit that `consequence` is explanatory prose the ranking engine must never read, and that `severity` belongs to target nodes, never tasks — a task-level `severity` read here would silently no-op on every correctly modelled task (which never carries one) while also being a second, new violation of the same rule.
+  A node escapes decay the instant it acquires any of these through a channel the model already treats as authoritative: becoming a real blocker, being named a stakeholder, being wired to a severity-bearing target via `contributes_to`, or being promoted by Nic. `stated_weight` and `intent` are themselves closed to working agents (`specs/pkb-rules.md` §6.3, §6.5) — so a task cannot quietly game itself out of decay by editing its own frontmatter.
+  - **`severity` and `consequence` are deliberately excluded from this gate.** `specs/pkb-rules.md` §6.1–§6.2 is explicit that `consequence` is explanatory prose the ranking engine must never read, and that `severity` belongs to target nodes, never tasks — a task-level `severity` read here would silently no-op on every correctly modelled task (which never carries one) while also being a second, new violation of the same rule.
 - **Formula** (only when `!has_real_stakes` and `days_overdue > 20`):
   ```
   decay_days = min(days_overdue - 20, 100)
@@ -384,7 +384,7 @@ In addition to `focus_score`, `mem` computes several topological and network mea
 - **Theoretical Range**: $[0.0, 1.0]$.
 - **Consumers**: `compute_voi_term`, `get_task` / `list_tasks` signals.
 
-### 4.6. `effective_intent` (mem_intent_ready_weight; `kb_pauli_prioritisation_doctrine` §6)
+### 4.6. `effective_intent` (mem_intent_ready_weight)
 - **Code reference**: `compute_effective_intent`, `src/graph_store.rs:3354-3464`.
 - There is no `effective_priority` field, `own_priority` function, or single undirected downstream-cone cascade. The prior shape (a min-cascade over `blocks`/`soft_blocks`/`children`/`contributes_to` in one pass, letting a parent silently absorb a child's urgency and a blocked node inherit pressure from what it blocks) was replaced (PR #616, "stop intent cascading to children; gate ready-node weight on blocked status") by two independently gated channels, neither of which is `min` over a "downstream cone" containing `children`:
   - **Blocker channel.** DFS over `blocks`, `soft_blocks`, `contributes_to` — **excluding `children`** — taking the lowest `intent` found in what the node transitively blocks (skipping completed nodes). A node blocking a P0 task gets pulled toward `0`.

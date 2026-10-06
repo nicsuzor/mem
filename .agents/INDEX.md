@@ -11,6 +11,8 @@
 - **`specs/excalidraw-tooling.md`**: Excalidraw tooling specification (`src/bin/pkb_excalidraw.rs`)
 - **`specs/pkb-server-spec.md`**: PKB MCP server specification
 - **`specs/pkb-type-taxonomy.md`**: Document/node type taxonomy
+- **`specs/pkb-rules.md`**: PKB rules (SSoT) — what the PKB holds, writing/linking nodes, graph hygiene, write/read discipline, task lifecycle, prioritisation doctrine, rule placement, agent conduct around the PKB
+- **`specs/ranking.md`**: Ranking engine — `focus_tuple`, `cost_of_delay`, urgency, severity ladder, verbal weight scale
 - **`specs/work-management.md`**: Task and work-management model
 - **`specs/batch-graph-operations.md`**, **`specs/multi-parent.md`**, **`specs/mutation-neighborhood.md`**, **`specs/typed-facts.md`**, **`specs/crud-redesign.md`**, **`specs/crud-audit.md`**, **`specs/areas-not-projects.md`**: Additional design specs
 - **`src/`**: Rust source — CLI, MCP server, graph store, vector store, embeddings, document CRUD, metrics
