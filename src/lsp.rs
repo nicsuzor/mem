@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 
 use lsp_types::*;
 use parking_lot::RwLock;
@@ -15,6 +15,9 @@ use regex::Regex;
 
 use crate::graph::GraphNode;
 use crate::graph_store::GraphStore;
+
+static WIKILINK_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\[\[([^\]\|]+)(?:\|([^\]]+))?\]\]").unwrap());
 
 /// A reference span located within a document.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -277,22 +280,20 @@ impl LspServer {
         let mut links = Vec::new();
         for (line_idx, line) in content.lines().enumerate() {
             // Find wikilinks
-            if let Ok(wiki_re) = Regex::new(r"\[\[([^\]\|]+)(?:\|([^\]]+))?\]\]") {
-                for cap in wiki_re.captures_iter(line) {
-                    if let (Some(full), Some(target_match)) = (cap.get(0), cap.get(1)) {
-                        let target = target_match.as_str().trim();
-                        if let Some((node, abs_path)) = self.resolve_node(target) {
-                            if let Ok(target_uri) = Uri::from_str(&format!("file://{}", abs_path.to_string_lossy())) {
-                                links.push(DocumentLink {
-                                    range: Range {
-                                        start: Position { line: line_idx as u32, character: full.start() as u32 },
-                                        end: Position { line: line_idx as u32, character: full.end() as u32 },
-                                    },
-                                    target: Some(target_uri),
-                                    tooltip: Some(format!("Open {}: {}", node.id, node.label)),
-                                    data: None,
-                                });
-                            }
+            for cap in WIKILINK_RE.captures_iter(line) {
+                if let (Some(full), Some(target_match)) = (cap.get(0), cap.get(1)) {
+                    let target = target_match.as_str().trim();
+                    if let Some((node, abs_path)) = self.resolve_node(target) {
+                        if let Ok(target_uri) = Uri::from_str(&format!("file://{}", abs_path.to_string_lossy())) {
+                            links.push(DocumentLink {
+                                range: Range {
+                                    start: Position { line: line_idx as u32, character: full.start() as u32 },
+                                    end: Position { line: line_idx as u32, character: full.end() as u32 },
+                                },
+                                target: Some(target_uri),
+                                tooltip: Some(format!("Open {}: {}", node.id, node.label)),
+                                data: None,
+                            });
                         }
                     }
                 }

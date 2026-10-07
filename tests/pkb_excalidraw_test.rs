@@ -3074,7 +3074,7 @@ fn test_batch_apply_stroke_style_mem_41d61d9c() {
         }
     ]"##;
 
-    let (code, stdout, stderr) = run_bin_stdin(&[path, "batch", "-"], batch_json);
+    let (code, _stdout, stderr) = run_bin_stdin(&[path, "batch", "-"], batch_json);
     assert_eq!(code, 0, "stderr: {}", stderr);
     
     assert_eq!(stroke_style_of(path, "node_solid"), "solid");
