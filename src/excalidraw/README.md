@@ -220,7 +220,7 @@ Theme Commands:
        pkb-excalidraw FILE theme apply <theme.json | default | retro-terminal | aops-default> [--all | --id <id>]
 ```
 
-`FILE` and the mode may be given in either order; with no mode, `summary` is assumed ([L2784-L2801](../bin/pkb_excalidraw.rs#L2784-L2801)). Also accepted but not in the usage text: `update-node --id <id> [--angle] [--roughness] [--fill-style] [--stroke-style] [--preset]` ([L2972-L3025](../bin/pkb_excalidraw.rs#L2972-L3025)) — it is missing from the `known_modes` list ([L2784-L2789](../bin/pkb_excalidraw.rs#L2784-L2789)), so only the `FILE update-node …` order works; `--angle`, `--roughness`, `--fill-style`, `--stroke-style` and `--preset hero|sticky|zone|badge` on `add-node` ([L3075-L3084](../bin/pkb_excalidraw.rs#L3075-L3084)); and `--curved` / `--stroke-style` on `connect` ([L3163-L3213](../bin/pkb_excalidraw.rs#L3163-L3213)).
+`FILE` and the mode may be given in either order; with no mode, `summary` is assumed ([L2784-L2801](../bin/pkb_excalidraw.rs#L2784-L2801)). Also accepted but not in the usage text: `update-node --id <id> [--angle] [--roughness] [--fill-style] [--stroke-style] [--preset]` ([L2972-L3025](../bin/pkb_excalidraw.rs#L2972-L3025)); `--angle`, `--roughness`, `--fill-style`, `--stroke-style` and `--preset hero|sticky|zone|badge` on `add-node` ([L3075-L3084](../bin/pkb_excalidraw.rs#L3075-L3084)); and `--curved` / `--stroke-style` on `connect` ([L3163-L3213](../bin/pkb_excalidraw.rs#L3163-L3213)).
 
 ### Projections (read-only)
 
@@ -268,4 +268,4 @@ Action names accept `snake_case` and `kebab-case` aliases (`update_node`, `add_n
 
 ### Exit codes
 
-`0` on success and on a clean `check`/`overlap`/`arrows-check`; `1` for usage errors, unreadable or unparseable JSON, a failed pre-save `check`, or any detected collision. Two things do **not** fail: a parseable file with no `elements` (e.g. `{}`) yields a zero-element `summary` and exit 0, and `delete-elem <unknown id>` prints `OK: deleted element <id>` and exits 0 ([L3282-L3303](../bin/pkb_excalidraw.rs#L3282-L3303)) — only `move-elem`, `set-text`/`fit`, `set-stroke-style` and `inspect`/`get` exit 1 on an unknown id. Output is plain text except `get`, `item` and `theme export`, which emit JSON.
+`0` on success and on a clean `check`/`overlap`/`arrows-check`; `1` for usage errors, unreadable or unparseable JSON, a failed pre-save `check`, or any detected collision. Two things do **not** fail: a parseable file with no `elements` (e.g. `{}`) yields a zero-element `summary` and exit 0, and `delete-elem <unknown id>` prints `OK: deleted element <id>` and exits 0 ([L3282-L3303](../bin/pkb_excalidraw.rs#L3282-L3303)), whereas commands like `move-elem`, `set-text`/`fit`, `update-node`, `connect`, `set-stroke-style` and `inspect`/`get` exit 1 on an unknown id. Output is plain text except `get`, `item` and `theme export`, which emit JSON.

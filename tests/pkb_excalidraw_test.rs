@@ -3031,3 +3031,100 @@ fn test_stroke_style_help_mem_41d61d9c() {
         assert!(stdout.contains("--stroke-style"), "help {cmd} missing --stroke-style");
     }
 }
+
+#[test]
+fn test_batch_apply_stroke_style_mem_41d61d9c() {
+    let initial = r##"{
+        "type": "excalidraw",
+        "version": 2,
+        "elements": []
+    }"##;
+    let file = NamedTempFile::new().unwrap();
+    fs::write(file.path(), initial).unwrap();
+    let path = file.path().to_str().unwrap();
+
+    let batch_json = r##"[
+        {
+            "action": "add-node",
+            "type": "rectangle",
+            "text": "Solid",
+            "at": [100, 100],
+            "id": "node_solid",
+            "stroke_style": "solid"
+        },
+        {
+            "action": "add-node",
+            "type": "rectangle",
+            "text": "Dashed",
+            "at": [300, 100],
+            "id": "node_dashed",
+            "strokeStyle": "dashed"
+        },
+        {
+            "action": "add-node",
+            "type": "rectangle",
+            "text": "Dotted",
+            "at": [500, 100],
+            "id": "node_dotted"
+        },
+        {
+            "action": "update-node",
+            "id": "node_dotted",
+            "stroke_style": "dotted"
+        }
+    ]"##;
+
+    let (code, stdout, stderr) = run_bin_stdin(&[path, "batch", "-"], batch_json);
+    assert_eq!(code, 0, "stderr: {}", stderr);
+    
+    assert_eq!(stroke_style_of(path, "node_solid"), "solid");
+    assert_eq!(stroke_style_of(path, "node_dashed"), "dashed");
+    assert_eq!(stroke_style_of(path, "node_dotted"), "dotted");
+
+    // Invalid style in batch aborts transaction
+    let invalid_batch = r##"[
+        {
+            "action": "add-node",
+            "type": "rectangle",
+            "text": "Bad",
+            "at": [100, 100],
+            "id": "bad",
+            "stroke_style": "wavy"
+        }
+    ]"##;
+    let (code, _, stderr) = run_bin_stdin(&[path, "batch", "-"], invalid_batch);
+    assert_eq!(code, 1);
+    assert!(stderr.contains("invalid stroke style"), "stderr={stderr}");
+
+    // Apply create with strokeStyle
+    let apply_json = r##"{
+        "create": [
+            {
+                "id": "added_by_apply",
+                "type": "rectangle",
+                "text": "Applied",
+                "at": [100, 300],
+                "strokeStyle": "dashed"
+            }
+        ]
+    }"##;
+    let (code, _, stderr) = run_bin_stdin(&[path, "apply", "-"], apply_json);
+    assert_eq!(code, 0, "stderr: {}", stderr);
+    assert_eq!(stroke_style_of(path, "added_by_apply"), "dashed");
+
+    // Invalid style in apply
+    let invalid_apply = r##"{
+        "create": [
+            {
+                "id": "bad_apply",
+                "type": "rectangle",
+                "text": "Bad Apply",
+                "at": [100, 500],
+                "strokeStyle": "zigzag"
+            }
+        ]
+    }"##;
+    let (code, _, stderr) = run_bin_stdin(&[path, "apply", "-"], invalid_apply);
+    assert_eq!(code, 1);
+    assert!(stderr.contains("invalid stroke style"), "stderr={stderr}");
+}

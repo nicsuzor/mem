@@ -5272,7 +5272,11 @@ fn main() {
                 } else if flag == "--fill-style" && !opts.is_empty() {
                     fill_style = Some(opts[0].clone());
                     opts = &opts[1..];
-                } else if flag == "--stroke-style" && !opts.is_empty() {
+                } else if flag == "--stroke-style" {
+                    if opts.is_empty() {
+                        eprintln!("missing value for --stroke-style");
+                        std::process::exit(1);
+                    }
                     stroke_style = Some(opts[0].clone());
                     opts = &opts[1..];
                 } else if flag == "--preset" && !opts.is_empty() {
