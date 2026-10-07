@@ -2947,6 +2947,28 @@ fn test_nodes_label_only_projection_task_1e1c963d() {
 }
 
 #[test]
+fn test_nodes_label_only_uses_rotated_containment() {
+    let file = NamedTempFile::new().unwrap();
+    fs::write(
+        file.path(),
+        r#"{
+            "type": "excalidraw",
+            "elements": [
+                { "id": "parent", "type": "rectangle", "x": 0, "y": 0, "width": 100, "height": 100, "angle": 0.7853981633974483, "index": "a0" },
+                { "id": "outside", "type": "rectangle", "x": 0, "y": 0, "width": 10, "height": 10, "index": "a1" },
+                { "id": "inside", "type": "rectangle", "x": -15, "y": 45, "width": 10, "height": 10, "index": "a2" }
+            ]
+        }"#,
+    )
+    .unwrap();
+    let path = file.path().to_str().unwrap();
+
+    let (code, stdout, stderr) = run_bin(&[path, "nodes", "--label-only"]);
+    assert_eq!(code, 0, "stderr: {stderr}");
+    assert_eq!(stdout, "parent\n  inside\noutside\n");
+}
+
+#[test]
 fn test_nodes_default_output_unchanged_task_1e1c963d() {
     let file = NamedTempFile::new().unwrap();
     fs::write(file.path(), LABEL_ONLY_SAMPLE).unwrap();
