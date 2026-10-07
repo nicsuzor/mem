@@ -1159,28 +1159,21 @@ fn rotated_rect_contains(outer: &LogicalNode, inner: &LogicalNode) -> bool {
             .max(inner.height.abs())
             .max(1.0);
 
-    [
-        (-1.0, -1.0),
-        (-1.0, 1.0),
-        (1.0, -1.0),
-        (1.0, 1.0),
-    ]
-    .iter()
-    .all(|&(sx, sy)| {
-        let corner_x = inner_cx
-            + sx * inner.width / 2.0 * inner_cos
-            - sy * inner.height / 2.0 * inner_sin;
-        let corner_y = inner_cy
-            + sx * inner.width / 2.0 * inner_sin
-            + sy * inner.height / 2.0 * inner_cos;
-        let dx = corner_x - outer_cx;
-        let dy = corner_y - outer_cy;
-        let local_x = dx * outer_cos + dy * outer_sin;
-        let local_y = -dx * outer_sin + dy * outer_cos;
+    [(-1.0, -1.0), (-1.0, 1.0), (1.0, -1.0), (1.0, 1.0)]
+        .iter()
+        .all(|&(sx, sy)| {
+            let corner_x =
+                inner_cx + sx * inner.width / 2.0 * inner_cos - sy * inner.height / 2.0 * inner_sin;
+            let corner_y =
+                inner_cy + sx * inner.width / 2.0 * inner_sin + sy * inner.height / 2.0 * inner_cos;
+            let dx = corner_x - outer_cx;
+            let dy = corner_y - outer_cy;
+            let local_x = dx * outer_cos + dy * outer_sin;
+            let local_y = -dx * outer_sin + dy * outer_cos;
 
-        local_x.abs() <= outer.width / 2.0 + tolerance
-            && local_y.abs() <= outer.height / 2.0 + tolerance
-    })
+            local_x.abs() <= outer.width / 2.0 + tolerance
+                && local_y.abs() <= outer.height / 2.0 + tolerance
+        })
 }
 
 #[derive(Debug, Clone, PartialEq)]
