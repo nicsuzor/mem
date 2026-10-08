@@ -118,6 +118,7 @@ Term 10, `value_lineage_term`, is the fix for the failure terms 5/11 cannot be: 
 - **Theoretical Range**: `0`, `5000`, or `10000`.
 - **Observed Range**: `0` for >97% of tasks (P0 is rare/transient).
 - **Default (absent input)**: `0` (intent unset defaults to P4/4, which bands to `0`).
+- **The default is P4 (Backlog) on every surface.** The engine reads `node.intent.unwrap_or(4)` at every site. Every agent-facing description of `intent` must state the same default: the `create_task`, `update_task` and `decompose_task` schemas in `src/mcp_server/schemas.rs`, and any dashboard fallback. *Rationale:* absence is curation-by-absence, meaning "no band warranted". Telling agents that absence means P3 while the engine treats it as P4 invites agents to write `intent: 3` to get what they think is the default. That turns the unset state into an explicit band nobody chose.
 - **Zeroing conditions**: `effective_intent >= 2` or unset.
 - **Consumers**: `compute_focus_scores` (via `compute_cost_of_delay`).
 
@@ -419,16 +420,74 @@ In addition to `focus_score`, `mem` computes several topological and network mea
 - **Consumers**: `compute_focus_scores` (`tie_breakers.unlock_breadth_x10` — a tie-breaker, **not** `cost_of_delay`; see the note at the end of §3), `get_task` / `list_tasks` signals.
 
 ### 4.11. `value_lineage` — Phase 2
+> **Approved 2026-10-08 (`mem_30862d16`), not yet shipped.** §4.11a–d, the `effective_intent` export in §8.5 and the P4 schema default in §2.1 are implemented by `mem_c07240b6`. Until that lands, the code at the pinned commit copies `raw(h)` whole onto every ready leaf beneath a container. It also treats a node with any child as a container, and lets non-actionable leaves receive value.
+
 - **Code reference**: `compute_value_lineage`, `src/graph_store.rs:4035`.
 - **Definition**: Standing weight elicited on **any** target/goal node that carries one, flowing multiplicatively to a contributor via `contributes_to`. This is the mechanism the doctrine in §7 and the parent plan's "Nic prices the destinations; the system prices the routes" require.
 - **Formula**:
   $$\text{value\_lineage}(x) = K_{\text{VL}} \times \text{confidence}(x) \times \sum_{ct \,\in\, x.\text{contributes\_to}} ct.\text{numeric\_weight}() \times \text{standing\_weight}(ct.\text{target})$$
   where $K_{\text{VL}} = 10{,}000$ (§2.9), $\text{confidence}(x)$ defaults to $1.0$ when unset (mirrors `compute_uncertainty`'s existing "missing confidence, no open question ⇒ certain" default — a default on the *contributor's* stated confidence, never on the target's `standing_weight`, which is strictly `None`-means-zero), and a target contributes nothing to the sum unless it has a priced `standing_weight` (`pkb-standing-weight-elicitation-instrument` §1; "Zero Defaults / Zero Inference"). **`goal_type` is not part of this gate** (ruling, Nic, 2026-09-12, `mem_537e44a9` "Verdict: goal_type gating"), verbatim: "price should operate even when targets have null category. we shouldn't encourage that state, but while it's legal, we shouldn't always count [i.e. discount] targets that exist." The prior formula filtered the sum to `goal_type(ct.target) == committed`; that filter is gone. `goal_type: committed` remains load-bearing only at the three SEV4 lexicographic-override sites (`severity_gate`, the `S_lex` base in §4.3, and the overdue-pin guard in §4.3) — those have a recorded rationale ("prevents moonshots from hijacking the focus queue," `specs/multi-parent.md` §1.3) that never applied to ordinary pricing.
-- **One hop from the target, then down to the nearest ready leaf**: the pricing walk itself is one hop — it reads a node's own `contributes_to` edges directly and does not chain transitively through a contributor's own further edges (a contributor of a contributor of a priced target earns nothing unless it also has its own direct edge). But the edge-holder does not necessarily keep the resulting value: if it is a container (`!node.children.is_empty()`), the value is zeroed on the container and instead pushed down — one walk up the `parent` chain per leaf, same shape as `compute_effective_intent`'s ancestor-pressure channel — to its nearest ready, unblocked leaf descendant (ruling, Nic, 2026-09-12, `mem_537e44a9` "Verdict: value flow to children": "A target's weight lands on the ready, unblocked leaves that advance it — never on the container, never on anything itself blocked"). A blocked or completed leaf is itself a conduit: it inherits nothing from this pass **and** its own directly-computed value (from its own `contributes_to` edge to a priced target, if it has one) is zeroed too, not merely left un-boosted — `value_lineage` has no notion of an "intrinsic" value the way `urgency`'s `S_lex` does (§4.3), since value_lineage is entirely a function of edges to priced targets, so a blocked contributor's own direct edge is exactly the "value... from its target" the ruling bars. (Contrast `urgency` §4.3, where a blocked node's own severity/deadline baseline survives — the two terms are asymmetric here because only `urgency` has a self-contained baseline independent of any edge.) This replaces the prior strict one-hop-and-stop reading (`ranking.md:412`, pre-2026-09-12) and is still a local per-node scan, not a new whole-graph cone-walk mechanism ("no fourth graph computation").
-- **Sibling-contributor combination semantics (settled)**: independent and additive. Multiple nodes contributing to the same target are each scored off their own edge alone — nothing reduces a contributor's credit because other contributors also point at the same target. This is a deliberate rejection of a Birnbaum-style reliability combination (cut sets, structure functions) across sibling edges, consistent with the parent plan's "Explicitly not building: Birnbaum importance proper" and §7's existing disclaimer that the verbal scale computes no such thing. See §7 for the corrected gloss this setting fixes.
+- **One hop from the target, then shared down the tree to the ready leaves beneath the edge-holder**: the pricing walk itself is one hop. It reads a node's own `contributes_to` edges directly and does not chain through a contributor's own further edges, so a contributor of a contributor of a priced target earns nothing unless it also has its own direct edge. Call the product above the edge-holder's **raw value**, `raw(h)`. The edge-holder keeps `raw(h)` only if it is itself an eligible leaf (§4.11a). Otherwise `raw(h)` is zeroed on `h` and **shared** among the eligible leaves beneath it by the tree split in §4.11b. It is never copied whole onto each of them. The ruling this implements is "A target's weight lands on the ready, unblocked leaves that advance it — never on the container, never on anything itself blocked" (Nic, 2026-09-12, `mem_537e44a9`, "Verdict: value flow to children"). Sharing is how that ruling is read when one edge-holder has many leaves: the target's price is what delivering the edge-holder's whole subtree is worth. A leaf is a fraction of that job, so it gets a fraction of that worth.
+- **A blocked or completed leaf is a conduit**: it inherits nothing, and its own directly computed value (from its own edge to a priced target) is zeroed as well. `value_lineage` has no intrinsic baseline the way `urgency`'s `S_lex` does (§4.3), because it is entirely a function of edges to priced targets. A blocked contributor's own direct edge is exactly the "value… from its target" the ruling bars. Contrast `urgency` (§4.3), where a blocked node keeps its own severity/deadline baseline.
+- **Sibling-contributor combination semantics (settled)**: independent and additive. Multiple nodes contributing to the same target are each scored off their own edge alone — nothing reduces a contributor's credit because other contributors also point at the same target. This is a deliberate rejection of a Birnbaum-style reliability combination (cut sets, structure functions) across sibling edges, consistent with the parent plan's "Explicitly not building: Birnbaum importance proper" and §7's existing disclaimer that the verbal scale computes no such thing. See §7 for the corrected gloss this setting fixes. The tree split (§4.11b) does not breach this independence. It divides one edge-holder's own value within that holder's subtree, and it never reads another contributor's edge.
 - **Theoretical Range**: `0` to `10,000` per contributing edge (§2.9); a node with edges to multiple priced targets sums across them.
 - **Observed Range**: `0` for nodes with no priced target in their lineage. `[[targ_4e2cc92a]]` is priced (`standing_weight: 0.60`, `goal_type: null`) as of 2026-09-12, the first live nonzero source.
 - **Consumers**: `compute_focus_scores` (`cost_of_delay`, §2.9 — **not** a tie-breaker; this is the term that must be able to move a ranking), `get_task` / `list_tasks` signals.
+
+#### 4.11a. Conduit eligibility
+
+Only an **eligible leaf** ever holds a nonzero `value_lineage`. A node `x` is an eligible leaf iff all four hold:
+
+1. Its type is in `ACTIONABLE_TYPES` (`task`, `learn`, `pr`, with `epic` collapsed into `task`; §8).
+2. Its status is not in `COMPLETED_STATUSES`.
+3. It is not effectively blocked (`compute_effectively_blocked`, §4.6).
+4. It has no **open actionable child**, meaning a child that satisfies (1) and (2).
+
+Every other node gets `value_lineage = 0`. That covers containers, blocked or completed leaves, and every non-actionable node (`knowledge`, `note`, `observation`, `target`, `template`, …) wherever it sits in the tree.
+
+- **Why (1):** only actionable nodes are ranked as work (§8.1). A knowledge note filed under a priced task advances nothing, so it must not be the place the price lands.
+- **Why (4) is "open actionable child" and not "any child":** a task whose children are all done or cancelled is the remaining actionable work, not a container. Treating it as a container zeroes it and leaves no leaf beneath it to receive the value, so the value disappears. Likewise, a non-actionable child, such as a note, must not turn its parent task into a conduit.
+
+The walk from a container down to its leaves (§4.11b) descends only through open actionable children. If an edge-holder has no eligible leaf beneath it, nobody holds its value until one becomes ready. Nothing is redirected elsewhere.
+
+#### 4.11b. Tree split
+
+An edge-holder's raw value is divided **equally among its live children at each level** as it descends. A child is *live* when it is itself an eligible leaf, or when it has at least one eligible leaf beneath it.
+
+```text
+share(h, h)  = raw(h)                               if h is an eligible leaf
+share(h, c)  = share(h, p) / |live_children(p)|     for each live child c of p, starting at p = h
+value_lineage(l) = max( raw(l) if l is an eligible leaf,
+                        max over ancestors h of l with raw(h) > 0 of share(h, l) )
+```
+
+- **Equal per level, not equal per leaf.** The author's decomposition sets how value divides. A sub-epic of ten tasks and a single sibling task, both under the same parent, each receive half of what reaches that parent. Dividing per leaf would let one heavily decomposed branch absorb most of the value just by having more leaves. Dividing per level keeps the decision about how big a branch is with whoever shaped the tree.
+- **Max across edge-holders, unchanged.** When several ancestors hold priced edges, a leaf takes the largest share any one of them gives it, not the sum. A nested edge-holder, typically a sub-epic restating its parent's edge, therefore concentrates value on its own subtree without counting the parent's value twice. Within a single node, edges to several priced targets still sum (§4.11 formula), because those are independent claims.
+- **A leaf's own direct edge is not divided.** An eligible leaf with its own priced edge keeps at least its own `raw(l)`. A direct edge is an explicit claim about that leaf.
+
+#### 4.11c. Intended share of open tasks ranking high
+
+"High" means `focus_score ≥ 1,000`. That is the order of magnitude at which a term can move a ranking (§3), and it is where the overwhelm dashboard's emphasis channel separates a node from the unpriced mass.
+
+- **Intended share: at most 10% of open tasks in the live graph** (type `task`, status not completed).
+- **Below 1,000:** the open tasks whose cost of delay is a fractional share of a priced target.
+- **Above 1,000**, only three kinds of task:
+  - Nic-curated P0/P1 intent (§2.1);
+  - a named stakeholder waiting (§2.6);
+  - priced value concentrated on a few leaves, either a small subtree, a direct edge, or the last open leaves of a nearly finished epic.
+
+**Why a share and not a cap in code:** the share depends on how many targets Nic prices and how heavily. Those are legitimate inputs, and the engine must not clip them. The 10% figure is a live-graph diagnostic. When it is exceeded, check pricing and decomposition before touching the formula. It is not a hard invariant. The invariants that make the share achievable are structural, and they are the regression properties below.
+
+#### 4.11d. Regression properties
+
+These hold on every graph. Each is asserted by a constructed-graph test in `src/graph_store.rs`'s test module.
+
+1. **Conservation.** For every edge-holder `h`, the shares it delivers to eligible leaves sum to at most `raw(h)`. They sum to exactly `raw(h)` when `h` has at least one eligible leaf. *Rationale:* a target's price is a finite budget. Copying it whole onto every leaf mints value out of decomposition, and that was the 117-way tie at 2,975.
+2. **Bounded ties.** For any threshold `T > 0`, at most `⌊raw(h) / T⌋` leaves receive `≥ T` from a single edge-holder `h`. For example, one edge-holder with `raw(h) = 2,975` puts at most 2 leaves at `≥ 1,000`, whatever the size of its subtree. Equivalently, `k` leaves tied on one holder's share each sit at `≤ raw(h) / k`, so large exact ties can only occur at low values. *Rationale:* this follows from (1), and it is the property the dashboard needs. A big tie is harmless at 25 points and harmful at 2,975.
+3. **Decomposition neutrality.** Splitting an eligible leaf into `k` actionable children does not increase the total value delivered from any edge-holder. *Rationale:* decomposing a task should never raise its priority.
+4. **Finishing concentrates.** Completing or cancelling an eligible leaf never lowers any remaining eligible leaf's share from the same edge-holder. *Rationale:* the last open leaves of a priced epic should press harder, not softer.
+5. **Eligibility.** Containers, blocked or completed nodes, and non-actionable nodes have `value_lineage = 0`. A task whose only children are completed, or are non-actionable, is an eligible leaf. *Rationale:* see §4.11a.
+6. **Direct edges survive.** An eligible leaf with its own priced edge has `value_lineage ≥ raw(l)`. *Rationale:* see §4.11b.
 
 ---
 
@@ -529,6 +588,8 @@ All flat task listings in MCP (`list_tasks`) and CLI (`pkb tasks`, `pkb list`) u
 
 Nodes without a `focus_tuple` (completed, or otherwise unscored) omit all three fields.
 
+Every exported node of an actionable type (§8) also carries **`effective_intent`** (integer `0`–`4`), the gated, propagated value from §4.6, whether or not it has a `focus_tuple`. It is a computed field, so it is still never written back to frontmatter. *Rationale:* `effective_intent` is a ranking input (it sets `intent_pressure`, §2.1). A consumer that receives only raw `intent` silently disagrees with the engine on every node whose band is lowered by the blocker or ancestor-pressure channel. The overwhelm dashboard already prefers `effective_intent` and falls back to `intent`, so omitting the field leaves the dashboard showing a different band from the one the engine ranks by.
+
 ---
 
 ## 9. Testing vs. Validation Distinction
@@ -542,6 +603,7 @@ Nodes without a `focus_tuple` (completed, or otherwise unscored) omit all three 
   - `tests/cli_default_ordering.rs`
   - Phase 2 (chain slack, unlock breadth, value lineage) constructed-graph tests, all in `src/graph_store.rs`'s test module, immediately after `test_urgency_propagation`:
     `test_chain_slack_relaxation_finds_true_minimum_across_path_lengths` (AC1), `test_urgency_first_path_bfs_defect_fixed` (AC2, the V9 regression test), `test_unlock_breadth_is_cost_of_delay_weighted_not_a_count` (AC3), `test_value_lineage_materially_differentiates_targets_by_standing_weight` (AC4, includes a `focus_cmp` rank-movement assertion), `test_sibling_contributors_to_same_target_are_independent_not_combined` (AC6), `test_stated_weight_out_of_scale_rejected_at_parse_time_not_defaulted` / `test_stated_weight_omitted_is_silently_zero_no_warning` (AC5), `test_standing_weight_out_of_range_rejected`, `test_criticality_never_enters_cost_of_delay` (AC7, executable companion to the grep-based verification).
+  - Value-lineage sharing: one constructed-graph test per regression property in §4.11d (conservation, bounded ties, decomposition neutrality, finishing concentrates, eligibility, direct edges survive).
 - **Model Validation Does NOT Exist**: These tests verify only that *the code executes what the code specifies*. They do not constitute empirical validation, calibration against real user outcomes, or backtesting of queue throughput. Genuinely untested at the mechanism level are the `slack = 0` and `slack = 30` step boundaries and the ready comparator against live queues. Phase 2's `value_lineage_term` is likewise untested against live-corpus outcomes — no target has been priced yet, so there is nothing on the live PKB to measure (§2.9, §4.11).
 
 ---
