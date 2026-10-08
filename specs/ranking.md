@@ -170,8 +170,8 @@ Without this term, an overdue `due` date presses harder without limit, forever, 
                                   // the SEV1 floor (~100)
       OR intent < 2               // Nic-curated P0/P1 override (§2.1)
   ```
-  A node escapes decay the instant it acquires any of these through a channel the model already treats as authoritative: becoming a real blocker, being named a stakeholder, being wired to a severity-bearing target via `contributes_to`, or being promoted by Nic. `stated_weight` and `intent` are themselves closed to agents — pauli/Nic only, per `kb_pauli_prioritisation_doctrine` §5 — so a task cannot quietly game itself out of decay by editing its own frontmatter.
-  - **`severity` and `consequence` are deliberately excluded from this gate.** `kb_pauli_prioritisation_doctrine` §4 is explicit that `consequence` is explanatory prose the ranking engine must never read, and that `severity` belongs to target nodes, never tasks — a task-level `severity` read here would silently no-op on every correctly modelled task (which never carries one) while also being a second, new violation of the same rule.
+  A node escapes decay the instant it acquires any of these through a channel the model already treats as authoritative: becoming a real blocker, being named a stakeholder, being wired to a severity-bearing target via `contributes_to`, or being promoted by Nic. `stated_weight` and `intent` are themselves closed to working agents (`specs/pkb-rules.md` §6.3, §6.5) — so a task cannot quietly game itself out of decay by editing its own frontmatter.
+  - **`severity` and `consequence` are deliberately excluded from this gate.** `specs/pkb-rules.md` §6.1–§6.2 is explicit that `consequence` is explanatory prose the ranking engine must never read, and that `severity` belongs to target nodes, never tasks — a task-level `severity` read here would silently no-op on every correctly modelled task (which never carries one) while also being a second, new violation of the same rule.
 - **Formula** (only when `!has_real_stakes` and `days_overdue > 20`):
   ```
   decay_days = min(days_overdue - 20, 100)
@@ -384,7 +384,7 @@ In addition to `focus_score`, `mem` computes several topological and network mea
 - **Theoretical Range**: $[0.0, 1.0]$.
 - **Consumers**: `compute_voi_term`, `get_task` / `list_tasks` signals.
 
-### 4.6. `effective_intent` (mem_intent_ready_weight; `kb_pauli_prioritisation_doctrine` §6)
+### 4.6. `effective_intent` (mem_intent_ready_weight)
 - **Code reference**: `compute_effective_intent`, `src/graph_store.rs:3354-3464`.
 - There is no `effective_priority` field, `own_priority` function, or single undirected downstream-cone cascade. The prior shape (a min-cascade over `blocks`/`soft_blocks`/`children`/`contributes_to` in one pass, letting a parent silently absorb a child's urgency and a blocked node inherit pressure from what it blocks) was replaced (PR #616, "stop intent cascading to children; gate ready-node weight on blocked status") by two independently gated channels, neither of which is `min` over a "downstream cone" containing `children`:
   - **Blocker channel.** DFS over `blocks`, `soft_blocks`, `contributes_to` — **excluding `children`** — taking the lowest `intent` found in what the node transitively blocks (skipping completed nodes). A node blocking a P0 task gets pulled toward `0`.
@@ -521,6 +521,14 @@ All flat task listings in MCP (`list_tasks`) and CLI (`pkb tasks`, `pkb list`) u
 1. **`focus_tuple` DESC** — nodes carrying a tuple sort by it (reversed `cmp`, so the "largest" tuple sorts first); a node with `None` (filtered/unscored — e.g. `affordable_loss: false`, or completed) sorts after any node that has a tuple. This is the §1 tuple, **not** `focus_score` — the two are demonstrably not the same sort key (§1).
 2. **Only when *both* nodes have no tuple** (both filtered/unscored) does the comparator fall through to a secondary chain: `effective_intent` **ASC** (§4.6) → `order` **ASC** (manual sequence order) → `id` **ASC** (guarantees a deterministic, total order). This fallback exists so unscored nodes still sort deterministically relative to each other; it never runs when either node has a real tuple.
 
+### 8.5. Exported Ranking (`export_graph` JSON)
+`export_graph` with `format: "json"` (`GraphStore::output_json_filtered`, also written to `graph.json` by the CLI) emits each node's ranking alongside its serialized fields, so consumers such as the overwhelm dashboard's `/api/graph` read the engine's order rather than re-deriving it. On every exported node that has a `focus_tuple`:
+- **`cost_of_delay`** (integer) — the tuple's `cost_of_delay` (§1, §2).
+- **`severity_gate`** (string, `"Normal"` | `"Catastrophic"`) — the tuple's `severity_gate` (§6).
+- **`queue_rank`** (integer, 1 = highest priority) — the node's position when the exported nodes that have a `focus_tuple` are sorted by `focus_cmp` (§8.4). Ranks are computed over the exported set after the `focus`, `project`, and `include_done` filters, so they are unique and contiguous `1..N` within each response.
+
+Nodes without a `focus_tuple` (completed, or otherwise unscored) omit all three fields.
+
 ---
 
 ## 9. Testing vs. Validation Distinction
@@ -552,6 +560,7 @@ All flat task listings in MCP (`list_tasks`) and CLI (`pkb tasks`, `pkb list`) u
 | `standing_weight` | Read by `compute_value_lineage`; elicited/written only via hand-edited frontmatter as of this phase (no MCP write-tool wiring — out of scope, elicitation session not yet run). |
 | `voi_value` | `compute_focus_scores`, `get_task` / `list_tasks` `signals: {}`. |
 | `uncertainty` | `compute_voi_term`, `get_task` / `list_tasks` `signals: {}`. |
+| `focus_tuple` | `focus_cmp` (§8.4) for `list_tasks`, `focus_picks`, CLI listings; `export_graph` JSON `cost_of_delay` / `severity_gate` / `queue_rank` (§8.5). |
 | `effective_intent` | `intent_pressure` in `cost_of_delay` (§2.1), `focus_cmp` fallback tie-breaker (§8.4, unscored nodes only), `classify_tasks` ready sorting, `list_tasks` filter. |
 | `scope` | `get_task` / `list_tasks` `signals: {}`. |
 | `pagerank` | `compute_criticality`, `top_n_by_metric`, `get_network_metrics`. |

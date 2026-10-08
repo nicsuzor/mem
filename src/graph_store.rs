@@ -18,6 +18,24 @@ use std::path::Path;
 // Output graph (for JSON serialization)
 // ===========================================================================
 
+/// One node as emitted by `export_graph` JSON: the node's serialized fields
+/// plus the engine's ranking, so consumers never re-derive it.
+#[derive(Serialize, Deserialize, Debug)]
+pub struct ExportNode {
+    #[serde(flatten)]
+    pub node: GraphNode,
+    /// `FocusTuple.severity_gate`; absent when the node has no focus tuple.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub severity_gate: Option<crate::graph::SeverityGate>,
+    /// `FocusTuple.cost_of_delay`; absent when the node has no focus tuple.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost_of_delay: Option<i64>,
+    /// 1-based position among the exported nodes that have a focus tuple,
+    /// ordered by [`GraphStore::focus_cmp`] (1 = highest priority).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub queue_rank: Option<usize>,
+}
+
 #[derive(Serialize, Deserialize, Debug)]
 pub struct OutputGraph {
     pub nodes: Vec<GraphNode>,
@@ -29,6 +47,22 @@ pub struct OutputGraph {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub roots: Vec<String>,
     /// Top focus picks: ready tasks ranked by priority + deadline + staleness + downstream weight.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub focus: Vec<String>,
+}
+
+/// `export_graph` JSON document: [`OutputGraph`] with ranked [`ExportNode`]s.
+#[derive(Serialize, Deserialize, Debug)]
+pub struct ExportGraph {
+    pub nodes: Vec<ExportNode>,
+    pub edges: Vec<Edge>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ready: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub blocked: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub roots: Vec<String>,
+    /// Top focus picks (`GraphStore::focus_picks`, max 50) within the exported set.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub focus: Vec<String>,
 }
@@ -1801,7 +1835,7 @@ impl GraphStore {
         // Deadline pressure -- a multiplier on the node's own value, never a
         // tier and never flat points (ruling, Nic, 2026-09-12, mem_537e44a9
         // "Ruling: deadline pressure is a multiplier on value, not a tier";
-        // specs/ranking.md §2.3, kb_pauli_prioritisation_doctrine §6.2).
+        // specs/ranking.md §2.3).
         //
         // `deadline_pressure_multiplier` starts at the neutral `1.0` (no
         // amplification) and grows with `ratio = effort_days / days_until`,
@@ -1885,12 +1919,12 @@ impl GraphStore {
                 // target, or being promoted by Nic -- every route requires a
                 // truthful claim the model already treats as load-bearing
                 // elsewhere, not a cosmetic label. `stated_weight` and
-                // `intent` are themselves closed to agents (pauli/Nic only)
-                // per `kb_pauli_prioritisation_doctrine` §5, so a task cannot
+                // `intent` are themselves closed to working agents
+                // per `specs/pkb-rules.md` §6.3 and §6.5, so a task cannot
                 // quietly game itself out of decay.
                 //
-                // `consequence` is deliberately NOT part of this gate: doctrine
-                // (`kb_pauli_prioritisation_doctrine` §4.2) is explicit that
+                // `consequence` is deliberately NOT part of this gate:
+                // `specs/pkb-rules.md` §6.1 is explicit that
                 // `consequence` is explanatory prose, never read by the
                 // ranking engine. `severity` is likewise not read directly off
                 // the task: doctrine reserves `severity` for target nodes and
@@ -2209,7 +2243,32 @@ impl GraphStore {
             .filter(|id| placed_ids.contains(id.as_str()))
             .collect();
 
-        let graph = OutputGraph {
+        let mut ranked: Vec<&GraphNode> =
+            nodes.iter().filter(|n| n.focus_tuple.is_some()).collect();
+        Self::sort_by_focus(&mut ranked);
+        let ranks: HashMap<String, usize> = ranked
+            .iter()
+            .enumerate()
+            .map(|(i, n)| (n.id.clone(), i + 1))
+            .collect();
+        let nodes: Vec<ExportNode> = nodes
+            .into_iter()
+            .map(|node| {
+                let queue_rank = ranks.get(&node.id).copied();
+                let (severity_gate, cost_of_delay) = match node.focus_tuple.as_ref() {
+                    Some(ft) => (Some(ft.severity_gate), Some(ft.cost_of_delay)),
+                    None => (None, None),
+                };
+                ExportNode {
+                    node,
+                    severity_gate,
+                    cost_of_delay,
+                    queue_rank,
+                }
+            })
+            .collect();
+
+        let graph = ExportGraph {
             nodes,
             edges,
             ready,
@@ -3346,9 +3405,8 @@ fn compute_effectively_blocked(
 }
 
 /// Compute `effective_intent` for each node via two independently gated
-/// channels (mem_intent_ready_weight; see `kb_pauli_prioritisation_doctrine`
-/// §6, "`effective_intent` -- blocker and parent pressure, kept apart and
-/// gated"):
+/// channels (mem_intent_ready_weight; see `specs/ranking.md`
+/// §4.6):
 ///
 ///   - **Blocker channel.** A node inherits the lowest (most urgent) intent
 ///     found in what it transitively blocks, via `blocks`, `soft_blocks`,
@@ -11097,8 +11155,8 @@ mod tests {
     #[test]
     fn test_courtesy_decay_escape_via_curated_p1_intent() {
         // Nic-curated P1 (intent = 1) is a deliberate human override
-        // (kb_pauli_prioritisation_doctrine §5: "Mechanism 1 (intent) is
-        // Nic's Curated Field") and must never be silently decayed. P1 also
+        // (`specs/pkb-rules.md` §6.3: intent is Nic's
+        // signal) and must never be silently decayed. P1 also
         // supplies its own value (`intent_pressure` = 5000) for the
         // multiplier to amplify, with no separate `value_lineage` needed:
         // round(5000 * 19.4391) = 97195.
@@ -11113,7 +11171,7 @@ mod tests {
 
     #[test]
     fn test_courtesy_decay_does_not_read_severity_or_consequence() {
-        // kb_pauli_prioritisation_doctrine §4.2: `severity` is target-only
+        // `specs/pkb-rules.md` §6.2: `severity` is target-only
         // (never set directly on a task) and `consequence` is explanatory
         // prose the ranking engine must never read. A courtesy-decay gate
         // that keyed off either would (a) silently no-op on every correctly
@@ -11132,7 +11190,7 @@ mod tests {
         assert_eq!(tuple.cost_of_delay, 32765, "severity/consequence must not block decay");
     }
 
-    /// Property (kb_pauli_prioritisation_doctrine §6, doctrine §7's "four
+    /// Property (`specs/pkb-rules.md` §6.8, "four
     /// properties that define good"; ruling, Nic, 2026-09-12,
     /// mem_537e44a9): "an overdue task outranks its day-before self." For a
     /// node with real stakes (a named stakeholder, so courtesy decay never

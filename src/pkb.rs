@@ -211,6 +211,12 @@ pub fn scan_directory_all(root: &Path) -> Vec<PathBuf> {
 
 /// Scan a directory for markdown files, respecting .gitignore, .ignore, and hidden files/dirs.
 pub fn scan_directory(root: &Path) -> Vec<PathBuf> {
+    scan_directory_with_extension(root, "md")
+}
+
+/// Scan a directory for files with extension `ext`, under the same ignore
+/// rules as [`scan_directory`].
+pub fn scan_directory_with_extension(root: &Path, ext: &str) -> Vec<PathBuf> {
     let mut paths = Vec::new();
 
     let walker = WalkBuilder::new(root)
@@ -238,12 +244,8 @@ pub fn scan_directory(root: &Path) -> Vec<PathBuf> {
 
     for entry in walker.flatten() {
         let path = entry.path();
-        if path.is_file() {
-            if let Some(ext) = path.extension() {
-                if ext == "md" {
-                    paths.push(path.to_path_buf());
-                }
-            }
+        if path.is_file() && path.extension().is_some_and(|e| e == ext) {
+            paths.push(path.to_path_buf());
         }
     }
 

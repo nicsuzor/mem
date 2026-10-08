@@ -5,6 +5,7 @@
 
 pub mod handlers_batch;
 pub mod handlers_document;
+pub mod handlers_excalidraw;
 pub mod handlers_prompt;
 pub mod handlers_search;
 pub mod handlers_task;
@@ -1488,6 +1489,7 @@ impl PkbSearchServer {
             "update_body" => self.handle_update_body(args),
             "edit_body" | "edit" => self.handle_edit_body(args),
             "delete" => self.handle_delete_document(args),
+            "convert_document" => self.handle_convert_document(args),
             "complete_task" => self.handle_complete_task(args),
             "release_task" => self.handle_release_task(args),
             "list_tasks" => self.handle_list_tasks(args),
@@ -1512,6 +1514,9 @@ impl PkbSearchServer {
             "export_graph" => self.handle_export_graph(args),
             "diff_excalidraw" => self.handle_diff_excalidraw(args),
             "sync_excalidraw" => self.handle_sync_excalidraw(args),
+            "list_excalidraw" => self.handle_list_excalidraw(args),
+            "get_excalidraw" => self.handle_get_excalidraw(args),
+            "write_excalidraw" => self.handle_write_excalidraw(args),
             "task_summary" => self.handle_task_summary(args),
             "find_duplicates" => self.handle_find_duplicates(args),
             "batch_merge" => self.handle_batch_merge(args),

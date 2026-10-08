@@ -228,10 +228,13 @@ Create and maintain knowledge artifacts. Notes, memories, insights.
 | Create   | `remember <title>`      | `create`, `create_memory` | New document of any type                     |
 | Append   | `append <id> <content>` | `append`                  | Add timestamped content to existing document |
 | Delete   | `delete <id>`           | `delete`                  | Remove document                              |
+| Convert  | —                       | `convert_document`        | Retype, move and rename a document in place  |
 
 **Document types**: `task`, `bug`, `epic`, `feature`, `goal`, `note`, `knowledge`, `memory`, `insight`, `observation`. (`project` is retired as a type — legacy `type: project` files read as epics; "project" is the routing-slug frontmatter field.)
 
 **Routing**: Documents auto-route to subdirectories by type (tasks/ projects/ goals/ notes/).
+
+**Convert in place** (`convert_document`): given an existing document ID and a new `type`, the server replaces the frontmatter `type`, then moves and renames the *same* file to `<dir>/<id>_<title-slug>.md` and reindexes it (graph patch, vector entry re-keyed to the new path). The ID never changes: it is written into frontmatter before the rename, so a document whose ID was only its filename stem (e.g. a mobile capture) keeps it. `dir` defaults to the type's routing directory (task/learn → `tasks/`, target → `targets/`, memory → `memories/`, otherwise `notes/`). Converting to a task type always leaves a valid task status: the `status` argument, else the existing status, else `inbox`. An existing status that is not a valid task status is rejected unless `status` replaces it. Every check runs before any write. The retype and the move are separate git commits, so git records the move as a rename. Re-running with the same arguments is a no-op, and finishes a conversion whose move step failed. Parent, project and other fields are set afterwards with `update_task`.
 
 **Success criteria**:
 
@@ -311,6 +314,8 @@ parent: parent-id
 
 Markdown body content.
 ```
+
+Excalidraw canvases (`*.excalidraw`) may sit beside the markdown. They are files, not documents: they carry no frontmatter, are not graph nodes, and are never indexed. MCP clients reach them by PKB-relative path through `list_excalidraw`, `get_excalidraw` and `write_excalidraw`. Writes are validated as Excalidraw scenes and are atomic.
 
 ### Vector Store
 

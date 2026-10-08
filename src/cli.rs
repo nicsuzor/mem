@@ -597,6 +597,13 @@ enum Commands {
         allowed_hosts: Vec<String>,
     },
 
+    /// Start the PKB Language Server Protocol (LSP) server on stdio (for VS Code, etc.)
+    Lsp {
+        /// Optional path to the PKB root directory (overrides global --pkb-root)
+        #[arg(long)]
+        root: Option<PathBuf>,
+    },
+
     /// Find potential duplicate tasks
     Duplicates {
         /// Filter by project
@@ -903,21 +910,18 @@ pub struct BatchFilterArgs {
 }
 
 fn default_pkb_root() -> String {
-    std::env::var("ACA_DATA").unwrap_or_else(|_| {
-        eprintln!("error: ACA_DATA environment variable is not set");
-        std::process::exit(1);
-    })
+    std::env::var("ACA_DATA").unwrap_or_default()
 }
 
 fn default_db_path() -> String {
-    let root = std::env::var("ACA_DATA").unwrap_or_else(|_| {
-        eprintln!("error: ACA_DATA environment variable is not set");
-        std::process::exit(1);
-    });
-    PathBuf::from(root)
-        .join("pkb_vectors.bin")
-        .to_string_lossy()
-        .to_string()
+    std::env::var("ACA_DATA")
+        .map(|root| {
+            PathBuf::from(root)
+                .join("pkb_vectors.bin")
+                .to_string_lossy()
+                .to_string()
+        })
+        .unwrap_or_default()
 }
 
 fn load_store(db_path: &Path, dim: usize) -> Result<Arc<RwLock<vectordb::VectorStore>>> {
@@ -1019,14 +1023,14 @@ fn print_staleness_warning(pkb_root: &std::path::Path, missing_id: &str) {
 async fn main() -> Result<()> {
     let cli = Cli::parse();
     let command = cli.command.unwrap_or(Commands::Focus { limit: 20 });
-    let is_mcp = matches!(command, Commands::Mcp { .. });
+    let is_protocol_server = matches!(command, Commands::Mcp { .. } | Commands::Lsp { .. });
 
-    // MCP mode: info-level logging to stderr (stdout is protocol).
+    // Protocol server mode: info-level logging to stderr (stdout is protocol).
     // CLI mode: only warnings.
     let env_filter = tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
         let mut filter =
-            tracing_subscriber::EnvFilter::new(if is_mcp { "info" } else { "warn" });
-        if is_mcp {
+            tracing_subscriber::EnvFilter::new(if is_protocol_server { "info" } else { "warn" });
+        if matches!(command, Commands::Mcp { .. }) {
             // Suppress noisy rmcp session close errors (benign during shutdown/cleanup).
             // Refs task-2ae61ce6.
             filter = filter.add_directive(
@@ -1061,8 +1065,26 @@ async fn main() -> Result<()> {
             .init();
     }
 
-    let pkb_root = PathBuf::from(mem::document_crud::expand_env_vars(&cli.pkb_root));
-    let db_path = PathBuf::from(&cli.db_path);
+    let pkb_root = if !cli.pkb_root.is_empty() {
+        PathBuf::from(mem::document_crud::expand_env_vars(&cli.pkb_root))
+    } else if let Ok(aca) = std::env::var("ACA_DATA") {
+        PathBuf::from(mem::document_crud::expand_env_vars(&aca))
+    } else if let Commands::Lsp { root: Some(ref r) } = command {
+        r.clone()
+    } else if matches!(command, Commands::Lsp { .. }) {
+        std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+    } else {
+        eprintln!("error: ACA_DATA environment variable is not set");
+        std::process::exit(1);
+    };
+
+    let db_path = if !cli.db_path.is_empty() {
+        PathBuf::from(&cli.db_path)
+    } else if let Ok(aca) = std::env::var("ACA_DATA") {
+        PathBuf::from(aca).join("pkb_vectors.bin")
+    } else {
+        pkb_root.join("pkb_vectors.bin")
+    };
 
     // Disable GPU for quick interactive commands unless explicitly overridden.
     // We explicitly list interactive commands here instead of whitelisting batch ops
@@ -1078,6 +1100,7 @@ async fn main() -> Result<()> {
             | Commands::Show { .. }
             | Commands::Deps { .. }
             | Commands::Metrics { .. }
+            | Commands::Lsp { .. }
             | Commands::New { .. }
             | Commands::Subtask { .. }
             | Commands::Remember { .. }
@@ -1215,6 +1238,11 @@ async fn main() -> Result<()> {
             let query_text = query.join(" ");
             if query_text.is_empty() {
                 eprintln!("Error: search query cannot be empty");
+                std::process::exit(1);
+            }
+
+            if let Err(e) = mem::date_filter::DateFilter::parse(since.as_deref(), before.as_deref()) {
+                eprintln!("Error: {e}");
                 std::process::exit(1);
             }
 
@@ -3324,6 +3352,14 @@ async fn main() -> Result<()> {
                 );
             }
             println!();
+        }
+
+        Commands::Lsp { root } => {
+            let lsp_root = root.unwrap_or(pkb_root);
+            eprintln!("🔍 PKB LSP Server starting over stdio...");
+            eprintln!("   PKB root: {}", lsp_root.display());
+            let server = mem::lsp::LspServer::new(lsp_root);
+            server.run_stdio()?;
         }
 
         Commands::Mcp {

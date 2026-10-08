@@ -238,7 +238,7 @@ use super::*;
     #[test]
     fn test_decompose_task_accepts_agent_intent() {
         // Agent-set subtask intent is accepted under Nic's standing delegation
-        // (kb_ccc17177 Mechanism 1, aops_intent_delegation_tooling).
+        // (specs/pkb-rules.md §6.3, aops_intent_delegation_tooling).
         let server = build_test_server();
         std::fs::create_dir_all("/tmp/test-pkb-project/tasks").unwrap();
 
@@ -465,7 +465,7 @@ use super::*;
         );
     }
 
-    // ── update_task: agent-set intent under Nic's standing delegation (kb_ccc17177 Mechanism 1, aops_intent_delegation_tooling) ──
+    // ── update_task: agent-set intent under Nic's standing delegation (specs/pkb-rules.md §6.3, aops_intent_delegation_tooling) ──
 
     #[test]
     fn test_update_task_accepts_agent_intent_nested() {
@@ -2778,6 +2778,12 @@ read_timestamp_utc: 2026-08-31T01:38:00.370857830Z\n";
                 || summary.errors[0].error.contains("DAG"),
             "error should explain DAG cycle: {}",
             summary.errors[0].error
+        );
+        // A rejected merge must write nothing: the source keeps its status.
+        let c_disk = std::fs::read_to_string(tmp.path().join("tasks/task-c.md")).unwrap();
+        assert!(
+            c_disk.contains("status: ready"),
+            "rejected merge must not archive the source, got:\n{c_disk}"
         );
     }
 

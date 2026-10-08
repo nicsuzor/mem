@@ -287,6 +287,11 @@ impl Bm25Index {
 
         let mut results: Vec<crate::vectordb::SearchResult> = Vec::new();
 
+        let date_filter = match crate::date_filter::DateFilter::parse(since, before) {
+            Ok(df) => df,
+            Err(_) => return Vec::new(),
+        };
+
         for (doc_id, score) in scores {
             let doc = match self.documents.get(&doc_id) {
                 Some(d) => d,
@@ -299,18 +304,8 @@ impl Bm25Index {
             }
 
             // Filter by modified date
-            if since.is_some() || before.is_some() {
-                match doc.modified.as_deref() {
-                    Some(m) => {
-                        let date_prefix = &m[..m.floor_char_boundary(10)];
-                        if since.is_some_and(|s| date_prefix < s)
-                            || before.is_some_and(|b| date_prefix > b)
-                        {
-                            continue;
-                        }
-                    }
-                    None => continue,
-                }
+            if date_filter.is_active() && !date_filter.matches(doc.modified.as_deref()) {
+                continue;
             }
 
             let abs_path = if doc.path.is_absolute() {

@@ -6,10 +6,12 @@
 //! - [`reader`]: 5-pass parser with container-bound text resolution, safe arrow typing, and duplicate ID detection.
 //! - [`diff`]: 3-way diff between base snapshot, canvas, and live graph with non-destructive node removal.
 //! - [`merge`]: Spiral placement for new nodes, cycle validation, and disk frontmatter sync.
+//! - [`files`]: List, read and validated atomic write of raw `.excalidraw` files by PKB-relative path.
 //! - [`validate`]: Ingestion-side structural validation gating `parse_canvas` — rejects a
 //!   canvas Excalidraw would refuse to open before any downstream diff or disk write sees it.
 
 pub mod diff;
+pub mod files;
 pub mod layout;
 pub mod merge;
 pub mod reader;

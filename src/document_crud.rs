@@ -241,16 +241,10 @@ pub fn create_document(root: &Path, fields: DocumentFields) -> Result<PathBuf> {
     };
 
     // Determine subdirectory
-    let subdir =
-        fields
-            .dir
-            .map(|d| expand_env_vars(&d))
-            .unwrap_or_else(|| match fields.doc_type.as_str() {
-                "task" | "epic" | "learn" => "tasks".to_string(),
-                "target" | "goal" | "capability" => "targets".to_string(),
-                "memory" => "memories".to_string(),
-                _ => "notes".to_string(),
-            });
+    let subdir = fields
+        .dir
+        .map(|d| expand_env_vars(&d))
+        .unwrap_or_else(|| default_subdir_for_type(&fields.doc_type).to_string());
 
     let dir = root.join(&subdir);
     if !dir.is_dir() {
@@ -3149,6 +3143,156 @@ pub fn delete_document(path: &Path) -> Result<PathBuf> {
     let _ = git_commit_file(&abs_path, &commit_msg);
 
     Ok(abs_path)
+}
+
+/// Default subdirectory for a document of `doc_type`, used by `create` and
+/// `convert_document` when no `dir` is given.
+pub fn default_subdir_for_type(doc_type: &str) -> &'static str {
+    match doc_type {
+        "task" | "epic" | "learn" => "tasks",
+        "target" | "goal" | "capability" => "targets",
+        "memory" => "memories",
+        _ => "notes",
+    }
+}
+
+/// Outcome of [`convert_document`]. Paths are absolute.
+#[derive(Debug, Clone)]
+pub struct ConvertResult {
+    pub id: String,
+    pub old_type: Option<String>,
+    pub new_type: String,
+    pub status: Option<String>,
+    pub old_path: PathBuf,
+    pub new_path: PathBuf,
+    pub retyped: bool,
+    pub moved: bool,
+}
+
+/// Convert an existing document in place: replace its frontmatter `type`,
+/// then move and rename the same file to `<dir>/<id>_<title-slug>.md`.
+/// The ID is kept — it is written into frontmatter before the rename, so a
+/// document whose ID was only its filename stem keeps that ID afterwards.
+///
+/// - `dir` defaults to [`default_subdir_for_type`] for `new_type`.
+/// - Converting to a task type (`TASK_TYPES`) requires a valid task status:
+///   `status` if given, else the existing status, else `inbox`. An existing
+///   status that is not a valid task status is rejected unless `status`
+///   replaces it.
+///
+/// All checks run before any write. The retype and the rename are separate
+/// git commits, so the rename is recorded as a pure rename. Re-running with
+/// the same arguments is a no-op, and finishes a conversion whose move failed.
+pub fn convert_document(
+    root: &Path,
+    abs_path: &Path,
+    id: &str,
+    title: &str,
+    new_type: &str,
+    dir: Option<&str>,
+    status: Option<&str>,
+) -> Result<ConvertResult> {
+    use gray_matter::engine::YAML;
+    use gray_matter::Matter;
+
+    if !crate::graph::is_valid_node_type(new_type) {
+        let valid_types = crate::graph::VALID_NODE_TYPES.join(", ");
+        anyhow::bail!("Invalid node type: {}. Must be one of: {}", new_type, valid_types);
+    }
+    if let Some(d) = dir {
+        if d.trim().is_empty() || !is_safe_relative_path(d) {
+            anyhow::bail!("Invalid dir path: must be relative and cannot contain '..'");
+        }
+    }
+    if let Some(s) = status {
+        if !crate::graph::is_valid_status(s) {
+            anyhow::bail!("Invalid status: {}", s);
+        }
+    }
+
+    let content = std::fs::read_to_string(abs_path)
+        .with_context(|| format!("Failed to read: {}", abs_path.display()))?;
+    let fm: serde_json::Map<String, serde_json::Value> = Matter::<YAML>::new()
+        .parse(&content)
+        .data
+        .and_then(|d| d.deserialize::<serde_json::Value>().ok())
+        .and_then(|v| v.as_object().cloned())
+        .unwrap_or_default();
+    let fm_str = |k: &str| fm.get(k).and_then(|v| v.as_str()).map(String::from);
+    let old_type = fm_str("type");
+    let old_status = fm_str("status");
+
+    let new_status = if crate::graph::TASK_TYPES.contains(&new_type) {
+        match (status, old_status.as_deref()) {
+            (Some(s), _) => Some(s.to_string()),
+            (None, Some(s)) if crate::graph::is_valid_status(s) => Some(s.to_string()),
+            (None, Some(s)) => anyhow::bail!(
+                "Existing status '{}' is not a valid task status; pass `status` to replace it",
+                s
+            ),
+            (None, None) => Some("inbox".to_string()),
+        }
+    } else {
+        status.map(String::from).or(old_status.clone())
+    };
+
+    let subdir = dir
+        .map(String::from)
+        .unwrap_or_else(|| default_subdir_for_type(new_type).to_string());
+    let target_dir = root.join(&subdir);
+    let new_path = target_dir.join(generate_filename(&sanitize_explicit_id(id), title));
+    let moved = new_path != abs_path;
+    if moved && new_path.exists() {
+        anyhow::bail!("Target file already exists: {}", new_path.display());
+    }
+
+    let mut updates = HashMap::new();
+    if old_type.as_deref() != Some(new_type) {
+        updates.insert("type".to_string(), serde_json::json!(new_type));
+    }
+    if fm_str("id").as_deref() != Some(id) {
+        updates.insert("id".to_string(), serde_json::json!(id));
+    }
+    if new_status != old_status {
+        updates.insert("status".to_string(), serde_json::json!(new_status));
+    }
+    let retyped = updates.contains_key("type");
+
+    // Step 1: retype in place (update_document commits the file).
+    update_document(abs_path, updates)?;
+
+    // Step 2: move + rename, committed together so git records a rename.
+    if moved {
+        std::fs::create_dir_all(&target_dir)
+            .with_context(|| format!("Failed to create directory: {}", target_dir.display()))?;
+        std::fs::rename(abs_path, &new_path).with_context(|| {
+            format!(
+                "Frontmatter updated but move failed: {} -> {}",
+                abs_path.display(),
+                new_path.display()
+            )
+        })?;
+        if let Some(repo_root) = find_repo_root(&new_path) {
+            let msg = format!(
+                "convert({}): {} -> {}",
+                id,
+                abs_path.strip_prefix(root).unwrap_or(abs_path).display(),
+                new_path.strip_prefix(root).unwrap_or(&new_path).display()
+            );
+            let _ = git_commit_paths(&repo_root, &[abs_path, new_path.as_path()], &msg);
+        }
+    }
+
+    Ok(ConvertResult {
+        id: id.to_string(),
+        old_type,
+        new_type: new_type.to_string(),
+        status: new_status,
+        old_path: abs_path.to_path_buf(),
+        new_path,
+        retyped,
+        moved,
+    })
 }
 
 fn append_severity_field(fm: &mut String, sev: i32) {

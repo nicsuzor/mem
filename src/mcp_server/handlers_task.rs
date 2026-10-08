@@ -1175,8 +1175,7 @@ impl PkbSearchServer {
             .get("has_superseded_by")
             .and_then(|v| v.as_bool());
         let limit = (args.get("limit").and_then(|v| v.as_u64()).unwrap_or(50) as usize).min(MAX_RESULTS);
-        let since = args.get("since").and_then(|v| v.as_str());
-        let before = args.get("before").and_then(|v| v.as_str());
+        let date_filter = crate::date_filter::DateFilter::from_args(args)?;
         let include_subtasks = args
             .get("include_subtasks")
             .and_then(|v| v.as_bool())
@@ -1350,24 +1349,10 @@ impl PkbSearchServer {
             tasks.retain(|t| t.focus_score.unwrap_or(0) >= min_score);
         }
 
-        // Date filters on modified. RFC3339 timestamps start with YYYY-MM-DD so
-        // the first 10 chars compare correctly against YYYY-MM-DD filter params.
-        // Tasks with no modified date are excluded when any date filter is active.
-        if let Some(s) = since {
-            tasks.retain(|t| {
-                t.modified
-                    .as_deref()
-                    .map(|m| &m[..m.floor_char_boundary(10)] >= s)
-                    .unwrap_or(false)
-            });
-        }
-        if let Some(b) = before {
-            tasks.retain(|t| {
-                t.modified
-                    .as_deref()
-                    .map(|m| &m[..m.floor_char_boundary(10)] <= b)
-                    .unwrap_or(false)
-            });
+        // Date filters on modified. Tasks with no modified date (or unparseable)
+        // are excluded when any date filter is active.
+        if date_filter.is_active() {
+            tasks.retain(|t| date_filter.matches(t.modified.as_deref()));
         }
 
         let explicitly_wants_target = doc_type

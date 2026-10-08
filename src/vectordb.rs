@@ -1041,27 +1041,21 @@ impl VectorStore {
         // Build candidate list: for each document, use max similarity across chunks
         let mut results: Vec<SearchResult> = Vec::new();
 
+        let date_filter = match crate::date_filter::DateFilter::parse(since, before) {
+            Ok(df) => df,
+            Err(_) => return Vec::new(),
+        };
+
         for entry in self.documents.values() {
             // Filter by document type
             if !matches_type_filter(entry.doc_type.as_deref(), type_filter) {
                 continue;
             }
 
-            // Filter by modified date. RFC3339 timestamps start with YYYY-MM-DD so
-            // the first 10 chars compare correctly against YYYY-MM-DD filter params.
-            // Entries with no modified date are excluded when any date filter is active.
-            if since.is_some() || before.is_some() {
-                match entry.modified.as_deref() {
-                    Some(m) => {
-                        let date_prefix = &m[..m.floor_char_boundary(10)];
-                        if since.is_some_and(|s| date_prefix < s)
-                            || before.is_some_and(|b| date_prefix > b)
-                        {
-                            continue;
-                        }
-                    }
-                    None => continue,
-                }
+            // Filter by modified date. Entries with no modified date (or unparseable)
+            // are excluded when any date filter is active.
+            if date_filter.is_active() && !date_filter.matches(entry.modified.as_deref()) {
+                continue;
             }
 
             let mut best_score = f32::NEG_INFINITY;
