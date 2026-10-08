@@ -1616,11 +1616,7 @@ impl ServerHandler for PkbSearchServer {
                 }
 
                 let input_str = serde_json::to_string(&args_task).unwrap_or_default();
-                let truncated_input = if input_str.len() > 8192 {
-                    format!("{}...", &input_str[..8189])
-                } else {
-                    input_str
-                };
+                let truncated_input = Self::truncate_span_value(input_str);
                 attrs.push(opentelemetry::KeyValue::new("input.value", truncated_input));
                 attrs.push(opentelemetry::KeyValue::new("input.mime_type", "application/json"));
 
@@ -1642,11 +1638,7 @@ impl ServerHandler for PkbSearchServer {
                     Ok(r) => serde_json::to_string(r).unwrap_or_default(),
                     Err(e) => serde_json::to_string(e).unwrap_or_default(),
                 };
-                let truncated_output = if output_str.len() > 8192 {
-                    format!("{}...", &output_str[..8189])
-                } else {
-                    output_str
-                };
+                let truncated_output = Self::truncate_span_value(output_str);
                 
                 use opentelemetry::trace::Span;
                 span.set_attribute(opentelemetry::KeyValue::new("output.value", truncated_output));

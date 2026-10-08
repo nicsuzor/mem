@@ -6,6 +6,9 @@ use std::path::{Path, PathBuf};
 
 use super::PkbSearchServer;
 
+/// Byte cap for tool input/output recorded on OTel spans.
+pub(crate) const SPAN_VALUE_MAX_BYTES: usize = 8192;
+
 impl PkbSearchServer {
     /// Reject `new_text` if it introduces a machine-specific path to a PKB
     /// file (see `crate::path_lint`). `existing_text` is the body as it is
@@ -200,6 +203,20 @@ impl PkbSearchServer {
                 message: Cow::from(format!("Failed to append evidence: {e}")),
                 data: None,
             })
+    }
+
+    /// Cap a JSON string recorded as an OTel span attribute (`input.value` /
+    /// `output.value`) at `SPAN_VALUE_MAX_BYTES`, cutting on a UTF-8 char
+    /// boundary and appending `...`. A raw byte slice here panics when a
+    /// multi-byte char straddles the cut, and the release build aborts on
+    /// panic, taking the whole server down (#686).
+    pub(crate) fn truncate_span_value(value: String) -> String {
+        if value.len() > SPAN_VALUE_MAX_BYTES {
+            let boundary = value.floor_char_boundary(SPAN_VALUE_MAX_BYTES - 3);
+            format!("{}...", &value[..boundary])
+        } else {
+            value
+        }
     }
 
     pub(crate) fn args_to_value(args: Option<JsonObject>) -> JsonValue {

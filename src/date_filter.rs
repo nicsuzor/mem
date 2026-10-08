@@ -119,7 +119,7 @@ pub fn parse_modified_instant(m: &str) -> Option<DateTime<Utc>> {
 
     // 3. Try date-only (10 chars, assume UTC 00:00:00)
     if trimmed.len() >= 10 {
-        if let Ok(d) = NaiveDate::parse_from_str(&trimmed[..10], "%Y-%m-%d") {
+        if let Ok(d) = NaiveDate::parse_from_str(&trimmed[..trimmed.floor_char_boundary(10)], "%Y-%m-%d") {
             return d.and_hms_opt(0, 0, 0).map(|ndt| ndt.and_utc());
         }
     }
@@ -290,5 +290,11 @@ mod tests {
         let inactive = DateFilter::default();
         assert!(inactive.matches(None));
         assert!(inactive.matches(Some("2026-10-05")));
+    }
+
+    #[test]
+    fn test_parse_modified_instant_multibyte_at_byte_10_does_not_panic() {
+        // #686: '§' spans bytes 9..11, so a raw `[..10]` cut panics.
+        assert_eq!(parse_modified_instant("2026-10-0§ later"), None);
     }
 }

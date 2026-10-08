@@ -406,7 +406,7 @@ fn is_older_than(date_str: Option<&str>, now: NaiveDate, days: u64) -> bool {
         dt.date_naive()
     } else if let Ok(d) = NaiveDate::parse_from_str(date_str, "%Y-%m-%d") {
         d
-    } else if let Ok(d) = NaiveDate::parse_from_str(&date_str[..10.min(date_str.len())], "%Y-%m-%d")
+    } else if let Ok(d) = NaiveDate::parse_from_str(&date_str[..date_str.floor_char_boundary(10)], "%Y-%m-%d")
     {
         d
     } else {
@@ -457,5 +457,13 @@ mod tests {
         assert_eq!(f.intent_gte, Some(2));
         assert_eq!(f.tags.as_ref().map(|t| t.len()), Some(2));
         assert_eq!(f.title_contains.as_deref(), Some("Write spec"));
+    }
+
+    #[test]
+    fn test_is_older_than_multibyte_at_byte_10_does_not_panic() {
+        // #686: '—' spans bytes 9..12, so a raw `[..10]` cut panics.
+        let now = NaiveDate::from_ymd_opt(2026, 10, 8).unwrap();
+        // Unparseable dates match the filter, as for any other bad date.
+        assert!(is_older_than(Some("2026-10-0— soon"), now, 1));
     }
 }

@@ -4409,7 +4409,7 @@ fn days_since_created(created: Option<&str>) -> Option<i64> {
     if created.len() < 10 {
         return None;
     }
-    let created_dt = chrono::NaiveDate::parse_from_str(&created[..10], "%Y-%m-%d").ok()?;
+    let created_dt = chrono::NaiveDate::parse_from_str(&created[..created.floor_char_boundary(10)], "%Y-%m-%d").ok()?;
     let today = chrono::Utc::now().date_naive();
     Some((today - created_dt).num_days())
 }
@@ -4428,7 +4428,7 @@ fn format_staleness(days: i64) -> String {
 fn format_due(due: &str) -> String {
     let today = chrono::Utc::now().date_naive();
     let len = std::cmp::min(10, due.len());
-    if let Ok(due_date) = chrono::NaiveDate::parse_from_str(&due[..len], "%Y-%m-%d") {
+    if let Ok(due_date) = chrono::NaiveDate::parse_from_str(&due[..due.floor_char_boundary(len)], "%Y-%m-%d") {
         let days_until = (due_date - today).num_days();
         let color = if days_until < 0 {
             colors::RED
@@ -4491,6 +4491,15 @@ fn format_task_line(task: &graph::GraphNode, width: usize) -> String {
     format!("{left}{:>pad$}{right}", "", pad = padding)
 }
 
+fn is_overdue(due: Option<&str>, today: chrono::NaiveDate) -> bool {
+    due.and_then(|d| {
+        let len = std::cmp::min(10, d.len());
+        chrono::NaiveDate::parse_from_str(&d[..d.floor_char_boundary(len)], "%Y-%m-%d").ok()
+    })
+    .map(|d| d < today)
+    .unwrap_or(false)
+}
+
 fn print_dashboard(tasks: &[&graph::GraphNode], filter: &TaskFilter) {
     let total = tasks.len();
     let urgent = tasks.iter().filter(|t| t.intent.unwrap_or(4) <= 1).count();
@@ -4499,16 +4508,7 @@ fn print_dashboard(tasks: &[&graph::GraphNode], filter: &TaskFilter) {
         let today = chrono::Utc::now().date_naive();
         tasks
             .iter()
-            .filter(|t| {
-                t.due
-                    .as_deref()
-                    .and_then(|d| {
-                        let len = std::cmp::min(10, d.len());
-                        chrono::NaiveDate::parse_from_str(&d[..len], "%Y-%m-%d").ok()
-                    })
-                    .map(|d| d < today)
-                    .unwrap_or(false)
-            })
+            .filter(|t| is_overdue(t.due.as_deref(), today))
             .count()
     };
 
@@ -4551,4 +4551,33 @@ fn print_dashboard(tasks: &[&graph::GraphNode], filter: &TaskFilter) {
         "  {}",
         parts.join(&format!(" {}│{} ", colors::DIM, colors::RESET))
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // #686: "2026-01-0é" is 11 bytes; byte 10 is inside 'é' (bytes 9..11).
+    const MULTIBYTE_DATE: &str = "2026-01-0\u{e9}";
+
+    #[test]
+    fn test_days_since_created_multibyte_does_not_panic() {
+        assert_eq!(days_since_created(Some(MULTIBYTE_DATE)), None);
+        assert!(days_since_created(Some("2026-01-01T00:00:00Z")).is_some());
+    }
+
+    #[test]
+    fn test_format_due_multibyte_does_not_panic() {
+        assert!(format_due(MULTIBYTE_DATE).contains(&format!("due:{MULTIBYTE_DATE}")));
+        assert!(format_due("2026-01-01T00:00:00Z").contains("due:2026-01-01"));
+    }
+
+    #[test]
+    fn test_is_overdue_multibyte_does_not_panic() {
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 6, 1).unwrap();
+        assert!(!is_overdue(Some(MULTIBYTE_DATE), today));
+        assert!(is_overdue(Some("2026-01-01T00:00:00Z"), today));
+        assert!(!is_overdue(Some("2026-12-01"), today));
+        assert!(!is_overdue(None, today));
+    }
 }

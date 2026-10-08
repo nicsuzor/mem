@@ -425,7 +425,8 @@ fn fallback_parse_frontmatter(content: &str) -> Option<serde_json::Value> {
         return None;
     }
     let end = content[3..].find("\n---")?;
-    let fm_text = &content[4..end + 3];
+    // `---` may be followed by a multi-byte char rather than `\n`.
+    let fm_text = content.get(4..end + 3)?;
 
     let mut map = serde_json::Map::new();
     let mut current_key: Option<String> = None;
@@ -3073,5 +3074,11 @@ Body.\n",
             fixed3,
             "---\nid: t3\nproject: aops\ntitle: T3\n---\n\nBody\n"
         );
+    }
+
+    #[test]
+    fn test_fallback_parse_frontmatter_multibyte_after_opening_fence() {
+        // #686: 'é' spans bytes 3..5, so a raw `[4..]` cut panics.
+        assert!(fallback_parse_frontmatter("---é\ntitle: x\n---\n").is_none());
     }
 }
