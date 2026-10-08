@@ -19,6 +19,7 @@ mod path_lint_tests;
 mod index_warning_tests;
 mod excalidraw_files_tests;
 mod convert_document_tests;
+mod span_truncation_tests;
 
 
 pub(crate) fn make_doc(
