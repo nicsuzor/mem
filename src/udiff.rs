@@ -104,7 +104,12 @@ impl RelativeIndenter {
             let change = (len_indent as isize) - (prev_indent.len() as isize);
 
             let cur_indent = if change > 0 {
-                indent[indent.floor_char_boundary(indent.len() - (change as usize))..].to_string()
+                // Indents are measured in bytes; a cut inside a multi-byte
+                // whitespace char (e.g. U+3000) cannot round-trip (#686).
+                indent
+                    .get(indent.len() - (change as usize)..)
+                    .ok_or_else(|| "Indent change is not on a char boundary".to_string())?
+                    .to_string()
             } else if change < 0 {
                 std::iter::repeat_n(self.marker, (-change) as usize).collect::<String>()
             } else {
@@ -138,7 +143,9 @@ impl RelativeIndenter {
                 if len_outdent > prev_indent.len() {
                     "".to_string()
                 } else {
-                    prev_indent[..prev_indent.floor_char_boundary(prev_indent.len() - len_outdent)]
+                    prev_indent
+                        .get(..prev_indent.len() - len_outdent)
+                        .ok_or_else(|| "Outdent is not on a char boundary".to_string())?
                         .to_string()
                 }
             } else {
@@ -997,17 +1004,25 @@ These changes will add the `--check-update` option...
     }
 
     #[test]
-    fn test_relative_indenter_multibyte_indent_does_not_panic() {
-        // #686: indents are measured in bytes; an ideographic space (3 bytes)
-        // following a 2-space indent used to be cut inside the char.
+    fn test_relative_indenter_multibyte_indent_round_trips_or_errs() {
+        // #686: indents are measured in bytes. An ideographic space (3 bytes)
+        // following a 2-space indent used to be cut inside the char; the cut
+        // cannot round-trip, so make_relative must refuse rather than corrupt.
         let text = "  a\n\u{3000}b\n  c\n";
         let ri = RelativeIndenter::new(&[text]);
-        let rel = ri.make_relative(text).unwrap();
-        let _ = ri.make_absolute(&rel);
+        assert!(ri.make_relative(text).is_err());
 
+        // Outdent from U+3000 to one space cuts inside the char on the way
+        // back to absolute indents.
         let text = "\u{3000}a\n b\n";
         let ri = RelativeIndenter::new(&[text]);
         let rel = ri.make_relative(text).unwrap();
-        let _ = ri.make_absolute(&rel);
+        assert!(ri.make_absolute(&rel).is_err());
+
+        // Multi-byte indents whose changes land on char boundaries round-trip.
+        let text = "\u{3000}a\n\u{3000}\u{3000}b\n\u{3000}c\nd\n";
+        let ri = RelativeIndenter::new(&[text]);
+        let rel = ri.make_relative(text).unwrap();
+        assert_eq!(ri.make_absolute(&rel).unwrap(), text);
     }
 }

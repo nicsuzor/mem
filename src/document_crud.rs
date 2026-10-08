@@ -136,6 +136,21 @@ pub struct MemoryFields {
 /// - `task|bug|epic|feature` → `tasks/`
 /// - `goal` → `goals/`
 /// - Everything else → `notes/`
+/// ID prefix for a document type: a fixed short form for common types,
+/// otherwise the first four bytes floored to a char boundary.
+fn type_prefix(doc_type: &str) -> &str {
+    match doc_type {
+        "task" | "epic" => "task",
+        "target" | "goal" | "capability" => "targ",
+        "memory" => "mem",
+        "note" => "note",
+        "knowledge" => "kb",
+        "insight" => "ins",
+        "observation" => "obs",
+        other => &other[..other.floor_char_boundary(4)],
+    }
+}
+
 pub fn create_document(root: &Path, fields: DocumentFields) -> Result<PathBuf> {
     if let Some(ref dir) = fields.dir {
         if !is_safe_relative_path(dir) {
@@ -212,16 +227,7 @@ pub fn create_document(root: &Path, fields: DocumentFields) -> Result<PathBuf> {
         }
     }
 
-    let type_prefix = match fields.doc_type.as_str() {
-        "task" | "epic" => "task",
-        "target" | "goal" | "capability" => "targ",
-        "memory" => "mem",
-        "note" => "note",
-        "knowledge" => "kb",
-        "insight" => "ins",
-        "observation" => "obs",
-        other => &other[..other.floor_char_boundary(4)],
-    };
+    let type_prefix = type_prefix(&fields.doc_type);
 
     let (id, filename) = match fields.id {
         Some(explicit_id) => {
@@ -3697,6 +3703,14 @@ mod tests {
     fn write_md(dir: &Path, name: &str, frontmatter: &str) {
         let path = dir.join(name);
         fs::write(&path, format!("---\n{}---\n\n# Body\n", frontmatter)).unwrap();
+    }
+
+    #[test]
+    fn test_type_prefix_multibyte_type_does_not_panic() {
+        // #686: byte 4 of "café" is inside 'é' (bytes 3..5).
+        assert_eq!(type_prefix("café"), "caf");
+        assert_eq!(type_prefix("project"), "proj");
+        assert_eq!(type_prefix("task"), "task");
     }
 
     #[test]
