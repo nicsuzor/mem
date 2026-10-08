@@ -132,3 +132,108 @@ fn test_export_graph_dispatch_dot_and_json() {
     let res_err = server.dispatch_tool_sync("export_graph", &serde_json::json!({"format": "xml"}));
     assert!(res_err.is_err());
 }
+
+/// `export_graph` JSON carries the engine's own ranking per node, so consumers
+/// (the overwhelm dashboard's `/api/graph`) never re-derive it:
+/// `cost_of_delay` and `severity_gate` are the node's `FocusTuple` components,
+/// and `queue_rank` is its 1-based position under the canonical focus order
+/// (`GraphStore::focus_cmp`, the comparator `list_tasks` sorts by).
+#[test]
+fn test_export_graph_json_emits_engine_queue_rank_and_cost_of_delay() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().to_path_buf();
+    let w = |name: &str, body: &str| std::fs::write(root.join(name), body).unwrap();
+
+    w(
+        "targ_x.md",
+        "---\nid: targ_x\ntitle: Priced Target\ntype: target\nstatus: active\nstanding_weight: 1.0\n---\nT\n",
+    );
+    // Identical except that `t_valued` contributes to a priced target and so
+    // carries value_lineage; the engine must rank it above `t_plain`.
+    w(
+        "t_valued.md",
+        "---\nid: t_valued\ntitle: Valued\ntype: task\nstatus: ready\ncontributes_to:\n  - target: targ_x\n    weight: \"fifty-fifty\"\n---\nB\n",
+    );
+    w("t_plain.md", "---\nid: t_plain\ntitle: Plain\ntype: task\nstatus: ready\n---\nB\n");
+    w("t_other.md", "---\nid: t_other\ntitle: Other\ntype: task\nstatus: in_progress\n---\nB\n");
+    w("t_done.md", "---\nid: t_done\ntitle: Done\ntype: task\nstatus: done\n---\nB\n");
+
+    let graph = GraphStore::build_from_directory(&root);
+
+    // Engine-side expectations, read from the engine rather than pasted.
+    let valued = graph.get_node("t_valued").unwrap();
+    assert!(valued.value_lineage > 0.0, "fixture must give t_valued value_lineage");
+    let shared = Arc::new(RwLock::new(graph));
+
+    let server = PkbSearchServer::new(
+        Arc::new(RwLock::new(mem::vectordb::VectorStore::new(3))),
+        Arc::new(mem::embeddings::Embedder::new_dummy()),
+        root.clone(),
+        root.join("db.bin"),
+        shared.clone(),
+    );
+    let res = server
+        .dispatch_tool_sync(
+            "export_graph",
+            &serde_json::json!({"format": "json", "include_done": true}),
+        )
+        .unwrap();
+    let text: String = res
+        .content
+        .iter()
+        .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+        .collect();
+    let parsed: Value = serde_json::from_str(&text).unwrap();
+    let nodes = parsed["nodes"].as_array().unwrap();
+    let by_id = |id: &str| nodes.iter().find(|n| n["id"] == id).unwrap_or_else(|| panic!("{id} missing"));
+
+    let g = shared.read();
+
+    // cost_of_delay / severity_gate mirror the engine's FocusTuple exactly.
+    for n in nodes {
+        let id = n["id"].as_str().unwrap();
+        match g.get_node(id).unwrap().focus_tuple.as_ref() {
+            Some(ft) => {
+                assert_eq!(n["cost_of_delay"].as_i64(), Some(ft.cost_of_delay), "{id} cost_of_delay");
+                assert_eq!(
+                    n["severity_gate"],
+                    serde_json::to_value(ft.severity_gate).unwrap(),
+                    "{id} severity_gate"
+                );
+                assert!(n["queue_rank"].is_u64(), "{id} must carry queue_rank: {n}");
+            }
+            None => {
+                assert!(n.get("cost_of_delay").is_none(), "{id}: no tuple => no cost_of_delay");
+                assert!(n.get("queue_rank").is_none(), "{id}: no tuple => no queue_rank");
+                assert!(n.get("severity_gate").is_none(), "{id}: no tuple => no severity_gate");
+            }
+        }
+    }
+    assert!(by_id("t_done").get("queue_rank").is_none());
+
+    // queue_rank is exactly the engine's canonical focus order, 1..N contiguous.
+    let mut ranked: Vec<&mem::graph::GraphNode> = nodes
+        .iter()
+        .filter_map(|n| g.get_node(n["id"].as_str().unwrap()))
+        .filter(|n| n.focus_tuple.is_some())
+        .collect();
+    GraphStore::sort_by_focus(&mut ranked);
+    assert!(ranked.len() >= 3, "fixture should rank several nodes");
+    for (i, n) in ranked.iter().enumerate() {
+        assert_eq!(
+            by_id(&n.id)["queue_rank"].as_u64(),
+            Some(i as u64 + 1),
+            "{} rank must match engine order",
+            n.id
+        );
+    }
+
+    // Behavioural anchor: value lineage lifts an otherwise-equal task.
+    let rv = by_id("t_valued")["queue_rank"].as_u64().unwrap();
+    let rp = by_id("t_plain")["queue_rank"].as_u64().unwrap();
+    assert!(rv < rp, "t_valued (rank {rv}) must outrank t_plain (rank {rp})");
+    assert!(
+        by_id("t_valued")["cost_of_delay"].as_i64().unwrap()
+            > by_id("t_plain")["cost_of_delay"].as_i64().unwrap()
+    );
+}

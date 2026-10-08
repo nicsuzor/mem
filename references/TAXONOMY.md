@@ -205,7 +205,7 @@ The tree hierarchy is a **spanning tree** of the underlying dependency graph. It
 | ------------- | -------------------------------------------------------------------------------- |
 | `inbox`       | **Default.** Captured but not yet triaged — unknown priority, unknown readiness  |
 | `ready`       | Decomposed to leaf tasks with all hard dependencies resolved                     |
-| `queued`      | User has manually marked this task available for agent dispatch                  |
+| `queued`      | User has promoted this task for agent dispatch, by hand or by asking for the work |
 | `in_progress` | Claimed by an agent or human — actively being worked                             |
 | `review`      | Awaiting human review — either mid-flight attention or post-PR changes requested |
 | `partial`     | Worker legitimately stopped at a scope seam — draft PR plus a live follow-up task. Not merge-ready, not done; the follow-up child carries the remainder |
@@ -218,7 +218,7 @@ The tree hierarchy is a **spanning tree** of the underlying dependency graph. It
 
 **`ready` means decomposed**: A task graduates to `ready` once it has been decomposed into leaf tasks and all upstream `DependsOn` edges are resolved. Ready signals that the work is well-understood and unblocked — not that an agent should pick it up immediately.
 
-**`queued` is a human gate**: The user manually promotes tasks from `ready` to `queued` to make them available for agent dispatch. This preserves human control over what agents work on next. Agents pull only from `queued`.
+**`queued` is a human gate**: The user promotes tasks from `ready` to `queued` to make them available for agent dispatch. A direct request from the user for a piece of work is that promotion: the task created for it (e.g. by a user-invoked `/q` or `/dispatch`) may be written straight to `queued`. Agents must not write `queued` on work the user did not ask for — tasks an agent originates stay at `inbox`/`ready` until the user promotes them. This preserves human control over what agents work on next. Agents pull only from `queued`.
 
 **Propagation**: Completion of a node should trigger readiness re-evaluation of all nodes that depend on it. The system surfaces dependency chains so that cascading unblocks are visible.
 
@@ -327,7 +327,7 @@ inbox → ready → queued → in_progress → done
 
 - `inbox` is the default for all new nodes
 - `ready` is set automatically when decomposition is complete and dependencies are resolved
-- `queued` is set **manually by the user** — the human gate before agent dispatch
+- `queued` is set **by the user** — by hand, or by directly requesting the work — the human gate before agent dispatch; agents never write `queued` on unrequested work
 - Agents pull only from `queued`
 
 ### Edge type guide

@@ -1198,7 +1198,7 @@ mod batch_finalize_tests {
     }
 
     /// Agent-set `intent` (or legacy `priority`) via `batch_update` is accepted
-    /// under Nic's standing delegation to agents (kb_ccc17177 Mechanism 1,
+    /// under Nic's standing delegation to agents (specs/pkb-rules.md §6.3,
     /// aops_intent_delegation_tooling) — the range check (`is_valid_intent`)
     /// still applies, but there is no longer an authority guard.
     #[test]
@@ -1518,7 +1518,37 @@ mod batch_finalize_tests {
             !dup_disk.contains("superseded_by"),
             "merged-away source must NOT carry a hand-written superseded_by, got:\n{dup_disk}"
         );
-        assert!(dup_disk.contains("status: done"));
+        // aops_pkb_batch_merge_archives_as_done: a merged source's work was not
+        // performed, so it must end `cancelled` (never `done`) and carry a note
+        // naming the canonical.
+        assert!(
+            dup_disk.contains("status: cancelled") && !dup_disk.contains("status: done"),
+            "merged-away source must be cancelled, not done, got:\n{dup_disk}"
+        );
+        assert!(
+            dup_disk.contains("Merged into [[task-canon]]"),
+            "merged-away source body must name the canonical, got:\n{dup_disk}"
+        );
+
+        // superseded_by must compute from the canonical's supersedes edge.
+        let rebuilt = GraphStore::build_from_directory(pkb_root);
+        let dup = rebuilt.get_node("task-dup").expect("task-dup in graph");
+        assert_eq!(dup.superseded_by, vec!["task-canon".to_string()]);
+
+        // Re-running the same merge is idempotent: no second note.
+        {
+            let mut graph = server.graph.write();
+            *graph = GraphStore::build_from_directory(pkb_root);
+        }
+        server
+            .handle_batch_merge(&json!({
+                "canonical": "task-canon",
+                "merge_ids": ["task-dup"],
+                "dry_run": false,
+            }))
+            .unwrap_or_else(|e| panic!("second batch_merge failed: {e:?}"));
+        let dup_disk = std::fs::read_to_string(pkb_root.join("task-dup.md")).unwrap();
+        assert_eq!(dup_disk.matches("Merged into [[task-canon]]").count(), 1);
     }
 }
 

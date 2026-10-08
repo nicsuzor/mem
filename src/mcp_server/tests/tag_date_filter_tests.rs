@@ -619,6 +619,128 @@ use super::*;
         assert!(!ts_text.contains("task-v2"));
     }
 
+    // ── Issue #670: Date filters support RFC 3339 timestamps and fail loud on invalid inputs ──
+
+    #[test]
+    fn test_list_tasks_since_before_rfc3339_timestamp() {
+        // Regression for Issue #670:
+        // Fixture tasks:
+        // - task-old: 2019-06-01T00:00:00Z
+        // - task-mid: 2023-03-15T12:00:00Z
+        // - task-new: 2026-06-01T09:00:00Z
+        // - task-nodated: None
+        let server = build_dated_task_server();
+
+        // 1. since on day of modification with 00:00:00Z must include the task (was 0 due to prefix bug)
+        let res_since_midnight = server
+            .handle_list_tasks(&json!({"since": "2026-06-01T00:00:00Z", "include_done": true, "format": "json"}))
+            .unwrap();
+        let tasks = extract_task_objects(&res_since_midnight);
+        let ids: Vec<String> = tasks.iter().filter_map(|t| t.get("id").and_then(|v| v.as_str()).map(String::from)).collect();
+        assert_eq!(ids, vec!["task-new".to_string()], "since=2026-06-01T00:00:00Z must return task-new");
+
+        // 2. since at exact timestamp must include the task
+        let res_since_exact = server
+            .handle_list_tasks(&json!({"since": "2026-06-01T09:00:00Z", "include_done": true, "format": "json"}))
+            .unwrap();
+        let ids: Vec<String> = extract_task_objects(&res_since_exact)
+            .iter().filter_map(|t| t.get("id").and_then(|v| v.as_str()).map(String::from)).collect();
+        assert_eq!(ids, vec!["task-new".to_string()], "since=2026-06-01T09:00:00Z must return task-new");
+
+        // 3. since 1 second after timestamp must exclude the task
+        let res_since_after = server
+            .handle_list_tasks(&json!({"since": "2026-06-01T09:00:01Z", "include_done": true, "format": "json"}))
+            .unwrap();
+        let ids: Vec<String> = extract_task_objects(&res_since_after)
+            .iter().filter_map(|t| t.get("id").and_then(|v| v.as_str()).map(String::from)).collect();
+        assert!(ids.is_empty(), "since=2026-06-01T09:00:01Z must return zero tasks");
+
+        // 4. since intermediate timestamp
+        let res_mid = server
+            .handle_list_tasks(&json!({"since": "2023-03-15T12:00:00Z", "include_done": true, "format": "json"}))
+            .unwrap();
+        let mut ids: Vec<String> = extract_task_objects(&res_mid)
+            .iter().filter_map(|t| t.get("id").and_then(|v| v.as_str()).map(String::from)).collect();
+        ids.sort();
+        assert_eq!(ids, vec!["task-mid".to_string(), "task-new".to_string()]);
+
+        let res_mid_plus1 = server
+            .handle_list_tasks(&json!({"since": "2023-03-15T12:00:01Z", "include_done": true, "format": "json"}))
+            .unwrap();
+        let ids: Vec<String> = extract_task_objects(&res_mid_plus1)
+            .iter().filter_map(|t| t.get("id").and_then(|v| v.as_str()).map(String::from)).collect();
+        assert_eq!(ids, vec!["task-new".to_string()]);
+
+        // 5. before at 00:00:00Z on day of modification must exclude tasks modified later that day
+        // (Previously kept task-new because "2026-06-01" < "2026-06-01T00:00:00Z")
+        let res_before_midnight = server
+            .handle_list_tasks(&json!({"before": "2026-06-01T00:00:00Z", "include_done": true, "format": "json"}))
+            .unwrap();
+        let mut ids: Vec<String> = extract_task_objects(&res_before_midnight)
+            .iter().filter_map(|t| t.get("id").and_then(|v| v.as_str()).map(String::from)).collect();
+        ids.sort();
+        assert_eq!(ids, vec!["task-mid".to_string(), "task-old".to_string()], "before=2026-06-01T00:00:00Z must exclude task-new (modified at 09:00:00Z)");
+
+        // 6. before at exact timestamp includes it
+        let res_before_exact = server
+            .handle_list_tasks(&json!({"before": "2026-06-01T09:00:00Z", "include_done": true, "format": "json"}))
+            .unwrap();
+        let mut ids: Vec<String> = extract_task_objects(&res_before_exact)
+            .iter().filter_map(|t| t.get("id").and_then(|v| v.as_str()).map(String::from)).collect();
+        ids.sort();
+        assert_eq!(ids, vec!["task-mid".to_string(), "task-new".to_string(), "task-old".to_string()]);
+
+        // 7. before 1 second prior excludes it
+        let res_before_prior = server
+            .handle_list_tasks(&json!({"before": "2026-06-01T08:59:59Z", "include_done": true, "format": "json"}))
+            .unwrap();
+        let mut ids: Vec<String> = extract_task_objects(&res_before_prior)
+            .iter().filter_map(|t| t.get("id").and_then(|v| v.as_str()).map(String::from)).collect();
+        ids.sort();
+        assert_eq!(ids, vec!["task-mid".to_string(), "task-old".to_string()]);
+    }
+
+    #[test]
+    fn test_date_filters_fail_loud_on_invalid_inputs() {
+        let server = build_dated_task_server();
+
+        // list_tasks invalid inputs
+        let err1 = server.handle_list_tasks(&json!({"since": "not-a-date"})).unwrap_err();
+        assert_eq!(err1.code, ErrorCode::INVALID_PARAMS);
+        assert!(err1.message.contains("Invalid date format for 'since'"));
+
+        let err2 = server.handle_list_tasks(&json!({"before": "not-a-date"})).unwrap_err();
+        assert_eq!(err2.code, ErrorCode::INVALID_PARAMS);
+        assert!(err2.message.contains("Invalid date format for 'before'"));
+
+        let err3 = server.handle_list_tasks(&json!({"since": ""})).unwrap_err();
+        assert_eq!(err3.code, ErrorCode::INVALID_PARAMS);
+
+        let err4 = server.handle_list_tasks(&json!({"since": "2026-13-45"})).unwrap_err();
+        assert_eq!(err4.code, ErrorCode::INVALID_PARAMS);
+
+        let err5 = server.handle_list_tasks(&json!({"since": 12345})).unwrap_err();
+        assert_eq!(err5.code, ErrorCode::INVALID_PARAMS);
+
+        // search invalid inputs
+        let err_s1 = server.handle_pkb_search(&json!({"query": "test", "since": "not-a-date"})).unwrap_err();
+        assert_eq!(err_s1.code, ErrorCode::INVALID_PARAMS);
+        assert!(err_s1.message.contains("Invalid date format for 'since'"));
+
+        let err_s2 = server.handle_pkb_search(&json!({"query": "test", "before": "not-a-date"})).unwrap_err();
+        assert_eq!(err_s2.code, ErrorCode::INVALID_PARAMS);
+        assert!(err_s2.message.contains("Invalid date format for 'before'"));
+
+        // task_search invalid inputs
+        let err_ts1 = server.handle_task_search(&json!({"query": "test", "since": "not-a-date"})).unwrap_err();
+        assert_eq!(err_ts1.code, ErrorCode::INVALID_PARAMS);
+        assert!(err_ts1.message.contains("Invalid date format for 'since'"));
+
+        let err_ts2 = server.handle_task_search(&json!({"query": "test", "before": "not-a-date"})).unwrap_err();
+        assert_eq!(err_ts2.code, ErrorCode::INVALID_PARAMS);
+        assert!(err_ts2.message.contains("Invalid date format for 'before'"));
+    }
+
     // ── Parent referential integrity (task-89b2af87) ───────────────────────
 
     #[test]

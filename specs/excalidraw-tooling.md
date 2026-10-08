@@ -222,12 +222,13 @@ Library:
   pkb-excalidraw FILE.excalidrawlib item SELECTOR --after INDEX [--at X,Y]
 
 CRUD & Mutation Commands:
-  pkb-excalidraw FILE add-node --type <type> --text "<text>" [--at X,Y] [--size W,H] [--role <role>] [--color <hex>] [--id <id>] [--angle <deg>] [--roughness <num>] [--fill-style <style>] [--preset <preset>]
-  pkb-excalidraw FILE update-node --id <id> [--angle <deg>] [--roughness <num>] [--fill-style <style>] [--preset <preset>]
+  pkb-excalidraw FILE add-node --type <type> --text "<text>" [--at X,Y] [--size W,H] [--role <role>] [--color <hex>] [--id <id>] [--angle <deg>] [--roughness <num>] [--fill-style <style>] [--stroke-style <style>] [--preset <preset>]
+  pkb-excalidraw FILE update-node --id <id> [--angle <deg>] [--roughness <num>] [--fill-style <style>] [--stroke-style <style>] [--preset <preset>]
   pkb-excalidraw FILE add-text --text "<text>" [--at X,Y] [--font-size <size>] [--color <hex>]
   pkb-excalidraw FILE connect --from <id1> --to <id2> [--label "<label>"] [--color <hex>] [--curved] [--stroke-style <style>]
   pkb-excalidraw FILE set-text <id> "<new_text>"
   pkb-excalidraw FILE fit <id> "<new_text>"
+  pkb-excalidraw FILE set-stroke-style <id> <style>
   pkb-excalidraw FILE move-elem <id> [--to X,Y | --by DX,DY]
   pkb-excalidraw FILE delete-elem <id> [--cascade-arrows]
   pkb-excalidraw FILE update <id> --set '<json>'
@@ -347,11 +348,12 @@ Computes a pure semantic diff of the logical graph, completely filtering out coo
   - Supports `--angle <deg>` (rotation angle, default `0`).
   - Supports `--roughness <num>` (stroke roughness `0`, `1`, `2`, default `1`).
   - Supports `--fill-style <style>` (`hachure`, `cross-hatch`, `solid`, `zigzag`, default `hachure`).
+  - Supports `--stroke-style <style>` (`solid`, `dashed`, `dotted`, default `solid`).
   - Supports `--preset <preset>` (`card`, `pill`, `container`, `note`, `cloud`).
 - **`update-node`**:
   `pkb-excalidraw FILE update-node --id rect1 --roughness 0 --fill-style solid`
   - Updates visual and stylistic properties of an existing node without altering its geometry or text bindings.
-  - Supports `--angle <deg>`, `--roughness <num>`, `--fill-style <style>`, and `--preset <preset>`.
+  - Supports `--angle <deg>`, `--roughness <num>`, `--fill-style <style>`, `--stroke-style <style>`, and `--preset <preset>`.
 - **`add-text`**:
   `pkb-excalidraw FILE add-text --text "System Architecture v2" --at 100,50 --font-size 24 --color "#333333"`
 - **`connect`**:
@@ -361,6 +363,9 @@ Computes a pure semantic diff of the logical graph, completely filtering out coo
   - Generates container-bound centered text label if `--label` is provided.
   - Supports `--curved` for curved bezier arrows instead of straight line segments.
   - Supports `--stroke-style <style>` (`solid`, `dashed`, `dotted`, default `solid`).
+- **`set-stroke-style`**:
+  `pkb-excalidraw FILE set-stroke-style <id> <style>`
+  - Updates the stroke line pattern for the specified element (e.g. `solid`, `dashed`, `dotted`).
 - **`set-text` / `fit`**:
   `pkb-excalidraw FILE set-text nodeA "Worker Node (Replicas: 3)"`
   - Updates both `text` and `originalText`.
@@ -485,6 +490,7 @@ The `batch` command executes an atomic sequence of mutations from a JSON array (
           "angle": { "type": "number", "default": 0.0 },
           "roughness": { "type": "number", "default": 1.0 },
           "fillStyle": { "type": "string", "enum": ["hachure", "cross-hatch", "solid", "zigzag", "dots"], "default": "hachure" },
+          "strokeStyle": { "type": "string", "enum": ["solid", "dashed", "dotted"], "default": "solid" },
           "preset": { "type": "string" }
         },
         "required": ["action", "text"]
@@ -497,6 +503,7 @@ The `batch` command executes an atomic sequence of mutations from a JSON array (
           "angle": { "type": "number" },
           "roughness": { "type": "number" },
           "fillStyle": { "type": "string", "enum": ["hachure", "cross-hatch", "solid", "zigzag", "dots"] },
+          "strokeStyle": { "type": "string", "enum": ["solid", "dashed", "dotted"] },
           "preset": { "type": "string" }
         },
         "required": ["action", "id"]

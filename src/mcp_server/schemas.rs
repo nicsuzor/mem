@@ -51,8 +51,8 @@ impl PkbSearchServer {
                         "type": { "type": "string", "description": "Filter by document type (e.g. 'task', 'template', 'note', '!task' to exclude tasks, or comma-separated list 'task,epic')" },
                         "actionable_only": { "type": "boolean", "description": "When true, only returns actionable tasks/epics/projects/learn and hides completed/cancelled work (unless include_done=true), superseding task_search." },
                         "include_done": { "type": "boolean", "description": "When actionable_only is true or filtering tasks, include done and cancelled items. Default: false." },
-                        "since": { "type": "string", "description": "Filter: return only results whose stored `modified` timestamp's UTC calendar date is on or after YYYY-MM-DD (inclusive). Documents with no modified date are excluded." },
-                        "before": { "type": "string", "description": "Filter: return only results whose stored `modified` timestamp's UTC calendar date is on or before YYYY-MM-DD (inclusive). Documents with no modified date are excluded." },
+                        "since": { "type": "string", "description": "Filter: return only results whose stored `modified` timestamp is on or after YYYY-MM-DD or RFC 3339 timestamp (inclusive). Documents with no modified date are excluded." },
+                        "before": { "type": "string", "description": "Filter: return only results whose stored `modified` timestamp is on or before YYYY-MM-DD or RFC 3339 timestamp (inclusive). Documents with no modified date are excluded." },
                         "boost_id": { "type": "string", "description": "Optional: boost results near this node (ID, filename, or title)" },
                         "detail": { "type": "string", "description": "Result detail level: 'chunk' (default), 'snippet' (300 chars), 'full' (entire document), or 'metadata' (metadata only, omitting content extracts)", "enum": ["chunk", "snippet", "full", "metadata"], "default": "chunk" },
                         "max_bytes": { "type": "integer", "description": "Maximum byte length of body to return when detail='full' (default: 4000)" },
@@ -304,6 +304,23 @@ impl PkbSearchServer {
             .with_title("Delete Document")
             .with_annotations(ToolAnnotations::new().destructive(true)),
             Tool::new(
+                "convert_document",
+                "Convert an existing document in place, keeping its ID: replace its frontmatter `type`, then move and rename the same file to `<dir>/<id>_<title-slug>.md` and reindex it. Use to turn a note or capture into a task (or any other retype) without creating a new file. The ID is written into frontmatter before the rename, so a document whose ID was only its filename stem keeps it. Converting to a task type sets a valid task status (`status`, else the existing status, else `inbox`). Re-running with the same arguments is a no-op. Set parent, project, and other fields afterwards with update_task.",
+                serde_json::from_value::<JsonObject>(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "id": { "type": "string", "description": "Document ID (task ID, memory ID, filename stem, or title). Uses flexible resolution." },
+                        "type": { "type": "string", "description": "New frontmatter type, e.g. 'task'." },
+                        "dir": { "type": "string", "description": "Target subdirectory relative to the PKB root. Default by type: task/learn → tasks, target → targets, memory → memories, everything else → notes." },
+                        "status": { "type": "string", "description": "Status to set in the same write. Required when converting to a task type and the existing status is not a valid task status." }
+                    },
+                    "required": ["id", "type"]
+                }))
+                .unwrap(),
+            )
+            .with_title("Convert Document In Place")
+            .with_annotations(ToolAnnotations::new().read_only(false).destructive(false)),
+            Tool::new(
                 "release_task",
                 "Release a task to a terminal or handoff status (done, review, blocked, cancelled, partial). Supersedes complete_task (use status='done'). Performs session handover by recording work history, linking PRs/issues, and tracking follow-up work. If 'id' is omitted, an ad-hoc session task is created (requires `project` parameter). Evidence-or-failure-reason contract: `summary` (or `completion_evidence`) is always required; releasing to blocked/cancelled/review/partial additionally requires a non-empty `reason` (or `blocker`, for `blocked`) — a handback with neither is rejected. Tasks created before this requirement shipped release under the old, optional rules.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
@@ -359,8 +376,8 @@ impl PkbSearchServer {
                         "tags": { "type": "array", "items": { "type": "string" }, "description": "Filter by tags. A task matches iff every requested tag is present in its frontmatter `tags` array (AND, case-insensitive)." },
                         "has_superseded_by": { "type": "boolean", "description": "Filter by presence of a computed `superseded_by` reverse index (materialised from another node's `supersedes` edge, never hand-written). When true, returns only tasks some other node names via `supersedes`; when false, returns only tasks nothing supersedes. When this filter is active, returned rows (both markdown and JSON) include the `superseded_by` target id(s) as a list. Default: unset (no filter applied)." },
                         "focus_score_gte": { "type": "integer", "description": "Filter to tasks whose composite focus_score is ≥ N." },
-                        "since": { "type": "string", "description": "Filter: return only tasks whose stored `modified` timestamp's UTC calendar date is on or after YYYY-MM-DD (inclusive). `modified` is a UTC instant — this compares its UTC date, not your local date, so a boundary near local midnight can be off by one day in a non-UTC timezone (e.g. UTC+10: local 00:00-09:59 is still the previous UTC date). Tasks with no modified date are excluded." },
-                        "before": { "type": "string", "description": "Filter: return only tasks whose stored `modified` timestamp's UTC calendar date is on or before YYYY-MM-DD (inclusive). `modified` is a UTC instant — this compares its UTC date, not your local date; see `since` for the boundary caveat. Tasks with no modified date are excluded." },
+                        "since": { "type": "string", "description": "Filter: return only tasks whose stored `modified` timestamp is on or after YYYY-MM-DD or RFC 3339 timestamp (inclusive). Date-only values compare UTC calendar date; timestamps compare exact UTC instants. Tasks with no modified date are excluded." },
+                        "before": { "type": "string", "description": "Filter: return only tasks whose stored `modified` timestamp is on or before YYYY-MM-DD or RFC 3339 timestamp (inclusive). Date-only values compare UTC calendar date; timestamps compare exact UTC instants. Tasks with no modified date are excluded." },
                         "limit": { "type": "integer", "description": "Max results (default: 50)" },
                         "include_subtasks": { "type": "boolean", "description": "Include sub-tasks (type=subtask) in results. Default: false — subtasks are hidden since they travel with their parent task." },
                         "include_done": { "type": "boolean", "description": "Include done and cancelled tasks. Default: false (silently hides closed tasks so the list shows actionable work, which can cause state blindness if you aren't expecting it). Ignored when an explicit `status` filter is provided." },
@@ -403,8 +420,8 @@ impl PkbSearchServer {
                         "complexity": { "type": "string", "description": "Filter by complexity (e.g. 'low', 'medium', 'high')" },
                         "weight_gte": { "type": "integer", "description": "Filter to tasks with downstream weight ≥ N" },
                         "tags": { "type": "array", "items": { "type": "string" }, "description": "Filter by tags (all must match)." },
-                        "since": { "type": "string", "description": "Filter: return only tasks whose modified date is on or after YYYY-MM-DD." },
-                        "before": { "type": "string", "description": "Filter: return only tasks whose modified date is on or before YYYY-MM-DD." },
+                        "since": { "type": "string", "description": "Filter: return only tasks whose modified date is on or after YYYY-MM-DD or RFC 3339 timestamp." },
+                        "before": { "type": "string", "description": "Filter: return only tasks whose modified date is on or before YYYY-MM-DD or RFC 3339 timestamp." },
                         "limit": { "type": "integer", "description": "Max results (default: 50)" },
                         "include_subtasks": { "type": "boolean", "description": "Include sub-tasks (type=subtask). Default: false." },
                         "include_done": { "type": "boolean", "description": "Include done and cancelled tasks. Default: false." },
@@ -652,6 +669,48 @@ impl PkbSearchServer {
             .with_title("Sync Excalidraw Canvas to PKB")
             .with_annotations(ToolAnnotations::new().read_only(false)),
             Tool::new(
+                "list_excalidraw",
+                "List the raw .excalidraw canvas files stored in the PKB, by PKB-relative path, with size and modified time. Canvases are files, not graph nodes: they are not indexed or searchable, so use this (not search/get_document) to find them, then get_excalidraw to read one.",
+                serde_json::from_value::<JsonObject>(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "dir": { "type": "string", "description": "Only list canvases under this PKB-relative directory (e.g. 'knowledge/framework')." }
+                    }
+                }))
+                .unwrap(),
+            )
+            .with_title("List Excalidraw Files")
+            .with_annotations(ToolAnnotations::new().read_only(true)),
+            Tool::new(
+                "get_excalidraw",
+                "Read a .excalidraw canvas file from the PKB verbatim, by PKB-relative path as returned by list_excalidraw. Returns the raw Excalidraw JSON.",
+                serde_json::from_value::<JsonObject>(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "path": { "type": "string", "description": "PKB-relative path ending in .excalidraw (e.g. 'knowledge/framework/academicops.excalidraw')." }
+                    },
+                    "required": ["path"]
+                }))
+                .unwrap(),
+            )
+            .with_title("Read Excalidraw File")
+            .with_annotations(ToolAnnotations::new().read_only(true)),
+            Tool::new(
+                "write_excalidraw",
+                "Write a .excalidraw canvas file into the PKB at a PKB-relative path, creating it (and parent directories) or overwriting it. Content must be a valid Excalidraw scene; it is validated before an atomic write and is not indexed. This stores the file as-is; to push canvas edits into PKB notes use sync_excalidraw.",
+                serde_json::from_value::<JsonObject>(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "path": { "type": "string", "description": "PKB-relative path ending in .excalidraw." },
+                        "content": { "type": "string", "description": "Full Excalidraw scene JSON (top-level type 'excalidraw' and an elements array)." }
+                    },
+                    "required": ["path", "content"]
+                }))
+                .unwrap(),
+            )
+            .with_title("Write Excalidraw File")
+            .with_annotations(ToolAnnotations::new().read_only(false).destructive(true)),
+            Tool::new(
                 "task_summary",
                 "Get high-level dashboard metrics: counts of 'ready' vs 'blocked' tasks, and intent breakdowns. Use for situational awareness.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
@@ -684,7 +743,7 @@ impl PkbSearchServer {
             .with_annotations(ToolAnnotations::new().read_only(true)),
             Tool::new(
                 "batch_merge",
-                "Merge multiple duplicate tasks or knowledge nodes into a single canonical task. Archives duplicates/sources and redirects dependencies/references. Idempotent. Supersedes merge_node.",
+                "Merge multiple duplicate tasks or knowledge nodes into a single canonical task. Sets each source to status `cancelled` (never `done` — the source's work was not performed) and appends a note naming the canonical; records the merge as `supersedes: [sources]` on the canonical so each source's `superseded_by` computes. Unions tags and depends_on onto the canonical, reparents children and redirects parent/depends_on/soft_depends_on/soft_blocks references. Source bodies are NOT carried across — write the consolidated body on the canonical yourself. A rejected merge (e.g. dependency cycle) writes nothing. Idempotent. Supersedes merge_node.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
