@@ -1697,15 +1697,26 @@ impl ServerHandler for PkbSearchServer {
             crate::telemetry::record_call(&effective_name, response_bytes, latency, is_error);
 
             // The one INFO line per transaction; per-step detail is DEBUG.
-            tracing::info!(
-                target: "pkb::tool_call",
-                tool = %effective_name,
-                status = %if is_error { "error" } else { "ok" },
-                latency_ms = latency as u64,
-                response_bytes,
-                session = %session_id,
-                "tool call"
-            );
+            if session_id == "unknown" {
+                tracing::info!(
+                    target: "pkb::tool_call",
+                    tool = %effective_name,
+                    status = %if is_error { "error" } else { "ok" },
+                    latency_ms = latency as u64,
+                    response_bytes,
+                    "tool call"
+                );
+            } else {
+                tracing::info!(
+                    target: "pkb::tool_call",
+                    tool = %effective_name,
+                    status = %if is_error { "error" } else { "ok" },
+                    latency_ms = latency as u64,
+                    response_bytes,
+                    session = %session_id,
+                    "tool call"
+                );
+            }
 
             result
         }

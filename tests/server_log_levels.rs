@@ -142,7 +142,7 @@ fn rpc(id: u64, method: &str, params: Value) -> Value {
 }
 
 /// Run a session of `calls` tool calls; return stderr lines emitted after startup.
-fn run_session(calls: &[(&str, Value)]) -> Vec<String> {
+fn run_session(calls: &[(&str, Value, bool)]) -> Vec<String> {
     let server = start_server();
     let init = rpc(
         1,
@@ -157,18 +157,26 @@ fn run_session(calls: &[(&str, Value)]) -> Vec<String> {
         &json!({"jsonrpc": "2.0", "method": "notifications/initialized"}),
         Some(&sid),
     );
-    for (i, (name, args)) in calls.iter().enumerate() {
+    for (i, (name, args, expects_error)) in calls.iter().enumerate() {
         let (_, body) = post(
             server.port,
             &rpc(10 + i as u64, "tools/call", json!({"name": name, "arguments": args})),
             Some(&sid),
         );
-        assert!(body.contains("\"result\""), "{name} returned no result: {body}");
+        if *expects_error {
+            assert!(body.contains("\"error\""), "{name} returned no error: {body}");
+        } else {
+            assert!(body.contains("\"result\""), "{name} returned no result: {body}");
+        }
     }
     // Let async log lines (post-response) flush.
     let deadline = Instant::now() + Duration::from_secs(2);
     while Instant::now() < deadline {
-        std::thread::sleep(Duration::from_millis(100));
+        let count = server.stderr.lock().unwrap().iter().filter(|l| level_of(l) == Some("INFO") && l.contains("pkb::tool_call")).count();
+        if count >= calls.len() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
     }
     let lines = server.stderr.lock().unwrap().clone();
     let start = lines
@@ -184,14 +192,21 @@ fn level_of(line: &str) -> Option<&'static str> {
         .find(|lvl| line.split_whitespace().nth(1) == Some(*lvl))
 }
 
-fn calls() -> Vec<(&'static str, Value)> {
+fn calls() -> Vec<(&'static str, Value, bool)> {
     vec![
-        ("get_task", json!({"id": "task-log-01"})),
-        ("search", json!({"query": "fixture"})),
+        ("get_task", json!({"id": "task-log-01"}), false),
+        ("search", json!({"query": "fixture"}), false),
         (
             "create_task",
             json!({"task_title": "Logged write", "parent": "task-log-01",
                    "body": "A write transaction."}),
+            false
+        ),
+        ("get_task", json!({"id": "missing-id-123"}), true),
+        (
+            "release_task",
+            json!({"task_title": "some unrelated task", "reason": "unreachable", "status": "done"}),
+            true
         ),
     ]
 }
@@ -233,9 +248,13 @@ fn each_tool_call_emits_one_info_summary() {
         .filter(|l| level_of(l) == Some("INFO") && l.contains("pkb::tool_call"))
         .collect();
     assert_eq!(summaries.len(), calls.len(), "expected one summary per call:\n{dump}");
-    for ((name, _), line) in calls.iter().zip(&summaries) {
+    for ((name, _, expects_error), line) in calls.iter().zip(&summaries) {
         assert!(line.contains(&format!("tool={name}")), "{line}");
-        assert!(line.contains("status=ok"), "{line}");
+        if *expects_error {
+            assert!(line.contains("status=error"), "{line}");
+        } else {
+            assert!(line.contains("status=ok"), "{line}");
+        }
         assert!(line.contains("latency_ms="), "{line}");
     }
 }

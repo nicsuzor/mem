@@ -275,9 +275,11 @@ impl LspServer {
         };
 
         let mut links = Vec::new();
+        let wiki_re = Regex::new(r"\[\[([^\]\|]+)(?:\|([^\]]+))?\]\]").ok();
+        
         for (line_idx, line) in content.lines().enumerate() {
             // Find wikilinks
-            if let Ok(wiki_re) = Regex::new(r"\[\[([^\]\|]+)(?:\|([^\]]+))?\]\]") {
+            if let Some(ref wiki_re) = wiki_re {
                 for cap in wiki_re.captures_iter(line) {
                     if let (Some(full), Some(target_match)) = (cap.get(0), cap.get(1)) {
                         let target = target_match.as_str().trim();
