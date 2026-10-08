@@ -775,7 +775,7 @@ pub fn days_since_created(created: Option<&str>) -> Option<i64> {
     if created.len() < 10 {
         return None;
     }
-    let created_dt = chrono::NaiveDate::parse_from_str(&created[..10], "%Y-%m-%d").ok()?;
+    let created_dt = chrono::NaiveDate::parse_from_str(&created[..created.floor_char_boundary(10)], "%Y-%m-%d").ok()?;
     let today = chrono::Utc::now().date_naive();
     Some((today - created_dt).num_days())
 }
@@ -2192,5 +2192,11 @@ mod tests {
             !serialized.contains("\"body\""),
             "brief metadata JSON must not contain body"
         );
+    }
+
+    #[test]
+    fn test_days_since_created_multibyte_at_byte_10_does_not_panic() {
+        // #686: '§' spans bytes 9..11, so a raw `[..10]` cut panics.
+        assert_eq!(days_since_created(Some("2026-10-0§ later")), None);
     }
 }

@@ -369,7 +369,7 @@ fn parse_age_days(date_str: &str, now: chrono::NaiveDate) -> Option<i64> {
     } else if let Ok(d) = chrono::NaiveDate::parse_from_str(date_str, "%Y-%m-%d") {
         d
     } else if date_str.len() >= 10 {
-        chrono::NaiveDate::parse_from_str(&date_str[..10], "%Y-%m-%d").ok()?
+        chrono::NaiveDate::parse_from_str(&date_str[..date_str.floor_char_boundary(10)], "%Y-%m-%d").ok()?
     } else {
         return None;
     };
@@ -481,5 +481,12 @@ mod tests {
             stats.disconnected_epics, 2,
             "Model B: only epics with no contributes_to→target/goal in their subtree are disconnected"
         );
+    }
+
+    #[test]
+    fn test_parse_age_days_multibyte_at_byte_10_does_not_panic() {
+        // #686: '§' spans bytes 9..11, so a raw `[..10]` cut panics.
+        let now = chrono::NaiveDate::from_ymd_opt(2026, 10, 8).unwrap();
+        assert_eq!(parse_age_days("2026-10-0§ later", now), None);
     }
 }

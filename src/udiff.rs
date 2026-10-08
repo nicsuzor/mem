@@ -104,7 +104,7 @@ impl RelativeIndenter {
             let change = (len_indent as isize) - (prev_indent.len() as isize);
 
             let cur_indent = if change > 0 {
-                indent[indent.len() - (change as usize)..].to_string()
+                indent[indent.floor_char_boundary(indent.len() - (change as usize))..].to_string()
             } else if change < 0 {
                 std::iter::repeat_n(self.marker, (-change) as usize).collect::<String>()
             } else {
@@ -138,7 +138,8 @@ impl RelativeIndenter {
                 if len_outdent > prev_indent.len() {
                     "".to_string()
                 } else {
-                    prev_indent[..prev_indent.len() - len_outdent].to_string()
+                    prev_indent[..prev_indent.floor_char_boundary(prev_indent.len() - len_outdent)]
+                        .to_string()
                 }
             } else {
                 format!("{}{}", prev_indent, dent)
@@ -212,7 +213,7 @@ pub fn hunk_to_before_after(hunk: &[String], lines_only: bool) -> (Vec<String>, 
 
         let op = raw_line.chars().next().unwrap_or(' ');
         let content_line = if raw_line.len() >= 2 {
-            raw_line[1..].to_string()
+            raw_line[op.len_utf8()..].to_string()
         } else {
             "\n".to_string()
         };
@@ -982,5 +983,31 @@ These changes will add the `--check-update` option...
         let diff = "```diff\n@@ ... @@\n-Second line.\n+Updated second line.\n```";
         let res = apply_diff(&parsed.content, diff).unwrap();
         assert!(res.new_content.contains("Updated second line."));
+    }
+
+    #[test]
+    fn test_hunk_line_with_multibyte_first_char_does_not_panic() {
+        // #686: a hunk line opening with a multi-byte char (no diff op) used
+        // to be cut at byte 1, inside the char.
+        let hunk = vec!["§ stray\n".to_string(), " ctx\n".to_string()];
+        let (before, after) = hunk_to_before_after(&hunk, true);
+        let expected = vec!["§ stray\n".to_string(), "ctx\n".to_string()];
+        assert_eq!(before, expected);
+        assert_eq!(after, expected);
+    }
+
+    #[test]
+    fn test_relative_indenter_multibyte_indent_does_not_panic() {
+        // #686: indents are measured in bytes; an ideographic space (3 bytes)
+        // following a 2-space indent used to be cut inside the char.
+        let text = "  a\n\u{3000}b\n  c\n";
+        let ri = RelativeIndenter::new(&[text]);
+        let rel = ri.make_relative(text).unwrap();
+        let _ = ri.make_absolute(&rel);
+
+        let text = "\u{3000}a\n b\n";
+        let ri = RelativeIndenter::new(&[text]);
+        let rel = ri.make_relative(text).unwrap();
+        let _ = ri.make_absolute(&rel);
     }
 }

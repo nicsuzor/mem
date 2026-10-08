@@ -220,7 +220,7 @@ pub fn create_document(root: &Path, fields: DocumentFields) -> Result<PathBuf> {
         "knowledge" => "kb",
         "insight" => "ins",
         "observation" => "obs",
-        other => &other[..other.len().min(4)],
+        other => &other[..other.floor_char_boundary(4)],
     };
 
     let (id, filename) = match fields.id {

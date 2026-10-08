@@ -4409,7 +4409,7 @@ fn days_since_created(created: Option<&str>) -> Option<i64> {
     if created.len() < 10 {
         return None;
     }
-    let created_dt = chrono::NaiveDate::parse_from_str(&created[..10], "%Y-%m-%d").ok()?;
+    let created_dt = chrono::NaiveDate::parse_from_str(&created[..created.floor_char_boundary(10)], "%Y-%m-%d").ok()?;
     let today = chrono::Utc::now().date_naive();
     Some((today - created_dt).num_days())
 }
@@ -4428,7 +4428,7 @@ fn format_staleness(days: i64) -> String {
 fn format_due(due: &str) -> String {
     let today = chrono::Utc::now().date_naive();
     let len = std::cmp::min(10, due.len());
-    if let Ok(due_date) = chrono::NaiveDate::parse_from_str(&due[..len], "%Y-%m-%d") {
+    if let Ok(due_date) = chrono::NaiveDate::parse_from_str(&due[..due.floor_char_boundary(len)], "%Y-%m-%d") {
         let days_until = (due_date - today).num_days();
         let color = if days_until < 0 {
             colors::RED
@@ -4504,7 +4504,7 @@ fn print_dashboard(tasks: &[&graph::GraphNode], filter: &TaskFilter) {
                     .as_deref()
                     .and_then(|d| {
                         let len = std::cmp::min(10, d.len());
-                        chrono::NaiveDate::parse_from_str(&d[..len], "%Y-%m-%d").ok()
+                        chrono::NaiveDate::parse_from_str(&d[..d.floor_char_boundary(len)], "%Y-%m-%d").ok()
                     })
                     .map(|d| d < today)
                     .unwrap_or(false)

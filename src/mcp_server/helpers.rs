@@ -212,7 +212,8 @@ impl PkbSearchServer {
     /// panic, taking the whole server down (#686).
     pub(crate) fn truncate_span_value(value: String) -> String {
         if value.len() > SPAN_VALUE_MAX_BYTES {
-            format!("{}...", &value[..SPAN_VALUE_MAX_BYTES - 3])
+            let boundary = value.floor_char_boundary(SPAN_VALUE_MAX_BYTES - 3);
+            format!("{}...", &value[..boundary])
         } else {
             value
         }
