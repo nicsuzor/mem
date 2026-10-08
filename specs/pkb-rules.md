@@ -191,7 +191,7 @@ Only a proposition passing all four is extracted. A task that yields nothing is 
 
 Extracted knowledge goes into the existing canonical topic note, synthesised into its prose rather than appended as a dated entry; otherwise into a new note parented to the relevant index or project. The destination id resolves before any write.
 
-Verification runs before deletion, never after. Before deleting the source: read the destination back by id; confirm its `modified` time is at or after the write; confirm the extracted proposition is in the returned body; reroute every link other nodes hold to the source. If any step fails, halt and leave the source intact.
+Before deleting the source, the destination write has succeeded and every link other nodes hold to the source is rerouted. If either step fails, halt and leave the source intact.
 
 ### 3.3. The consolidation guard
 
@@ -248,7 +248,7 @@ Nic, 2026-09-18, as a standing mandate for every session:
 - **Ask, or probe.** A question a person can answer in a sentence is asked in conversation and never becomes a task. An unknown that needs investigation becomes an explicit probe (`type: learn`) with observable acceptance criteria, and the work that waits on its answer `depends_on` it.
 - **Find out cheaply before committing.** Where paths diverge on an unknown, a low-cost discriminating probe comes before heavy work on any branch.
 - **Place work where its scope is shared.** Place a node under the highest container whose whole scope it serves, not under the nearest or current one. Work that affects several projects is not buried in one project's leaf. It reaches the goal or target it serves through `contributes_to` (§2.6), never by being parented to it.
-- **No task flooding.** Never batch-generate unverified nodes. Each node minted is checked for duplicates first (§3.8) and read back after (§4.2).
+- **No task flooding.** Never batch-generate unverified nodes. Each node minted is checked for duplicates first (§3.8).
 - **A review is its own node only when a separate evaluator must discharge it in a different session.** Otherwise it is a checklist line on the task it reviews. An empty placeholder review node is deleted.
 
 ---
@@ -261,14 +261,12 @@ Fan out as many PKB writers as the work needs, on any nodes, whether or not thei
 
 Compare-and-swap is opt-in and is the writer's job: pass `expected_modified` (the `modified` value from your own last read) on `append`, `update_body` and `edit_body` whenever another writer may hold the node. On `stale_write`, re-read and merge before retrying; a blind retry re-derives the conflict or clobbers a third writer.
 
-### 4.2. Verify by id; `ok: true` is not evidence
+### 4.2. Trust the write response
 
-After every PKB write, read the node back by id and check your content is there. This binds a single agent alone on the store: a success response means the call completed, not that the content reached disk or survived.
+A success response from a PKB write means the write landed. Do not read the node back to confirm it. A write that reports success without landing is a server defect: file it against nicsuzor/mem so the server checks it mechanically, rather than spending agent reads on it.
 
-- **Verify by id, never by search** (§4.3). A search miss is not evidence of loss; an id read that lacks the content is.
-- **No destructive step keys off a success response.** Deletions, merges and bulk rewrites confirm the prior state independently first.
+- **A search miss is not evidence of loss** (§4.3): a fresh write is not yet searchable.
 - **A failure response is not evidence the write did not land.** Before retrying, read the target and compare `last_modified` with the value held before the call: unmoved means nothing landed; moved means the retry must be re-planned. When a surgical write fails, do not fall back to a whole-document rewrite as the "safe" option; it has a larger clobber window.
-- **A delegate's report is weaker than `ok: true`.** Read the artifact back yourself.
 - **A self-reported clobber is not evidence in either direction.** A `git diff` of the brain repository across the suspected revisions settles whether content was lost. Attribution of the second writer comes from the dispatcher's record of what was running, or from nothing.
 - After a heavy parallel wave, an id-vs-filename scan detects whole-node overwrites (frontmatter `id:` not matching the filename stem). It cannot detect two writers on one file; §4.1 is for that.
 
@@ -300,7 +298,6 @@ A knowledge note that explains a system behaviour is filed only after confirming
 - **Write through the PKB tools, never by editing node files.** A direct file edit bypasses compare-and-swap, the path lint and the per-write commit. The exception is a field no write tool exposes.
 - **Pass list fields (`depends_on`, `tags`, …) as native arrays.** A list passed as a string is stored as a string. An update replaces a list field whole: read it, extend it, write the full list.
 - **A changed `title` or `body_chars_before` in an `update_body` result is a clobber alarm**: another writer has been there since your read. Re-read and merge (§4.1).
-- **Verify an edge through the graph.** Read the relationship back with `get_task`, never from the file you believe you wrote.
 
 ---
 
@@ -354,7 +351,7 @@ Collapsing intent, stakes, likelihood and deadlines into one "importance" knob b
 
 - **Severity is magnitude and belongs only to targets** (`type: target`). Never write `severity` on a task or epic; work inherits stakes through `contributes_to`.
 - **The worst realistic consequence sets severity.** Likelihood belongs on the edge. Never lower a target's severity because failure seems unlikely: that double-counts the discount the edge already carries.
-- **Severity is the integer field**, never read from `consequence` prose or `severity-*` tags. After writing it, re-read the node and confirm `parse_warnings` is empty.
+- **Severity is the integer field**, never read from `consequence` prose or `severity-*` tags.
 - **Ladder.** SEV4 "Catastrophic": terminal, non-negotiable, existential failure (loss of employment, academic misconduct, bankruptcy, severe health failure), a lexicographic override that applies only with `goal_type: committed` (`specs/ranking.md` §6). SEV3: severe institutional, legal or major compliance failure. SEV2: substantial professional deliverables and core commitments. SEV1: routine operational responsibilities and courtesies. SEV0: negligible.
 - **Calibration anchors** (Nic-confirmed): teaching deliverables (marks owed) SEV4 committed; research compliance (ethics, reporting, governance) SEV3 committed; peer-review obligations SEV2 committed; active collaborations with owed work SEV2; travel and accommodation arranged SEV2 committed; research-student responses SEV1; courtesy to loose contacts SEV1.
 - **Standing targets.** Keep a small reusable set of failure-type targets; do not mint bespoke targets per task.
