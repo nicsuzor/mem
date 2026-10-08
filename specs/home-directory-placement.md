@@ -48,7 +48,7 @@ When a non-task document is created without `dir`, the server puts it in the dir
 1. **Source signal.** The document's `source` field names an existing file inside the PKB. The document goes next to that file.
 2. **Ancestor signal.** The nearest ancestor on the `parent` chain whose file sits in a *home directory* (§2.1). The document goes into that directory.
 
-**This spec does not, by itself, fix the motivating case.** The two Joel notes were created with `parent: hdr-982d610d` and no `source`. Neither signal points at `hdr/joel/`: there is no source signal, and the parent's file is `projects/hdr.md` (§7 Q1), which sits in a routing directory, so the ancestor walk skips it. Replaying that exact call under this spec lands the note in `notes/` (§5.1 checks this, including that no ancestor above `hdr-982d610d` has a home), not `hdr/joel/`. The case is handled only once the writer supplies a signal that identifies the sub-project: a `source` path to the Joel canvas, or a `parent` whose file lives in `hdr/joel/`. Making writers do that is the out-of-scope follow-up named in §1.5.
+**This spec does not, by itself, fix the motivating case.** The two Joel notes were created with `parent: hdr-982d610d` and no `source`. Neither signal points at `hdr/joel/`: there is no source signal, and the parent's file is `projects/hdr.md` (§7 Q1), which sits in a routing directory, so the ancestor walk skips it. Replaying that exact call under this spec lands the note in `notes/` (§5.1 checks this; its only ancestor, `task_f0641605`, is `tasks/task_f0641605-qut-academic-work.md`, also a routing directory), not `hdr/joel/`. The case is handled only once the writer supplies a signal that identifies the sub-project: a `source` path to the Joel canvas, or a `parent` whose file lives in `hdr/joel/`. Making writers do that is the out-of-scope follow-up named in §1.5.
 
 ### 1.5 Non-goals
 
@@ -56,7 +56,7 @@ When a non-task document is created without `dir`, the server puts it in the dir
 - Tasks, epics, learns, targets, goals, capabilities and memories are out of scope. `create_task`, `create_memory`, `convert_document` and the routing of task types through `create` do not change.
 - Existing documents are not moved automatically. See §6.
 - No new directories are created by inference.
-- **Out of scope: writer-side follow-up.** Making note writers identify the sub-project. When a note is derived from a PKB artefact, the writer must pass the artefact's PKB-relative path in `source`, or parent the note to a node whose file lives in the sub-project directory. That change is in the writing skills (§6), not in this server. Until it lands, a call shaped like the motivating one (`parent: hdr-982d610d`, no `source`) still goes to `notes/`.
+- **Out of scope: writer-side follow-up.** Making note writers identify the sub-project. When a note is derived from a PKB artefact, the writer must pass the artefact's PKB-relative path in `source`, or parent the note to a node whose file lives in the sub-project directory. That change is in the writing skills (§6), not in this server, and is tracked as PKB task `aops_a3553900`. Until it lands, a call shaped like the motivating one (`parent: hdr-982d610d`, no `source`) still goes to `notes/`.
 
 ## 2. Definitions
 
@@ -233,5 +233,5 @@ After merge, on the live PKB:
 
 ## 7. Open questions for approval
 
-1. **Ancestor rule reach.** *Resolved.* As written, a note parented anywhere under an epic whose file is in a home directory lands in that directory. The concern was that every HDR note would land in `hdr/`. It does not: the file with `id: hdr-982d610d` is `projects/hdr.md` (checked in the private PKB repo at commit `2b9b614be77a4a7563fa07c982972cfc4fef5c8d`), so its directory is `projects/`, a routing directory, not `hdr/`. The ancestor walk passes over it, and notes parented to it fall through to `notes/` unless a higher ancestor has a home (§1.4, §5.1). The rule stays as written.
+1. **Ancestor rule reach.** *Resolved.* As written, a note parented anywhere under an epic whose file is in a home directory lands in that directory. The concern was that every HDR note would land in `hdr/`. It does not: the file with `id: hdr-982d610d` is `projects/hdr.md` (checked in the private PKB repo at commit `2b9b614be77a4a7563fa07c982972cfc4fef5c8d`), so its directory is `projects/`, a routing directory, not `hdr/`. The ancestor walk passes over it, and notes parented to it fall through to `notes/` (its only ancestor, `task_f0641605`, is in `tasks/`, also a routing directory) (§1.4, §5.1). The rule stays as written.
 2. **Routing-directory list.** Are there other top-level directories in the live PKB that hold documents by type rather than subject (for example `archive`, `contacts`, `daily`) and should be added to §2.1's fixed list?
