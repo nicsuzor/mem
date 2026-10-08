@@ -420,9 +420,7 @@ In addition to `focus_score`, `mem` computes several topological and network mea
 - **Consumers**: `compute_focus_scores` (`tie_breakers.unlock_breadth_x10` — a tie-breaker, **not** `cost_of_delay`; see the note at the end of §3), `get_task` / `list_tasks` signals.
 
 ### 4.11. `value_lineage` — Phase 2
-> **Approved 2026-10-08 (`mem_30862d16`), not yet shipped.** §4.11a–d, the `effective_intent` export in §8.5 and the P4 schema default in §2.1 are implemented by `mem_c07240b6`. Until that lands, the code at the pinned commit copies `raw(h)` whole onto every ready leaf beneath a container. It also treats a node with any child as a container, and lets non-actionable leaves receive value.
-
-- **Code reference**: `compute_value_lineage`, `src/graph_store.rs:4035`.
+- **Code reference**: `compute_value_lineage`, `src/graph_store.rs:4121`.
 - **Definition**: Standing weight elicited on **any** target/goal node that carries one, flowing multiplicatively to a contributor via `contributes_to`. This is the mechanism the doctrine in §7 and the parent plan's "Nic prices the destinations; the system prices the routes" require.
 - **Formula**:
   $$\text{value\_lineage}(x) = K_{\text{VL}} \times \text{confidence}(x) \times \sum_{ct \,\in\, x.\text{contributes\_to}} ct.\text{numeric\_weight}() \times \text{standing\_weight}(ct.\text{target})$$
@@ -603,7 +601,7 @@ Every exported node of an actionable type (§8) also carries **`effective_intent
   - `tests/cli_default_ordering.rs`
   - Phase 2 (chain slack, unlock breadth, value lineage) constructed-graph tests, all in `src/graph_store.rs`'s test module, immediately after `test_urgency_propagation`:
     `test_chain_slack_relaxation_finds_true_minimum_across_path_lengths` (AC1), `test_urgency_first_path_bfs_defect_fixed` (AC2, the V9 regression test), `test_unlock_breadth_is_cost_of_delay_weighted_not_a_count` (AC3), `test_value_lineage_materially_differentiates_targets_by_standing_weight` (AC4, includes a `focus_cmp` rank-movement assertion), `test_sibling_contributors_to_same_target_are_independent_not_combined` (AC6), `test_stated_weight_out_of_scale_rejected_at_parse_time_not_defaulted` / `test_stated_weight_omitted_is_silently_zero_no_warning` (AC5), `test_standing_weight_out_of_range_rejected`, `test_criticality_never_enters_cost_of_delay` (AC7, executable companion to the grep-based verification).
-  - Value-lineage sharing: one constructed-graph test per regression property in §4.11d (conservation, bounded ties, decomposition neutrality, finishing concentrates, eligibility, direct edges survive).
+  - Value-lineage sharing: one constructed-graph test per regression property in §4.11d, in `src/graph_store.rs`'s test module: `test_value_lineage_conservation_shares_sum_to_raw`, `test_value_lineage_bounded_ties_one_holder_cannot_plateau`, `test_value_lineage_decomposition_neutral`, `test_value_lineage_finishing_concentrates`, `test_value_lineage_eligibility`, `test_value_lineage_direct_edge_survives`. The `effective_intent` export (§8.5) is covered by `tests/export_graph_tool_test.rs::test_export_graph_json_emits_effective_intent_on_actionable_nodes`.
 - **Model Validation Does NOT Exist**: These tests verify only that *the code executes what the code specifies*. They do not constitute empirical validation, calibration against real user outcomes, or backtesting of queue throughput. Genuinely untested at the mechanism level are the `slack = 0` and `slack = 30` step boundaries and the ready comparator against live queues. Phase 2's `value_lineage_term` is likewise untested against live-corpus outcomes — no target has been priced yet, so there is nothing on the live PKB to measure (§2.9, §4.11).
 
 ---

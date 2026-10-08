@@ -564,9 +564,11 @@ pub struct GraphNode {
     /// 1.0 if blocking any in_progress, 0.5 if blocking any active, else 0.0.
     #[serde(skip)]
     pub blocking_urgency: f64,
-    /// Computed: min intent across self + full downstream cone (blocks, soft_blocks, children).
-    /// Used for filtering/sorting — a P2 blocker of a P0 gets effective_intent=0.
-    /// Never written back to frontmatter; skip serialization to avoid polluting YAML.
+    /// Computed: own intent lowered by the blocker channel (blocks, soft_blocks,
+    /// contributes_to — not children) and the ancestor-pressure channel; a blocked
+    /// node keeps its own intent (specs/ranking.md §4.6). A P2 blocker of a P0 gets
+    /// effective_intent=0. Never written back to frontmatter; `export_graph` emits it
+    /// via `ExportNode` instead (§8.5).
     #[serde(skip)]
     pub effective_intent: Option<i32>,
     /// Computed: lexicographic urgency propagation.

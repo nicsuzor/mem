@@ -237,3 +237,60 @@ fn test_export_graph_json_emits_engine_queue_rank_and_cost_of_delay() {
             > by_id("t_plain")["cost_of_delay"].as_i64().unwrap()
     );
 }
+
+/// specs/ranking.md §8.5: every exported actionable node carries the
+/// engine's `effective_intent`, tuple or not; non-actionable nodes omit it.
+/// `t_child` has no stated intent but sits under a P1 epic, so the
+/// ancestor-pressure channel (§4.6) lowers it to 1 — a consumer reading raw
+/// `intent` would wrongly show P4.
+#[test]
+fn test_export_graph_json_emits_effective_intent_on_actionable_nodes() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().to_path_buf();
+    let w = |name: &str, body: &str| std::fs::write(root.join(name), body).unwrap();
+
+    w("targ_y.md", "---\nid: targ_y\ntitle: Target\ntype: target\nstatus: active\n---\nT\n");
+    w("note_z.md", "---\nid: note_z\ntitle: Note\ntype: note\n---\nN\n");
+    w("epic_p1.md", "---\nid: epic_p1\ntitle: Epic\ntype: task\nstatus: ready\nintent: 1\n---\nE\n");
+    w("t_child.md", "---\nid: t_child\ntitle: Child\ntype: task\nstatus: ready\nparent: epic_p1\n---\nC\n");
+    w("t_done.md", "---\nid: t_done\ntitle: Done\ntype: task\nstatus: done\n---\nD\n");
+
+    let graph = GraphStore::build_from_directory(&root);
+    let engine_child = graph.get_node("t_child").unwrap().effective_intent;
+    assert_eq!(engine_child, Some(1), "fixture: ancestor pressure must lower t_child to P1");
+    let shared = Arc::new(RwLock::new(graph));
+    let server = PkbSearchServer::new(
+        Arc::new(RwLock::new(mem::vectordb::VectorStore::new(3))),
+        Arc::new(mem::embeddings::Embedder::new_dummy()),
+        root.clone(),
+        root.join("db.bin"),
+        shared.clone(),
+    );
+    let res = server
+        .dispatch_tool_sync(
+            "export_graph",
+            &serde_json::json!({"format": "json", "include_done": true}),
+        )
+        .unwrap();
+    let text: String = res
+        .content
+        .iter()
+        .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+        .collect();
+    let parsed: Value = serde_json::from_str(&text).unwrap();
+    let nodes = parsed["nodes"].as_array().unwrap();
+    let find = |id: &str| nodes.iter().find(|n| n["id"] == id);
+
+    let child = find("t_child").expect("t_child exported");
+    assert_eq!(child["effective_intent"].as_i64(), Some(1), "{child}");
+    assert!(child.get("intent").is_none(), "fixture: t_child has no stated intent");
+    assert_eq!(find("epic_p1").unwrap()["effective_intent"].as_i64(), Some(1));
+    let done = find("t_done").expect("t_done exported with include_done");
+    assert!(done.get("queue_rank").is_none(), "fixture: t_done has no focus tuple");
+    assert_eq!(done["effective_intent"].as_i64(), Some(4), "carried without a tuple: {done}");
+    for id in ["targ_y", "note_z"] {
+        if let Some(n) = find(id) {
+            assert!(n.get("effective_intent").is_none(), "{id} is not actionable: {n}");
+        }
+    }
+}

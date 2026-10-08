@@ -34,6 +34,11 @@ pub struct ExportNode {
     /// ordered by [`GraphStore::focus_cmp`] (1 = highest priority).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub queue_rank: Option<usize>,
+    /// `GraphNode.effective_intent` (specs/ranking.md §4.6), emitted on every
+    /// node of an actionable type so consumers read the band the engine
+    /// ranks by (§8.5). Computed; never written back to frontmatter.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effective_intent: Option<i32>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -2259,11 +2264,21 @@ impl GraphStore {
                     Some(ft) => (Some(ft.severity_gate), Some(ft.cost_of_delay)),
                     None => (None, None),
                 };
+                let actionable = match node.node_type.as_deref() {
+                    Some(t) => ACTIONABLE_TYPES.contains(&t),
+                    None => true,
+                };
+                let effective_intent = if actionable {
+                    Some(node.effective_intent.unwrap_or(node.intent.unwrap_or(4)))
+                } else {
+                    None
+                };
                 ExportNode {
                     node,
                     severity_gate,
                     cost_of_delay,
                     queue_rank,
+                    effective_intent,
                 }
             })
             .collect();
@@ -4073,18 +4088,17 @@ const K_VALUE_LINEAGE: f64 = 10000.0;
 /// (`standing_weight: None`) still contributes nothing, so this is Zero
 /// Defaults / Zero Inference, not a relaxed default.
 ///
-/// **One hop from the target, then down to the nearest ready leaf.** The
-/// pricing walk itself is one hop: it reads each node's own `contributes_to`
-/// edges directly and does not chain transitively through a contributor's
-/// own further `contributes_to` edges (a contributor of a contributor of a
-/// priced target earns nothing unless it also has a direct edge). But the
-/// edge-holder does not necessarily keep the resulting value for itself: if
-/// the edge-holder is a container (has open children), the value is instead
-/// pushed down to its nearest ready, unblocked leaf descendant (Nic,
-/// 2026-09-12, mem_537e44a9 "Verdict: value flow to children" — see the
-/// conduit pass at the end of this function). This is still a local
-/// per-node scan (one `contributes_to` read plus one `parent`-chain walk
-/// per node), not a new whole-graph cone-walk mechanism.
+/// **One hop from the target, then shared down the tree.** The pricing
+/// walk itself is one hop: it reads each node's own `contributes_to` edges
+/// directly and does not chain transitively through a contributor's own
+/// further `contributes_to` edges (a contributor of a contributor of a
+/// priced target earns nothing unless it also has a direct edge). Only an
+/// eligible leaf (actionable, open, unblocked, no open actionable child;
+/// specs/ranking.md §4.11a) keeps a nonzero value. Any other edge-holder's
+/// raw value is split equally among its live children at each level down
+/// to the eligible leaves beneath it (§4.11b), so the shares one holder
+/// delivers sum to its raw value. A leaf takes the max share any single
+/// holder gives it; its own direct edge is never divided.
 ///
 /// **Sibling-contributor semantics (outcome 6):** independent and additive.
 /// Multiple nodes contributing to the same target are each scored off their
@@ -4141,15 +4155,16 @@ fn compute_value_lineage(nodes: &mut [GraphNode]) {
         }
     }
 
-    // Conduit pass (outcome 5, mem_fix_value_flows_to_ready_leaves): a
-    // priced edge held by a container (`!leaf`, i.e. it has children) does
-    // not land on the container. "A target's weight lands on the ready,
-    // unblocked leaves that advance it -- never on the container, never on
-    // anything itself blocked" (Nic, 2026-09-12, mem_537e44a9 "Verdict:
-    // value flow to children"). This replaces the previous strict one-hop
-    // reading with "one hop from the edge-holder, then down to the nearest
-    // ready/unblocked leaf beneath it" -- still a local scan (walk `parent`
-    // to the root once per node), not a new whole-graph cone walk.
+    // Conduit pass (specs/ranking.md §4.11a-b, mem_c07240b6): only an
+    // eligible leaf holds value. Every other edge-holder's raw value is
+    // zeroed on it and *shared* down the tree -- divided equally among its
+    // live children at each level -- to the eligible leaves beneath it. It
+    // is never copied whole onto each of them: one priced edge copied onto
+    // every ready leaf under its holder was the 117-way tie at 2,975 the
+    // overwhelm dashboard showed as "almost everything high priority". A
+    // leaf takes the max share any one edge-holder gives it (nested holders
+    // concentrate, they do not double-count); its own direct edge is never
+    // divided.
     if !standing_weights.is_empty() {
         let id_to_idx: HashMap<String, usize> = nodes
             .iter()
@@ -4159,49 +4174,105 @@ fn compute_value_lineage(nodes: &mut [GraphNode]) {
         let is_blocked = compute_effectively_blocked(nodes, &id_to_idx);
         let raw_lineage = lineage.clone();
 
-        for i in 0..nodes.len() {
-            // See the equivalent comment in `compute_urgency`'s conduit
-            // pass: read `children` directly rather than the cached `leaf`
-            // flag so this stays correct when exercised directly in tests
-            // against hand-built `GraphNode`s (where `leaf` was never set
-            // by the full build pipeline's `compute_inverses`).
-            if !nodes[i].children.is_empty() {
-                lineage[i] = 0.0; // container: conduit, does not compete
-                continue;
-            }
-            if graph::is_completed(nodes[i].status.as_deref()) || is_blocked[i] {
-                // Conduit gate: a blocked/completed leaf is itself a
-                // conduit, not a competitor (doctrine: "never on anything
-                // itself blocked"). Zero the leaf's OWN direct-edge value
-                // (computed above, before this pass ran) — not just skip
-                // inheriting from an ancestor. Without this, a blocked node
-                // holding its own priced `contributes_to` edge kept full
-                // credit for work it cannot currently advance.
-                lineage[i] = 0.0;
-                continue;
-            }
-
-            let mut best = raw_lineage[i];
-            let mut current = nodes[i].parent.clone();
-            let mut climbed: HashSet<usize> = HashSet::new();
-            let mut depth = 0usize;
-            while let Some(pid) = current {
-                if depth >= MAX_CONE_DEPTH {
-                    break;
-                }
-                let Some(&pidx) = id_to_idx.get(&pid) else {
-                    break;
+        // §4.11a (1)+(2): actionable type, not completed. Untyped nodes
+        // default to actionable, as everywhere else in the engine.
+        let open_actionable: Vec<bool> = nodes
+            .iter()
+            .map(|n| {
+                let actionable = match n.node_type.as_deref() {
+                    Some(t) => ACTIONABLE_TYPES.contains(&t),
+                    None => true,
                 };
-                if !climbed.insert(pidx) {
-                    break; // cycle guard
-                }
-                if raw_lineage[pidx] > best {
-                    best = raw_lineage[pidx];
-                }
-                current = nodes[pidx].parent.clone();
-                depth += 1;
+                actionable && !graph::is_completed(n.status.as_deref())
+            })
+            .collect();
+        // Open actionable children only: the walk descends through these,
+        // and a node with none of them is a leaf (§4.11a (4)). Reading
+        // `children` directly (not the cached `leaf` flag) keeps this
+        // correct against hand-built `GraphNode`s in tests.
+        let open_children: Vec<Vec<usize>> = nodes
+            .iter()
+            .map(|n| {
+                n.children
+                    .iter()
+                    .filter_map(|c| id_to_idx.get(c).copied())
+                    .filter(|&c| open_actionable[c])
+                    .collect()
+            })
+            .collect();
+        let eligible: Vec<bool> = (0..nodes.len())
+            .map(|i| open_actionable[i] && !is_blocked[i] && open_children[i].is_empty())
+            .collect();
+
+        // live(x): x is an eligible leaf, or has one beneath it.
+        let mut live: Vec<Option<bool>> = vec![None; nodes.len()];
+        fn is_live(
+            i: usize,
+            depth: usize,
+            eligible: &[bool],
+            open_children: &[Vec<usize>],
+            live: &mut [Option<bool>],
+            on_stack: &mut HashSet<usize>,
+        ) -> bool {
+            if let Some(v) = live[i] {
+                return v;
             }
-            lineage[i] = best;
+            if eligible[i] {
+                live[i] = Some(true);
+                return true;
+            }
+            if depth >= MAX_CONE_DEPTH || !on_stack.insert(i) {
+                return false; // depth / cycle guard; not memoised
+            }
+            let mut any = false;
+            for &c in &open_children[i] {
+                any |= is_live(c, depth + 1, eligible, open_children, live, on_stack);
+            }
+            on_stack.remove(&i);
+            live[i] = Some(any);
+            any
+        }
+
+        for (i, v) in lineage.iter_mut().enumerate() {
+            *v = if eligible[i] { raw_lineage[i] } else { 0.0 };
+        }
+
+        for h in 0..nodes.len() {
+            if raw_lineage[h] <= 0.0 || eligible[h] {
+                continue;
+            }
+            // Tree split (§4.11b): share(h, c) = share(h, p) / |live(p)|.
+            let mut stack: Vec<(usize, f64, usize)> = vec![(h, raw_lineage[h], 0)];
+            let mut visited: HashSet<usize> = HashSet::new();
+            while let Some((p, share, depth)) = stack.pop() {
+                if !visited.insert(p) {
+                    continue; // cycle guard
+                }
+                if eligible[p] {
+                    if share > lineage[p] {
+                        lineage[p] = share;
+                    }
+                    continue;
+                }
+                if depth >= MAX_CONE_DEPTH {
+                    continue;
+                }
+                let mut on_stack = HashSet::new();
+                let live_children: Vec<usize> = open_children[p]
+                    .iter()
+                    .copied()
+                    .filter(|&c| {
+                        is_live(c, depth + 1, &eligible, &open_children, &mut live, &mut on_stack)
+                    })
+                    .collect();
+                if live_children.is_empty() {
+                    continue; // no eligible leaf yet: nobody holds the value
+                }
+                let each = share / live_children.len() as f64;
+                for c in live_children {
+                    stack.push((c, each, depth + 1));
+                }
+            }
         }
     }
 
@@ -8370,6 +8441,268 @@ mod tests {
             a, b,
             "sibling contributors to the same target must each receive full, independent \
              credit -- the presence of another contributor must not reduce either one's"
+        );
+    }
+
+    // ── value_lineage tree split: specs/ranking.md §4.11d regression
+    // properties, one test each (mem_c07240b6). Fixture prices mirror the
+    // live failure: a `Probable` (0.85) edge to a 0.35 target is 2975.
+
+    fn vl_node(id: &str, node_type: &str, parent: Option<&str>, children: &[&str]) -> GraphNode {
+        GraphNode {
+            id: id.to_string(),
+            node_type: Some(node_type.to_string()),
+            status: Some("ready".to_string()),
+            parent: parent.map(str::to_string),
+            children: children.iter().map(|c| c.to_string()).collect(),
+            ..Default::default()
+        }
+    }
+
+    fn vl_target(id: &str, standing_weight: f64) -> GraphNode {
+        GraphNode {
+            id: id.to_string(),
+            node_type: Some("target".to_string()),
+            status: Some("active".to_string()),
+            standing_weight: Some(standing_weight),
+            ..Default::default()
+        }
+    }
+
+    /// A holder `epic` with a `Probable` edge to a 0.35 target (raw 2975)
+    /// and `n` ready task children `leaf-0..n`.
+    fn vl_flat_epic(n: usize) -> Vec<GraphNode> {
+        let ids: Vec<String> = (0..n).map(|i| format!("leaf-{i}")).collect();
+        let refs: Vec<&str> = ids.iter().map(String::as_str).collect();
+        let mut epic = vl_node("epic", "task", None, &refs);
+        epic.contributes_to = vec![ct_edge("targ", "Probable")];
+        let mut nodes = vec![vl_target("targ", 0.35), epic];
+        nodes.extend(ids.iter().map(|id| vl_node(id, "task", Some("epic"), &[])));
+        nodes
+    }
+
+    fn vl_of(nodes: &[GraphNode], id: &str) -> f64 {
+        nodes.iter().find(|n| n.id == id).unwrap().value_lineage
+    }
+
+    fn vl_total(nodes: &[GraphNode]) -> f64 {
+        nodes.iter().map(|n| n.value_lineage).sum()
+    }
+
+    const VL_RAW_2975: f64 = 0.85 * 0.35 * K_VALUE_LINEAGE;
+
+    /// §4.11d (1) Conservation: the shares one edge-holder delivers sum to
+    /// exactly its raw value when it has an eligible leaf, and to nothing
+    /// (never more) when it has none. Per level: `a`, `b` and the live
+    /// sub-epic `sub` each get a third; `sub`'s three leaves a ninth each;
+    /// the blocked child `c` is not live and takes no slice.
+    #[test]
+    fn test_value_lineage_conservation_shares_sum_to_raw() {
+        let mut epic = vl_node("epic", "task", None, &["a", "b", "c", "sub"]);
+        epic.contributes_to = vec![ct_edge("targ", "Probable")];
+        let mut c = vl_node("c", "task", Some("epic"), &[]);
+        c.depends_on = vec!["unmet".to_string()];
+        let mut lonely = vl_node("lonely-holder", "task", None, &["lonely-blocked"]);
+        lonely.contributes_to = vec![ct_edge("targ", "Probable")];
+        let mut lonely_blocked = vl_node("lonely-blocked", "task", Some("lonely-holder"), &[]);
+        lonely_blocked.depends_on = vec!["unmet".to_string()];
+        let mut nodes = vec![
+            vl_target("targ", 0.35),
+            epic,
+            vl_node("a", "task", Some("epic"), &[]),
+            vl_node("b", "task", Some("epic"), &[]),
+            c,
+            vl_node("sub", "task", Some("epic"), &["s1", "s2", "s3"]),
+            vl_node("s1", "task", Some("sub"), &[]),
+            vl_node("s2", "task", Some("sub"), &[]),
+            vl_node("s3", "task", Some("sub"), &[]),
+            lonely,
+            lonely_blocked,
+        ];
+        compute_value_lineage(&mut nodes);
+
+        let delivered: f64 = ["a", "b", "c", "sub", "s1", "s2", "s3", "epic"]
+            .iter()
+            .map(|id| vl_of(&nodes, id))
+            .sum();
+        assert!(
+            (delivered - VL_RAW_2975).abs() < 1e-6,
+            "shares from one holder must sum to exactly raw(h) = {VL_RAW_2975}, got {delivered}"
+        );
+        assert!((vl_of(&nodes, "a") - VL_RAW_2975 / 3.0).abs() < 1e-6);
+        assert!((vl_of(&nodes, "s1") - VL_RAW_2975 / 9.0).abs() < 1e-6);
+        assert_eq!(vl_of(&nodes, "c"), 0.0, "blocked child takes no slice");
+        assert_eq!(
+            vl_of(&nodes, "lonely-holder") + vl_of(&nodes, "lonely-blocked"),
+            0.0,
+            "a holder with no eligible leaf delivers nothing until one becomes ready"
+        );
+    }
+
+    /// §4.11d (2) Bounded ties: for any threshold T, at most ⌊raw(h)/T⌋
+    /// leaves receive ≥ T from one holder. The live failure: one 2975
+    /// holder over 117 ready leaves put all 117 at exactly 2975; now at most
+    /// 2 can reach 1000, and the 117-way tie sits at 2975/117 ≈ 25.
+    #[test]
+    fn test_value_lineage_bounded_ties_one_holder_cannot_plateau() {
+        let mut nodes = vl_flat_epic(117);
+        compute_value_lineage(&mut nodes);
+        let leaves: Vec<f64> = (0..117).map(|i| vl_of(&nodes, &format!("leaf-{i}"))).collect();
+        for t in [1000.0, 100.0, 26.0, 25.0, 1.0] {
+            let at_or_above = leaves.iter().filter(|&&v| v >= t).count();
+            let bound = (VL_RAW_2975 / t).floor() as usize;
+            assert!(
+                at_or_above <= bound,
+                "at most ⌊{VL_RAW_2975}/{t}⌋ = {bound} leaves may reach {t}; got {at_or_above}"
+            );
+        }
+        let max = leaves.iter().cloned().fold(0.0_f64, f64::max);
+        assert!(
+            max <= VL_RAW_2975 / 117.0 + 1e-6,
+            "117 leaves tied on one holder must each sit at ≤ raw/117, got {max}"
+        );
+    }
+
+    /// §4.11d (3) Decomposition neutrality: splitting an eligible leaf into
+    /// k actionable children does not raise the total value delivered.
+    #[test]
+    fn test_value_lineage_decomposition_neutral() {
+        let mut before = vl_flat_epic(2);
+        compute_value_lineage(&mut before);
+
+        let mut after = vl_flat_epic(2);
+        after.iter_mut().find(|n| n.id == "leaf-0").unwrap().children =
+            vec!["k1".to_string(), "k2".to_string(), "k3".to_string()];
+        for k in ["k1", "k2", "k3"] {
+            after.push(vl_node(k, "task", Some("leaf-0"), &[]));
+        }
+        compute_value_lineage(&mut after);
+
+        let (tb, ta) = (vl_total(&before), vl_total(&after));
+        assert!(
+            ta <= tb + 1e-6,
+            "decomposing leaf-0 into 3 children must not raise total delivered value: \
+             before {tb}, after {ta}"
+        );
+        assert!(
+            (vl_of(&after, "leaf-1") - vl_of(&before, "leaf-1")).abs() < 1e-6,
+            "the undecomposed sibling keeps its half: the split is per level, not per leaf"
+        );
+    }
+
+    /// §4.11d (4) Finishing concentrates: completing or cancelling an
+    /// eligible leaf never lowers a remaining leaf's share from the same
+    /// holder, and the value it held moves to the leaves still open — so
+    /// the last open leaf of a priced epic carries the whole price.
+    #[test]
+    fn test_value_lineage_finishing_concentrates() {
+        let mut nodes = vl_flat_epic(4);
+        compute_value_lineage(&mut nodes);
+        let before = vl_of(&nodes, "leaf-0");
+
+        nodes.iter_mut().find(|n| n.id == "leaf-3").unwrap().status = Some("done".to_string());
+        compute_value_lineage(&mut nodes);
+        let after_one = vl_of(&nodes, "leaf-0");
+        assert!(after_one >= before, "finishing must never lower a sibling's share");
+        assert!(
+            after_one > before + 1e-6,
+            "finishing leaf-3 must concentrate its share on the open leaves: \
+             before {before}, after {after_one}"
+        );
+
+        for id in ["leaf-1", "leaf-2"] {
+            nodes.iter_mut().find(|n| n.id == id).unwrap().status = Some("cancelled".to_string());
+        }
+        compute_value_lineage(&mut nodes);
+        assert!(
+            (vl_of(&nodes, "leaf-0") - VL_RAW_2975).abs() < 1e-6,
+            "the last open leaf carries the holder's whole raw value, got {}",
+            vl_of(&nodes, "leaf-0")
+        );
+    }
+
+    /// §4.11d (5) Eligibility: containers, blocked or completed nodes and
+    /// non-actionable nodes hold 0; a task whose only children are completed
+    /// or non-actionable is an eligible leaf and takes its share.
+    #[test]
+    fn test_value_lineage_eligibility() {
+        let mut epic = vl_node(
+            "epic",
+            "task",
+            None,
+            &["note-leaf", "all-done", "has-note", "blocked", "done", "container"],
+        );
+        epic.contributes_to = vec![ct_edge("targ", "Probable")];
+        let mut blocked = vl_node("blocked", "task", Some("epic"), &[]);
+        blocked.depends_on = vec!["unmet".to_string()];
+        let mut done = vl_node("done", "task", Some("epic"), &[]);
+        done.status = Some("done".to_string());
+        let mut done_child = vl_node("done-child", "task", Some("all-done"), &[]);
+        done_child.status = Some("done".to_string());
+        let mut nodes = vec![
+            vl_target("targ", 0.35),
+            epic,
+            vl_node("note-leaf", "note", Some("epic"), &[]),
+            vl_node("all-done", "task", Some("epic"), &["done-child"]),
+            done_child,
+            vl_node("has-note", "task", Some("epic"), &["a-note"]),
+            vl_node("a-note", "knowledge", Some("has-note"), &[]),
+            blocked,
+            done,
+            vl_node("container", "task", Some("epic"), &["inner"]),
+            vl_node("inner", "task", Some("container"), &[]),
+        ];
+        compute_value_lineage(&mut nodes);
+
+        for id in ["epic", "container", "note-leaf", "a-note", "blocked", "done", "done-child"] {
+            assert_eq!(vl_of(&nodes, id), 0.0, "{id} is not an eligible leaf and must hold 0");
+        }
+        // Live children of `epic`: all-done, has-note, container -> a third each.
+        let third = VL_RAW_2975 / 3.0;
+        for id in ["all-done", "has-note", "inner"] {
+            assert!(
+                (vl_of(&nodes, id) - third).abs() < 1e-6,
+                "{id} is an eligible leaf and must take its share {third}, got {}",
+                vl_of(&nodes, id)
+            );
+        }
+    }
+
+    /// §4.11d (6) Direct edges survive: an eligible leaf with its own priced
+    /// edge keeps at least its own raw value, undivided — even under a
+    /// holder whose split share is smaller, and even when the leaf has only
+    /// completed or non-actionable children.
+    #[test]
+    fn test_value_lineage_direct_edge_survives() {
+        let siblings: Vec<String> = (0..9).map(|i| format!("sib-{i}")).collect();
+        let mut child_ids: Vec<&str> = siblings.iter().map(String::as_str).collect();
+        child_ids.push("direct");
+        let mut epic = vl_node("epic", "task", None, &child_ids);
+        epic.contributes_to = vec![ct_edge("targ-big", "Certain")]; // raw 10000, 1000 per child
+        let mut direct = vl_node("direct", "task", Some("epic"), &["direct-done", "direct-note"]);
+        direct.contributes_to = vec![ct_edge("targ", "Probable")]; // raw 2975
+        let mut direct_done = vl_node("direct-done", "task", Some("direct"), &[]);
+        direct_done.status = Some("done".to_string());
+        let mut nodes = vec![
+            vl_target("targ", 0.35),
+            vl_target("targ-big", 1.0),
+            epic,
+            direct,
+            direct_done,
+            vl_node("direct-note", "note", Some("direct"), &[]),
+        ];
+        nodes.extend(siblings.iter().map(|id| vl_node(id, "task", Some("epic"), &[])));
+        compute_value_lineage(&mut nodes);
+
+        let v = vl_of(&nodes, "direct");
+        assert!(
+            v >= VL_RAW_2975 - 1e-6,
+            "an eligible leaf's own direct edge ({VL_RAW_2975}) must survive undivided, got {v}"
+        );
+        assert!(
+            (vl_of(&nodes, "sib-0") - 1000.0).abs() < 1e-6,
+            "siblings take the holder's per-level share, got {}",
+            vl_of(&nodes, "sib-0")
         );
     }
 
