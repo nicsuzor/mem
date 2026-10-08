@@ -301,7 +301,7 @@ Changing a constant is a pull request (S11: simple beats complicated). Moving th
 - `saturated_loop`, with `loop: [ids]`;
 - `no_convergence`, with `loop: [ids]`.
 
-A node whose cone reaches a priced target **and** touches a saturated or unsettled component gets `flow_status ≠ ok`. R12 is checked first, as in the reference (`flow.py:236-240`): a node whose cone reaches no priced target is 0 / 0 / 0 with `ok`, even if its cone touches a failed loop. Its `gain`, `loss_averted` and `decision_value` are `null`, not 0.
+A node whose cone reaches a priced target **and** touches a saturated or unsettled component gets `flow_status ≠ ok`; its `gain`, `loss_averted` and `decision_value` are `null`, not 0. R12 is checked first, as in the reference (`flow.py:236-240`): a node whose cone reaches no priced target is 0 / 0 / 0 with `ok`, even if its cone touches a failed loop.
 
 - **Other nodes are unaffected.** They are ranked as normal (`flow-rule.md` §3.2, lines 156 and 158).
 - **The linter names the loop** (`epic_fc1de9ec`).
@@ -327,7 +327,7 @@ This spec follows lines 156 and 158, and reports `null` instead of 0.
 
 ### 5.4. Cost at the live graph's size (I13)
 
-`python3 specs/pkb-flow-engine/cost.py` prints these figures. It runs the reference calculator unchanged on the committed fixture `specs/flow-rule/fixtures/live-2026-10-05.json`.
+`python3 specs/pkb-flow-engine/cost.py` prints these figures. It runs the reference calculator unchanged on the committed fixture `specs/flow-rule/fixtures/live-2026-10-05.json`. A full run takes about 2 minutes, of which scenario C takes about 42 s.
 
 | Scenario | Flow edges | Priced targets | Open nodes reaching a priced target | Σ cone edges (max per node) | Loops (largest) | Python `worth_all`, median per run, over three runs |
 |---|---|---|---|---|---|---|
@@ -558,6 +558,10 @@ Each criterion is something an observer can check against the built server. Ever
 | A18 | No output of any tool or CLI command carries a field removed in §7.1–§7.3 | §7, R3, R23 | T-removed |
 | A19 | A malformed `links` entry yields one `ParseWarning`; an entry with a bad label is dropped, an entry with a bad number or word keeps the entry with that field unstated, and the node's other entries stay | R5 | T-parse |
 | A20 | A rejected or unsettled loop that reaches a priced target gives the nodes feeding it `flow_status ≠ ok` with null figures and the loop named; a node feeding an unpriced failed loop shows 0 / ok; unrelated nodes keep their figures | R12, R13, S15 | T-fail |
+| A21 | `compute_flow` and `compute_decision_value` together take under 0.25 s on the fixture with every target priced, in a release build | R15, I13 | T-cost |
+| A22 | Two rebuilds from identical input give byte-identical `flow` across every build entry point | R17 | T-determinism |
+| A23 | No tool or CLI output contains a sum of `gain`, `loss_averted` or `decision_value` over two or more nodes | R21 | T-nosum |
+| A24 | `pkb tasks`, `pkb focus` and `list_tasks` agree on order and figures | R19, R24 | T-cli-parity |
 | A25 | A link declared at both ends is read once; on disagreement the `from` entry wins with a warning; `parent:`, mapped old keys, `standing_weight` and `worth` words are read as R6, R7 and R9 say; an unclassed `due` is `fake` | R4, R6, R7, R9, R10 | T-schema |
 | A26 | An entry with `set_by: agent-proposed` moves worth only at its label's default; the same entry marked `nic` moves its stated quantum; a `needs` entry with no quantum carries 1.0 | R11, R26 | T-schema |
 | A27 | Immediately after a write, `get_task` shows the node's previous `flow`, or 0 / 0 / 0 with `ok` for a new node; after the background rebuild it shows the recomputed `flow` | R16 | T-carryover |
@@ -566,10 +570,6 @@ Each criterion is something an observer can check against the built server. Ever
 | A30 | `list_tasks` with `sort: gain_per_effort` orders by `gain / effort_days`; the default order is unchanged by it | R22 | T-sort |
 | A31 | A write tool given a `links` entry, `worth` or `deadline_class` that R5, R9 or R10 would warn about returns an error and writes nothing | §7.2 | T-write-reject |
 | A32 | Cancelling a priced opportunity drops to 0 every node that served only it; no passage of time, age or inactivity changes any figure | R25, S6, U19 | T-ripeness |
-| A21 | `compute_flow` and `compute_decision_value` together take under 0.25 s on the fixture with every target priced, in a release build | R15, I13 | T-cost |
-| A22 | Two rebuilds from identical input give byte-identical `flow` across every build entry point | R17 | T-determinism |
-| A23 | No tool or CLI output contains a sum of `gain`, `loss_averted` or `decision_value` over two or more nodes | R21 | T-nosum |
-| A24 | `pkb tasks`, `pkb focus` and `list_tasks` agree on order and figures | R19, R24 | T-cli-parity |
 
 ---
 
@@ -627,7 +627,7 @@ The parse tests for severity and `goal_type` stay, since those fields stay store
 
 ## 10. Questions for Nic
 
-### 10.1. Questions this spec adds (E1–E16)
+### 10.1. Questions this spec adds (E1–E18)
 
 Each comes with the proposal this spec builds against if it is not answered. None is decided.
 

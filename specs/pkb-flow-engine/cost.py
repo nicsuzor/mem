@@ -1,4 +1,4 @@
-"""Cost of the flow rule on the committed live fixture (pkb-flow-engine.md section 6).
+"""Cost of the flow rule on the committed live fixture (pkb-flow-engine.md section 5.4).
 
 Run: python3 specs/pkb-flow-engine/cost.py
 
