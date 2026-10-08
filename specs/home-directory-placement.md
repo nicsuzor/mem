@@ -48,12 +48,15 @@ When a non-task document is created without `dir`, the server puts it in the dir
 1. **Source signal.** The document's `source` field names an existing file inside the PKB. The document goes next to that file.
 2. **Ancestor signal.** The nearest ancestor on the `parent` chain whose file sits in a *home directory* (§2.1). The document goes into that directory.
 
+**This spec does not, by itself, fix the motivating case.** The two Joel notes were created with `parent: hdr-982d610d` and no `source`. Neither signal points at `hdr/joel/`: there is no source signal, and the parent's file is `projects/hdr.md` (§7 Q1), which sits in a routing directory, so the ancestor walk skips it. Replaying that exact call under this spec lands the note in `notes/` (§5.1 checks this, including that no ancestor above `hdr-982d610d` has a home), not `hdr/joel/`. The case is handled only once the writer supplies a signal that identifies the sub-project: a `source` path to the Joel canvas, or a `parent` whose file lives in `hdr/joel/`. Making writers do that is the out-of-scope follow-up named in §1.5.
+
 ### 1.5 Non-goals
 
 - No inference from body text, tags, titles or embeddings. The bodies of the two Joel notes mention the canvas path in prose. Parsing prose for paths is rejected because it fails silently in both directions.
 - Tasks, epics, learns, targets, goals, capabilities and memories are out of scope. `create_task`, `create_memory`, `convert_document` and the routing of task types through `create` do not change.
 - Existing documents are not moved automatically. See §6.
 - No new directories are created by inference.
+- **Out of scope: writer-side follow-up.** Making note writers identify the sub-project. When a note is derived from a PKB artefact, the writer must pass the artefact's PKB-relative path in `source`, or parent the note to a node whose file lives in the sub-project directory. That change is in the writing skills (§6), not in this server. Until it lands, a call shaped like the motivating one (`parent: hdr-982d610d`, no `source`) still goes to `notes/`.
 
 ## 2. Definitions
 
@@ -65,7 +68,7 @@ A **routing directory** is a directory that holds documents because of their typ
 - the fixed type directories: `tasks`, `targets`, `goals`, `memories`, `notes`, `projects`
 - any top-level directory whose name is a canonical project slug in `polecat.yaml`. These directories are filled by `create_task`'s `project` routing (`subdir = project`).
 
-A **home directory** is any directory under the PKB root, relative and free of `..`, that is not a routing directory. Examples: `hdr`, `hdr/joel`. A node's **home** is the directory containing its file, if that directory is a home directory.
+A **home directory** is any directory under the PKB root, relative and free of `..`, that is not a routing directory and that the indexer does not skip. The indexer skips hidden (`.`-prefixed) directories and gitignored directories (`src/pkb.rs:223-227`: `.hidden(true)`, `.git_ignore(true)`, `.git_global(true)`, `.git_exclude(true)`, `.ignore(true)`), so no directory that is, or lies under, a hidden or ignored directory is a home directory. A document placed there would never be indexed. Examples: `hdr`, `hdr/joel`; not `.obsidian` or a gitignored directory. A node's **home** is the directory containing its file, if that directory is a home directory.
 
 ### 2.2 In-scope types
 
@@ -185,6 +188,9 @@ tasks/cb.md                      id: cb              type: task   parent: ca
 tasks/d01.md … tasks/d17.md      chain: d01 → parent d02 → … → d17 → parent deep-epic
 deep/deep.md                     id: deep-epic       type: epic   (home dir `deep`; 18th node from d01)
 memories/                        (empty directory)
+.obsidian/x.md                   (hidden directory)
+ignored/y.md                     (gitignored directory)
+.gitignore                       ignored/
 polecat.yaml                     projects: { mem: … }
 ```
 
@@ -206,6 +212,7 @@ Each criterion is falsifiable by its test.
 | AC12 | Inference never creates a directory. | `no_directories_created`: in one fixture PKB, record the set of directories, then run the AC1, AC4, AC5, AC6 and AC8 creates plus a `memory` create. Assert the set is unchanged. `memories/` is pre-created in the fixture. |
 | AC13 | A document placed in a nested home directory is in the graph immediately, with no rebuild call. | `nested_placement_is_indexed`: after the AC1 create, `get_document(id)` returns the body, and the graph node's path is `hdr/joel/<id>_<slug>.md`. No embedder is needed, because neither call goes through vector search. |
 | AC14 | The `create` schema descriptions match §4.2, and `pkb-server-spec.md` no longer claims type-only routing. | Extend `tests/schema_doc_integrity.rs`: assert the `source` description contains "saved in that file's directory" and the spec routing line links this file. |
+| AC15 | A `source` naming an existing file in a hidden or gitignored directory has no effect on placement: `source: .obsidian/x.md` → `notes/`; `source: ignored/y.md` → `notes/`. | `skipped_dirs_not_home`: two cases, both with no `parent`; each lands in `notes/` with reason `type default`, and nothing is written under `.obsidian/` or `ignored/`. |
 
 ### 5.1 Verification beyond unit tests
 
@@ -215,6 +222,8 @@ After merge, on the live PKB:
 - Confirm the response line reads `in \`hdr/joel/\` — placed by source`.
 - Confirm the file is under `hdr/joel/`.
 - Then delete the probe note.
+- Replay the original call exactly: `type: note`, `parent: hdr-982d610d`, no `source`, no `dir`. Expected under this spec: the note lands in `notes/` with reason `type default`, because `hdr-982d610d`'s file is `projects/hdr.md` (a routing directory) and no source signal is given. This confirms the gap stated in §1.4 rather than fixing it. If the response names any other directory, record which ancestor produced it; the check fails.
+- Delete the second probe note.
 
 ## 6. Remediation of existing documents and complements
 
@@ -224,5 +233,5 @@ After merge, on the live PKB:
 
 ## 7. Open questions for approval
 
-1. **Ancestor rule reach.** As written, a note parented anywhere under an epic whose file is in a home directory lands in that directory. That includes `hdr/` for any HDR note, if `hdr-982d610d`'s file is in `hdr/`. Its on-disk location is not visible through the MCP API and was not checked. Accept, or restrict the rule to the immediate parent only?
+1. **Ancestor rule reach.** *Resolved.* As written, a note parented anywhere under an epic whose file is in a home directory lands in that directory. The concern was that every HDR note would land in `hdr/`. It does not: the file with `id: hdr-982d610d` is `projects/hdr.md` (checked in the private PKB repo at commit `2b9b614be77a4a7563fa07c982972cfc4fef5c8d`), so its directory is `projects/`, a routing directory, not `hdr/`. The ancestor walk passes over it, and notes parented to it fall through to `notes/` unless a higher ancestor has a home (§1.4, §5.1). The rule stays as written.
 2. **Routing-directory list.** Are there other top-level directories in the live PKB that hold documents by type rather than subject (for example `archive`, `contacts`, `daily`) and should be added to §2.1's fixed list?
