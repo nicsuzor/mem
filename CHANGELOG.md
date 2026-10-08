@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.98](https://github.com/nicsuzor/mem/compare/mem-v0.3.97...mem-v0.3.98) (2026-10-08)
+
+
+### Features
+
+* **excalidraw:** first-class strokeStyle flags and set-stroke-style command ([a93a94d](https://github.com/nicsuzor/mem/commit/a93a94d85c620783327dc1017369bb483c866a52))
+
+
+### Bug Fixes
+
+* **batch_merge:** cancel merged sources with a merge note, not done ([f188db4](https://github.com/nicsuzor/mem/commit/f188db4b991ac08c8cf4f3770823c23d654e7a5c))
+* **clippy:** hoist wikilink regex out of loop in lsp document links ([44082d5](https://github.com/nicsuzor/mem/commit/44082d5df695d3f1e3873691300e4c28c98b0d98))
+* **clippy:** hoist wikilink regex out of loop in lsp.rs ([021ab60](https://github.com/nicsuzor/mem/commit/021ab6074575f8ece0597432a2b073e95c481dfc))
+* **mcp:** drop index/disk disagreement warning from list responses ([f05abac](https://github.com/nicsuzor/mem/commit/f05abac9a48626b64c7545a17043b703c5292e31))
+
+
+### Miscellaneous
+
+* **logging:** one INFO line per tool call; per-request noise to DEBUG ([#676](https://github.com/nicsuzor/mem/issues/676)) ([8bdec50](https://github.com/nicsuzor/mem/commit/8bdec50752a8605e12a4b3982798ce3db53ced57))
+
 ## [0.3.97](https://github.com/nicsuzor/mem/compare/mem-v0.3.96...mem-v0.3.97) (2026-10-06)
 
 
