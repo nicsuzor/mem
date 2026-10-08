@@ -33,20 +33,31 @@ fn required_str<'a>(args: &'a JsonValue, key: &str) -> Result<&'a str, McpError>
 }
 
 impl PkbSearchServer {
-    pub(crate) fn handle_list_excalidraw(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+    pub(crate) fn handle_list_excalidraw(
+        &self,
+        args: &JsonValue,
+    ) -> Result<CallToolResult, McpError> {
         let dir = args.get("dir").and_then(|v| v.as_str());
         let canvases = files::list_canvases(&self.pkb_root, dir).map_err(to_mcp)?;
         let out = serde_json::json!({ "count": canvases.len(), "canvases": canvases });
-        Ok(CallToolResult::success(vec![Content::text(out.to_string())]))
+        Ok(CallToolResult::success(vec![Content::text(
+            out.to_string(),
+        )]))
     }
 
-    pub(crate) fn handle_get_excalidraw(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+    pub(crate) fn handle_get_excalidraw(
+        &self,
+        args: &JsonValue,
+    ) -> Result<CallToolResult, McpError> {
         let path = required_str(args, "path")?;
         let content = files::read_canvas(&self.pkb_root, path).map_err(to_mcp)?;
         Ok(CallToolResult::success(vec![Content::text(content)]))
     }
 
-    pub(crate) fn handle_write_excalidraw(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+    pub(crate) fn handle_write_excalidraw(
+        &self,
+        args: &JsonValue,
+    ) -> Result<CallToolResult, McpError> {
         let path = required_str(args, "path")?;
         let content = required_str(args, "content")?;
         let outcome = files::write_canvas(&self.pkb_root, path, content).map_err(to_mcp)?;

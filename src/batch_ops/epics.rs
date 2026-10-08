@@ -60,7 +60,10 @@ pub fn batch_create_epics(
         }
         // Validate that reparenting tasks under the epic and connecting epic dependencies
         // does not create a hard dependency cycle (DependsOn + Parent DAG rule).
-        let ph_id = epic_def.id.clone().unwrap_or_else(|| format!("__new_epic_{}__", epic_def.title));
+        let ph_id = epic_def
+            .id
+            .clone()
+            .unwrap_or_else(|| format!("__new_epic_{}__", epic_def.title));
         let mut proposed_edges: Vec<(&str, &str)> = Vec::new();
         for tid in &valid_task_ids {
             proposed_edges.push((tid.as_str(), ph_id.as_str()));

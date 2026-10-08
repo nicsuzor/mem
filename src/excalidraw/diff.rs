@@ -240,7 +240,10 @@ impl DiffEngine {
                     // Check for 3-way conflict
                     if let Some(base_snap) = base {
                         if let Some(bn) = base_snap.nodes.get(&node_id) {
-                            if ln.label != bn.title && card.title != bn.title && ln.label != card.title {
+                            if ln.label != bn.title
+                                && card.title != bn.title
+                                && ln.label != card.title
+                            {
                                 diff.conflicts.push(DiffConflict {
                                     node_id: node_id.clone(),
                                     field: "title".to_string(),
@@ -259,7 +262,10 @@ impl DiffEngine {
                     if ln.status.as_deref() != Some(cs.as_str()) {
                         if let Some(base_snap) = base {
                             if let Some(bn) = base_snap.nodes.get(&node_id) {
-                                if ln.status != bn.status && card.status != bn.status && ln.status != card.status {
+                                if ln.status != bn.status
+                                    && card.status != bn.status
+                                    && ln.status != card.status
+                                {
                                     diff.conflicts.push(DiffConflict {
                                         node_id: node_id.clone(),
                                         field: "status".to_string(),
@@ -312,9 +318,16 @@ impl DiffEngine {
                 // Visual modifications (tracked when base snapshot is provided)
                 if let Some(base_snap) = base {
                     if let Some(bn) = base_snap.nodes.get(&node_id) {
-                        let pos_changed = (card.x - bn.x).abs() > 0.5 || (card.y - bn.y).abs() > 0.5;
-                        let color_changed = bn.stroke_color.as_ref().is_some_and(|sc| sc != &card.stroke_color)
-                            || bn.background_color.as_ref().is_some_and(|bg| bg != &card.background_color);
+                        let pos_changed =
+                            (card.x - bn.x).abs() > 0.5 || (card.y - bn.y).abs() > 0.5;
+                        let color_changed = bn
+                            .stroke_color
+                            .as_ref()
+                            .is_some_and(|sc| sc != &card.stroke_color)
+                            || bn
+                                .background_color
+                                .as_ref()
+                                .is_some_and(|bg| bg != &card.background_color);
 
                         if pos_changed || color_changed {
                             diff.visual_mutations.push(VisualMutation {
@@ -689,7 +702,7 @@ mod tests {
         fn card(element_id: &str, title: &str) -> crate::excalidraw::reader::CanvasCard {
             crate::excalidraw::reader::CanvasCard {
                 element_id: element_id.to_string(),
-                node_id: None,          // no customData, and no id in the card text
+                node_id: None, // no customData, and no id in the card text
                 title: title.to_string(),
                 node_type: None,
                 status: None,

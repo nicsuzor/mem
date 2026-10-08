@@ -61,11 +61,9 @@ fn check_relative(rel: &str, require_ext: bool) -> Result<PathBuf, CanvasError> 
         match c {
             Component::Normal(s) if !s.to_string_lossy().starts_with('.') => {}
             Component::CurDir => {}
-            _ => {
-                return Err(CanvasError::Invalid(format!(
-                    "path {rel:?} must be relative to the PKB root, without '..' or hidden components"
-                )))
-            }
+            _ => return Err(CanvasError::Invalid(format!(
+                "path {rel:?} must be relative to the PKB root, without '..' or hidden components"
+            ))),
         }
     }
     if require_ext && p.extension().and_then(|e| e.to_str()) != Some(CANVAS_EXTENSION) {
@@ -129,17 +127,18 @@ pub fn list_canvases(root: &Path, dir: Option<&str>) -> Result<Vec<CanvasEntry>,
         }
         None => root.to_path_buf(),
     };
-    let mut out: Vec<CanvasEntry> = crate::pkb::scan_directory_with_extension(&base, CANVAS_EXTENSION)
-        .into_iter()
-        .filter_map(|abs| {
-            let meta = std::fs::metadata(&abs).ok()?;
-            Some(CanvasEntry {
-                path: rel_string(root, &abs),
-                bytes: meta.len(),
-                modified: modified_rfc3339(&meta),
+    let mut out: Vec<CanvasEntry> =
+        crate::pkb::scan_directory_with_extension(&base, CANVAS_EXTENSION)
+            .into_iter()
+            .filter_map(|abs| {
+                let meta = std::fs::metadata(&abs).ok()?;
+                Some(CanvasEntry {
+                    path: rel_string(root, &abs),
+                    bytes: meta.len(),
+                    modified: modified_rfc3339(&meta),
+                })
             })
-        })
-        .collect();
+            .collect();
     out.sort_by(|a, b| a.path.cmp(&b.path));
     Ok(out)
 }
@@ -162,12 +161,18 @@ pub fn write_canvas(root: &Path, rel: &str, content: &str) -> Result<WriteOutcom
     check_contained(root, &abs, rel)?;
 
     validate_raw_shape(content).map_err(|f| {
-        CanvasError::Invalid(format!("content is not an Excalidraw scene: {}", f.join("; ")))
+        CanvasError::Invalid(format!(
+            "content is not an Excalidraw scene: {}",
+            f.join("; ")
+        ))
     })?;
     let file: ExcalidrawFile = serde_json::from_str(content)
         .map_err(|e| CanvasError::Invalid(format!("content is not an Excalidraw scene: {e}")))?;
     let mut warnings = validate_file(&file).map_err(|f| {
-        CanvasError::Invalid(format!("canvas failed structural validation: {}", f.join("; ")))
+        CanvasError::Invalid(format!(
+            "canvas failed structural validation: {}",
+            f.join("; ")
+        ))
     })?;
 
     if abs.is_dir() {

@@ -20,10 +20,7 @@ pub const DEFAULT_COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
 pub enum CommandError {
     /// The command exceeded its execution deadline and was killed.
     #[error("command '{program}' timed out after {timeout:?}")]
-    Timeout {
-        program: String,
-        timeout: Duration,
-    },
+    Timeout { program: String, timeout: Duration },
     /// An I/O error occurred while spawning or interacting with the process.
     #[error("failed to execute command '{program}': {source}")]
     Io {
@@ -86,8 +83,10 @@ impl BoundedCommand {
         K: AsRef<OsStr>,
         V: AsRef<OsStr>,
     {
-        self.envs
-            .push((key.as_ref().to_os_string(), Some(val.as_ref().to_os_string())));
+        self.envs.push((
+            key.as_ref().to_os_string(),
+            Some(val.as_ref().to_os_string()),
+        ));
         self
     }
 

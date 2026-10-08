@@ -1,11 +1,11 @@
+use crate::batch_ops::{BatchContext, BatchSummary, TaskAction};
 use crate::document_crud;
 use crate::graph_store::GraphStore;
 use crate::pkb;
 use crate::vectordb::VectorStore;
-use crate::batch_ops::{BatchContext, BatchSummary, TaskAction};
 use anyhow::{Context, Result};
-use std::collections::{BTreeMap, HashMap, HashSet};
 use serde_json::Value as JsonValue;
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 /// Get a subgraph of related notes for a consolidation batch.
 pub fn get_consolidation_cluster(
@@ -28,7 +28,11 @@ pub fn get_consolidation_cluster(
                     "epic" | "task" | "note" | "memory" | "insight" | "observation"
                 )
             })
-            .min_by_key(|n| n.created.clone().unwrap_or_else(|| "9999-99-99".to_string()))
+            .min_by_key(|n| {
+                n.created
+                    .clone()
+                    .unwrap_or_else(|| "9999-99-99".to_string())
+            })
             .context("No unconsolidated nodes found")?
     };
 
@@ -73,10 +77,11 @@ pub fn get_consolidation_cluster(
     } else {
         for (_, entry) in vector_store.documents() {
             if (entry.id == seed_node.id || entry.path == seed_node.path)
-                && !entry.chunk_embeddings.is_empty() {
-                    seed_embedding = Some(entry.chunk_embeddings[0].clone());
-                    break;
-                }
+                && !entry.chunk_embeddings.is_empty()
+            {
+                seed_embedding = Some(entry.chunk_embeddings[0].clone());
+                break;
+            }
         }
     }
 
@@ -127,9 +132,9 @@ pub fn get_consolidation_cluster(
         } else {
             pkb_root.join(&n.path)
         };
-        
+
         let pkb_doc = pkb::parse_file(&abs_path);
-        
+
         nodes_payload.push(serde_json::json!({
             "id": n.id,
             "title": n.label,
@@ -158,10 +163,14 @@ pub fn apply_consolidation_batch(
     // Ensure the seed node is always included in the updates to be marked consolidated
     let seed_entry = updates.entry(seed_id.to_string()).or_default();
     seed_entry.insert("consolidated".to_string(), JsonValue::Bool(true));
-    seed_entry.insert("consolidated_at".to_string(), JsonValue::String(chrono::Utc::now().to_rfc3339()));
+    seed_entry.insert(
+        "consolidated_at".to_string(),
+        JsonValue::String(chrono::Utc::now().to_rfc3339()),
+    );
 
     // Deterministic write order: sort updates by node_id.
-    let mut sorted_updates: Vec<(String, HashMap<String, JsonValue>)> = updates.into_iter().collect();
+    let mut sorted_updates: Vec<(String, HashMap<String, JsonValue>)> =
+        updates.into_iter().collect();
     sorted_updates.sort_by(|a, b| a.0.cmp(&b.0));
 
     // Pre-flight snapshotting across all target nodes.
@@ -191,8 +200,12 @@ pub fn apply_consolidation_batch(
             );
         }
 
-        let content = std::fs::read_to_string(&abs_path)
-            .with_context(|| format!("Failed to read file for node {node_id} at {}", abs_path.display()))?;
+        let content = std::fs::read_to_string(&abs_path).with_context(|| {
+            format!(
+                "Failed to read file for node {node_id} at {}",
+                abs_path.display()
+            )
+        })?;
 
         snapshots.insert(abs_path, content);
     }
@@ -216,20 +229,35 @@ pub fn apply_consolidation_batch(
 
     // Apply updates in deterministic order
     for (node_id, upds) in sorted_updates {
-        let node_label = ctx.graph.get_node(&node_id).map(|n| n.label.clone()).unwrap_or_default();
+        let node_label = ctx
+            .graph
+            .get_node(&node_id)
+            .map(|n| n.label.clone())
+            .unwrap_or_default();
 
         if let Err(e) = ctx.update_task(&node_id, upds) {
             // Rollback with verified disk restore
             let mut failed_restores = Vec::new();
             for (path, original_content) in &snapshots {
-                if let Err(write_err) = document_crud::atomic_write_file(path, original_content, "consolidation_rollback") {
+                if let Err(write_err) = document_crud::atomic_write_file(
+                    path,
+                    original_content,
+                    "consolidation_rollback",
+                ) {
                     failed_restores.push(format!("{}: {}", path.display(), write_err));
                     continue;
                 }
                 match std::fs::read_to_string(path) {
                     Ok(restored) if &restored == original_content => {}
-                    Ok(_) => failed_restores.push(format!("{}: content mismatch after restore write", path.display())),
-                    Err(read_err) => failed_restores.push(format!("{}: readback verification failed: {}", path.display(), read_err)),
+                    Ok(_) => failed_restores.push(format!(
+                        "{}: content mismatch after restore write",
+                        path.display()
+                    )),
+                    Err(read_err) => failed_restores.push(format!(
+                        "{}: readback verification failed: {}",
+                        path.display(),
+                        read_err
+                    )),
                 }
             }
 
@@ -464,7 +492,10 @@ mod tests {
 
         let tree1 = run_failing_batch();
         let tree2 = run_failing_batch();
-        assert_eq!(tree1, tree2, "two runs of identical failing batch must produce identical trees");
+        assert_eq!(
+            tree1, tree2,
+            "two runs of identical failing batch must produce identical trees"
+        );
     }
 
     #[test]
@@ -624,7 +655,10 @@ mod tests {
         let cluster1 = get_consolidation_cluster(&graph1, &vector_store, None, 10, 5, pkb_root)
             .expect("should find first unconsolidated seed");
         let seed1 = cluster1["seed_id"].as_str().expect("seed_id present");
-        assert_eq!(seed1, "doc-1", "first auto-seed selection should be oldest node doc-1");
+        assert_eq!(
+            seed1, "doc-1",
+            "first auto-seed selection should be oldest node doc-1"
+        );
 
         // Apply consolidation batch on doc-1 with empty updates
         let mut ctx1 = BatchContext::new(&graph1, pkb_root);
@@ -636,12 +670,18 @@ mod tests {
         let cluster2 = get_consolidation_cluster(&graph2, &vector_store, None, 10, 5, pkb_root)
             .expect("should find second unconsolidated seed");
         let seed2 = cluster2["seed_id"].as_str().expect("seed_id present");
-        assert_ne!(seed1, seed2, "consecutive auto-seed selections must not return the same node");
+        assert_ne!(
+            seed1, seed2,
+            "consecutive auto-seed selections must not return the same node"
+        );
         assert_eq!(seed2, "doc-2", "second auto-seed selection should be doc-2");
 
         // Apply consolidation batch on doc-2 with updates for doc-3 only (omitting seed doc-2)
         let mut doc3_upds = HashMap::new();
-        doc3_upds.insert("title".to_string(), JsonValue::String("Doc 3 Updated".to_string()));
+        doc3_upds.insert(
+            "title".to_string(),
+            JsonValue::String("Doc 3 Updated".to_string()),
+        );
         let mut updates2 = HashMap::new();
         updates2.insert("doc-3".to_string(), doc3_upds);
 
@@ -654,7 +694,10 @@ mod tests {
         let cluster3 = get_consolidation_cluster(&graph3, &vector_store, None, 10, 5, pkb_root)
             .expect("should find third unconsolidated seed");
         let seed3 = cluster3["seed_id"].as_str().expect("seed_id present");
-        assert_ne!(seed2, seed3, "consecutive auto-seed selections must not return the same node");
+        assert_ne!(
+            seed2, seed3,
+            "consecutive auto-seed selections must not return the same node"
+        );
         assert_eq!(seed3, "doc-3", "third auto-seed selection should be doc-3");
 
         // Apply consolidation batch on doc-3

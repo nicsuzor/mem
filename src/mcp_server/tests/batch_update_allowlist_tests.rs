@@ -118,7 +118,9 @@ fn batch_update_rejects_the_same_unknown_key_update_task_rejects() {
         }))
         .expect_err("update_task must refuse an unrecognized frontmatter key");
     assert!(
-        update_task_err.message.contains("Unknown keys in update_task"),
+        update_task_err
+            .message
+            .contains("Unknown keys in update_task"),
         "unexpected update_task error: {}",
         update_task_err.message
     );
@@ -137,7 +139,9 @@ fn batch_update_rejects_the_same_unknown_key_update_task_rejects() {
     );
     let errors = batch_errors(&batch_res);
     assert!(
-        errors.iter().any(|e| e.contains("Unknown keys in batch_update")),
+        errors
+            .iter()
+            .any(|e| e.contains("Unknown keys in batch_update")),
         "batch_update must refuse the same unrecognized key update_task refuses — it must not \
          be a second, unguarded entry point onto update_document. Got errors: {errors:?}"
     );
@@ -174,7 +178,9 @@ fn batch_update_rejects_null_clear_of_an_unknown_key() {
     assert_eq!(batch_changed(&batch_res), 0);
     let errors = batch_errors(&batch_res);
     assert!(
-        errors.iter().any(|e| e.contains("Unknown keys in batch_update")),
+        errors
+            .iter()
+            .any(|e| e.contains("Unknown keys in batch_update")),
         "batch_update must refuse a null-clear of a key update_task refuses — \
          update_document's null-removes-the-key behavior is what made the original defect \
          reachable. Got errors: {errors:?}"
@@ -222,7 +228,11 @@ fn released_at_is_clearable_through_both_update_task_and_batch_update() {
             "dry_run": false,
         }))
         .unwrap();
-    assert_eq!(batch_errors(&set_res), Vec::<String>::new(), "batch_update must accept released_at");
+    assert_eq!(
+        batch_errors(&set_res),
+        Vec::<String>::new(),
+        "batch_update must accept released_at"
+    );
     assert_eq!(batch_changed(&set_res), 1);
 
     let clear_res = server

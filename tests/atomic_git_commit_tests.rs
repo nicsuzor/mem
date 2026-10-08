@@ -46,9 +46,12 @@ fn test_atomic_git_commits_on_all_write_operations() {
         mem::document_crud::TaskFields {
             title: "Test Task for Atomic Commits".to_string(),
             parent: Some("root-epic".to_string()),
-            body: Some("# Test Task
+            body: Some(
+                "# Test Task
 
-Task body content.".to_string()),
+Task body content."
+                    .to_string(),
+            ),
             ..Default::default()
         },
     )
@@ -108,8 +111,7 @@ Task body content.".to_string()),
 -Task body content.
 +Updated task body content.
 ";
-    mem::document_crud::edit_body(&task_path, diff, true, None, false)
-        .expect("edit body");
+    mem::document_crud::edit_body(&task_path, diff, true, None, false).expect("edit body");
 
     let messages = git_log_messages(&pkb_root);
     assert_eq!(messages.len(), 4);
@@ -120,13 +122,8 @@ Task body content.".to_string()),
     );
 
     // 5. Append to document
-    mem::document_crud::append_to_document(
-        &task_path,
-        "Appended notes block",
-        Some("Notes"),
-        None,
-    )
-    .expect("append to document");
+    mem::document_crud::append_to_document(&task_path, "Appended notes block", Some("Notes"), None)
+        .expect("append to document");
 
     let messages = git_log_messages(&pkb_root);
     assert_eq!(messages.len(), 5);
@@ -159,8 +156,11 @@ fn test_writes_succeed_in_non_git_directory() {
         mem::document_crud::TaskFields {
             title: "Non-git Task".to_string(),
             parent: Some("root-epic".to_string()),
-            body: Some("# Non-git Task
-".to_string()),
+            body: Some(
+                "# Non-git Task
+"
+                .to_string(),
+            ),
             ..Default::default()
         },
     )
@@ -173,10 +173,8 @@ fn test_writes_succeed_in_non_git_directory() {
         "status".to_string(),
         serde_json::Value::String("ready".to_string()),
     );
-    mem::document_crud::update_document(&task_path, updates)
-        .expect("update in non-git directory");
+    mem::document_crud::update_document(&task_path, updates).expect("update in non-git directory");
 
-    mem::document_crud::delete_document(&task_path)
-        .expect("delete in non-git directory");
+    mem::document_crud::delete_document(&task_path).expect("delete in non-git directory");
     assert!(!task_path.exists());
 }

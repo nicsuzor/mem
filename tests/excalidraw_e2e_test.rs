@@ -202,7 +202,8 @@ fn test_roundtrip_fidelity() {
     let gs = GraphStore::build_from_directory(ws.path());
 
     // Export entire graph to Excalidraw scene
-    let (excal_json, _, _) = gs.output_excalidraw(None, 2)
+    let (excal_json, _, _) = gs
+        .output_excalidraw(None, 2)
         .expect("export excalidraw JSON");
     let excal_file: ExcalidrawFile =
         serde_json::from_str(&excal_json).expect("deserialize ExcalidrawFile");
@@ -229,14 +230,22 @@ fn test_roundtrip_fidelity() {
     assert!(card_node_ids.contains(&"area-platform".to_string()));
 
     // Verify status and intent parsing fidelity
-    let t1_card = canvas.cards.iter().find(|c| c.node_id.as_deref() == Some("task-t1")).unwrap();
+    let t1_card = canvas
+        .cards
+        .iter()
+        .find(|c| c.node_id.as_deref() == Some("task-t1"))
+        .unwrap();
     assert_eq!(t1_card.status.as_deref(), Some("ready"));
     assert_eq!(t1_card.intent, Some(1));
     assert_eq!(t1_card.title, "Build Schema");
     assert_eq!(t1_card.parent.as_deref(), Some("epic-core"));
     assert!(t1_card.tags.contains(&"schema".to_string()));
 
-    let t3_card = canvas.cards.iter().find(|c| c.node_id.as_deref() == Some("task-t3")).unwrap();
+    let t3_card = canvas
+        .cards
+        .iter()
+        .find(|c| c.node_id.as_deref() == Some("task-t3"))
+        .unwrap();
     assert_eq!(t3_card.status.as_deref(), Some("done"));
     assert_eq!(t3_card.intent, Some(3));
 
@@ -270,7 +279,10 @@ fn test_non_destructive_canvas_removal() {
     let mut gs = GraphStore::build_from_directory(ws.path());
 
     let target_file_path = ws.path().join("tasks/task-t2.md");
-    assert!(target_file_path.exists(), "task-t2 must exist initially on disk");
+    assert!(
+        target_file_path.exists(),
+        "task-t2 must exist initially on disk"
+    );
 
     // Export graph to canvas
     let (excal_json, _, _) = gs.output_excalidraw(None, 2).expect("export excalidraw");
@@ -296,7 +308,10 @@ fn test_non_destructive_canvas_removal() {
 
     // Parse modified canvas
     let canvas = CanvasReader::parse_file(excal_file);
-    assert!(!canvas.cards.iter().any(|c| c.node_id.as_deref() == Some("task-t2")));
+    assert!(!canvas
+        .cards
+        .iter()
+        .any(|c| c.node_id.as_deref() == Some("task-t2")));
 
     // Compute diff: must record task-t2 in `removed_from_canvas`
     let diff = diff_canvas(Some(&base_snapshot), &gs, &canvas).expect("diff");
@@ -385,43 +400,87 @@ fn test_safe_arrow_typing_and_typed_prefixes() {
     let card_core = create_card("epic-core", "Core");
 
     // Construct arrows with different typed labels
-    let create_arrow = |elem_id: &str, src: &str, tgt: &str, label: Option<&str>, custom_type: Option<&str>| {
-        let mut raw = ExcalidrawElement::default();
-        raw.id = elem_id.to_string();
-        raw.element_type = "arrow".to_string();
-        raw.start_binding = Some(PointBinding {
-            element_id: format!("elem-{src}"),
-            focus: 0.0,
-            gap: 1.0,
-            fixed_point: None,
-        });
-        raw.end_binding = Some(PointBinding {
-            element_id: format!("elem-{tgt}"),
-            focus: 0.0,
-            gap: 1.0,
-            fixed_point: None,
-        });
-        raw.text = label.map(|s| s.to_string());
-        raw.custom_data = Some(CustomData {
-            pkb: Some(PkbCustomData {
-                edge_type: custom_type.map(|s| s.to_string()),
-                is_pkb_managed: Some(true),
+    let create_arrow =
+        |elem_id: &str, src: &str, tgt: &str, label: Option<&str>, custom_type: Option<&str>| {
+            let mut raw = ExcalidrawElement::default();
+            raw.id = elem_id.to_string();
+            raw.element_type = "arrow".to_string();
+            raw.start_binding = Some(PointBinding {
+                element_id: format!("elem-{src}"),
+                focus: 0.0,
+                gap: 1.0,
+                fixed_point: None,
+            });
+            raw.end_binding = Some(PointBinding {
+                element_id: format!("elem-{tgt}"),
+                focus: 0.0,
+                gap: 1.0,
+                fixed_point: None,
+            });
+            raw.text = label.map(|s| s.to_string());
+            raw.custom_data = Some(CustomData {
+                pkb: Some(PkbCustomData {
+                    edge_type: custom_type.map(|s| s.to_string()),
+                    is_pkb_managed: Some(true),
+                    ..Default::default()
+                }),
                 ..Default::default()
-            }),
-            ..Default::default()
-        });
-        raw
-    };
+            });
+            raw
+        };
 
     let mut file = ExcalidrawFile::default();
-    file.elements.push(create_arrow("arr-1", "task-t1", "task-t2", None, None)); // Untyped -> Link
-    file.elements.push(create_arrow("arr-2", "task-t1", "task-t3", Some("dep: blocker"), None)); // DependsOn
-    file.elements.push(create_arrow("arr-3", "task-t1", "target-v1", Some("soft: optional"), None)); // SoftDependsOn
-    file.elements.push(create_arrow("arr-4", "task-t1", "epic-core", Some("parent: container"), None)); // Parent
-    file.elements.push(create_arrow("arr-5", "task-t2", "target-v1", Some("contrib: 0.8"), None)); // ContributesTo
-    file.elements.push(create_arrow("arr-6", "task-t3", "target-v1", Some("closes: issue"), None)); // Closes
-    file.elements.push(create_arrow("arr-7", "task-t3", "task-t2", Some("supersedes: old"), None)); // Supersedes
-    file.elements.push(create_arrow("arr-8", "task-t2", "epic-core", Some("sim: related"), None)); // SimilarTo
+    file.elements
+        .push(create_arrow("arr-1", "task-t1", "task-t2", None, None)); // Untyped -> Link
+    file.elements.push(create_arrow(
+        "arr-2",
+        "task-t1",
+        "task-t3",
+        Some("dep: blocker"),
+        None,
+    )); // DependsOn
+    file.elements.push(create_arrow(
+        "arr-3",
+        "task-t1",
+        "target-v1",
+        Some("soft: optional"),
+        None,
+    )); // SoftDependsOn
+    file.elements.push(create_arrow(
+        "arr-4",
+        "task-t1",
+        "epic-core",
+        Some("parent: container"),
+        None,
+    )); // Parent
+    file.elements.push(create_arrow(
+        "arr-5",
+        "task-t2",
+        "target-v1",
+        Some("contrib: 0.8"),
+        None,
+    )); // ContributesTo
+    file.elements.push(create_arrow(
+        "arr-6",
+        "task-t3",
+        "target-v1",
+        Some("closes: issue"),
+        None,
+    )); // Closes
+    file.elements.push(create_arrow(
+        "arr-7",
+        "task-t3",
+        "task-t2",
+        Some("supersedes: old"),
+        None,
+    )); // Supersedes
+    file.elements.push(create_arrow(
+        "arr-8",
+        "task-t2",
+        "epic-core",
+        Some("sim: related"),
+        None,
+    )); // SimilarTo
 
     // Add cards to file elements
     file.elements.push(card_t1.raw_card_element.clone());
@@ -437,16 +496,24 @@ fn test_safe_arrow_typing_and_typed_prefixes() {
         canvas
             .arrows
             .iter()
-            .find(|a| a.source_node_id.as_deref() == Some(src) && a.target_node_id.as_deref() == Some(tgt))
+            .find(|a| {
+                a.source_node_id.as_deref() == Some(src) && a.target_node_id.as_deref() == Some(tgt)
+            })
             .map(|a| a.edge_type.clone())
             .expect(&format!("Arrow {src} -> {tgt} not found"))
     };
 
     assert_eq!(find_arrow_type("task-t1", "task-t2"), EdgeType::Link);
     assert_eq!(find_arrow_type("task-t1", "task-t3"), EdgeType::DependsOn);
-    assert_eq!(find_arrow_type("task-t1", "target-v1"), EdgeType::SoftDependsOn);
+    assert_eq!(
+        find_arrow_type("task-t1", "target-v1"),
+        EdgeType::SoftDependsOn
+    );
     assert_eq!(find_arrow_type("task-t1", "epic-core"), EdgeType::Parent);
-    assert_eq!(find_arrow_type("task-t2", "target-v1"), EdgeType::ContributesTo);
+    assert_eq!(
+        find_arrow_type("task-t2", "target-v1"),
+        EdgeType::ContributesTo
+    );
     assert_eq!(find_arrow_type("task-t3", "target-v1"), EdgeType::Closes);
     assert_eq!(find_arrow_type("task-t3", "task-t2"), EdgeType::Supersedes);
     assert_eq!(find_arrow_type("task-t2", "epic-core"), EdgeType::SimilarTo);
@@ -507,8 +574,14 @@ fn test_multi_layer_dummy_vertex_routing() {
 
     // Verify all positions are finite and positive
     for (id, (x, y)) in &positions {
-        assert!(x.is_finite() && *x >= 100.0, "x for {id} must be finite: {x}");
-        assert!(y.is_finite() && *y >= 100.0, "y for {id} must be finite: {y}");
+        assert!(
+            x.is_finite() && *x >= 100.0,
+            "x for {id} must be finite: {x}"
+        );
+        assert!(
+            y.is_finite() && *y >= 100.0,
+            "y for {id} must be finite: {y}"
+        );
     }
 
     // Generate scene and verify bound elements & frames
@@ -551,8 +624,7 @@ fn test_bounded_archimedean_spiral_placement() {
 
     // Place 12 consecutive new cards using spiral placement
     for i in 0..12 {
-        let (cand_x, cand_y) =
-            find_spiral_placement(center_x, center_y, card_w, card_h, &occupied);
+        let (cand_x, cand_y) = find_spiral_placement(center_x, center_y, card_w, card_h, &occupied);
 
         let cand_box = [cand_x, cand_y, cand_x + card_w, cand_y + card_h];
 
@@ -664,11 +736,17 @@ fn test_global_cycle_rejection() {
 
     // 1. Direct 2-node cycle: B depends on A
     let res1 = validate_no_cycle(&gs, "task-b", "task-a", &EdgeType::DependsOn);
-    assert!(res1.is_err(), "Direct 2-node dependency cycle must be rejected");
+    assert!(
+        res1.is_err(),
+        "Direct 2-node dependency cycle must be rejected"
+    );
 
     // 2. Transitive 3-node cycle: C depends on A
     let res2 = validate_no_cycle(&gs, "task-c", "task-a", &EdgeType::DependsOn);
-    assert!(res2.is_err(), "Transitive dependency cycle must be rejected");
+    assert!(
+        res2.is_err(),
+        "Transitive dependency cycle must be rejected"
+    );
     let cycle_path = res2.unwrap_err();
     assert_eq!(cycle_path.first(), Some(&"task-a".to_string()));
     assert_eq!(cycle_path.last(), Some(&"task-a".to_string()));
@@ -693,7 +771,11 @@ fn test_global_cycle_rejection() {
     });
 
     let report = sync_canvas(ws.path(), &mut gs, &diff, false).expect("sync");
-    assert_eq!(report.rejected_cycles.len(), 1, "Must report rejected cycle");
+    assert_eq!(
+        report.rejected_cycles.len(),
+        1,
+        "Must report rejected cycle"
+    );
     assert!(report.rejected_cycles[0].contains("cycle detected"));
 }
 
@@ -750,19 +832,29 @@ fn test_clipboard_duplicate_id_handling() {
     assert!(!first.is_new);
 
     let second = &canvas.cards[1];
-    assert_eq!(second.node_id, None, "Duplicate card ID must be reset to None");
+    assert_eq!(
+        second.node_id, None,
+        "Duplicate card ID must be reset to None"
+    );
     assert!(second.is_duplicate);
     assert!(second.is_new);
 
     // When synced, the duplicate card must create a NEW unique task without overwriting task-t1
     let diff = diff_canvas(None, &gs, &canvas).expect("diff");
-    assert_eq!(diff.added_nodes.len(), 1, "Duplicate card must become AddedNodeMutation");
+    assert_eq!(
+        diff.added_nodes.len(),
+        1,
+        "Duplicate card must become AddedNodeMutation"
+    );
 
     let report = sync_canvas(ws.path(), &mut gs, &diff, false).expect("sync");
     assert_eq!(report.created_nodes.len(), 1);
 
     let (new_id, new_path) = &report.created_nodes[0];
-    assert_ne!(new_id, "task-t1", "New task ID must not collide with task-t1");
+    assert_ne!(
+        new_id, "task-t1",
+        "New task ID must not collide with task-t1"
+    );
     assert!(new_path.exists(), "New document must exist on disk");
 
     // Original task-t1.md must be untouched
@@ -1127,7 +1219,9 @@ fn test_mcp_excalidraw_tool_endpoints() {
     let ws = create_test_pkb_workspace();
     let db_path = ws.path().join("pkb_vectors.bin");
     let store = Arc::new(parking_lot::RwLock::new(VectorStore::new(1024)));
-    let graph = Arc::new(parking_lot::RwLock::new(GraphStore::build_from_directory(ws.path())));
+    let graph = Arc::new(parking_lot::RwLock::new(GraphStore::build_from_directory(
+        ws.path(),
+    )));
 
     let server = PkbSearchServer::new(
         store,
@@ -1142,7 +1236,8 @@ fn test_mcp_excalidraw_tool_endpoints() {
         .handle_graph_excalidraw(&json!({}))
         .expect("graph_excalidraw full");
     let text = res.content[0].as_text().unwrap();
-    let full_file: ExcalidrawFile = serde_json::from_str(&text.text).expect("valid full scene JSON");
+    let full_file: ExcalidrawFile =
+        serde_json::from_str(&text.text).expect("valid full scene JSON");
     assert!(!full_file.elements.is_empty());
 
     // 2. graph_excalidraw (ego network around focus node)
@@ -1153,7 +1248,8 @@ fn test_mcp_excalidraw_tool_endpoints() {
         }))
         .expect("graph_excalidraw ego");
     let ego_text = res_ego.content[0].as_text().unwrap();
-    let ego_file: ExcalidrawFile = serde_json::from_str(&ego_text.text).expect("valid ego scene JSON");
+    let ego_file: ExcalidrawFile =
+        serde_json::from_str(&ego_text.text).expect("valid ego scene JSON");
     assert!(!ego_file.elements.is_empty());
 
     // 3. diff_excalidraw (empty diff on fresh export)
@@ -1190,7 +1286,8 @@ fn test_mcp_excalidraw_tool_endpoints() {
     new_text.id = "elem-brand-new-text".to_string();
     new_text.element_type = "text".to_string();
     new_text.container_id = Some("elem-brand-new".to_string());
-    new_text.text = Some("[READY · P1] Brand New Automated Subsystem Task\n#automation".to_string());
+    new_text.text =
+        Some("[READY · P1] Brand New Automated Subsystem Task\n#automation".to_string());
 
     new_card.bound_elements = Some(vec![BoundElement {
         id: "elem-brand-new-text".to_string(),
@@ -1334,8 +1431,16 @@ fn test_adversarial_and_corrupted_canvas_inputs() {
     file.elements.push(unbound_rect);
 
     let canvas = CanvasReader::parse_file(file);
-    assert_eq!(canvas.cards.len(), 0, "Unbound shapes without PKB metadata must not become cards");
-    assert_eq!(canvas.annotations.len(), 2, "Doodles and unbound shapes must be preserved in annotations");
+    assert_eq!(
+        canvas.cards.len(),
+        0,
+        "Unbound shapes without PKB metadata must not become cards"
+    );
+    assert_eq!(
+        canvas.annotations.len(),
+        2,
+        "Doodles and unbound shapes must be preserved in annotations"
+    );
 
     // 4. Dangling arrow without start or end bindings -> classified into annotations
     let dangling_arrow = ExcalidrawElement {
@@ -1349,8 +1454,16 @@ fn test_adversarial_and_corrupted_canvas_inputs() {
     let mut file2 = ExcalidrawFile::default();
     file2.elements.push(dangling_arrow);
     let canvas2 = CanvasReader::parse_file(file2);
-    assert_eq!(canvas2.arrows.len(), 0, "Unbound arrows must not be treated as graph edges");
-    assert_eq!(canvas2.annotations.len(), 1, "Unbound arrows must be preserved in annotations");
+    assert_eq!(
+        canvas2.arrows.len(),
+        0,
+        "Unbound arrows must not be treated as graph edges"
+    );
+    assert_eq!(
+        canvas2.annotations.len(),
+        1,
+        "Unbound arrows must be preserved in annotations"
+    );
 }
 
 // ===========================================================================
@@ -1415,14 +1528,27 @@ fn test_unlinked_non_pkb_arrows_survive_sync() {
     assert!(ann_ids.contains(&"partial-arr-1"));
 
     // Merge with live graph
-    let target_node_ids = vec!["epic-core".to_string(), "task-t1".to_string(), "task-t2".to_string()];
+    let target_node_ids = vec![
+        "epic-core".to_string(),
+        "task-t1".to_string(),
+        "task-t2".to_string(),
+    ];
     let merged = merge_canvas_with_live(&file, &gs, &target_node_ids).expect("merge");
 
     // Assert all user annotations survive in merged output elements
     let merged_elem_ids: Vec<&str> = merged.elements.iter().map(|e| e.id.as_str()).collect();
-    assert!(merged_elem_ids.contains(&"floating-arr-1"), "Floating arrow must survive merge");
-    assert!(merged_elem_ids.contains(&"sticky-note-1"), "Sticky note must survive merge");
-    assert!(merged_elem_ids.contains(&"partial-arr-1"), "Partial arrow must survive merge");
+    assert!(
+        merged_elem_ids.contains(&"floating-arr-1"),
+        "Floating arrow must survive merge"
+    );
+    assert!(
+        merged_elem_ids.contains(&"sticky-note-1"),
+        "Sticky note must survive merge"
+    );
+    assert!(
+        merged_elem_ids.contains(&"partial-arr-1"),
+        "Partial arrow must survive merge"
+    );
 }
 
 // ===========================================================================
@@ -1471,17 +1597,32 @@ fn test_sync_edge_removals_flag_e2e() {
     let report_false = sync_canvas(ws.path(), &mut gs, &diff, false).expect("sync false");
     assert_eq!(report_false.updated_edges, 0);
     let content_preserved = fs::read_to_string(&task_path).unwrap();
-    assert!(content_preserved.contains("task-t1"), "task-t1 must be preserved when sync_edge_removals=false");
-    assert!(content_preserved.contains("task-t2"), "task-t2 must be preserved when sync_edge_removals=false");
+    assert!(
+        content_preserved.contains("task-t1"),
+        "task-t1 must be preserved when sync_edge_removals=false"
+    );
+    assert!(
+        content_preserved.contains("task-t2"),
+        "task-t2 must be preserved when sync_edge_removals=false"
+    );
     assert!(content_preserved.contains("tasks/task-t3.md"));
 
     // Case 2: sync_edge_removals = true -> bare ID and wikilink are stripped
     let report_true = sync_canvas(ws.path(), &mut gs, &diff, true).expect("sync true");
     assert_eq!(report_true.updated_edges, 2);
     let content_stripped = fs::read_to_string(&task_path).unwrap();
-    assert!(!content_stripped.contains("task-t1"), "task-t1 must be removed when sync_edge_removals=true");
-    assert!(!content_stripped.contains("task-t2"), "task-t2 must be removed when sync_edge_removals=true");
-    assert!(content_stripped.contains("tasks/task-t3.md"), "tasks/task-t3.md must remain untouched");
+    assert!(
+        !content_stripped.contains("task-t1"),
+        "task-t1 must be removed when sync_edge_removals=true"
+    );
+    assert!(
+        !content_stripped.contains("task-t2"),
+        "task-t2 must be removed when sync_edge_removals=true"
+    );
+    assert!(
+        content_stripped.contains("tasks/task-t3.md"),
+        "tasks/task-t3.md must remain untouched"
+    );
 
     // Case 3: remove filename path reference tasks/task-t3.md
     let mut diff_t3 = GraphDiff::default();
@@ -1493,7 +1634,10 @@ fn test_sync_edge_removals_flag_e2e() {
     let report_t3 = sync_canvas(ws.path(), &mut gs, &diff_t3, true).expect("sync t3");
     assert_eq!(report_t3.updated_edges, 1);
     let content_t3 = fs::read_to_string(&task_path).unwrap();
-    assert!(!content_t3.contains("tasks/task-t3.md"), "tasks/task-t3.md must be removed");
+    assert!(
+        !content_t3.contains("tasks/task-t3.md"),
+        "tasks/task-t3.md must be removed"
+    );
 }
 
 // ===========================================================================
@@ -1532,7 +1676,8 @@ fn test_preserve_custom_card_styling_e2e() {
     }
 
     // 1. Merge when status is unchanged (ready == ready)
-    let merged_unchanged = merge_canvas_with_live(&file, &gs, &["task-t1".to_string()]).expect("merge unchanged");
+    let merged_unchanged =
+        merge_canvas_with_live(&file, &gs, &["task-t1".to_string()]).expect("merge unchanged");
     let t1_card = merged_unchanged
         .elements
         .iter()
@@ -1546,10 +1691,22 @@ fn test_preserve_custom_card_styling_e2e() {
         })
         .expect("t1 card in merged");
 
-    assert_eq!(t1_card.background_color, custom_bg, "Custom background must be preserved");
-    assert_eq!(t1_card.stroke_color, custom_stroke, "Custom stroke color must be preserved");
-    assert_eq!(t1_card.stroke_width, custom_stroke_width, "Custom stroke width must be preserved");
-    assert_eq!(t1_card.roughness, custom_roughness, "Custom roughness must be preserved");
+    assert_eq!(
+        t1_card.background_color, custom_bg,
+        "Custom background must be preserved"
+    );
+    assert_eq!(
+        t1_card.stroke_color, custom_stroke,
+        "Custom stroke color must be preserved"
+    );
+    assert_eq!(
+        t1_card.stroke_width, custom_stroke_width,
+        "Custom stroke width must be preserved"
+    );
+    assert_eq!(
+        t1_card.roughness, custom_roughness,
+        "Custom roughness must be preserved"
+    );
 
     // 2. Update task-t1 status in live graph to "done"
     let mut node_t1 = gs.get_node("task-t1").unwrap().clone();
@@ -1557,7 +1714,8 @@ fn test_preserve_custom_card_styling_e2e() {
     gs.replace_node(node_t1);
 
     // Merge when status changed -> must apply new done status color palette
-    let merged_changed = merge_canvas_with_live(&file, &gs, &["task-t1".to_string()]).expect("merge changed");
+    let merged_changed =
+        merge_canvas_with_live(&file, &gs, &["task-t1".to_string()]).expect("merge changed");
     let t1_card_changed = merged_changed
         .elements
         .iter()
@@ -1813,7 +1971,15 @@ fn test_real_export_encoding_registry_conformance() {
         excal_file
             .elements
             .iter()
-            .find(|e| (e.id == id || e.custom_data.as_ref().and_then(|c| c.pkb.as_ref()).and_then(|p| p.node_id.as_deref()) == Some(id)) && e.element_type != "frame")
+            .find(|e| {
+                (e.id == id
+                    || e.custom_data
+                        .as_ref()
+                        .and_then(|c| c.pkb.as_ref())
+                        .and_then(|p| p.node_id.as_deref())
+                        == Some(id))
+                    && e.element_type != "frame"
+            })
             .unwrap_or_else(|| panic!("Card for node {id} must exist in exported scene"))
     };
     let find_text = |id: &str| -> &ExcalidrawElement {
@@ -1827,23 +1993,44 @@ fn test_real_export_encoding_registry_conformance() {
 
     // 1. Target node: Tier A (380px), Gold fill (#ecdcab), Gold stroke (#f59f00), element ID == node ID
     let card_target = find_card("targ_4e2cc92a");
-    assert_eq!(card_target.id, "targ_4e2cc92a", "Element ID must equal node ID");
-    assert_eq!(card_target.width, CARD_WIDTH_A, "Target node must use Tier A (380px)");
-    assert_eq!(card_target.background_color, "#ecdcab", "Target must have gold fill");
-    assert_eq!(card_target.stroke_color, "#f59f00", "Target must have gold stroke");
+    assert_eq!(
+        card_target.id, "targ_4e2cc92a",
+        "Element ID must equal node ID"
+    );
+    assert_eq!(
+        card_target.width, CARD_WIDTH_A,
+        "Target node must use Tier A (380px)"
+    );
+    assert_eq!(
+        card_target.background_color, "#ecdcab",
+        "Target must have gold fill"
+    );
+    assert_eq!(
+        card_target.stroke_color, "#f59f00",
+        "Target must have gold stroke"
+    );
 
     // 2. P2 Epic: Tier L (300px), Epic colors (#edf2ff, #4c6ef5)
     let card_epic = find_card("epic-p2");
     assert_eq!(card_epic.id, "epic-p2", "Element ID must equal node ID");
-    assert_eq!(card_epic.width, CARD_WIDTH_L, "P2 Epic must use Tier L (300px)");
+    assert_eq!(
+        card_epic.width, CARD_WIDTH_L,
+        "P2 Epic must use Tier L (300px)"
+    );
     assert_eq!(card_epic.background_color, "#edf2ff");
     assert_eq!(card_epic.stroke_color, "#4c6ef5");
 
     // 3. P2 Task: Tier M (240px), Ready green (#e8f0e6, #2b8a3e), effort 2h
     let card_p2 = find_card("task-p2");
     assert_eq!(card_p2.id, "task-p2", "Element ID must equal node ID");
-    assert_eq!(card_p2.width, CARD_WIDTH_M, "P2 Task must use Tier M (240px)");
-    assert_eq!(card_p2.background_color, "#e8f0e6", "Ready fill must be #e8f0e6");
+    assert_eq!(
+        card_p2.width, CARD_WIDTH_M,
+        "P2 Task must use Tier M (240px)"
+    );
+    assert_eq!(
+        card_p2.background_color, "#e8f0e6",
+        "Ready fill must be #e8f0e6"
+    );
     assert_eq!(card_p2.stroke_color, "#2b8a3e");
     let text_p2 = find_text("task-p2");
     let raw_text_p2 = text_p2.text.as_deref().unwrap();
@@ -1857,50 +2044,102 @@ fn test_real_export_encoding_registry_conformance() {
     // takes it one tier further, to L (300px), deep green (#a3d3a3), now chip, START marker.
     let card_p4 = find_card("task-p4");
     assert_eq!(card_p4.id, "task-p4", "Element ID must equal node ID");
-    assert_eq!(card_p4.width, CARD_WIDTH_L, "P4 child of a P2 epic with focus_score >= 1000 must be bumped to Tier L (300px)");
-    assert_eq!(card_p4.background_color, "#a3d3a3", "In-progress fill must be deep green #a3d3a3");
+    assert_eq!(
+        card_p4.width, CARD_WIDTH_L,
+        "P4 child of a P2 epic with focus_score >= 1000 must be bumped to Tier L (300px)"
+    );
+    assert_eq!(
+        card_p4.background_color, "#a3d3a3",
+        "In-progress fill must be deep green #a3d3a3"
+    );
     let text_p4 = find_text("task-p4");
     let raw_text_p4 = text_p4.text.as_deref().unwrap();
-    assert!(raw_text_p4.contains("now"), "In-progress card must carry 'now' chip");
-    assert!(raw_text_p4.contains("START"), "Focus score >= 1000 card must carry START marker");
+    assert!(
+        raw_text_p4.contains("now"),
+        "In-progress card must carry 'now' chip"
+    );
+    assert!(
+        raw_text_p4.contains("START"),
+        "Focus score >= 1000 card must carry START marker"
+    );
 
     // 5. Stakeholder task: Red ring (#e03131, strokeWidth 2.5)
     let card_stakeholder = find_card("task-stakeholder");
     assert_eq!(card_stakeholder.id, "task-stakeholder");
-    assert_eq!(card_stakeholder.stroke_color, "#e03131", "Stakeholder task must carry red ring");
+    assert_eq!(
+        card_stakeholder.stroke_color, "#e03131",
+        "Stakeholder task must carry red ring"
+    );
     assert_eq!(card_stakeholder.stroke_width, 2.5);
 
     // 6. Review task: Red ring (#e03131, strokeWidth 2.5)
     let card_review = find_card("task-review");
     assert_eq!(card_review.id, "task-review");
-    assert_eq!(card_review.stroke_color, "#e03131", "Review task must carry red ring");
+    assert_eq!(
+        card_review.stroke_color, "#e03131",
+        "Review task must carry red ring"
+    );
     assert_eq!(card_review.stroke_width, 2.5);
 
     // 7. Admin task: WORK marker
     let text_admin = find_text("task-admin");
-    assert!(text_admin.text.as_deref().unwrap().contains("WORK"), "project: admin must produce WORK marker");
+    assert!(
+        text_admin.text.as_deref().unwrap().contains("WORK"),
+        "project: admin must produce WORK marker"
+    );
 
     // 8. Contributes to targ_4e2cc92a: LSL marker
     let text_lsl = find_text("task-lsl");
-    assert!(text_lsl.text.as_deref().unwrap().contains("LSL"), "contributes_to targ_4e2cc92a must produce LSL marker");
+    assert!(
+        text_lsl.text.as_deref().unwrap().contains("LSL"),
+        "contributes_to targ_4e2cc92a must produce LSL marker"
+    );
 
     // 9. Paused task: Amber fill (#ffe9bf, #e8590c)
     let card_paused = find_card("task-paused");
-    assert_eq!(card_paused.background_color, "#ffe9bf", "Paused fill must be amber #ffe9bf");
+    assert_eq!(
+        card_paused.background_color, "#ffe9bf",
+        "Paused fill must be amber #ffe9bf"
+    );
     assert_eq!(card_paused.stroke_color, "#e8590c");
 
     // 10. Inbox task: Violet fill (#efe8f5), dashed border
     let card_inbox = find_card("task-inbox");
-    assert_eq!(card_inbox.background_color, "#efe8f5", "Inbox fill must be violet #efe8f5");
-    assert_eq!(card_inbox.stroke_style, "dashed", "Inbox card must have dashed border");
+    assert_eq!(
+        card_inbox.background_color, "#efe8f5",
+        "Inbox fill must be violet #efe8f5"
+    );
+    assert_eq!(
+        card_inbox.stroke_style, "dashed",
+        "Inbox card must have dashed border"
+    );
 
     // 11. Done task: Grey fill (#ededed)
     let card_done = find_card("task-done");
-    assert_eq!(card_done.background_color, "#ededed", "Done fill must be grey #ededed");
+    assert_eq!(
+        card_done.background_color, "#ededed",
+        "Done fill must be grey #ededed"
+    );
 
     // 12. Someday and cancelled tasks: MUST NOT BE DRAWN
-    assert!(!excal_file.elements.iter().any(|e| e.id == "task-someday" || e.custom_data.as_ref().and_then(|c| c.pkb.as_ref()).and_then(|p| p.node_id.as_deref()) == Some("task-someday")), "task-someday must not be drawn");
-    assert!(!excal_file.elements.iter().any(|e| e.id == "task-cancelled" || e.custom_data.as_ref().and_then(|c| c.pkb.as_ref()).and_then(|p| p.node_id.as_deref()) == Some("task-cancelled")), "task-cancelled must not be drawn");
+    assert!(
+        !excal_file.elements.iter().any(|e| e.id == "task-someday"
+            || e.custom_data
+                .as_ref()
+                .and_then(|c| c.pkb.as_ref())
+                .and_then(|p| p.node_id.as_deref())
+                == Some("task-someday")),
+        "task-someday must not be drawn"
+    );
+    assert!(
+        !excal_file.elements.iter().any(|e| e.id == "task-cancelled"
+            || e.custom_data
+                .as_ref()
+                .and_then(|c| c.pkb.as_ref())
+                .and_then(|p| p.node_id.as_deref())
+                == Some("task-cancelled")),
+        "task-cancelled must not be drawn"
+    );
 }
 
 // ===========================================================================
@@ -1919,7 +2158,14 @@ fn test_moved_element_identified_by_id_not_add_plus_delete() {
 
     // User moves task-t1 to a new hand-laid position (1200.0, 950.0)
     for elem in &mut file.elements {
-        if elem.id == "task-t1" || elem.custom_data.as_ref().and_then(|c| c.pkb.as_ref()).and_then(|p| p.node_id.as_deref()) == Some("task-t1") {
+        if elem.id == "task-t1"
+            || elem
+                .custom_data
+                .as_ref()
+                .and_then(|c| c.pkb.as_ref())
+                .and_then(|p| p.node_id.as_deref())
+                == Some("task-t1")
+        {
             elem.x = 1200.0;
             elem.y = 950.0;
         }
@@ -2029,21 +2275,51 @@ fn test_hand_laid_positions_and_annotations_survive_sync_and_export() {
 
     // Now simulate live sync / merge via merge_canvas_with_live
     let target_ids = vec!["task-t1".to_string(), "task-t2".to_string()];
-    let merged_file = merge_canvas_with_live(&file, &gs, &target_ids).expect("merge canvas with live");
+    let merged_file =
+        merge_canvas_with_live(&file, &gs, &target_ids).expect("merge canvas with live");
 
     // Assert that hand-placed positions survive intact
-    let merged_t1 = merged_file.elements.iter().find(|e| e.id == "task-t1").unwrap();
-    assert_eq!(merged_t1.x, 1337.0, "Hand-placed x coordinate must survive intact");
-    assert_eq!(merged_t1.y, 4242.0, "Hand-placed y coordinate must survive intact");
+    let merged_t1 = merged_file
+        .elements
+        .iter()
+        .find(|e| e.id == "task-t1")
+        .unwrap();
+    assert_eq!(
+        merged_t1.x, 1337.0,
+        "Hand-placed x coordinate must survive intact"
+    );
+    assert_eq!(
+        merged_t1.y, 4242.0,
+        "Hand-placed y coordinate must survive intact"
+    );
 
-    let merged_t2 = merged_file.elements.iter().find(|e| e.id == "task-t2").unwrap();
-    assert_eq!(merged_t2.x, 1800.0, "Hand-placed x coordinate must survive intact");
-    assert_eq!(merged_t2.y, 4242.0, "Hand-placed y coordinate must survive intact");
+    let merged_t2 = merged_file
+        .elements
+        .iter()
+        .find(|e| e.id == "task-t2")
+        .unwrap();
+    assert_eq!(
+        merged_t2.x, 1800.0,
+        "Hand-placed x coordinate must survive intact"
+    );
+    assert_eq!(
+        merged_t2.y, 4242.0,
+        "Hand-placed y coordinate must survive intact"
+    );
 
     // Assert that handwritten annotation survives intact
-    let merged_note = merged_file.elements.iter().find(|e| e.id == "note-handwritten-1");
-    assert!(merged_note.is_some(), "Handwritten canvas note must survive merge intact");
-    assert_eq!(merged_note.unwrap().text.as_deref(), Some("Nic: the map is multidimensional space"));
+    let merged_note = merged_file
+        .elements
+        .iter()
+        .find(|e| e.id == "note-handwritten-1");
+    assert!(
+        merged_note.is_some(),
+        "Handwritten canvas note must survive merge intact"
+    );
+    assert_eq!(
+        merged_note.unwrap().text.as_deref(),
+        Some("Nic: the map is multidimensional space")
+    );
 }
 
 // ===========================================================================
@@ -2149,8 +2425,15 @@ fn test_personal_projects_live_consumer_roundtrip() {
     // 4. Compute 3-way diff
     let diff = diff_canvas(Some(&base_snap), &gs, &canvas).expect("compute diff");
     assert!(diff.added_nodes.is_empty(), "No nodes should be added");
-    assert!(diff.removed_from_canvas.is_empty(), "No nodes should be removed");
-    assert_eq!(diff.visual_mutations.len(), 1, "Moving task-a should be recognized as a visual mutation");
+    assert!(
+        diff.removed_from_canvas.is_empty(),
+        "No nodes should be removed"
+    );
+    assert_eq!(
+        diff.visual_mutations.len(),
+        1,
+        "Moving task-a should be recognized as a visual mutation"
+    );
 
     // 5. Sync to disk: verify no unintended mutations occur
     let report = sync_canvas(pkb_root, &mut gs, &diff, false).expect("sync canvas");
@@ -2160,6 +2443,12 @@ fn test_personal_projects_live_consumer_roundtrip() {
     // 6. Verify round-trip state through GraphStore rebuild
     let gs_rebuilt = GraphStore::build_from_directory(pkb_root);
     assert_eq!(gs_rebuilt.node_count(), 4);
-    assert_eq!(gs_rebuilt.get_node("task-a").unwrap().status.as_deref(), Some("in_progress"));
-    assert_eq!(gs_rebuilt.get_node("task-b").unwrap().status.as_deref(), Some("ready"));
+    assert_eq!(
+        gs_rebuilt.get_node("task-a").unwrap().status.as_deref(),
+        Some("in_progress")
+    );
+    assert_eq!(
+        gs_rebuilt.get_node("task-b").unwrap().status.as_deref(),
+        Some("ready")
+    );
 }

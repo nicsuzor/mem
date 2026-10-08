@@ -126,7 +126,9 @@ impl TestEnv {
             body.push_str("---\n");
             body.push_str(&format!("id: {id}\n"));
             body.push_str("type: task\n");
-            body.push_str(&format!("title: \"Benchmark task {i} performance and indexing\"\n"));
+            body.push_str(&format!(
+                "title: \"Benchmark task {i} performance and indexing\"\n"
+            ));
             body.push_str("status: in_progress\n");
             body.push_str("priority: 2\n");
             body.push_str("project: proj-core\n");
@@ -138,7 +140,9 @@ impl TestEnv {
                 let prev = i - 1;
                 body.push_str(&format!("depends_on:\n  - task-bench-{prev:05}\n"));
             }
-            body.push_str("---\n\nDetailed task body for benchmarking latency and search capabilities.\n");
+            body.push_str(
+                "---\n\nDetailed task body for benchmarking latency and search capabilities.\n",
+            );
             fs::write(tasks_dir.join(format!("{id}.md")), body).unwrap();
         }
 
@@ -211,11 +215,17 @@ fn probe_h1() {
     let env = TestEnv::new(n_tasks, false);
 
     if !env.is_real_embedder {
-        println!("\n********************************************************************************");
+        println!(
+            "\n********************************************************************************"
+        );
         println!("WARNING: Real ONNX embedder is UNAVAILABLE on this host.");
         println!("Refusing to report H1 ONNX query embedding timings (stub embedder was used).");
-        println!("Run on a host with ONNX runtime and models downloaded to measure real H1 latency.");
-        println!("********************************************************************************\n");
+        println!(
+            "Run on a host with ONNX runtime and models downloaded to measure real H1 latency."
+        );
+        println!(
+            "********************************************************************************\n"
+        );
         return;
     }
 
@@ -232,10 +242,15 @@ fn probe_h1() {
     let t_cold_start = Instant::now();
     let _ = env.embedder.encode_query(query).unwrap();
     let cold_dur = t_cold_start.elapsed();
-    println!("Cold start (initial ONNX encode_query session load): {}", fmt_dur(cold_dur));
+    println!(
+        "Cold start (initial ONNX encode_query session load): {}",
+        fmt_dur(cold_dur)
+    );
 
     // Warm-up call
-    let _ = env.server.bench_search(&json!({ "query": query, "limit": 10 }));
+    let _ = env
+        .server
+        .bench_search(&json!({ "query": query, "limit": 10 }));
 
     for _ in 0..iters {
         let t0 = Instant::now();
@@ -277,7 +292,9 @@ fn probe_h1() {
         let graph = env.graph.read();
         for (i, (r, score)) in scored.iter().enumerate() {
             let node = graph.get_node(&r.id);
-            let display_id = node.map(|n| n.task_id.as_deref().unwrap_or(&n.id)).unwrap_or(&r.id);
+            let display_id = node
+                .map(|n| n.task_id.as_deref().unwrap_or(&n.id))
+                .unwrap_or(&r.id);
             output.push_str(&format!("{}. [{}] ({:.3})\n", i + 1, display_id, score));
         }
         drop(graph);
@@ -287,26 +304,54 @@ fn probe_h1() {
         t_total.record(t0.elapsed());
     }
 
-    println!("\nPer-Stage Wall-Clock Breakdown (N={} iterations against {} docs):", iters, n_tasks);
+    println!(
+        "\nPer-Stage Wall-Clock Breakdown (N={} iterations against {} docs):",
+        iters, n_tasks
+    );
     println!("--------------------------------------------------------------------------------");
     println!("Stage                                  Mean       p50       p95       p99       Max");
     println!("--------------------------------------------------------------------------------");
-    println!("1. Query Embedding (encode_query)   {:>9} {:>9} {:>9} {:>9} {:>9}",
-        fmt_dur(t_embed.mean()), fmt_dur(t_embed.percentile(0.50)),
-        fmt_dur(t_embed.percentile(0.95)), fmt_dur(t_embed.percentile(0.99)), fmt_dur(t_embed.max()));
-    println!("2. Vector Store Scan (cosine sim)   {:>9} {:>9} {:>9} {:>9} {:>9}",
-        fmt_dur(t_vector.mean()), fmt_dur(t_vector.percentile(0.50)),
-        fmt_dur(t_vector.percentile(0.95)), fmt_dur(t_vector.percentile(0.99)), fmt_dur(t_vector.max()));
-    println!("3. Graph Resolution & Scoring       {:>9} {:>9} {:>9} {:>9} {:>9}",
-        fmt_dur(t_graph.mean()), fmt_dur(t_graph.percentile(0.50)),
-        fmt_dur(t_graph.percentile(0.95)), fmt_dur(t_graph.percentile(0.99)), fmt_dur(t_graph.max()));
-    println!("4. MCP Formatting & Serialization   {:>9} {:>9} {:>9} {:>9} {:>9}",
-        fmt_dur(t_mcp_format.mean()), fmt_dur(t_mcp_format.percentile(0.50)),
-        fmt_dur(t_mcp_format.percentile(0.95)), fmt_dur(t_mcp_format.percentile(0.99)), fmt_dur(t_mcp_format.max()));
+    println!(
+        "1. Query Embedding (encode_query)   {:>9} {:>9} {:>9} {:>9} {:>9}",
+        fmt_dur(t_embed.mean()),
+        fmt_dur(t_embed.percentile(0.50)),
+        fmt_dur(t_embed.percentile(0.95)),
+        fmt_dur(t_embed.percentile(0.99)),
+        fmt_dur(t_embed.max())
+    );
+    println!(
+        "2. Vector Store Scan (cosine sim)   {:>9} {:>9} {:>9} {:>9} {:>9}",
+        fmt_dur(t_vector.mean()),
+        fmt_dur(t_vector.percentile(0.50)),
+        fmt_dur(t_vector.percentile(0.95)),
+        fmt_dur(t_vector.percentile(0.99)),
+        fmt_dur(t_vector.max())
+    );
+    println!(
+        "3. Graph Resolution & Scoring       {:>9} {:>9} {:>9} {:>9} {:>9}",
+        fmt_dur(t_graph.mean()),
+        fmt_dur(t_graph.percentile(0.50)),
+        fmt_dur(t_graph.percentile(0.95)),
+        fmt_dur(t_graph.percentile(0.99)),
+        fmt_dur(t_graph.max())
+    );
+    println!(
+        "4. MCP Formatting & Serialization   {:>9} {:>9} {:>9} {:>9} {:>9}",
+        fmt_dur(t_mcp_format.mean()),
+        fmt_dur(t_mcp_format.percentile(0.50)),
+        fmt_dur(t_mcp_format.percentile(0.95)),
+        fmt_dur(t_mcp_format.percentile(0.99)),
+        fmt_dur(t_mcp_format.max())
+    );
     println!("--------------------------------------------------------------------------------");
-    println!("TOTAL In-Process Search Pipeline    {:>9} {:>9} {:>9} {:>9} {:>9}",
-        fmt_dur(t_total.mean()), fmt_dur(t_total.percentile(0.50)),
-        fmt_dur(t_total.percentile(0.95)), fmt_dur(t_total.percentile(0.99)), fmt_dur(t_total.max()));
+    println!(
+        "TOTAL In-Process Search Pipeline    {:>9} {:>9} {:>9} {:>9} {:>9}",
+        fmt_dur(t_total.mean()),
+        fmt_dur(t_total.percentile(0.50)),
+        fmt_dur(t_total.percentile(0.95)),
+        fmt_dur(t_total.percentile(0.99)),
+        fmt_dur(t_total.max())
+    );
     println!("--------------------------------------------------------------------------------");
 }
 
@@ -342,7 +387,10 @@ fn probe_h2() {
     *env.graph.write() = GraphStore::build(&docs, &env.pkb_root);
 
     // 1. Call bench_get_task on standard task
-    let res = env.server.bench_get_task(&json!({ "id": "task-bench-00001" })).unwrap();
+    let res = env
+        .server
+        .bench_get_task(&json!({ "id": "task-bench-00001" }))
+        .unwrap();
     let text_content = extract_text(&res);
 
     let json_val: JsonValue = serde_json::from_str(&text_content).unwrap();
@@ -351,47 +399,90 @@ fn probe_h2() {
     println!("Inspecting serialized payload for task-bench-00001:");
 
     let always_null_keys = [
-        "stakeholder_exposure", "stakeholder", "waiting_since", "due", "effort",
-        "consequence", "severity", "goal_type", "edge_template", "days_until_due", "urgency_ratio"
+        "stakeholder_exposure",
+        "stakeholder",
+        "waiting_since",
+        "due",
+        "effort",
+        "consequence",
+        "severity",
+        "goal_type",
+        "edge_template",
+        "days_until_due",
+        "urgency_ratio",
     ];
 
     println!("\n1. Optional/null fields serialized unconditionally:");
     for k in &always_null_keys {
         let val = obj.get(*k);
         println!("   - {:<22} : {:?}", k, val);
-        assert!(obj.contains_key(*k), "Field {k} MUST be present in JSON object");
+        assert!(
+            obj.contains_key(*k),
+            "Field {k} MUST be present in JSON object"
+        );
     }
 
     println!("\n2. Frontmatter duplication check:");
     let has_fm = obj.contains_key("frontmatter");
     println!("   - 'frontmatter' field present: {}", has_fm);
     if let Some(fm) = obj.get("frontmatter").and_then(|v| v.as_object()) {
-        println!("   - 'frontmatter' keys: {:?}", fm.keys().collect::<Vec<_>>());
-        println!("   - Top-level 'id': {:?} vs frontmatter 'id': {:?}", obj.get("id"), fm.get("id"));
-        println!("   - Top-level 'status': {:?} vs frontmatter 'status': {:?}", obj.get("status"), fm.get("status"));
-        println!("   - Top-level 'project': {:?} vs frontmatter 'project': {:?}", obj.get("project"), fm.get("project"));
+        println!(
+            "   - 'frontmatter' keys: {:?}",
+            fm.keys().collect::<Vec<_>>()
+        );
+        println!(
+            "   - Top-level 'id': {:?} vs frontmatter 'id': {:?}",
+            obj.get("id"),
+            fm.get("id")
+        );
+        println!(
+            "   - Top-level 'status': {:?} vs frontmatter 'status': {:?}",
+            obj.get("status"),
+            fm.get("status")
+        );
+        println!(
+            "   - Top-level 'project': {:?} vs frontmatter 'project': {:?}",
+            obj.get("project"),
+            fm.get("project")
+        );
     }
 
     let full_size = text_content.len();
     let mut stripped_obj = obj.clone();
     stripped_obj.remove("frontmatter");
     for k in &always_null_keys {
-        if stripped_obj.get(*k).is_some_and(|v| v.is_null() || v == &json!(false)) {
+        if stripped_obj
+            .get(*k)
+            .is_some_and(|v| v.is_null() || v == &json!(false))
+        {
             stripped_obj.remove(*k);
         }
     }
     let stripped_size = serde_json::to_string_pretty(&stripped_obj).unwrap().len();
     println!("\n3. Byte bulk comparison:");
     println!("   - Full payload size:     {} bytes", full_size);
-    println!("   - Stripped payload size: {} bytes ({:.1}% reduction)", stripped_size, (1.0 - stripped_size as f64 / full_size as f64) * 100.0);
+    println!(
+        "   - Stripped payload size: {} bytes ({:.1}% reduction)",
+        stripped_size,
+        (1.0 - stripped_size as f64 / full_size as f64) * 100.0
+    );
 
     // 4. Test unbounded children array
-    let parent_res = env.server.bench_get_task(&json!({ "id": parent_id })).unwrap();
+    let parent_res = env
+        .server
+        .bench_get_task(&json!({ "id": parent_id }))
+        .unwrap();
     let parent_text = extract_text(&parent_res);
     let parent_json: JsonValue = serde_json::from_str(&parent_text).unwrap();
-    let children_arr = parent_json.get("children").and_then(|v| v.as_array()).unwrap();
+    let children_arr = parent_json
+        .get("children")
+        .and_then(|v| v.as_array())
+        .unwrap();
     println!("\n4. Children array length check on parent with 30 children:");
-    println!("   - Serialized children count: {} (no truncation/limit applied)", children_arr.len());
+    println!(
+        "   - Serialized children count: {} (no truncation/limit applied)",
+        children_arr.len()
+    );
     assert_eq!(children_arr.len(), 30);
 
     println!("\nVerdict for H2: CONFIRMED (Null fields, duplicate frontmatter, and unbounded children are unconditionally serialized).");
@@ -417,14 +508,25 @@ fn probe_h3() {
     drop(graph);
 
     println!("1. Exact ID Resolution via GraphStore::resolve(\"{target_id}\"):");
-    println!("   - Result: {}", if resolved { "FOUND" } else { "NOT FOUND" });
+    println!(
+        "   - Result: {}",
+        if resolved { "FOUND" } else { "NOT FOUND" }
+    );
     println!("   - Latency: {}", fmt_dur(resolve_dur));
 
     // 2. Semantic query using opaque ID string
-    println!("\n2. Semantic Search using opaque ID as natural language query (query=\"{target_id}\"):");
-    let search_res = env.server.bench_search(&json!({ "query": target_id, "limit": 5 })).unwrap();
+    println!(
+        "\n2. Semantic Search using opaque ID as natural language query (query=\"{target_id}\"):"
+    );
+    let search_res = env
+        .server
+        .bench_search(&json!({ "query": target_id, "limit": 5 }))
+        .unwrap();
     let text = extract_text(&search_res);
-    println!("   - MCP Search output excerpt: {}", text.lines().next().unwrap_or(""));
+    println!(
+        "   - MCP Search output excerpt: {}",
+        text.lines().next().unwrap_or("")
+    );
     println!("   - Note: Synthetic store uses uniform vectors; semantic ranking quality is NOT tested here.");
 
     // 3. New Node Indexing Lifecycle: Synchronous Metadata vs Asynchronous Vector Embed
@@ -447,14 +549,27 @@ fn probe_h3() {
     // Verify immediate ID resolution
     let graph = env.graph.read();
     let immediate_resolve = graph.resolve(new_id).is_some();
-    println!("   - Immediate GraphStore::resolve(\"{new_id}\"): {}", if immediate_resolve { "RESOLVED (0 ms lag)" } else { "FAILED" });
+    println!(
+        "   - Immediate GraphStore::resolve(\"{new_id}\"): {}",
+        if immediate_resolve {
+            "RESOLVED (0 ms lag)"
+        } else {
+            "FAILED"
+        }
+    );
     drop(graph);
 
     // Check VectorStore before embedding worker runs
     let store = env.store.read();
     let in_vector_before = store.needs_update(new_id, &doc.file_hash);
-    println!("   - VectorStore status before embedding worker: {} (vector absent / needs_update=true)",
-        if in_vector_before { "PENDING" } else { "PRESENT" });
+    println!(
+        "   - VectorStore status before embedding worker: {} (vector absent / needs_update=true)",
+        if in_vector_before {
+            "PENDING"
+        } else {
+            "PRESENT"
+        }
+    );
     drop(store);
 
     // Now insert into VectorStore (simulating background embed worker completion)
@@ -465,8 +580,14 @@ fn probe_h3() {
 
     let store = env.store.read();
     let in_vector_after = store.needs_update(new_id, &doc.file_hash);
-    println!("   - VectorStore status after embedding worker: {} (vector indexed / needs_update=false)",
-        if !in_vector_after { "INDEXED" } else { "PENDING" });
+    println!(
+        "   - VectorStore status after embedding worker: {} (vector indexed / needs_update=false)",
+        if !in_vector_after {
+            "INDEXED"
+        } else {
+            "PENDING"
+        }
+    );
     drop(store);
 
     println!("\nVerdict for H3:");
@@ -487,10 +608,16 @@ fn probe_h4() {
     let env = TestEnv::new(n_tasks, true);
 
     let limit = 10;
-    println!("Calling handle_list_tasks with limit={} against {} tasks in store...", limit, n_tasks);
+    println!(
+        "Calling handle_list_tasks with limit={} against {} tasks in store...",
+        limit, n_tasks
+    );
 
     // 1. Markdown Format
-    let res_md = env.server.bench_list_tasks(&json!({ "limit": limit, "format": "markdown", "include_done": true })).unwrap();
+    let res_md = env
+        .server
+        .bench_list_tasks(&json!({ "limit": limit, "format": "markdown", "include_done": true }))
+        .unwrap();
     let text_md = extract_text(&res_md);
 
     let first_line = text_md.lines().next().unwrap_or("");
@@ -498,7 +625,10 @@ fn probe_h4() {
     println!("   {}", first_line);
 
     // 2. JSON Format
-    let res_json = env.server.bench_list_tasks(&json!({ "limit": limit, "format": "json", "include_done": true })).unwrap();
+    let res_json = env
+        .server
+        .bench_list_tasks(&json!({ "limit": limit, "format": "json", "include_done": true }))
+        .unwrap();
     let text_json = extract_text(&res_json);
 
     let json_val: JsonValue = serde_json::from_str(&text_json).unwrap();
@@ -515,7 +645,9 @@ fn probe_h4() {
     println!("   - `let total = tasks.len();` captures exact count of matching tasks.");
     println!("   - `tasks.truncate(limit);` truncates the vector in place.");
     println!("   - `\"total\": total` exposes the full count in JSON mode.");
-    println!("   - Truthful truncation requires no additional query pass; total is already in memory.");
+    println!(
+        "   - Truthful truncation requires no additional query pass; total is already in memory."
+    );
 
     println!("\nVerdict for H4: CONFIRMED (True total is known in-memory at truncation point).");
 }
@@ -530,4 +662,3 @@ fn main() {
     println!("PROBE RUN COMPLETE: All H1-H4 probes finished successfully.");
     println!("================================================================================\n");
 }
-

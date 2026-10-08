@@ -852,8 +852,6 @@ impl PkbSearchServer {
     }
 }
 
-
-
 #[cfg(test)]
 mod annotation_tests {
     use super::*;
@@ -963,5 +961,3 @@ mod annotation_tests {
         );
     }
 }
-
-

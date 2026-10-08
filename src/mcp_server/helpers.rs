@@ -60,7 +60,10 @@ impl PkbSearchServer {
     ///
     /// The error message names the referrer count and up to 3 referencing
     /// nodes/edge types, avoiding path disclosure while providing an actionable diagnosis.
-    pub(crate) fn ghost_node_error(id: &str, graph: Option<&crate::graph_store::GraphStore>) -> McpError {
+    pub(crate) fn ghost_node_error(
+        id: &str,
+        graph: Option<&crate::graph_store::GraphStore>,
+    ) -> McpError {
         let msg = if let Some(g) = graph {
             let incoming = g.get_incoming_edges(id);
             let count = incoming.len();

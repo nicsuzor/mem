@@ -1,10 +1,10 @@
+use crate::graph::{is_completed, GraphNode};
+use crate::graph_store::GraphStore;
 use rmcp::model::*;
 use rmcp::ErrorData as McpError;
 use serde_json::Value as JsonValue;
 use std::borrow::Cow;
 use std::collections::HashSet;
-use crate::graph::{is_completed, GraphNode};
-use crate::graph_store::GraphStore;
 
 use super::{PkbSearchServer, MAX_RESULTS};
 
@@ -18,7 +18,9 @@ use super::{PkbSearchServer, MAX_RESULTS};
 /// Returns `Ok(None)` if status is omitted or null.
 /// Returns `Ok(Some(Vec<String>))` with lowercase status strings.
 /// Returns `Err(McpError)` with `INVALID_PARAMS` if any status is invalid or type is not string/array of strings.
-pub(crate) fn parse_status_filter(val: Option<&JsonValue>) -> Result<Option<Vec<String>>, McpError> {
+pub(crate) fn parse_status_filter(
+    val: Option<&JsonValue>,
+) -> Result<Option<Vec<String>>, McpError> {
     let Some(v) = val else {
         return Ok(None);
     };
@@ -333,7 +335,8 @@ impl PkbSearchServer {
                 .map(String::from),
             contributes_to: args
                 .get("contributes_to")
-                .and_then(|v| v.as_array()).cloned()
+                .and_then(|v| v.as_array())
+                .cloned()
                 .unwrap_or_default(),
             classification: args
                 .get("classification")
@@ -476,7 +479,6 @@ impl PkbSearchServer {
             }
         }
 
-
         let t_total = std::time::Instant::now();
 
         let t = std::time::Instant::now();
@@ -598,9 +600,7 @@ impl PkbSearchServer {
         if !abs_path.exists() {
             return Err(McpError {
                 code: ErrorCode::INTERNAL_ERROR,
-                message: Cow::from(format!(
-                    "Task file not found on disk for ID '{id}'"
-                )),
+                message: Cow::from(format!("Task file not found on disk for ID '{id}'")),
                 data: None,
             });
         }
@@ -812,13 +812,28 @@ impl PkbSearchServer {
 
         let fields_filter: Option<HashSet<String>> = args.get("fields").and_then(|v| {
             if let Some(arr) = v.as_array() {
-                Some(arr.iter().filter_map(|s| s.as_str().map(|k| k.to_string())).collect())
+                Some(
+                    arr.iter()
+                        .filter_map(|s| s.as_str().map(|k| k.to_string()))
+                        .collect(),
+                )
             } else {
-                v.as_str().map(|s| s.split(',').map(|k| k.trim().to_string()).filter(|k| !k.is_empty()).collect())
+                v.as_str().map(|s| {
+                    s.split(',')
+                        .map(|k| k.trim().to_string())
+                        .filter(|k| !k.is_empty())
+                        .collect()
+                })
             }
         });
-        let include_signals = args.get("include_signals").and_then(|v| v.as_bool()).unwrap_or(true);
-        let metadata_only = args.get("metadata_only").and_then(|v| v.as_bool()).unwrap_or(false);
+        let include_signals = args
+            .get("include_signals")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true);
+        let metadata_only = args
+            .get("metadata_only")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
 
         let mut result = serde_json::json!({
             "id": node.task_id.as_deref().unwrap_or(&node.id),
@@ -890,7 +905,10 @@ impl PkbSearchServer {
     // MEMORY + DELETE + COMPLETE TOOLS (4)
     // =========================================================================
 
-    pub(crate) fn handle_get_dependency_tree(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+    pub(crate) fn handle_get_dependency_tree(
+        &self,
+        args: &JsonValue,
+    ) -> Result<CallToolResult, McpError> {
         self.ensure_graph_fresh();
         let id = args
             .get("id")
@@ -917,7 +935,8 @@ impl PkbSearchServer {
         // Bounds traversal depth so a densely-linked graph can't return an
         // unbounded tree. MAX_RESULTS is not the right cap here (this bounds
         // hops, not row count) so it just gets a sane ceiling of its own.
-        let max_depth = (args.get("max_depth").and_then(|v| v.as_u64()).unwrap_or(10) as usize).min(1000);
+        let max_depth =
+            (args.get("max_depth").and_then(|v| v.as_u64()).unwrap_or(10) as usize).min(1000);
 
         let graph = self.graph.read();
         let node = graph.resolve(id).ok_or_else(|| McpError {
@@ -928,12 +947,21 @@ impl PkbSearchServer {
         let node_id = node.id.clone();
         let node_label = node.label.clone();
 
-        let is_children = direction.eq_ignore_ascii_case("children") || direction.eq_ignore_ascii_case("subtasks");
+        let is_children = direction.eq_ignore_ascii_case("children")
+            || direction.eq_ignore_ascii_case("subtasks");
         let tree: Vec<(String, usize)> = if is_children {
             if recursive {
                 let mut res = Vec::new();
-                fn collect_children(g: &GraphStore, nid: &str, depth: usize, max: usize, out: &mut Vec<(String, usize)>) {
-                    if depth > max { return; }
+                fn collect_children(
+                    g: &GraphStore,
+                    nid: &str,
+                    depth: usize,
+                    max: usize,
+                    out: &mut Vec<(String, usize)>,
+                ) {
+                    if depth > max {
+                        return;
+                    }
                     if let Some(n) = g.get_node(nid) {
                         for c in &n.children {
                             out.push((c.clone(), depth));
@@ -1001,19 +1029,18 @@ impl PkbSearchServer {
         for (dep_id, depth) in &tree {
             let indent = "  ".repeat(*depth);
             let dep_node = graph.resolve(dep_id);
-            let label = dep_node
-                .map(|n| n.label.as_str())
-                .unwrap_or("?");
-            let status = dep_node
-                .and_then(|n| n.status.as_deref())
-                .unwrap_or("?");
+            let label = dep_node.map(|n| n.label.as_str()).unwrap_or("?");
+            let status = dep_node.and_then(|n| n.status.as_deref()).unwrap_or("?");
             output.push_str(&format!("{indent}- `{dep_id}` [{status}] {label}\n"));
         }
 
         Ok(CallToolResult::success(vec![Content::text(output)]))
     }
 
-    pub(crate) fn handle_get_task_children(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+    pub(crate) fn handle_get_task_children(
+        &self,
+        args: &JsonValue,
+    ) -> Result<CallToolResult, McpError> {
         self.ensure_graph_fresh();
         let id = args
             .get("id")
@@ -1032,7 +1059,8 @@ impl PkbSearchServer {
         // epic subtree could otherwise dump thousands of rows). The
         // completion summary (`total`/`done_count`) still walks the whole
         // subtree so the counts stay accurate even when printing is capped.
-        let limit = (args.get("limit").and_then(|v| v.as_u64()).unwrap_or(200) as usize).min(MAX_RESULTS);
+        let limit =
+            (args.get("limit").and_then(|v| v.as_u64()).unwrap_or(200) as usize).min(MAX_RESULTS);
 
         let graph = self.graph.read();
         let node = graph.resolve(id).ok_or_else(|| McpError {
@@ -1171,10 +1199,9 @@ impl PkbSearchServer {
                     .collect()
             })
             .unwrap_or_default();
-        let has_superseded_by = args
-            .get("has_superseded_by")
-            .and_then(|v| v.as_bool());
-        let limit = (args.get("limit").and_then(|v| v.as_u64()).unwrap_or(50) as usize).min(MAX_RESULTS);
+        let has_superseded_by = args.get("has_superseded_by").and_then(|v| v.as_bool());
+        let limit =
+            (args.get("limit").and_then(|v| v.as_u64()).unwrap_or(50) as usize).min(MAX_RESULTS);
         let date_filter = crate::date_filter::DateFilter::from_args(args)?;
         let include_subtasks = args
             .get("include_subtasks")
@@ -1196,9 +1223,18 @@ impl PkbSearchServer {
             .unwrap_or("markdown");
         let fields_filter: Option<HashSet<String>> = args.get("fields").and_then(|v| {
             if let Some(arr) = v.as_array() {
-                Some(arr.iter().filter_map(|s| s.as_str().map(|k| k.to_string())).collect())
+                Some(
+                    arr.iter()
+                        .filter_map(|s| s.as_str().map(|k| k.to_string()))
+                        .collect(),
+                )
             } else {
-                v.as_str().map(|s| s.split(',').map(|k| k.trim().to_string()).filter(|k| !k.is_empty()).collect())
+                v.as_str().map(|s| {
+                    s.split(',')
+                        .map(|k| k.trim().to_string())
+                        .filter(|k| !k.is_empty())
+                        .collect()
+                })
             }
         });
 
@@ -1413,7 +1449,10 @@ impl PkbSearchServer {
 
         let is_ascii_tree = format.eq_ignore_ascii_case("tree")
             || format.eq_ignore_ascii_case("ascii_tree")
-            || (nested && (format.eq_ignore_ascii_case("markdown") || format.eq_ignore_ascii_case("tree") || format.eq_ignore_ascii_case("ascii_tree")));
+            || (nested
+                && (format.eq_ignore_ascii_case("markdown")
+                    || format.eq_ignore_ascii_case("tree")
+                    || format.eq_ignore_ascii_case("ascii_tree")));
 
         let is_nested_json = format.eq_ignore_ascii_case("nested_json")
             || format.eq_ignore_ascii_case("json_tree")
@@ -1464,7 +1503,8 @@ impl PkbSearchServer {
         }
 
         if is_ascii_tree {
-            let tree_lines = crate::graph_display::render_nested_task_ascii_tree(&graph, &tasks, 100, true);
+            let tree_lines =
+                crate::graph_display::render_nested_task_ascii_tree(&graph, &tasks, 100, true);
             let mut out = tree_lines.join("\n");
             let count_label = if total != tasks.len() {
                 format!("\n\n  {} tasks (showing {})", total, tasks.len())
@@ -1587,11 +1627,8 @@ impl PkbSearchServer {
                     out.push_str("**Blocked by:**\n");
                     for dep in &t.depends_on {
                         let dep_node = graph.resolve(dep);
-                        let dep_label =
-                            dep_node.map(|n| n.label.as_str()).unwrap_or("?");
-                        let dep_status = dep_node
-                            .and_then(|n| n.status.as_deref())
-                            .unwrap_or("?");
+                        let dep_label = dep_node.map(|n| n.label.as_str()).unwrap_or("?");
+                        let dep_status = dep_node.and_then(|n| n.status.as_deref()).unwrap_or("?");
                         out.push_str(&format!("- `{}` [{}] {}\n", dep, dep_status, dep_label));
                     }
                 }
@@ -1664,7 +1701,11 @@ impl PkbSearchServer {
                     })
                     .unwrap_or_else(|| "-".to_string());
                 if has_superseded_by.is_some() {
-                    let superseded_str = if t.superseded_by.is_empty() { "-".to_string() } else { t.superseded_by.join(", ") };
+                    let superseded_str = if t.superseded_by.is_empty() {
+                        "-".to_string()
+                    } else {
+                        t.superseded_by.join(", ")
+                    };
                     out.push_str(&format!(
                         "| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |\n",
                         i + 1,
@@ -1712,7 +1753,11 @@ impl PkbSearchServer {
                 let pri = t.intent.unwrap_or(4);
                 let status_str = t.status.as_deref().unwrap_or("-");
                 if has_superseded_by.is_some() {
-                    let superseded_str = if t.superseded_by.is_empty() { "-".to_string() } else { t.superseded_by.join(", ") };
+                    let superseded_str = if t.superseded_by.is_empty() {
+                        "-".to_string()
+                    } else {
+                        t.superseded_by.join(", ")
+                    };
                     out.push_str(&format!(
                         "| {} | {} | {} | {} | {} | {} |\n",
                         i + 1,
@@ -1960,7 +2005,10 @@ impl PkbSearchServer {
         }
 
         // Reject hard dependency cycles when updating depends_on or _add_depends_on.
-        if let Some(deps_val) = updates.get("depends_on").or_else(|| updates.get("_add_depends_on")) {
+        if let Some(deps_val) = updates
+            .get("depends_on")
+            .or_else(|| updates.get("_add_depends_on"))
+        {
             let targets = crate::graph::parse_string_array(
                 &serde_json::json!({ "depends_on": deps_val.clone() }),
                 "depends_on",
@@ -2002,9 +2050,11 @@ impl PkbSearchServer {
                         .open_descendants(&canonical_id)
                         .into_iter()
                         .filter_map(|desc_id| {
-                            graph
-                                .get_node(&desc_id)
-                                .and_then(|n| self.abs_path_for_node(n, Some(&graph)).ok().map(|p| (desc_id, p)))
+                            graph.get_node(&desc_id).and_then(|n| {
+                                self.abs_path_for_node(n, Some(&graph))
+                                    .ok()
+                                    .map(|p| (desc_id, p))
+                            })
                         })
                         .collect()
                 };
@@ -2083,13 +2133,12 @@ impl PkbSearchServer {
             .map(|s| s.to_string());
 
         let update_map = {
-            let doc = crate::pkb::parse_file_relative(&path, &self.pkb_root).ok_or_else(|| {
-                McpError {
+            let doc =
+                crate::pkb::parse_file_relative(&path, &self.pkb_root).ok_or_else(|| McpError {
                     code: ErrorCode::INTERNAL_ERROR,
                     message: Cow::from(format!("Failed to parse task file at {}", path.display())),
                     data: None,
-                }
-            })?;
+                })?;
             let disk_node = crate::graph::GraphNode::from_pkb_document(&doc);
             let mut filtered_updates = serde_json::Map::new();
             for (k, v) in &updates {
@@ -2166,13 +2215,7 @@ impl PkbSearchServer {
         tracing::debug!(target: "perf::update_task", phase = "TOTAL", elapsed_ms = t_total.elapsed().as_secs_f64() * 1000.0);
 
         // Soft warning if setting a terminal status via update_task instead of release_task
-        let terminal_statuses = [
-            "done",
-            "review",
-            "blocked",
-            "cancelled",
-            "partial",
-        ];
+        let terminal_statuses = ["done", "review", "blocked", "cancelled", "partial"];
         let hint = updates
             .get("status")
             .and_then(|v| v.as_str())
@@ -2290,8 +2333,7 @@ impl PkbSearchServer {
             all_tasks
         };
 
-        let mut by_intent: std::collections::HashMap<i32, usize> =
-            std::collections::HashMap::new();
+        let mut by_intent: std::collections::HashMap<i32, usize> = std::collections::HashMap::new();
         for task in &ready {
             let p = task.intent.unwrap_or(4);
             *by_intent.entry(p).or_insert(0) += 1;
@@ -2353,5 +2395,4 @@ impl PkbSearchServer {
             serde_json::to_string_pretty(&summary).unwrap_or_default(),
         )]))
     }
-
 }

@@ -174,8 +174,8 @@ pub fn batch_merge(
     let best_intent = canonical.intent.unwrap_or(4);
     let mut children_to_reparent: Vec<String> = Vec::new();
     let mut backlinks_to_update: Vec<(String, String)> = Vec::new(); // (node_id, field) to repoint
-    // Source ids successfully archived — appended to the canonical node's
-    // own `supersedes` list below (mem_8035b002: superseded_by is computed).
+                                                                     // Source ids successfully archived — appended to the canonical node's
+                                                                     // own `supersedes` list below (mem_8035b002: superseded_by is computed).
     let mut merged_ids_for_supersedes: Vec<String> = Vec::new();
     // Resolved sources, archived only after the cycle check passes so a
     // rejected merge writes nothing.

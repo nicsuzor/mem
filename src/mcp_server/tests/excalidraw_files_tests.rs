@@ -74,7 +74,11 @@ fn list_returns_canvases_only_sorted_with_size() {
     let root = tmp.path();
     write_file(root, "knowledge/framework/b.excalidraw", &canvas("B"));
     write_file(root, "a.excalidraw", &canvas("A"));
-    write_file(root, "knowledge/note.md", "---\nid: n1\ntitle: N\n---\nbody\n");
+    write_file(
+        root,
+        "knowledge/note.md",
+        "---\nid: n1\ntitle: N\n---\nbody\n",
+    );
     write_file(root, "lib/parts.excalidrawlib", "{}");
     write_file(root, ".hidden/secret.excalidraw", &canvas("H"));
     let server = make_server(root);
@@ -152,7 +156,12 @@ fn get_rejects_missing_traversal_and_non_canvas_paths() {
         let err = server
             .handle_get_excalidraw(&json!({ "path": bad }))
             .expect_err(&format!("{bad} must be rejected"));
-        assert_eq!(err.code, ErrorCode::INVALID_PARAMS, "{bad}: {}", err.message);
+        assert_eq!(
+            err.code,
+            ErrorCode::INVALID_PARAMS,
+            "{bad}: {}",
+            err.message
+        );
     }
 }
 
@@ -165,7 +174,9 @@ fn write_creates_new_canvas_and_parent_dirs_then_reads_back() {
     let body = canvas("fresh");
 
     let res = server
-        .handle_write_excalidraw(&json!({ "path": "sketches/new/fresh.excalidraw", "content": body }))
+        .handle_write_excalidraw(
+            &json!({ "path": "sketches/new/fresh.excalidraw", "content": body }),
+        )
         .unwrap();
     let out = json_of(&res);
     assert_eq!(out["path"], "sketches/new/fresh.excalidraw");
@@ -206,7 +217,12 @@ fn write_rejects_content_that_is_not_an_excalidraw_scene() {
         let err = server
             .handle_write_excalidraw(&json!({ "path": "c.excalidraw", "content": bad }))
             .expect_err(&format!("{bad} must be rejected"));
-        assert_eq!(err.code, ErrorCode::INVALID_PARAMS, "{bad}: {}", err.message);
+        assert_eq!(
+            err.code,
+            ErrorCode::INVALID_PARAMS,
+            "{bad}: {}",
+            err.message
+        );
     }
     assert_eq!(
         std::fs::read_to_string(root.join("c.excalidraw")).unwrap(),
@@ -222,11 +238,21 @@ fn write_rejects_paths_outside_pkb_or_without_canvas_extension() {
     std::fs::create_dir_all(&root).unwrap();
     let server = make_server(&root);
 
-    for bad in ["../escape.excalidraw", "notes/x.md", "x.excalidraw.json", ".git/x.excalidraw"] {
+    for bad in [
+        "../escape.excalidraw",
+        "notes/x.md",
+        "x.excalidraw.json",
+        ".git/x.excalidraw",
+    ] {
         let err = server
             .handle_write_excalidraw(&json!({ "path": bad, "content": canvas("x") }))
             .expect_err(&format!("{bad} must be rejected"));
-        assert_eq!(err.code, ErrorCode::INVALID_PARAMS, "{bad}: {}", err.message);
+        assert_eq!(
+            err.code,
+            ErrorCode::INVALID_PARAMS,
+            "{bad}: {}",
+            err.message
+        );
     }
     assert!(!tmp.path().join("escape.excalidraw").exists());
     assert!(!root.join("notes/x.md").exists());
@@ -238,7 +264,11 @@ fn write_rejects_paths_outside_pkb_or_without_canvas_extension() {
 fn canvas_written_over_mcp_is_not_indexed_or_searchable() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path();
-    write_file(root, "note.md", "---\nid: n1\ntitle: Plain note\n---\nordinary words\n");
+    write_file(
+        root,
+        "note.md",
+        "---\nid: n1\ntitle: Plain note\n---\nordinary words\n",
+    );
     let server = make_server(root);
     server
         .handle_write_excalidraw(&json!({
@@ -251,7 +281,10 @@ fn canvas_written_over_mcp_is_not_indexed_or_searchable() {
     server.handle_refresh_graph(&json!({})).unwrap();
     assert!(server.graph.read().resolve("zanzibarquokka").is_none());
     let scanned: Vec<_> = crate::pkb::scan_directory(root);
-    assert!(scanned.iter().all(|p| p.extension().unwrap() == "md"), "{scanned:?}");
+    assert!(
+        scanned.iter().all(|p| p.extension().unwrap() == "md"),
+        "{scanned:?}"
+    );
 
     let res = server
         .handle_pkb_search(&json!({ "query": "zanzibarquokka", "format": "json" }))
@@ -289,6 +322,10 @@ fn write_reports_warning_count_and_caps_the_listed_warnings() {
     );
     assert_eq!(out["warning_count"].as_u64().unwrap(), n as u64, "{out}");
     let listed = out["warnings"].as_array().unwrap();
-    assert!(listed.len() < n, "warnings list must be capped: {}", listed.len());
+    assert!(
+        listed.len() < n,
+        "warnings list must be capped: {}",
+        listed.len()
+    );
     assert!(!listed.is_empty());
 }

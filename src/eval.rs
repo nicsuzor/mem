@@ -74,7 +74,14 @@ pub fn evaluate(
     pkb_root: &std::path::Path,
     k: usize,
 ) -> EvalSummary {
-    evaluate_with_mode(store, embedder, queries, pkb_root, k, EvalMode::HybridReranked)
+    evaluate_with_mode(
+        store,
+        embedder,
+        queries,
+        pkb_root,
+        k,
+        EvalMode::HybridReranked,
+    )
 }
 
 /// Run evaluation against a vector store with golden queries and a specific search mode.
@@ -88,7 +95,9 @@ pub fn evaluate_with_mode(
 ) -> EvalSummary {
     let mut query_results = Vec::new();
     let reranker = if mode == EvalMode::HybridReranked {
-        Some(crate::rerank::CrossEncoderReranker::new(crate::rerank::RerankerConfig::default()))
+        Some(crate::rerank::CrossEncoderReranker::new(
+            crate::rerank::RerankerConfig::default(),
+        ))
     } else {
         None
     };
@@ -105,9 +114,7 @@ pub fn evaluate_with_mode(
                 };
                 store.search(&query_emb, k, pkb_root, None, None, None)
             }
-            EvalMode::Bm25Only => {
-                store.search_bm25(gq.query, k, pkb_root, None, None, None)
-            }
+            EvalMode::Bm25Only => store.search_bm25(gq.query, k, pkb_root, None, None, None),
             EvalMode::Hybrid => {
                 let query_emb = match embedder.encode_query(gq.query) {
                     Ok(emb) => emb,
@@ -126,7 +133,16 @@ pub fn evaluate_with_mode(
                         continue;
                     }
                 };
-                store.search_hybrid(gq.query, &query_emb, k, pkb_root, None, None, None, reranker.as_ref())
+                store.search_hybrid(
+                    gq.query,
+                    &query_emb,
+                    k,
+                    pkb_root,
+                    None,
+                    None,
+                    None,
+                    reranker.as_ref(),
+                )
             }
         };
 

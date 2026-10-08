@@ -253,8 +253,14 @@ fn cli_and_library_focus_score_parity() {
     let focus_ids = ordered_focus_ids(dir.path());
 
     assert_eq!(flat_ids, vec!["t-sev", "t-hi", "t-mid"]);
-    assert_eq!(tree_ids, flat_ids, "tree view must match flat view focus ordering");
-    assert_eq!(focus_ids, flat_ids, "focus command must match tasks view focus ordering");
+    assert_eq!(
+        tree_ids, flat_ids,
+        "tree view must match flat view focus ordering"
+    );
+    assert_eq!(
+        focus_ids, flat_ids,
+        "focus command must match tasks view focus ordering"
+    );
 }
 
 /// AC4 (backward compatibility): an EXPLICIT `--sort priority` is honoured

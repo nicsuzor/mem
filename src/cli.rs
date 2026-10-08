@@ -1046,9 +1046,9 @@ async fn main() -> Result<()> {
 
     use tracing_subscriber::layer::SubscriberExt;
     use tracing_subscriber::util::SubscriberInitExt;
-    
+
     let otel_provider = mem::otel::init_telemetry();
-    
+
     if let Some(provider) = &otel_provider {
         use opentelemetry::trace::TracerProvider;
         let tracer = provider.tracer("mem");
@@ -1241,7 +1241,8 @@ async fn main() -> Result<()> {
                 std::process::exit(1);
             }
 
-            if let Err(e) = mem::date_filter::DateFilter::parse(since.as_deref(), before.as_deref()) {
+            if let Err(e) = mem::date_filter::DateFilter::parse(since.as_deref(), before.as_deref())
+            {
                 eprintln!("Error: {e}");
                 std::process::exit(1);
             }
@@ -3414,7 +3415,7 @@ async fn main() -> Result<()> {
             );
 
             let session_registry = mem::otel::session_registry::SessionRegistry::new();
-            
+
             let prune_registry = session_registry.clone();
             tokio::spawn(async move {
                 loop {

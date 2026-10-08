@@ -26,7 +26,10 @@ fn test_export_graph_tool_is_registered_read_only_with_expected_params() {
 
     let desc = tool.description.as_deref().unwrap_or("").to_lowercase();
     assert!(desc.contains("dot"), "description must mention DOT: {desc}");
-    assert!(desc.contains("digraph"), "description must mention digraph syntax: {desc}");
+    assert!(
+        desc.contains("digraph"),
+        "description must mention digraph syntax: {desc}"
+    );
 
     let schema_str = serde_json::to_string(&tool.input_schema).unwrap();
     for param in ["format", "focus", "max_depth", "project", "include_done"] {
@@ -154,15 +157,27 @@ fn test_export_graph_json_emits_engine_queue_rank_and_cost_of_delay() {
         "t_valued.md",
         "---\nid: t_valued\ntitle: Valued\ntype: task\nstatus: ready\ncontributes_to:\n  - target: targ_x\n    weight: \"fifty-fifty\"\n---\nB\n",
     );
-    w("t_plain.md", "---\nid: t_plain\ntitle: Plain\ntype: task\nstatus: ready\n---\nB\n");
-    w("t_other.md", "---\nid: t_other\ntitle: Other\ntype: task\nstatus: in_progress\n---\nB\n");
-    w("t_done.md", "---\nid: t_done\ntitle: Done\ntype: task\nstatus: done\n---\nB\n");
+    w(
+        "t_plain.md",
+        "---\nid: t_plain\ntitle: Plain\ntype: task\nstatus: ready\n---\nB\n",
+    );
+    w(
+        "t_other.md",
+        "---\nid: t_other\ntitle: Other\ntype: task\nstatus: in_progress\n---\nB\n",
+    );
+    w(
+        "t_done.md",
+        "---\nid: t_done\ntitle: Done\ntype: task\nstatus: done\n---\nB\n",
+    );
 
     let graph = GraphStore::build_from_directory(&root);
 
     // Engine-side expectations, read from the engine rather than pasted.
     let valued = graph.get_node("t_valued").unwrap();
-    assert!(valued.value_lineage > 0.0, "fixture must give t_valued value_lineage");
+    assert!(
+        valued.value_lineage > 0.0,
+        "fixture must give t_valued value_lineage"
+    );
     let shared = Arc::new(RwLock::new(graph));
 
     let server = PkbSearchServer::new(
@@ -185,7 +200,12 @@ fn test_export_graph_json_emits_engine_queue_rank_and_cost_of_delay() {
         .collect();
     let parsed: Value = serde_json::from_str(&text).unwrap();
     let nodes = parsed["nodes"].as_array().unwrap();
-    let by_id = |id: &str| nodes.iter().find(|n| n["id"] == id).unwrap_or_else(|| panic!("{id} missing"));
+    let by_id = |id: &str| {
+        nodes
+            .iter()
+            .find(|n| n["id"] == id)
+            .unwrap_or_else(|| panic!("{id} missing"))
+    };
 
     let g = shared.read();
 
@@ -194,7 +214,11 @@ fn test_export_graph_json_emits_engine_queue_rank_and_cost_of_delay() {
         let id = n["id"].as_str().unwrap();
         match g.get_node(id).unwrap().focus_tuple.as_ref() {
             Some(ft) => {
-                assert_eq!(n["cost_of_delay"].as_i64(), Some(ft.cost_of_delay), "{id} cost_of_delay");
+                assert_eq!(
+                    n["cost_of_delay"].as_i64(),
+                    Some(ft.cost_of_delay),
+                    "{id} cost_of_delay"
+                );
                 assert_eq!(
                     n["severity_gate"],
                     serde_json::to_value(ft.severity_gate).unwrap(),
@@ -203,9 +227,18 @@ fn test_export_graph_json_emits_engine_queue_rank_and_cost_of_delay() {
                 assert!(n["queue_rank"].is_u64(), "{id} must carry queue_rank: {n}");
             }
             None => {
-                assert!(n.get("cost_of_delay").is_none(), "{id}: no tuple => no cost_of_delay");
-                assert!(n.get("queue_rank").is_none(), "{id}: no tuple => no queue_rank");
-                assert!(n.get("severity_gate").is_none(), "{id}: no tuple => no severity_gate");
+                assert!(
+                    n.get("cost_of_delay").is_none(),
+                    "{id}: no tuple => no cost_of_delay"
+                );
+                assert!(
+                    n.get("queue_rank").is_none(),
+                    "{id}: no tuple => no queue_rank"
+                );
+                assert!(
+                    n.get("severity_gate").is_none(),
+                    "{id}: no tuple => no severity_gate"
+                );
             }
         }
     }
@@ -231,7 +264,10 @@ fn test_export_graph_json_emits_engine_queue_rank_and_cost_of_delay() {
     // Behavioural anchor: value lineage lifts an otherwise-equal task.
     let rv = by_id("t_valued")["queue_rank"].as_u64().unwrap();
     let rp = by_id("t_plain")["queue_rank"].as_u64().unwrap();
-    assert!(rv < rp, "t_valued (rank {rv}) must outrank t_plain (rank {rp})");
+    assert!(
+        rv < rp,
+        "t_valued (rank {rv}) must outrank t_plain (rank {rp})"
+    );
     assert!(
         by_id("t_valued")["cost_of_delay"].as_i64().unwrap()
             > by_id("t_plain")["cost_of_delay"].as_i64().unwrap()

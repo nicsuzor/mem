@@ -117,7 +117,9 @@ impl FocusTuple {
             "severity_gate"
         } else if self.cost_of_delay != other.cost_of_delay {
             "cost_of_delay"
-        } else if self.tie_breakers.downstream_weight_x10 != other.tie_breakers.downstream_weight_x10 {
+        } else if self.tie_breakers.downstream_weight_x10
+            != other.tie_breakers.downstream_weight_x10
+        {
             "tie_breakers.downstream_weight"
         } else if self.tie_breakers.unlock_breadth_x10 != other.tie_breakers.unlock_breadth_x10 {
             "tie_breakers.unlock_breadth"
@@ -153,11 +155,28 @@ impl Ord for FocusTuple {
         self.severity_gate
             .cmp(&other.severity_gate)
             .then_with(|| self.cost_of_delay.cmp(&other.cost_of_delay))
-            .then_with(|| self.tie_breakers.downstream_weight_x10.cmp(&other.tie_breakers.downstream_weight_x10))
-            .then_with(|| self.tie_breakers.unlock_breadth_x10.cmp(&other.tie_breakers.unlock_breadth_x10))
-            .then_with(|| self.tie_breakers.age_staleness.cmp(&other.tie_breakers.age_staleness))
+            .then_with(|| {
+                self.tie_breakers
+                    .downstream_weight_x10
+                    .cmp(&other.tie_breakers.downstream_weight_x10)
+            })
+            .then_with(|| {
+                self.tie_breakers
+                    .unlock_breadth_x10
+                    .cmp(&other.tie_breakers.unlock_breadth_x10)
+            })
+            .then_with(|| {
+                self.tie_breakers
+                    .age_staleness
+                    .cmp(&other.tie_breakers.age_staleness)
+            })
             // Inverted for higher-is-better tuple Ord
-            .then_with(|| other.tie_breakers.effective_intent.cmp(&self.tie_breakers.effective_intent))
+            .then_with(|| {
+                other
+                    .tie_breakers
+                    .effective_intent
+                    .cmp(&self.tie_breakers.effective_intent)
+            })
             .then_with(|| other.tie_breakers.order.cmp(&self.tie_breakers.order))
             .then_with(|| other.tie_breakers.id.cmp(&self.tie_breakers.id))
     }
@@ -248,7 +267,11 @@ pub struct ContributesTo {
     /// rejected at parse time (`GraphNode::from_pkb_document` pushes a
     /// `ParseWarning`, field `contributes_to.stated_weight`) rather than
     /// silently defaulting to 0.3 — see `ContributesTo::is_recognized_weight`.
-    #[serde(alias = "weight", default, deserialize_with = "deserialize_stated_weight")]
+    #[serde(
+        alias = "weight",
+        default,
+        deserialize_with = "deserialize_stated_weight"
+    )]
     pub stated_weight: String,
     /// Single-sentence justification for the weight. Optional in parsing
     /// (present in well-formed entries; not validated at write time).
@@ -705,8 +728,8 @@ pub fn create_id_verbatim(prefix: &str) -> String {
 pub fn resolve_status_alias(status: &str) -> &str {
     match status {
         // Passthrough — canonical values
-        "inbox" | "ready" | "queued" | "in_progress" | "review" | "done"
-        | "paused" | "someday" | "cancelled" | "partial" => status,
+        "inbox" | "ready" | "queued" | "in_progress" | "review" | "done" | "paused" | "someday"
+        | "cancelled" | "partial" => status,
 
         // Legacy "active" = in-flight / claimed work (per Nic 2026-06-27). The old
         // taxonomy collapsed ready/queued/in_progress into one "active" label, but
@@ -1175,13 +1198,12 @@ pub fn parse_confidence(val: &serde_json::Value) -> Option<f64> {
     match val {
         serde_json::Value::Number(n) => n.as_f64().map(|f| f.clamp(0.0, 1.0)),
         serde_json::Value::String(s) => parse_verbal_confidence(s),
-        serde_json::Value::Object(map) => {
-            map.get("value")
-                .or_else(|| map.get("stated_confidence"))
-                .or_else(|| map.get("score"))
-                .or_else(|| map.get("confidence"))
-                .and_then(parse_confidence)
-        }
+        serde_json::Value::Object(map) => map
+            .get("value")
+            .or_else(|| map.get("stated_confidence"))
+            .or_else(|| map.get("score"))
+            .or_else(|| map.get("confidence"))
+            .and_then(parse_confidence),
         _ => None,
     }
 }
@@ -1372,7 +1394,8 @@ impl GraphNode {
                 if task_id.is_some() {
                     parse_warnings.push(ParseWarning {
                         field: "type".to_string(),
-                        message: "missing 'type' field on id-bearing node; defaulted to 'task'".to_string(),
+                        message: "missing 'type' field on id-bearing node; defaulted to 'task'"
+                            .to_string(),
                     });
                     Some("task".to_string())
                 } else {
@@ -1385,14 +1408,12 @@ impl GraphNode {
                 .and_then(|v| v.as_str())
                 .map(|s| resolve_status_alias(s).to_string())
         });
-        let intent = fm
-            .as_ref()
-            .and_then(|f| {
-                f.get("intent")
-                    .or_else(|| f.get("priority"))
-                    .and_then(|v| v.as_i64())
-                    .map(|v| v as i32)
-            });
+        let intent = fm.as_ref().and_then(|f| {
+            f.get("intent")
+                .or_else(|| f.get("priority"))
+                .and_then(|v| v.as_i64())
+                .map(|v| v as i32)
+        });
         let order = fm
             .as_ref()
             .and_then(|f| f.get("order").and_then(|v| v.as_i64()).map(|v| v as i32))
@@ -2194,11 +2215,21 @@ mod regex_tests {
     #[test]
     fn test_task_id_prefix_re() {
         assert_eq!(
-            TASK_ID_PREFIX_RE.captures("aops_1234_some_title").unwrap().get(1).unwrap().as_str(),
+            TASK_ID_PREFIX_RE
+                .captures("aops_1234_some_title")
+                .unwrap()
+                .get(1)
+                .unwrap()
+                .as_str(),
             "aops_1234"
         );
         assert_eq!(
-            TASK_ID_PREFIX_RE.captures("task-1234-some-title").unwrap().get(1).unwrap().as_str(),
+            TASK_ID_PREFIX_RE
+                .captures("task-1234-some-title")
+                .unwrap()
+                .get(1)
+                .unwrap()
+                .as_str(),
             "task-1234"
         );
         assert!(TASK_ID_PREFIX_RE.captures("invalid1234").is_none());

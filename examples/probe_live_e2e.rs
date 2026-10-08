@@ -103,7 +103,11 @@ fn parse_url(u: &str) -> ParsedUrl {
         Some((h, p)) => (h.to_string(), p.parse().expect("valid port in PKB_MCP_URL")),
         None => (hostport.to_string(), 80),
     };
-    ParsedUrl { host, port, path: path.to_string() }
+    ParsedUrl {
+        host,
+        port,
+        path: path.to_string(),
+    }
 }
 
 struct StageTiming {
@@ -126,7 +130,9 @@ fn read_chunked<R: BufRead>(reader: &mut R) -> String {
     let mut out = String::new();
     loop {
         let mut size_line = String::new();
-        reader.read_line(&mut size_line).expect("read chunk size line");
+        reader
+            .read_line(&mut size_line)
+            .expect("read chunk size line");
         let size_str = size_line.trim().split(';').next().unwrap_or("0");
         let size = usize::from_str_radix(size_str, 16).unwrap_or(0);
         if size == 0 {
@@ -154,8 +160,9 @@ fn read_chunked<R: BufRead>(reader: &mut R) -> String {
 fn raw_post(url: &ParsedUrl, json_body: &str, session_id: Option<&str>) -> RawResponse {
     let t0 = Instant::now();
     let addr = format!("{}:{}", url.host, url.port);
-    let mut stream = TcpStream::connect(&addr)
-        .unwrap_or_else(|e| panic!("connect to {addr} failed: {e} (is PKB_MCP_URL reachable from this sandbox?)"));
+    let mut stream = TcpStream::connect(&addr).unwrap_or_else(|e| {
+        panic!("connect to {addr} failed: {e} (is PKB_MCP_URL reachable from this sandbox?)")
+    });
     stream.set_nodelay(true).ok();
     let t_connect = t0.elapsed();
 
@@ -179,8 +186,14 @@ fn raw_post(url: &ParsedUrl, json_body: &str, session_id: Option<&str>) -> RawRe
     let t2 = Instant::now();
     let mut reader = BufReader::new(stream);
     let mut status_line = String::new();
-    reader.read_line(&mut status_line).expect("read status line");
-    let status: u16 = status_line.split_whitespace().nth(1).and_then(|s| s.parse().ok()).unwrap_or(0);
+    reader
+        .read_line(&mut status_line)
+        .expect("read status line");
+    let status: u16 = status_line
+        .split_whitespace()
+        .nth(1)
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
 
     let mut headers = HashMap::new();
     loop {
@@ -196,13 +209,21 @@ fn raw_post(url: &ParsedUrl, json_body: &str, session_id: Option<&str>) -> RawRe
     let t_headers = t2.elapsed();
 
     let t3 = Instant::now();
-    let chunked = headers.get("transfer-encoding").map(|v| v.contains("chunked")).unwrap_or(false);
+    let chunked = headers
+        .get("transfer-encoding")
+        .map(|v| v.contains("chunked"))
+        .unwrap_or(false);
     let body = if chunked {
         read_chunked(&mut reader)
-    } else if let Some(len) = headers.get("content-length").and_then(|v| v.parse::<usize>().ok()) {
+    } else if let Some(len) = headers
+        .get("content-length")
+        .and_then(|v| v.parse::<usize>().ok())
+    {
         let mut buf = vec![0u8; len];
         if len > 0 {
-            reader.read_exact(&mut buf).expect("read content-length body");
+            reader
+                .read_exact(&mut buf)
+                .expect("read content-length body");
         }
         String::from_utf8_lossy(&buf).into_owned()
     } else {
@@ -216,7 +237,13 @@ fn raw_post(url: &ParsedUrl, json_body: &str, session_id: Option<&str>) -> RawRe
         status,
         headers,
         body,
-        timing: StageTiming { connect: t_connect, send: t_send, headers: t_headers, body_read: t_body, total: t0.elapsed() },
+        timing: StageTiming {
+            connect: t_connect,
+            send: t_send,
+            headers: t_headers,
+            body_read: t_body,
+            total: t0.elapsed(),
+        },
     }
 }
 
@@ -257,11 +284,16 @@ impl McpClient {
             .get("mcp-session-id")
             .cloned()
             .expect("server did not return Mcp-Session-Id header on initialize");
-        let json = extract_json(&resp.body).expect("initialize response was not parseable JSON/SSE");
+        let json =
+            extract_json(&resp.body).expect("initialize response was not parseable JSON/SSE");
         let server_info = &json["result"]["serverInfo"];
-        println!("Connected: server={} version={} session={}", server_info["name"], server_info["version"], session_id);
+        println!(
+            "Connected: server={} version={} session={}",
+            server_info["name"], server_info["version"], session_id
+        );
 
-        let notify_body = json!({"jsonrpc": "2.0", "method": "notifications/initialized"}).to_string();
+        let notify_body =
+            json!({"jsonrpc": "2.0", "method": "notifications/initialized"}).to_string();
         let notify_resp = raw_post(&url, &notify_body, Some(&session_id));
         assert!(
             notify_resp.status == 202 || notify_resp.status == 200,
@@ -281,8 +313,13 @@ impl McpClient {
         })
         .to_string();
         let resp = raw_post(&self.url, &body, Some(&self.session_id));
-        assert_eq!(resp.status, 200, "tool call {name} failed with HTTP {}: {}", resp.status, resp.body);
-        let json = extract_json(&resp.body).unwrap_or_else(|| panic!("tool call {name} response not parseable: {}", resp.body));
+        assert_eq!(
+            resp.status, 200,
+            "tool call {name} failed with HTTP {}: {}",
+            resp.status, resp.body
+        );
+        let json = extract_json(&resp.body)
+            .unwrap_or_else(|| panic!("tool call {name} response not parseable: {}", resp.body));
         if let Some(err) = json.get("error") {
             panic!("tool call {name} returned JSON-RPC error: {err}");
         }
@@ -291,7 +328,10 @@ impl McpClient {
 
     fn call_text(&self, id: u64, name: &str, args: JsonValue) -> (String, StageTiming) {
         let (json, timing) = self.call(id, name, args);
-        let text = json["result"]["content"][0]["text"].as_str().unwrap_or_default().to_string();
+        let text = json["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string();
         (text, timing)
     }
 }
@@ -354,12 +394,20 @@ fn probe_h1_live(client: &McpClient, node_count: u64) {
 
     // Warm-up call, discarded, matching probe_h1_h4.rs's convention of excluding
     // any first-call JIT/session effects from the statistics.
-    let _ = client.call_text(900, "pkb__search", json!({"query": REALISTIC_QUERIES[0], "limit": 5}));
+    let _ = client.call_text(
+        900,
+        "pkb__search",
+        json!({"query": REALISTIC_QUERIES[0], "limit": 5}),
+    );
 
     let iters = REALISTIC_QUERIES.len() * 2;
     for i in 0..iters {
         let q = REALISTIC_QUERIES[i % REALISTIC_QUERIES.len()];
-        let (_, timing) = client.call(1000 + i as u64, "pkb__search", json!({"query": q, "limit": 5}));
+        let (_, timing) = client.call(
+            1000 + i as u64,
+            "pkb__search",
+            json!({"query": q, "limit": 5}),
+        );
         connect.record(timing.connect);
         send.record(timing.send);
         headers.record(timing.headers);
@@ -412,7 +460,9 @@ fn probe_id_reads_live(client: &McpClient, real_ids: &[&str]) {
 
 fn probe_h3_opaque_id_live(client: &McpClient, real_ids: &[&str]) {
     println!("\n================================================================================");
-    println!("PROBE H3 (LIVE, opaque-ID half): does semantic search find a node by its own opaque id?");
+    println!(
+        "PROBE H3 (LIVE, opaque-ID half): does semantic search find a node by its own opaque id?"
+    );
     println!("================================================================================");
     println!(
         "This directly discharges the gap the merged probe left open: examples/probe_h1_h4.rs prints \
@@ -423,13 +473,18 @@ fn probe_h3_opaque_id_live(client: &McpClient, real_ids: &[&str]) {
 
     for (i, id) in real_ids.iter().enumerate() {
         // 1. Direct id resolution via get_task — should always succeed, cheap.
-        let (get_text, get_timing) = client.call_text(3000 + i as u64 * 2, "pkb__get_task", json!({"id": id}));
+        let (get_text, get_timing) =
+            client.call_text(3000 + i as u64 * 2, "pkb__get_task", json!({"id": id}));
         let resolved = get_text.contains(&format!("\"id\": \"{id}\""));
 
         // 2. Semantic search using the bare opaque id string as the query — the
         //    failure mode reported in the epic ("an agent's own task id, created
         //    30 minutes earlier, returned unrelated hits").
-        let (search_text, search_timing) = client.call_text(3001 + i as u64 * 2, "pkb__search", json!({"query": id, "limit": 10}));
+        let (search_text, search_timing) = client.call_text(
+            3001 + i as u64 * 2,
+            "pkb__search",
+            json!({"query": id, "limit": 10}),
+        );
         let hit = search_text.contains(&format!("`{id}`"));
         let lines: Vec<&str> = search_text.lines().collect();
         let rank = lines
@@ -437,14 +492,22 @@ fn probe_h3_opaque_id_live(client: &McpClient, real_ids: &[&str]) {
             .position(|l| l.contains(&format!("`{id}`")))
             .and_then(|idx| {
                 // The id line follows a "### N. Title (score: X)" line; find that header above it.
-                lines[..idx].iter().rev().find_map(|l| l.trim_start().strip_prefix("### ").map(|s| s.split('.').next().unwrap_or("?").to_string()))
+                lines[..idx].iter().rev().find_map(|l| {
+                    l.trim_start()
+                        .strip_prefix("### ")
+                        .map(|s| s.split('.').next().unwrap_or("?").to_string())
+                })
             });
 
         println!(
             "  {id:<16}  get_task: {} ({})   search(query=id): {} rank={}",
             if resolved { "RESOLVED" } else { "NOT RESOLVED" },
             fmt_dur(get_timing.total),
-            if hit { "FOUND in top-10" } else { "NOT FOUND in top-10" },
+            if hit {
+                "FOUND in top-10"
+            } else {
+                "NOT FOUND in top-10"
+            },
             rank.unwrap_or_else(|| "-".to_string())
         );
         let _ = search_timing; // timing already reported in probe_h1_live's aggregate stats
@@ -464,13 +527,21 @@ fn main() {
 
     // Confirm and name the store being measured (task brief requires this).
     let (stats_text, _) = client.call_text(10, "pkb__graph_stats", json!({}));
-    let stats_json: JsonValue = serde_json::from_str(&stats_text).expect("graph_stats returned non-JSON text");
+    let stats_json: JsonValue =
+        serde_json::from_str(&stats_text).expect("graph_stats returned non-JSON text");
     let node_count: u64 = stats_json["type_distribution"]
         .as_object()
         .map(|m| m.values().filter_map(|v| v.as_u64()).sum())
         .unwrap_or(0);
 
-    let real_ids = ["mem_eea75657", "mem_d20dd7f3", "mem_e4fa072f", "aops-fd27a513", "mem_7f4b0d03", "obs_018c4dee"];
+    let real_ids = [
+        "mem_eea75657",
+        "mem_d20dd7f3",
+        "mem_e4fa072f",
+        "aops-fd27a513",
+        "mem_7f4b0d03",
+        "obs_018c4dee",
+    ];
 
     probe_h1_live(&client, node_count);
     probe_id_reads_live(&client, &real_ids);

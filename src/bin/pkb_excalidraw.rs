@@ -51,12 +51,12 @@ impl Styler {
                 enabled: true,
                 bold: "\x1b[1m",
                 dim: "\x1b[2m",
-                section: "\x1b[1;36m",   // Bold Cyan
-                category: "\x1b[1;33m",  // Bold Yellow
-                cmd: "\x1b[1;32m",       // Bold Green
-                flag: "\x1b[33m",        // Yellow
-                arg: "\x1b[36m",         // Cyan
-                example: "\x1b[32m",     // Green
+                section: "\x1b[1;36m",  // Bold Cyan
+                category: "\x1b[1;33m", // Bold Yellow
+                cmd: "\x1b[1;32m",      // Bold Green
+                flag: "\x1b[33m",       // Yellow
+                arg: "\x1b[36m",        // Cyan
+                example: "\x1b[32m",    // Green
                 reset: "\x1b[0m",
             }
         } else {
@@ -658,7 +658,9 @@ pub const COMMAND_REGISTRY: &[CommandInfo] = &[
 ];
 
 pub fn is_known_subcommand(name: &str) -> bool {
-    COMMAND_REGISTRY.iter().any(|c| c.name == name || c.aliases.contains(&name))
+    COMMAND_REGISTRY
+        .iter()
+        .any(|c| c.name == name || c.aliases.contains(&name))
 }
 
 pub fn render_full_man_page(styler: &Styler) -> String {
@@ -671,17 +673,37 @@ pub fn render_full_man_page(styler: &Styler) -> String {
 
     // SYNOPSIS
     out.push_str(&format!("{}SYNOPSIS{}\n", s.section, s.reset));
-    out.push_str(&format!("    {}Usage:{} {}pkb-excalidraw{} [OPTIONS] {}FILE{} {}COMMAND{} [ARGS...]\n", s.bold, s.reset, s.cmd, s.reset, s.arg, s.reset, s.cmd, s.reset));
-    out.push_str(&format!("           {}pkb-excalidraw{} [OPTIONS] {}COMMAND{} {}FILE{} [ARGS...]\n", s.cmd, s.reset, s.cmd, s.reset, s.arg, s.reset));
-    out.push_str(&format!("           {}pkb-excalidraw{} {}help{} [COMMAND]\n", s.cmd, s.reset, s.arg, s.reset));
-    out.push_str(&format!("           {}pkb-excalidraw{} {}--help{} [COMMAND]\n\n", s.cmd, s.reset, s.flag, s.reset));
+    out.push_str(&format!(
+        "    {}Usage:{} {}pkb-excalidraw{} [OPTIONS] {}FILE{} {}COMMAND{} [ARGS...]\n",
+        s.bold, s.reset, s.cmd, s.reset, s.arg, s.reset, s.cmd, s.reset
+    ));
+    out.push_str(&format!(
+        "           {}pkb-excalidraw{} [OPTIONS] {}COMMAND{} {}FILE{} [ARGS...]\n",
+        s.cmd, s.reset, s.cmd, s.reset, s.arg, s.reset
+    ));
+    out.push_str(&format!(
+        "           {}pkb-excalidraw{} {}help{} [COMMAND]\n",
+        s.cmd, s.reset, s.arg, s.reset
+    ));
+    out.push_str(&format!(
+        "           {}pkb-excalidraw{} {}--help{} [COMMAND]\n\n",
+        s.cmd, s.reset, s.flag, s.reset
+    ));
 
     // DESCRIPTION
     out.push_str(&format!("{}DESCRIPTION{}\n", s.section, s.reset));
-    out.push_str("    pkb-excalidraw is a zero-dependency (stdlib + serde) companion tool for Excalidraw\n");
-    out.push_str("    whiteboard files (.excalidraw and Obsidian .excalidraw.md) and component library\n");
-    out.push_str("    files (.excalidrawlib). It operates directly on whiteboard scenes and diagrams\n");
-    out.push_str("    without requiring a browser, running server, or active PKB database connection.\n\n");
+    out.push_str(
+        "    pkb-excalidraw is a zero-dependency (stdlib + serde) companion tool for Excalidraw\n",
+    );
+    out.push_str(
+        "    whiteboard files (.excalidraw and Obsidian .excalidraw.md) and component library\n",
+    );
+    out.push_str(
+        "    files (.excalidrawlib). It operates directly on whiteboard scenes and diagrams\n",
+    );
+    out.push_str(
+        "    without requiring a browser, running server, or active PKB database connection.\n\n",
+    );
     out.push_str("    Commands support both prefix syntax (pkb-excalidraw FILE COMMAND ...) and\n");
     out.push_str("    command-first syntax (pkb-excalidraw COMMAND FILE ...) interchangeably.\n\n");
     out.push_str("    Core Invariant Guarantees:\n");
@@ -697,47 +719,89 @@ pub fn render_full_man_page(styler: &Styler) -> String {
     for cmd in COMMAND_REGISTRY {
         if cmd.category != current_category {
             current_category = cmd.category;
-            out.push_str(&format!("  {}{}{}\n\n", s.category, current_category.to_uppercase(), s.reset));
+            out.push_str(&format!(
+                "  {}{}{}\n\n",
+                s.category,
+                current_category.to_uppercase(),
+                s.reset
+            ));
         }
 
         out.push_str(&format!("    {}{}{}", s.cmd, cmd.name, s.reset));
         if !cmd.aliases.is_empty() {
-            out.push_str(&format!(" {}[alias: {}]{}", s.dim, cmd.aliases.join(", "), s.reset));
+            out.push_str(&format!(
+                " {}[alias: {}]{}",
+                s.dim,
+                cmd.aliases.join(", "),
+                s.reset
+            ));
         }
         out.push('\n');
         out.push_str(&format!("        {}\n", cmd.summary));
-        out.push_str(&format!("        {}Syntax:{} {}\n", s.bold, s.reset, cmd.synopsis));
+        out.push_str(&format!(
+            "        {}Syntax:{} {}\n",
+            s.bold, s.reset, cmd.synopsis
+        ));
         if !cmd.options.is_empty() {
             out.push_str(&format!("        {}Options:{}\n", s.bold, s.reset));
             for opt in cmd.options {
                 if opt.default != "none" && opt.default != "required" && !opt.default.is_empty() {
-                    out.push_str(&format!("          {}{:<24}{} {} (default: {})\n", s.flag, opt.flag, s.reset, opt.description, opt.default));
+                    out.push_str(&format!(
+                        "          {}{:<24}{} {} (default: {})\n",
+                        s.flag, opt.flag, s.reset, opt.description, opt.default
+                    ));
                 } else if opt.default == "required" {
-                    out.push_str(&format!("          {}{:<24}{} {} [required]\n", s.flag, opt.flag, s.reset, opt.description));
+                    out.push_str(&format!(
+                        "          {}{:<24}{} {} [required]\n",
+                        s.flag, opt.flag, s.reset, opt.description
+                    ));
                 } else {
-                    out.push_str(&format!("          {}{:<24}{} {}\n", s.flag, opt.flag, s.reset, opt.description));
+                    out.push_str(&format!(
+                        "          {}{:<24}{} {}\n",
+                        s.flag, opt.flag, s.reset, opt.description
+                    ));
                 }
             }
         }
-        out.push_str(&format!("        {}Example:{} {}{}{}\n\n", s.bold, s.reset, s.example, cmd.example, s.reset));
+        out.push_str(&format!(
+            "        {}Example:{} {}{}{}\n\n",
+            s.bold, s.reset, s.example, cmd.example, s.reset
+        ));
     }
 
     // OPTIONS
     out.push_str(&format!("{}OPTIONS{}\n", s.section, s.reset));
-    out.push_str(&format!("    {}--help{}, {}-h{}\n", s.flag, s.reset, s.flag, s.reset));
+    out.push_str(&format!(
+        "    {}--help{}, {}-h{}\n",
+        s.flag, s.reset, s.flag, s.reset
+    ));
     out.push_str("        Print this manual or help for a specific command.\n\n");
     out.push_str(&format!("    {}--color{} <when>\n", s.flag, s.reset));
     out.push_str("        Control colored output: auto (default), always, never.\n\n");
     out.push_str(&format!("    {}--no-color{}\n", s.flag, s.reset));
-    out.push_str("        Disable color output (equivalent to --color=never or setting NO_COLOR=1).\n\n");
+    out.push_str(
+        "        Disable color output (equivalent to --color=never or setting NO_COLOR=1).\n\n",
+    );
 
     // EXAMPLES
     out.push_str(&format!("{}EXAMPLES{}\n", s.section, s.reset));
     out.push_str("    1. Inspecting and validating an existing diagram:\n");
-    out.push_str(&format!("       {}pkb-excalidraw diagram.excalidraw summary{}\n", s.example, s.reset));
-    out.push_str(&format!("       {}pkb-excalidraw diagram.excalidraw map{}\n", s.example, s.reset));
-    out.push_str(&format!("       {}pkb-excalidraw diagram.excalidraw check{}\n", s.example, s.reset));
-    out.push_str(&format!("       {}pkb-excalidraw diagram.excalidraw overlap{}\n\n", s.example, s.reset));
+    out.push_str(&format!(
+        "       {}pkb-excalidraw diagram.excalidraw summary{}\n",
+        s.example, s.reset
+    ));
+    out.push_str(&format!(
+        "       {}pkb-excalidraw diagram.excalidraw map{}\n",
+        s.example, s.reset
+    ));
+    out.push_str(&format!(
+        "       {}pkb-excalidraw diagram.excalidraw check{}\n",
+        s.example, s.reset
+    ));
+    out.push_str(&format!(
+        "       {}pkb-excalidraw diagram.excalidraw overlap{}\n\n",
+        s.example, s.reset
+    ));
 
     out.push_str("    2. Adding nodes and connecting them with a labeled arrow:\n");
     out.push_str(&format!("       {}pkb-excalidraw diagram.excalidraw add-node --type rectangle --text \"API Gateway\" --at 100,200 --role primary{}\n", s.example, s.reset));
@@ -745,29 +809,54 @@ pub fn render_full_man_page(styler: &Styler) -> String {
     out.push_str(&format!("       {}pkb-excalidraw diagram.excalidraw connect --from r1 --to r2 --label \"Verify Token\" --stroke-style dashed{}\n\n", s.example, s.reset));
 
     out.push_str("    3. Updating text and resizing container symmetrically:\n");
-    out.push_str(&format!("       {}pkb-excalidraw diagram.excalidraw set-text r1 \"API Gateway (v2 Cluster)\"{}\n\n", s.example, s.reset));
+    out.push_str(&format!(
+        "       {}pkb-excalidraw diagram.excalidraw set-text r1 \"API Gateway (v2 Cluster)\"{}\n\n",
+        s.example, s.reset
+    ));
 
     out.push_str("    4. Arranging and aligning nodes:\n");
-    out.push_str(&format!("       {}pkb-excalidraw diagram.excalidraw align --ids r1,r2,r3 --to top{}\n", s.example, s.reset));
+    out.push_str(&format!(
+        "       {}pkb-excalidraw diagram.excalidraw align --ids r1,r2,r3 --to top{}\n",
+        s.example, s.reset
+    ));
     out.push_str(&format!("       {}pkb-excalidraw diagram.excalidraw distribute --ids r1,r2,r3 --to horizontal{}\n\n", s.example, s.reset));
 
     out.push_str("    5. Executing an atomic batch mutation transaction:\n");
-    out.push_str(&format!("       {}cat mutations.json | pkb-excalidraw diagram.excalidraw batch -{}\n\n", s.example, s.reset));
+    out.push_str(&format!(
+        "       {}cat mutations.json | pkb-excalidraw diagram.excalidraw batch -{}\n\n",
+        s.example, s.reset
+    ));
 
     out.push_str("    6. Version snapshotting and recovery:\n");
-    out.push_str(&format!("       {}pkb-excalidraw diagram.excalidraw snapshot save checkpoint-pre-cleanup{}\n", s.example, s.reset));
-    out.push_str(&format!("       {}pkb-excalidraw diagram.excalidraw snapshot list{}\n", s.example, s.reset));
-    out.push_str(&format!("       {}pkb-excalidraw diagram.excalidraw snapshot restore checkpoint-pre-cleanup{}\n\n", s.example, s.reset));
+    out.push_str(&format!(
+        "       {}pkb-excalidraw diagram.excalidraw snapshot save checkpoint-pre-cleanup{}\n",
+        s.example, s.reset
+    ));
+    out.push_str(&format!(
+        "       {}pkb-excalidraw diagram.excalidraw snapshot list{}\n",
+        s.example, s.reset
+    ));
+    out.push_str(&format!(
+        "       {}pkb-excalidraw diagram.excalidraw snapshot restore checkpoint-pre-cleanup{}\n\n",
+        s.example, s.reset
+    ));
 
     out.push_str("    7. Exporting to Obsidian Markdown and rendering an SVG:\n");
-    out.push_str(&format!("       {}pkb-excalidraw diagram.excalidraw export --out diagram.md --format obsidian{}\n", s.example, s.reset));
+    out.push_str(&format!(
+        "       {}pkb-excalidraw diagram.excalidraw export --out diagram.md --format obsidian{}\n",
+        s.example, s.reset
+    ));
     out.push_str(&format!("       {}pkb-excalidraw diagram.excalidraw screenshot --out diagram.svg --format svg{}\n\n", s.example, s.reset));
 
     // EXIT STATUS
     out.push_str(&format!("{}EXIT STATUS{}\n", s.section, s.reset));
-    out.push_str("    0    Success; validation checks passed; diffs identical or cleanly computed.\n");
+    out.push_str(
+        "    0    Success; validation checks passed; diffs identical or cleanly computed.\n",
+    );
     out.push_str("    1    Error occurred (syntax error, file I/O failure, JSON parse failure,\n");
-    out.push_str("         invariant check failure from 'check', AABB overlap detected from 'overlap',\n");
+    out.push_str(
+        "         invariant check failure from 'check', AABB overlap detected from 'overlap',\n",
+    );
     out.push_str("         or arrow polyline collision detected from 'arrows-check').\n\n");
 
     // SEE ALSO
@@ -778,13 +867,18 @@ pub fn render_full_man_page(styler: &Styler) -> String {
 }
 
 pub fn render_subcommand_help(name: &str, styler: &Styler) -> Option<String> {
-    let cmd = COMMAND_REGISTRY.iter().find(|c| c.name == name || c.aliases.contains(&name))?;
+    let cmd = COMMAND_REGISTRY
+        .iter()
+        .find(|c| c.name == name || c.aliases.contains(&name))?;
     let s = styler;
     let mut out = String::new();
 
     // NAME
     out.push_str(&format!("{}NAME{}\n", s.section, s.reset));
-    out.push_str(&format!("    {}pkb-excalidraw {}{} - {}\n\n", s.cmd, cmd.name, s.reset, cmd.summary));
+    out.push_str(&format!(
+        "    {}pkb-excalidraw {}{} - {}\n\n",
+        s.cmd, cmd.name, s.reset, cmd.summary
+    ));
 
     // SYNOPSIS
     out.push_str(&format!("{}SYNOPSIS{}\n", s.section, s.reset));
@@ -799,11 +893,20 @@ pub fn render_subcommand_help(name: &str, styler: &Styler) -> Option<String> {
         out.push_str(&format!("{}OPTIONS{}\n", s.section, s.reset));
         for opt in cmd.options {
             if opt.default != "none" && opt.default != "required" && !opt.default.is_empty() {
-                out.push_str(&format!("    {}{:<24}{} {} (default: {})\n", s.flag, opt.flag, s.reset, opt.description, opt.default));
+                out.push_str(&format!(
+                    "    {}{:<24}{} {} (default: {})\n",
+                    s.flag, opt.flag, s.reset, opt.description, opt.default
+                ));
             } else if opt.default == "required" {
-                out.push_str(&format!("    {}{:<24}{} {} [required]\n", s.flag, opt.flag, s.reset, opt.description));
+                out.push_str(&format!(
+                    "    {}{:<24}{} {} [required]\n",
+                    s.flag, opt.flag, s.reset, opt.description
+                ));
             } else {
-                out.push_str(&format!("    {}{:<24}{} {}\n", s.flag, opt.flag, s.reset, opt.description));
+                out.push_str(&format!(
+                    "    {}{:<24}{} {}\n",
+                    s.flag, opt.flag, s.reset, opt.description
+                ));
             }
         }
         out.push('\n');
@@ -823,19 +926,39 @@ pub fn render_subcommand_help(name: &str, styler: &Styler) -> Option<String> {
 pub fn render_brief_usage(styler: &Styler) -> String {
     let s = styler;
     let mut out = String::new();
-    out.push_str(&format!("    {}Usage:{} {}pkb-excalidraw{} [OPTIONS] {}FILE{} {}COMMAND{} [ARGS...]\n", s.bold, s.reset, s.cmd, s.reset, s.arg, s.reset, s.cmd, s.reset));
-    out.push_str(&format!("           {}pkb-excalidraw{} [OPTIONS] {}COMMAND{} {}FILE{} [ARGS...]\n", s.cmd, s.reset, s.cmd, s.reset, s.arg, s.reset));
-    out.push_str(&format!("           {}pkb-excalidraw{} {}help{} [COMMAND]\n", s.cmd, s.reset, s.arg, s.reset));
-    out.push_str(&format!("           {}pkb-excalidraw{} {}--help{} [COMMAND]\n\n", s.cmd, s.reset, s.flag, s.reset));
+    out.push_str(&format!(
+        "    {}Usage:{} {}pkb-excalidraw{} [OPTIONS] {}FILE{} {}COMMAND{} [ARGS...]\n",
+        s.bold, s.reset, s.cmd, s.reset, s.arg, s.reset, s.cmd, s.reset
+    ));
+    out.push_str(&format!(
+        "           {}pkb-excalidraw{} [OPTIONS] {}COMMAND{} {}FILE{} [ARGS...]\n",
+        s.cmd, s.reset, s.cmd, s.reset, s.arg, s.reset
+    ));
+    out.push_str(&format!(
+        "           {}pkb-excalidraw{} {}help{} [COMMAND]\n",
+        s.cmd, s.reset, s.arg, s.reset
+    ));
+    out.push_str(&format!(
+        "           {}pkb-excalidraw{} {}--help{} [COMMAND]\n\n",
+        s.cmd, s.reset, s.flag, s.reset
+    ));
 
-    out.push_str("Token-cheap projections, structural diffs, and mutations for .excalidraw files.\n\n");
+    out.push_str(
+        "Token-cheap projections, structural diffs, and mutations for .excalidraw files.\n\n",
+    );
     out.push_str(&format!("{}Commands:{}\n", s.bold, s.reset));
-    out.push_str("  Projections:     summary, map, nodes, edges, inspect, get, describe, style, query\n");
+    out.push_str(
+        "  Projections:     summary, map, nodes, edges, inspect, get, describe, style, query\n",
+    );
     out.push_str("  Validation:      check, overlap, arrows-check\n");
     out.push_str("  Diffing:         diff, struct-diff\n");
-    out.push_str("  Mutations:       add-node, update-node, add-text, connect, set-text, fit, move-elem,\n");
+    out.push_str(
+        "  Mutations:       add-node, update-node, add-text, connect, set-text, fit, move-elem,\n",
+    );
     out.push_str("                   delete-elem, update, apply, batch, clear\n");
-    out.push_str("  Arrangement:     arrange (align, distribute, group, ungroup, lock, unlock, duplicate)\n");
+    out.push_str(
+        "  Arrangement:     arrange (align, distribute, group, ungroup, lock, unlock, duplicate)\n",
+    );
     out.push_str("  Library:         lib, item\n");
     out.push_str("  Snapshots:       snapshot (save, list, restore)\n");
     out.push_str("  Import/Export:   export, import, screenshot\n");
@@ -866,7 +989,6 @@ Commands:
 Run 'pkb-excalidraw --help' for the complete manual, or 'pkb-excalidraw help <command>' for command details.
 "#;
 
-
 // ============================================================================
 // Core Helper Functions & Projections
 // ============================================================================
@@ -876,7 +998,11 @@ pub fn live(doc: &Value) -> Vec<&Value> {
         .and_then(|v| v.as_array())
         .map(|arr| {
             arr.iter()
-                .filter(|e| !e.get("isDeleted").and_then(|v| v.as_bool()).unwrap_or(false))
+                .filter(|e| {
+                    !e.get("isDeleted")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false)
+                })
                 .collect()
         })
         .unwrap_or_default()
@@ -952,10 +1078,7 @@ fn format_str_list(items: &[&str]) -> String {
 }
 
 fn format_str_counter(counts: &[(&str, usize)]) -> String {
-    let inner: Vec<String> = counts
-        .iter()
-        .map(|(k, v)| format!("'{k}': {v}"))
-        .collect();
+    let inner: Vec<String> = counts.iter().map(|(k, v)| format!("'{k}': {v}")).collect();
     format!("{{{}}}", inner.join(", "))
 }
 
@@ -1216,7 +1339,11 @@ pub fn get_logical_nodes_and_edges(doc: &Value) -> (Vec<LogicalNode>, Vec<Logica
 
     for e in &els {
         let e_type = e.get("type").and_then(|v| v.as_str()).unwrap_or("");
-        let id = e.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let id = e
+            .get("id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
         let container_id = e.get("containerId").and_then(|v| v.as_str()).unwrap_or("");
 
         if e_type == "text" && !container_id.is_empty() {
@@ -1332,7 +1459,10 @@ pub fn extract_scene_json_from_obsidian_md(md: &str) -> Result<String, String> {
             let after_fence = &after_drawing[fence_start + 3..];
             if let Some(newline_pos) = after_fence.find('\n') {
                 let json_content = &after_fence[newline_pos + 1..];
-                if let Some(end_fence) = json_content.find("\n```").or_else(|| json_content.find("\r\n```")) {
+                if let Some(end_fence) = json_content
+                    .find("\n```")
+                    .or_else(|| json_content.find("\r\n```"))
+                {
                     let raw_json = json_content[..end_fence].trim();
                     return Ok(raw_json.to_string());
                 }
@@ -1350,7 +1480,10 @@ pub fn wrap_scene_as_obsidian_md(scene: &Value) -> Result<String, String> {
 
     let mut text_entries = Vec::new();
     for el in elements {
-        let is_deleted = el.get("isDeleted").and_then(|v| v.as_bool()).unwrap_or(false);
+        let is_deleted = el
+            .get("isDeleted")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
         if is_deleted {
             continue;
         }
@@ -1386,7 +1519,11 @@ pub fn atomic_save(file_path: &str, doc: &mut Value) -> Result<(), String> {
     atomic_save_ex(file_path, doc, false)
 }
 
-pub fn atomic_save_ex(file_path: &str, doc: &mut Value, force_obsidian: bool) -> Result<(), String> {
+pub fn atomic_save_ex(
+    file_path: &str,
+    doc: &mut Value,
+    force_obsidian: bool,
+) -> Result<(), String> {
     // 1. Maintain array sort order: elements.sort_by_key(|e| e.index)
     if let Some(arr) = doc.get_mut("elements").and_then(|v| v.as_array_mut()) {
         arr.sort_by(|a, b| {
@@ -1398,7 +1535,10 @@ pub fn atomic_save_ex(file_path: &str, doc: &mut Value, force_obsidian: bool) ->
 
     // 2. Validate structural integrity
     if let Err(fails) = cmd_check(doc) {
-        return Err(format!("Validation failed before save:\n  {}", fails.join("\n  ")));
+        return Err(format!(
+            "Validation failed before save:\n  {}",
+            fails.join("\n  ")
+        ));
     }
 
     // 3. Write to temporary file in same directory (.tmp.<pid>.<rand>)
@@ -1417,12 +1557,16 @@ pub fn atomic_save_ex(file_path: &str, doc: &mut Value, force_obsidian: bool) ->
         serde_json::to_string_pretty(doc).map_err(|e| e.to_string())?
     };
 
-    fs::write(&temp_path, content).map_err(|e| format!("failed to write temp file {:?}: {}", temp_path, e))?;
+    fs::write(&temp_path, content)
+        .map_err(|e| format!("failed to write temp file {:?}: {}", temp_path, e))?;
 
     // 4. Atomically rename
     fs::rename(&temp_path, path).map_err(|e| {
         let _ = fs::remove_file(&temp_path);
-        format!("failed to atomically rename {:?} to {:?}: {}", temp_path, path, e)
+        format!(
+            "failed to atomically rename {:?} to {:?}: {}",
+            temp_path, path, e
+        )
     })?;
 
     Ok(())
@@ -1432,25 +1576,38 @@ pub fn atomic_save_ex(file_path: &str, doc: &mut Value, force_obsidian: bool) ->
 // CRUD Mutations
 // ============================================================================
 
-
 pub const STROKE_STYLES: [&str; 3] = ["solid", "dashed", "dotted"];
 
 pub fn validate_stroke_style(style: &str) -> Result<(), String> {
     if STROKE_STYLES.contains(&style) {
         Ok(())
     } else {
-        Err(format!("invalid stroke style {style:?}; expected one of: {}", STROKE_STYLES.join(", ")))
+        Err(format!(
+            "invalid stroke style {style:?}; expected one of: {}",
+            STROKE_STYLES.join(", ")
+        ))
     }
 }
 
-pub fn mutate_set_stroke_style(doc: &mut Value, target_id: &str, stroke_style: &str) -> Result<(), String> {
+pub fn mutate_set_stroke_style(
+    doc: &mut Value,
+    target_id: &str,
+    stroke_style: &str,
+) -> Result<(), String> {
     validate_stroke_style(stroke_style)?;
-    let elements = doc.get_mut("elements")
+    let elements = doc
+        .get_mut("elements")
         .and_then(|v| v.as_array_mut())
         .ok_or("no elements array")?;
-    let elem = elements.iter_mut()
-        .find(|e| e.get("id").and_then(|v| v.as_str()) == Some(target_id)
-            && !e.get("isDeleted").and_then(|v| v.as_bool()).unwrap_or(false))
+    let elem = elements
+        .iter_mut()
+        .find(|e| {
+            e.get("id").and_then(|v| v.as_str()) == Some(target_id)
+                && !e
+                    .get("isDeleted")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false)
+        })
         .ok_or_else(|| format!("element {target_id} not found"))?;
     elem["strokeStyle"] = json!(stroke_style);
     Ok(())
@@ -1473,7 +1630,8 @@ pub fn mutate_update_node(
         style = Some(mem::excalidraw::schema::node_preset_style(p));
     }
 
-    let elements = doc.get_mut("elements")
+    let elements = doc
+        .get_mut("elements")
         .and_then(|v| v.as_array_mut())
         .ok_or("no elements array")?;
 
@@ -1481,7 +1639,7 @@ pub fn mutate_update_node(
     for elem in elements.iter_mut() {
         if elem.get("id").and_then(|v| v.as_str()) == Some(target_id) {
             found = true;
-            
+
             // Apply preset properties FIRST
             if let Some(s) = &style {
                 elem["strokeColor"] = serde_json::json!(s.stroke_color);
@@ -1510,18 +1668,17 @@ pub fn mutate_update_node(
             if let Some(ss) = stroke_style {
                 elem["strokeStyle"] = serde_json::json!(ss);
             }
-            
+
             break;
         }
     }
-    
+
     if !found {
         return Err(format!("node {} not found", target_id));
     }
-    
+
     Ok(())
 }
-
 
 pub fn mutate_add_node(
     doc: &mut Value,
@@ -1548,7 +1705,10 @@ pub fn mutate_add_node(
     let text_index = &minted[1];
 
     let shape_id = if let Some(cid) = custom_id {
-        if live(doc).iter().any(|e| e.get("id").and_then(|v| v.as_str()) == Some(cid)) {
+        if live(doc)
+            .iter()
+            .any(|e| e.get("id").and_then(|v| v.as_str()) == Some(cid))
+        {
             return Err(format!("element with id {cid:?} already exists"));
         }
         cid.to_string()
@@ -1575,7 +1735,6 @@ pub fn mutate_add_node(
     let default_theme = Theme::default_retro();
     let th_ref = theme.unwrap_or(&default_theme);
 
-
     let mut bg_color = "transparent".to_string();
     let mut applied_stroke_color = th_ref.stroke_color.clone();
     let mut applied_fill_style = th_ref.fill_style.clone();
@@ -1586,13 +1745,17 @@ pub fn mutate_add_node(
         bg_color = style.bg_color.to_string();
         applied_stroke_color = style.stroke_color.to_string();
         applied_fill_style = style.fill_style.to_string();
-        if p == "sticky" { applied_roughness = 2.0; }
+        if p == "sticky" {
+            applied_roughness = 2.0;
+        }
     } else if let Some(c) = color {
         bg_color = c.to_string();
     } else if let Some(r) = role {
-        bg_color = th_ref.color_for_role(r).unwrap_or_else(|| "transparent".to_string());
+        bg_color = th_ref
+            .color_for_role(r)
+            .unwrap_or_else(|| "transparent".to_string());
     }
-    
+
     if let Some(fs) = fill_style {
         applied_fill_style = fs.to_string();
     }
@@ -1600,7 +1763,6 @@ pub fn mutate_add_node(
         applied_roughness = r;
     }
     let applied_angle = angle.unwrap_or(0.0);
-
 
     let stamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -1790,15 +1952,24 @@ pub fn mutate_connect(
 
     let fx = from_elem.get("x").and_then(|v| v.as_f64()).unwrap_or(0.0);
     let fy = from_elem.get("y").and_then(|v| v.as_f64()).unwrap_or(0.0);
-    let fw = from_elem.get("width").and_then(|v| v.as_f64()).unwrap_or(0.0);
-    let fh = from_elem.get("height").and_then(|v| v.as_f64()).unwrap_or(0.0);
+    let fw = from_elem
+        .get("width")
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0);
+    let fh = from_elem
+        .get("height")
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0);
     let c1_x = fx + fw / 2.0;
     let c1_y = fy + fh / 2.0;
 
     let tx = to_elem.get("x").and_then(|v| v.as_f64()).unwrap_or(0.0);
     let ty = to_elem.get("y").and_then(|v| v.as_f64()).unwrap_or(0.0);
     let tw = to_elem.get("width").and_then(|v| v.as_f64()).unwrap_or(0.0);
-    let th = to_elem.get("height").and_then(|v| v.as_f64()).unwrap_or(0.0);
+    let th = to_elem
+        .get("height")
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0);
     let c2_x = tx + tw / 2.0;
     let c2_y = ty + th / 2.0;
 
@@ -1964,8 +2135,14 @@ fn get_arrow_midpoint(arrow_elem: &Value) -> (f64, f64) {
             }
         }
     }
-    let aw = arrow_elem.get("width").and_then(|v| v.as_f64()).unwrap_or(0.0);
-    let ah = arrow_elem.get("height").and_then(|v| v.as_f64()).unwrap_or(0.0);
+    let aw = arrow_elem
+        .get("width")
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0);
+    let ah = arrow_elem
+        .get("height")
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0);
     (ax + aw / 2.0, ay + ah / 2.0)
 }
 
@@ -2008,17 +2185,36 @@ pub fn mutate_set_text(doc: &mut Value, id: &str, new_text: &str) -> Result<(), 
         elements[target_idx]["height"] = json!(th);
 
         if let Some(cid) = container_id {
-            if let Some(cidx) = elements.iter().position(|e| e.get("id").and_then(|v| v.as_str()) == Some(&cid)) {
-                let ctype = elements[cidx].get("type").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            if let Some(cidx) = elements
+                .iter()
+                .position(|e| e.get("id").and_then(|v| v.as_str()) == Some(&cid))
+            {
+                let ctype = elements[cidx]
+                    .get("type")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
                 if ctype == "arrow" {
                     let (mid_x, mid_y) = get_arrow_midpoint(&elements[cidx]);
                     elements[target_idx]["x"] = json!(mid_x - tw / 2.0);
                     elements[target_idx]["y"] = json!(mid_y - th / 2.0);
                 } else {
-                    let cw = elements[cidx].get("width").and_then(|v| v.as_f64()).unwrap_or(0.0);
-                    let ch = elements[cidx].get("height").and_then(|v| v.as_f64()).unwrap_or(0.0);
-                    let cx = elements[cidx].get("x").and_then(|v| v.as_f64()).unwrap_or(0.0);
-                    let cy = elements[cidx].get("y").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                    let cw = elements[cidx]
+                        .get("width")
+                        .and_then(|v| v.as_f64())
+                        .unwrap_or(0.0);
+                    let ch = elements[cidx]
+                        .get("height")
+                        .and_then(|v| v.as_f64())
+                        .unwrap_or(0.0);
+                    let cx = elements[cidx]
+                        .get("x")
+                        .and_then(|v| v.as_f64())
+                        .unwrap_or(0.0);
+                    let cy = elements[cidx]
+                        .get("y")
+                        .and_then(|v| v.as_f64())
+                        .unwrap_or(0.0);
 
                     let old_mid_x = cx + cw / 2.0;
                     let old_mid_y = cy + ch / 2.0;
@@ -2051,7 +2247,10 @@ pub fn mutate_set_text(doc: &mut Value, id: &str, new_text: &str) -> Result<(), 
             });
 
         if let Some(tid) = bound_text_id {
-            if let Some(tidx) = elements.iter().position(|e| e.get("id").and_then(|v| v.as_str()) == Some(&tid)) {
+            if let Some(tidx) = elements
+                .iter()
+                .position(|e| e.get("id").and_then(|v| v.as_str()) == Some(&tid))
+            {
                 let font_size = elements[tidx]
                     .get("fontSize")
                     .and_then(|v| v.as_f64())
@@ -2068,10 +2267,22 @@ pub fn mutate_set_text(doc: &mut Value, id: &str, new_text: &str) -> Result<(), 
                     elements[tidx]["x"] = json!(mid_x - tw / 2.0);
                     elements[tidx]["y"] = json!(mid_y - th / 2.0);
                 } else {
-                    let cw = elements[target_idx].get("width").and_then(|v| v.as_f64()).unwrap_or(0.0);
-                    let ch = elements[target_idx].get("height").and_then(|v| v.as_f64()).unwrap_or(0.0);
-                    let cx = elements[target_idx].get("x").and_then(|v| v.as_f64()).unwrap_or(0.0);
-                    let cy = elements[target_idx].get("y").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                    let cw = elements[target_idx]
+                        .get("width")
+                        .and_then(|v| v.as_f64())
+                        .unwrap_or(0.0);
+                    let ch = elements[target_idx]
+                        .get("height")
+                        .and_then(|v| v.as_f64())
+                        .unwrap_or(0.0);
+                    let cx = elements[target_idx]
+                        .get("x")
+                        .and_then(|v| v.as_f64())
+                        .unwrap_or(0.0);
+                    let cy = elements[target_idx]
+                        .get("y")
+                        .and_then(|v| v.as_f64())
+                        .unwrap_or(0.0);
 
                     let old_mid_x = cx + cw / 2.0;
                     let old_mid_y = cy + ch / 2.0;
@@ -2116,8 +2327,14 @@ pub fn mutate_move_elem(
         .position(|e| e.get("id").and_then(|v| v.as_str()) == Some(id))
         .ok_or_else(|| format!("element {id:?} not found"))?;
 
-    let curr_x = elements[target_idx].get("x").and_then(|v| v.as_f64()).unwrap_or(0.0);
-    let curr_y = elements[target_idx].get("y").and_then(|v| v.as_f64()).unwrap_or(0.0);
+    let curr_x = elements[target_idx]
+        .get("x")
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0);
+    let curr_y = elements[target_idx]
+        .get("y")
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0);
 
     let (dx, dy) = if let Some((tx, ty)) = to {
         (tx - curr_x, ty - curr_y)
@@ -2131,11 +2348,17 @@ pub fn mutate_move_elem(
     let mut moved_ids = HashSet::new();
     moved_ids.insert(id.to_string());
 
-    if let Some(cid) = elements[target_idx].get("containerId").and_then(|v| v.as_str()) {
+    if let Some(cid) = elements[target_idx]
+        .get("containerId")
+        .and_then(|v| v.as_str())
+    {
         moved_ids.insert(cid.to_string());
     }
 
-    if let Some(bound_arr) = elements[target_idx].get("boundElements").and_then(|v| v.as_array()) {
+    if let Some(bound_arr) = elements[target_idx]
+        .get("boundElements")
+        .and_then(|v| v.as_array())
+    {
         for b in bound_arr {
             if b.get("type").and_then(|v| v.as_str()) == Some("text") {
                 if let Some(bid) = b.get("id").and_then(|v| v.as_str()) {
@@ -2162,8 +2385,16 @@ pub fn mutate_move_elem(
 
     for e in elements.iter_mut() {
         if e.get("type").and_then(|v| v.as_str()) == Some("arrow") {
-            let s_id = e.get("startBinding").and_then(|v| v.get("elementId")).and_then(|v| v.as_str()).unwrap_or("");
-            let e_id = e.get("endBinding").and_then(|v| v.get("elementId")).and_then(|v| v.as_str()).unwrap_or("");
+            let s_id = e
+                .get("startBinding")
+                .and_then(|v| v.get("elementId"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let e_id = e
+                .get("endBinding")
+                .and_then(|v| v.get("elementId"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
 
             let s_moved = moved_ids.contains(s_id);
             let e_moved = moved_ids.contains(e_id);
@@ -2301,11 +2532,25 @@ pub fn mutate_delete_elem(doc: &mut Value, id: &str, cascade_arrows: bool) -> Re
 
     for e in elements.iter_mut() {
         if e.get("type").and_then(|v| v.as_str()) == Some("arrow") {
-            let s_id = e.get("startBinding").and_then(|v| v.get("elementId")).and_then(|v| v.as_str()).unwrap_or("");
-            let e_id = e.get("endBinding").and_then(|v| v.get("elementId")).and_then(|v| v.as_str()).unwrap_or("");
+            let s_id = e
+                .get("startBinding")
+                .and_then(|v| v.get("elementId"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let e_id = e
+                .get("endBinding")
+                .and_then(|v| v.get("elementId"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
 
-            if (!s_id.is_empty() && del_ids.contains(s_id)) || (!e_id.is_empty() && del_ids.contains(e_id)) {
-                let aid = e.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            if (!s_id.is_empty() && del_ids.contains(s_id))
+                || (!e_id.is_empty() && del_ids.contains(e_id))
+            {
+                let aid = e
+                    .get("id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
                 if cascade_arrows {
                     arrow_ids_to_delete.push(aid);
                 } else {
@@ -2450,7 +2695,11 @@ pub fn mutate_theme_apply(
                 e["roughness"] = json!(theme.roughness);
                 e["strokeColor"] = json!(theme.stroke_color);
 
-                if let Some(role) = e.get("customData").and_then(|v| v.get("role")).and_then(|v| v.as_str()) {
+                if let Some(role) = e
+                    .get("customData")
+                    .and_then(|v| v.get("role"))
+                    .and_then(|v| v.as_str())
+                {
                     if let Some(bg) = theme.color_for_role(role) {
                         e["backgroundColor"] = json!(bg);
                     }
@@ -2463,11 +2712,7 @@ pub fn mutate_theme_apply(
     Ok(applied_count)
 }
 
-pub fn mutate_align(
-    doc: &mut Value,
-    ids: &[String],
-    alignment: &str,
-) -> Result<usize, String> {
+pub fn mutate_align(doc: &mut Value, ids: &[String], alignment: &str) -> Result<usize, String> {
     if ids.len() < 2 {
         return Err("Need at least 2 elements to align".to_string());
     }
@@ -2487,7 +2732,10 @@ pub fn mutate_align(
 
     let mut targets = Vec::new();
     for id in ids {
-        if let Some(e) = elements.iter().find(|e| e.get("id").and_then(|v| v.as_str()) == Some(id)) {
+        if let Some(e) = elements
+            .iter()
+            .find(|e| e.get("id").and_then(|v| v.as_str()) == Some(id))
+        {
             targets.push(TargetElem {
                 id: id.clone(),
                 x: e.get("x").and_then(|v| v.as_f64()).unwrap_or(0.0),
@@ -2512,7 +2760,10 @@ pub fn mutate_align(
             }
         }
         "right" => {
-            let max_right = targets.iter().map(|t| t.x + t.width).fold(f64::NEG_INFINITY, f64::max);
+            let max_right = targets
+                .iter()
+                .map(|t| t.x + t.width)
+                .fold(f64::NEG_INFINITY, f64::max);
             for t in &targets {
                 moves.push((t.id.clone(), max_right - (t.x + t.width), 0.0));
             }
@@ -2532,7 +2783,10 @@ pub fn mutate_align(
             }
         }
         "bottom" => {
-            let max_bottom = targets.iter().map(|t| t.y + t.height).fold(f64::NEG_INFINITY, f64::max);
+            let max_bottom = targets
+                .iter()
+                .map(|t| t.y + t.height)
+                .fold(f64::NEG_INFINITY, f64::max);
             for t in &targets {
                 moves.push((t.id.clone(), 0.0, max_bottom - (t.y + t.height)));
             }
@@ -2545,7 +2799,11 @@ pub fn mutate_align(
                 moves.push((t.id.clone(), 0.0, target_y - t.y));
             }
         }
-        other => return Err(format!("Unknown alignment {other:?}; expected left|center|right|top|middle|bottom")),
+        other => {
+            return Err(format!(
+                "Unknown alignment {other:?}; expected left|center|right|top|middle|bottom"
+            ))
+        }
     }
 
     let mut moved_count = 0;
@@ -2589,7 +2847,10 @@ pub fn mutate_distribute(
 
     let mut targets = Vec::new();
     for id in ids {
-        if let Some(e) = elements.iter().find(|e| e.get("id").and_then(|v| v.as_str()) == Some(id)) {
+        if let Some(e) = elements
+            .iter()
+            .find(|e| e.get("id").and_then(|v| v.as_str()) == Some(id))
+        {
             targets.push(DistElem {
                 id: id.clone(),
                 x: e.get("x").and_then(|v| v.as_f64()).unwrap_or(0.0),
@@ -2633,7 +2894,9 @@ pub fn mutate_distribute(
             curr_y += t.height + gap;
         }
     } else {
-        return Err(format!("Unknown direction {direction:?}; expected horizontal|vertical"));
+        return Err(format!(
+            "Unknown direction {direction:?}; expected horizontal|vertical"
+        ));
     }
 
     let mut moved_count = 0;
@@ -2647,10 +2910,7 @@ pub fn mutate_distribute(
     Ok(moved_count)
 }
 
-pub fn mutate_group(
-    doc: &mut Value,
-    ids: &[String],
-) -> Result<String, String> {
+pub fn mutate_group(doc: &mut Value, ids: &[String]) -> Result<String, String> {
     if ids.is_empty() {
         return Err("group requires at least one element ID".to_string());
     }
@@ -2696,7 +2956,11 @@ pub fn mutate_ungroup(
     let mut ungrouped_count = 0;
 
     for el in elements.iter_mut() {
-        let el_id = el.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let el_id = el
+            .get("id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
         if let Some(target_ids) = ids {
             if !target_ids.contains(&el_id) {
                 continue;
@@ -2720,11 +2984,7 @@ pub fn mutate_ungroup(
     Ok(ungrouped_count)
 }
 
-pub fn mutate_lock(
-    doc: &mut Value,
-    ids: &[String],
-    locked: bool,
-) -> Result<usize, String> {
+pub fn mutate_lock(doc: &mut Value, ids: &[String], locked: bool) -> Result<usize, String> {
     let elements = doc
         .get_mut("elements")
         .and_then(|v| v.as_array_mut())
@@ -2780,7 +3040,10 @@ pub fn mutate_duplicate(
         if !all_to_dup.contains(id) {
             all_to_dup.push(id.clone());
         }
-        if let Some(el) = elements.iter().find(|e| e.get("id").and_then(|v| v.as_str()) == Some(id)) {
+        if let Some(el) = elements
+            .iter()
+            .find(|e| e.get("id").and_then(|v| v.as_str()) == Some(id))
+        {
             if let Some(bounds) = el.get("boundElements").and_then(|v| v.as_array()) {
                 for b in bounds {
                     if b.get("type").and_then(|v| v.as_str()) == Some("text") {
@@ -2805,7 +3068,10 @@ pub fn mutate_duplicate(
 
     let mut cloned_elements = Vec::new();
     for (i, old_id) in all_to_dup.iter().enumerate() {
-        if let Some(el) = elements.iter().find(|e| e.get("id").and_then(|v| v.as_str()) == Some(old_id)) {
+        if let Some(el) = elements
+            .iter()
+            .find(|e| e.get("id").and_then(|v| v.as_str()) == Some(old_id))
+        {
             let mut clone = el.clone();
             let new_elem_id = &id_map[old_id];
             clone["id"] = json!(new_elem_id);
@@ -2824,7 +3090,10 @@ pub fn mutate_duplicate(
             }
 
             // Remap boundElements
-            if let Some(bounds) = clone.get_mut("boundElements").and_then(|v| v.as_array_mut()) {
+            if let Some(bounds) = clone
+                .get_mut("boundElements")
+                .and_then(|v| v.as_array_mut())
+            {
                 for b in bounds.iter_mut() {
                     if let Some(bid) = b.get("id").and_then(|v| v.as_str()) {
                         if let Some(new_bid) = id_map.get(bid) {
@@ -2835,7 +3104,10 @@ pub fn mutate_duplicate(
             }
 
             // Remap arrow startBinding / endBinding
-            if let Some(sb) = clone.get_mut("startBinding").and_then(|v| v.as_object_mut()) {
+            if let Some(sb) = clone
+                .get_mut("startBinding")
+                .and_then(|v| v.as_object_mut())
+            {
                 if let Some(eid) = sb.get("elementId").and_then(|v| v.as_str()) {
                     if let Some(new_eid) = id_map.get(eid) {
                         sb.insert("elementId".to_string(), json!(new_eid));
@@ -2859,7 +3131,10 @@ pub fn mutate_duplicate(
         .and_then(|v| v.as_array_mut())
         .unwrap();
 
-    let created_ids: Vec<String> = ids.iter().filter_map(|id| id_map.get(id).cloned()).collect();
+    let created_ids: Vec<String> = ids
+        .iter()
+        .filter_map(|id| id_map.get(id).cloned())
+        .collect();
     for cl in cloned_elements {
         elements_mut.push(cl);
     }
@@ -2867,11 +3142,7 @@ pub fn mutate_duplicate(
     Ok(created_ids)
 }
 
-pub fn mutate_update_elem(
-    doc: &mut Value,
-    target_id: &str,
-    updates: &Value,
-) -> Result<(), String> {
+pub fn mutate_update_elem(doc: &mut Value, target_id: &str, updates: &Value) -> Result<(), String> {
     let updates_obj = updates
         .as_object()
         .ok_or_else(|| "updates must be a JSON object".to_string())?;
@@ -3110,7 +3381,9 @@ pub fn cmd_edges(doc: &Value) {
 
 pub fn cmd_inspect(doc: &Value, id: &str) {
     let els = live(doc);
-    let elem = els.iter().find(|e| e.get("id").and_then(|v| v.as_str()) == Some(id));
+    let elem = els
+        .iter()
+        .find(|e| e.get("id").and_then(|v| v.as_str()) == Some(id));
     if elem.is_none() {
         eprintln!("element {id:?} not found");
         process::exit(1);
@@ -3134,7 +3407,10 @@ pub fn cmd_inspect(doc: &Value, id: &str) {
 
         println!("id: {}", n.id);
         println!("type: {}", n.elem_type);
-        println!("bounds: {:.0},{:.0} {:.0}x{:.0}", n.x, n.y, n.width, n.height);
+        println!(
+            "bounds: {:.0},{:.0} {:.0}x{:.0}",
+            n.x, n.y, n.width, n.height
+        );
         println!("label: {}", n.label);
         println!("role: {}", n.role);
         println!("inbound: [{}]", inbound.join(", "));
@@ -3164,7 +3440,9 @@ pub fn cmd_inspect(doc: &Value, id: &str) {
 
 pub fn cmd_get(doc: &Value, id: &str) {
     let els = live(doc);
-    let elem = els.iter().find(|e| e.get("id").and_then(|v| v.as_str()) == Some(id));
+    let elem = els
+        .iter()
+        .find(|e| e.get("id").and_then(|v| v.as_str()) == Some(id));
     if let Some(e) = elem {
         println!("{}", serde_json::to_string_pretty(e).unwrap());
     } else {
@@ -3502,7 +3780,10 @@ pub fn cmd_diff(doc1: &Value, doc2: &Value) {
         let c1 = t1.get(t).copied().unwrap_or(0);
         let c2 = t2.get(t).copied().unwrap_or(0);
         if c1 != c2 {
-            type_diffs.push(format!("  {t}: {c1} -> {c2} ({:+})", c2 as isize - c1 as isize));
+            type_diffs.push(format!(
+                "  {t}: {c1} -> {c2} ({:+})",
+                c2 as isize - c1 as isize
+            ));
         }
     }
     if !type_diffs.is_empty() {
@@ -3541,7 +3822,10 @@ pub fn cmd_diff(doc1: &Value, doc2: &Value) {
         let c1 = bg1.get(bg).copied().unwrap_or(0);
         let c2 = bg2.get(bg).copied().unwrap_or(0);
         if c1 != c2 {
-            bg_diffs.push(format!("  {bg}: {c1} -> {c2} ({:+})", c2 as isize - c1 as isize));
+            bg_diffs.push(format!(
+                "  {bg}: {c1} -> {c2} ({:+})",
+                c2 as isize - c1 as isize
+            ));
         }
     }
     if !bg_diffs.is_empty() {
@@ -4290,8 +4574,16 @@ pub fn cmd_describe(doc: &Value) {
         let elem_type = e.get("type").and_then(|v| v.as_str()).unwrap_or("");
         let x = e.get("x").and_then(|v| v.as_f64()).unwrap_or(0.0).round() as i64;
         let y = e.get("y").and_then(|v| v.as_f64()).unwrap_or(0.0).round() as i64;
-        let width = e.get("width").and_then(|v| v.as_f64()).unwrap_or(0.0).round() as i64;
-        let height = e.get("height").and_then(|v| v.as_f64()).unwrap_or(0.0).round() as i64;
+        let width = e
+            .get("width")
+            .and_then(|v| v.as_f64())
+            .unwrap_or(0.0)
+            .round() as i64;
+        let height = e
+            .get("height")
+            .and_then(|v| v.as_f64())
+            .unwrap_or(0.0)
+            .round() as i64;
 
         let mut parts = Vec::new();
         parts.push(format!("[{}] {}", id, elem_type));
@@ -4310,7 +4602,11 @@ pub fn cmd_describe(doc: &Value) {
             }
         }
 
-        if let Some(role) = e.get("customData").and_then(|cd| cd.get("role")).and_then(|v| v.as_str()) {
+        if let Some(role) = e
+            .get("customData")
+            .and_then(|cd| cd.get("role"))
+            .and_then(|v| v.as_str())
+        {
             parts.push(format!("role: {}", role));
         }
         if let Some(bg) = e.get("backgroundColor").and_then(|v| v.as_str()) {
@@ -4340,13 +4636,24 @@ pub fn cmd_describe(doc: &Value) {
     for e in &elements {
         if e.get("type").and_then(|v| v.as_str()) == Some("arrow") {
             let id = e.get("id").and_then(|v| v.as_str()).unwrap_or("");
-            let from = e.get("startBinding").and_then(|b| b.get("elementId")).and_then(|v| v.as_str()).unwrap_or("?");
-            let to = e.get("endBinding").and_then(|b| b.get("elementId")).and_then(|v| v.as_str()).unwrap_or("?");
+            let from = e
+                .get("startBinding")
+                .and_then(|b| b.get("elementId"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("?");
+            let to = e
+                .get("endBinding")
+                .and_then(|b| b.get("elementId"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("?");
             let label = label_of(e, &texts);
             if label.is_empty() {
                 connection_descs.push(format!("  {} --> {} (arrow: {})", from, to, id));
             } else {
-                connection_descs.push(format!("  {} --> {} (arrow: {}, label: {:?})", from, to, id, label));
+                connection_descs.push(format!(
+                    "  {} --> {} (arrow: {}, label: {:?})",
+                    from, to, id, label
+                ));
             }
         }
     }
@@ -4356,7 +4663,10 @@ pub fn cmd_describe(doc: &Value) {
         let id = e.get("id").and_then(|v| v.as_str()).unwrap_or("");
         if let Some(gids) = e.get("groupIds").and_then(|v| v.as_array()) {
             for gid in gids.iter().filter_map(|g| g.as_str()) {
-                group_map.entry(gid.to_string()).or_default().push(id.to_string());
+                group_map
+                    .entry(gid.to_string())
+                    .or_default()
+                    .push(id.to_string());
             }
         }
     }
@@ -4366,7 +4676,10 @@ pub fn cmd_describe(doc: &Value) {
     println!("## Canvas Description");
     println!("Total elements: {}", elements.len());
     println!("Types: {}", types_summary);
-    println!("Bounding box: ({:.0}, {:.0}) to ({:.0}, {:.0}) = {:.0}x{:.0}", min_x, min_y, max_x, max_y, w, h);
+    println!(
+        "Bounding box: ({:.0}, {:.0}) to ({:.0}, {:.0}) = {:.0}x{:.0}",
+        min_x, min_y, max_x, max_y, w, h
+    );
     println!();
     println!("### Elements (top-to-bottom, left-to-right):");
     for line in elem_descs {
@@ -4421,9 +4734,7 @@ pub fn coerce_filter_match(actual: &Value, expected: &str) -> bool {
             }
         }
         Value::String(s) => s == expected,
-        Value::Array(arr) => {
-            arr.iter().any(|item| coerce_filter_match(item, expected))
-        }
+        Value::Array(arr) => arr.iter().any(|item| coerce_filter_match(item, expected)),
         Value::Null => expected == "null",
         _ => false,
     }
@@ -4559,9 +4870,15 @@ pub fn render_svg(doc: &Value, include_background: bool) -> Result<String, Strin
         let y = e.get("y").and_then(|v| v.as_f64()).unwrap_or(0.0);
         let width = e.get("width").and_then(|v| v.as_f64()).unwrap_or(0.0);
         let height = e.get("height").and_then(|v| v.as_f64()).unwrap_or(0.0);
-        let stroke_color = e.get("strokeColor").and_then(|v| v.as_str()).unwrap_or("#1e1e1e");
+        let stroke_color = e
+            .get("strokeColor")
+            .and_then(|v| v.as_str())
+            .unwrap_or("#1e1e1e");
         let stroke_width = e.get("strokeWidth").and_then(|v| v.as_f64()).unwrap_or(2.0);
-        let stroke_style = e.get("strokeStyle").and_then(|v| v.as_str()).unwrap_or("solid");
+        let stroke_style = e
+            .get("strokeStyle")
+            .and_then(|v| v.as_str())
+            .unwrap_or("solid");
         let dash_attr = match stroke_style {
             "dashed" => " stroke-dasharray=\"6,6\"",
             "dotted" => " stroke-dasharray=\"2,4\"",
@@ -4573,16 +4890,24 @@ pub fn render_svg(doc: &Value, include_background: bool) -> Result<String, Strin
         } else {
             "".to_string()
         };
-        let bg = e.get("backgroundColor").and_then(|v| v.as_str()).unwrap_or("transparent");
-        let fill = if bg == "transparent" || bg.is_empty() { "none" } else { bg };
+        let bg = e
+            .get("backgroundColor")
+            .and_then(|v| v.as_str())
+            .unwrap_or("transparent");
+        let fill = if bg == "transparent" || bg.is_empty() {
+            "none"
+        } else {
+            bg
+        };
 
         match elem_type {
             "rectangle" => {
-                let rx_attr = if e.get("roundness").is_some() && !e.get("roundness").unwrap().is_null() {
-                    " rx=\"8\" ry=\"8\""
-                } else {
-                    ""
-                };
+                let rx_attr =
+                    if e.get("roundness").is_some() && !e.get("roundness").unwrap().is_null() {
+                        " rx=\"8\" ry=\"8\""
+                    } else {
+                        ""
+                    };
                 svg.push_str(&format!(
                     r#"  <rect x="{:.1}" y="{:.1}" width="{:.1}" height="{:.1}" fill="{}" stroke="{}" stroke-width="{:.1}"{}{}{} />"#,
                     x, y, width, height, fill, stroke_color, stroke_width, rx_attr, dash_attr, opacity_attr
@@ -4611,16 +4936,26 @@ pub fn render_svg(doc: &Value, include_background: bool) -> Result<String, Strin
             }
             "line" | "arrow" => {
                 let is_arrow = elem_type == "arrow";
-                let marker_attr = if is_arrow { " marker-end=\"url(#arrowhead)\"" } else { "" };
+                let marker_attr = if is_arrow {
+                    " marker-end=\"url(#arrowhead)\""
+                } else {
+                    ""
+                };
                 if let Some(pts) = e.get("points").and_then(|v| v.as_array()) {
                     let mut pts_tuples: Vec<(f64, f64)> = Vec::new();
                     for p in pts {
                         if let Some(arr) = p.as_array() {
                             if arr.len() == 2 {
-                                pts_tuples.push((x + arr[0].as_f64().unwrap_or(0.0), y + arr[1].as_f64().unwrap_or(0.0)));
+                                pts_tuples.push((
+                                    x + arr[0].as_f64().unwrap_or(0.0),
+                                    y + arr[1].as_f64().unwrap_or(0.0),
+                                ));
                             }
                         } else if let Some(obj) = p.as_object() {
-                            pts_tuples.push((x + obj.get("x").and_then(|v| v.as_f64()).unwrap_or(0.0), y + obj.get("y").and_then(|v| v.as_f64()).unwrap_or(0.0)));
+                            pts_tuples.push((
+                                x + obj.get("x").and_then(|v| v.as_f64()).unwrap_or(0.0),
+                                y + obj.get("y").and_then(|v| v.as_f64()).unwrap_or(0.0),
+                            ));
                         }
                     }
 
@@ -4632,7 +4967,11 @@ pub fn render_svg(doc: &Value, include_background: bool) -> Result<String, Strin
                         ));
                         svg.push('\n');
                     } else if pts_tuples.len() > 2 {
-                        let pts_str = pts_tuples.iter().map(|(px, py)| format!("{:.1},{:.1}", px, py)).collect::<Vec<_>>().join(" ");
+                        let pts_str = pts_tuples
+                            .iter()
+                            .map(|(px, py)| format!("{:.1},{:.1}", px, py))
+                            .collect::<Vec<_>>()
+                            .join(" ");
                         svg.push_str(&format!(
                             r#"  <polyline points="{}" fill="none" stroke="{}" stroke-width="{:.1}"{}{}{} />"#,
                             pts_str, stroke_color, stroke_width, dash_attr, opacity_attr, marker_attr
@@ -4644,7 +4983,10 @@ pub fn render_svg(doc: &Value, include_background: bool) -> Result<String, Strin
             "text" => {
                 let font_size = e.get("fontSize").and_then(|v| v.as_f64()).unwrap_or(20.0);
                 let text_val = element_text(e);
-                let text_align = e.get("textAlign").and_then(|v| v.as_str()).unwrap_or("left");
+                let text_align = e
+                    .get("textAlign")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("left");
                 let text_anchor = match text_align {
                     "center" => "middle",
                     "right" => "end",
@@ -4675,7 +5017,9 @@ pub fn render_svg(doc: &Value, include_background: bool) -> Result<String, Strin
                     let dy = if i == 0 { 0.0 } else { line_height };
                     svg.push_str(&format!(
                         r#"    <tspan x="{:.1}" dy="{:.1}">{}</tspan>"#,
-                        text_x, dy, xml_escape(line)
+                        text_x,
+                        dy,
+                        xml_escape(line)
                     ));
                     svg.push('\n');
                 }
@@ -4689,7 +5033,12 @@ pub fn render_svg(doc: &Value, include_background: bool) -> Result<String, Strin
     Ok(svg)
 }
 
-pub fn cmd_screenshot(doc: &Value, out_path: Option<&str>, format: Option<&str>, no_background: bool) {
+pub fn cmd_screenshot(
+    doc: &Value,
+    out_path: Option<&str>,
+    format: Option<&str>,
+    no_background: bool,
+) {
     let fmt = format.unwrap_or_else(|| {
         if let Some(p) = out_path {
             if p.ends_with(".png") {
@@ -4746,7 +5095,10 @@ pub fn cmd_screenshot(doc: &Value, out_path: Option<&str>, format: Option<&str>,
         let mut rasterized = false;
         let tools = [
             ("resvg", vec![temp_svg.as_str(), target_png.as_str()]),
-            ("rsvg-convert", vec!["-f", "png", "-o", target_png.as_str(), temp_svg.as_str()]),
+            (
+                "rsvg-convert",
+                vec!["-f", "png", "-o", target_png.as_str(), temp_svg.as_str()],
+            ),
             ("magick", vec![temp_svg.as_str(), target_png.as_str()]),
             ("convert", vec![temp_svg.as_str(), target_png.as_str()]),
         ];
@@ -4795,17 +5147,31 @@ pub fn cmd_apply(doc: &mut Value, patch_val: &Value) -> Result<(usize, usize, us
     let (creates, updates, deletes) = if let Some(arr) = patch_val.as_array() {
         (Some(arr.as_slice()), None, None)
     } else if let Some(obj) = patch_val.as_object() {
-        let c = obj.get("create").and_then(|v| v.as_array()).map(|a| a.as_slice());
-        let u = obj.get("update").and_then(|v| v.as_array()).map(|a| a.as_slice());
-        let d = obj.get("delete").and_then(|v| v.as_array()).map(|a| a.as_slice());
+        let c = obj
+            .get("create")
+            .and_then(|v| v.as_array())
+            .map(|a| a.as_slice());
+        let u = obj
+            .get("update")
+            .and_then(|v| v.as_array())
+            .map(|a| a.as_slice());
+        let d = obj
+            .get("delete")
+            .and_then(|v| v.as_array())
+            .map(|a| a.as_slice());
         (c, u, d)
     } else {
-        return Err("apply patch must be a JSON array or object with create/update/delete".to_string());
+        return Err(
+            "apply patch must be a JSON array or object with create/update/delete".to_string(),
+        );
     };
 
     if let Some(create_items) = creates {
         for item in create_items {
-            let elem_type = item.get("type").and_then(|v| v.as_str()).unwrap_or("rectangle");
+            let elem_type = item
+                .get("type")
+                .and_then(|v| v.as_str())
+                .unwrap_or("rectangle");
             let text = item.get("text").and_then(|v| v.as_str()).unwrap_or("");
             let at = item.get("at").and_then(|v| v.as_array()).and_then(|a| {
                 if a.len() == 2 {
@@ -4817,17 +5183,37 @@ pub fn cmd_apply(doc: &mut Value, patch_val: &Value) -> Result<(usize, usize, us
             let custom_id = item.get("id").and_then(|v| v.as_str());
 
             if elem_type == "arrow" {
-                let from = item.get("startElementId").or_else(|| item.get("from")).and_then(|v| v.as_str()).unwrap_or("");
-                let to = item.get("endElementId").or_else(|| item.get("to")).and_then(|v| v.as_str()).unwrap_or("");
-                let label = item.get("label").or_else(|| item.get("text")).and_then(|v| v.as_str());
-                let color = item.get("color").or_else(|| item.get("strokeColor")).and_then(|v| v.as_str());
+                let from = item
+                    .get("startElementId")
+                    .or_else(|| item.get("from"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let to = item
+                    .get("endElementId")
+                    .or_else(|| item.get("to"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let label = item
+                    .get("label")
+                    .or_else(|| item.get("text"))
+                    .and_then(|v| v.as_str());
+                let color = item
+                    .get("color")
+                    .or_else(|| item.get("strokeColor"))
+                    .and_then(|v| v.as_str());
                 let curved = item.get("curved").and_then(|v| v.as_bool());
-                let stroke_style = item.get("strokeStyle").or_else(|| item.get("stroke_style")).and_then(|v| v.as_str());
+                let stroke_style = item
+                    .get("strokeStyle")
+                    .or_else(|| item.get("stroke_style"))
+                    .and_then(|v| v.as_str());
                 mutate_connect(doc, from, to, label, color, curved, stroke_style)?;
             } else if elem_type == "text" {
                 let at_pos = at.unwrap_or((100.0, 100.0));
                 let font_size = item.get("fontSize").and_then(|v| v.as_f64());
-                let color = item.get("color").or_else(|| item.get("strokeColor")).and_then(|v| v.as_str());
+                let color = item
+                    .get("color")
+                    .or_else(|| item.get("strokeColor"))
+                    .and_then(|v| v.as_str());
                 mutate_add_text(doc, text, at_pos, font_size, color)?;
             } else {
                 let size = item.get("size").and_then(|v| v.as_array()).and_then(|a| {
@@ -4838,13 +5224,37 @@ pub fn cmd_apply(doc: &mut Value, patch_val: &Value) -> Result<(usize, usize, us
                     }
                 });
                 let role = item.get("role").and_then(|v| v.as_str());
-                let color = item.get("color").or_else(|| item.get("backgroundColor")).and_then(|v| v.as_str());
+                let color = item
+                    .get("color")
+                    .or_else(|| item.get("backgroundColor"))
+                    .and_then(|v| v.as_str());
                 let angle = item.get("angle").and_then(|v| v.as_f64());
                 let roughness = item.get("roughness").and_then(|v| v.as_f64());
-                let fill_style = item.get("fillStyle").or_else(|| item.get("fill_style")).and_then(|v| v.as_str());
-                let stroke_style = item.get("strokeStyle").or_else(|| item.get("stroke_style")).and_then(|v| v.as_str());
+                let fill_style = item
+                    .get("fillStyle")
+                    .or_else(|| item.get("fill_style"))
+                    .and_then(|v| v.as_str());
+                let stroke_style = item
+                    .get("strokeStyle")
+                    .or_else(|| item.get("stroke_style"))
+                    .and_then(|v| v.as_str());
                 let preset = item.get("preset").and_then(|v| v.as_str());
-                mutate_add_node(doc, elem_type, text, at, size, role, color, None, custom_id, angle, roughness, fill_style, stroke_style, preset)?;
+                mutate_add_node(
+                    doc,
+                    elem_type,
+                    text,
+                    at,
+                    size,
+                    role,
+                    color,
+                    None,
+                    custom_id,
+                    angle,
+                    roughness,
+                    fill_style,
+                    stroke_style,
+                    preset,
+                )?;
             }
             created_count += 1;
         }
@@ -4852,7 +5262,10 @@ pub fn cmd_apply(doc: &mut Value, patch_val: &Value) -> Result<(usize, usize, us
 
     if let Some(update_items) = updates {
         for item in update_items {
-            let id = item.get("id").and_then(|v| v.as_str()).ok_or_else(|| "update item missing 'id'".to_string())?;
+            let id = item
+                .get("id")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| "update item missing 'id'".to_string())?;
             let updates_map = if let Some(set_obj) = item.get("set") {
                 set_obj
             } else {
@@ -4877,7 +5290,10 @@ pub fn cmd_apply(doc: &mut Value, patch_val: &Value) -> Result<(usize, usize, us
 
 pub fn cmd_snapshot_save(file_path: &str, doc: &Value, name: &str) -> Result<(), String> {
     let path = std::path::Path::new(file_path);
-    let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("canvas");
+    let stem = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("canvas");
     let parent = path.parent().unwrap_or_else(|| std::path::Path::new("."));
     let snap_dir = parent.join(format!(".snapshots_{}", stem));
     fs::create_dir_all(&snap_dir).map_err(|e| format!("failed to create snapshot dir: {e}"))?;
@@ -4899,7 +5315,10 @@ pub fn cmd_snapshot_save(file_path: &str, doc: &Value, name: &str) -> Result<(),
 
 pub fn cmd_snapshot_list(file_path: &str) -> Result<(), String> {
     let path = std::path::Path::new(file_path);
-    let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("canvas");
+    let stem = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("canvas");
     let parent = path.parent().unwrap_or_else(|| std::path::Path::new("."));
     let snap_dir = parent.join(format!(".snapshots_{}", stem));
 
@@ -4930,16 +5349,23 @@ pub fn cmd_snapshot_list(file_path: &str) -> Result<(), String> {
 
 pub fn cmd_snapshot_restore(file_path: &str, doc: &mut Value, name: &str) -> Result<(), String> {
     let path = std::path::Path::new(file_path);
-    let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("canvas");
+    let stem = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("canvas");
     let parent = path.parent().unwrap_or_else(|| std::path::Path::new("."));
-    let snap_file = parent.join(format!(".snapshots_{}", stem)).join(format!("{}.json", name));
+    let snap_file = parent
+        .join(format!(".snapshots_{}", stem))
+        .join(format!("{}.json", name));
 
     if !snap_file.exists() {
         return Err(format!("Snapshot '{name}' not found at {:?}", snap_file));
     }
 
-    let content = fs::read_to_string(&snap_file).map_err(|e| format!("failed to read snapshot: {e}"))?;
-    let snap_obj: Value = serde_json::from_str(&content).map_err(|e| format!("invalid snapshot JSON: {e}"))?;
+    let content =
+        fs::read_to_string(&snap_file).map_err(|e| format!("failed to read snapshot: {e}"))?;
+    let snap_obj: Value =
+        serde_json::from_str(&content).map_err(|e| format!("invalid snapshot JSON: {e}"))?;
 
     let snap_elements = snap_obj
         .get("elements")
@@ -4949,7 +5375,10 @@ pub fn cmd_snapshot_restore(file_path: &str, doc: &mut Value, name: &str) -> Res
     doc["elements"] = json!(snap_elements);
     let is_obsidian = is_obsidian_excalidraw_md(&fs::read_to_string(file_path).unwrap_or_default());
     atomic_save_ex(file_path, doc, is_obsidian)?;
-    println!("OK: restored snapshot '{name}' ({} elements)", snap_elements.len());
+    println!(
+        "OK: restored snapshot '{name}' ({} elements)",
+        snap_elements.len()
+    );
     Ok(())
 }
 
@@ -4992,7 +5421,12 @@ fn main() {
 
     if has_help {
         let styler = Styler::new(should_color(color_choice, true));
-        let non_help_args: Vec<&str> = args.iter().skip(1).filter(|a| !is_help_arg(a)).map(|s| s.as_str()).collect();
+        let non_help_args: Vec<&str> = args
+            .iter()
+            .skip(1)
+            .filter(|a| !is_help_arg(a))
+            .map(|s| s.as_str())
+            .collect();
 
         if non_help_args.is_empty() {
             print!("{}", render_full_man_page(&styler));
@@ -5016,7 +5450,9 @@ fn main() {
                 process::exit(0);
             } else {
                 eprintln!("{}Unknown subcommand: {req}{}", styler.bold, styler.reset);
-                eprintln!("\nRun 'pkb-excalidraw --help' for the complete list of available commands.");
+                eprintln!(
+                    "\nRun 'pkb-excalidraw --help' for the complete list of available commands."
+                );
                 process::exit(1);
             }
         }
@@ -5029,27 +5465,71 @@ fn main() {
     // Normalize command positioning:
     // Support both `pkb-excalidraw FILE COMMAND [args]` and `pkb-excalidraw COMMAND FILE [args]`
     let known_modes = [
-        "summary", "map", "style", "check", "diff", "struct-diff", "lib", "item",
-        "nodes", "edges", "arrows", "inspect", "get", "add-node", "update-node", "add-text",
-        "connect", "set-text", "fit", "set-stroke-style", "move-elem", "delete-elem", "batch",
-        "theme", "overlap", "arrows-check",
-        "describe", "screenshot", "arrange", "align", "distribute", "group",
-        "ungroup", "lock", "unlock", "duplicate", "update", "query", "apply",
-        "export", "import", "snapshot", "clear"
+        "summary",
+        "map",
+        "style",
+        "check",
+        "diff",
+        "struct-diff",
+        "lib",
+        "item",
+        "nodes",
+        "edges",
+        "arrows",
+        "inspect",
+        "get",
+        "add-node",
+        "update-node",
+        "add-text",
+        "connect",
+        "set-text",
+        "fit",
+        "set-stroke-style",
+        "move-elem",
+        "delete-elem",
+        "batch",
+        "theme",
+        "overlap",
+        "arrows-check",
+        "describe",
+        "screenshot",
+        "arrange",
+        "align",
+        "distribute",
+        "group",
+        "ungroup",
+        "lock",
+        "unlock",
+        "duplicate",
+        "update",
+        "query",
+        "apply",
+        "export",
+        "import",
+        "snapshot",
+        "clear",
     ];
 
-    let (file_path, mode, extra_args) = if known_modes.contains(&args[1].as_str()) && args.len() > 2 {
+    let (file_path, mode, extra_args) = if known_modes.contains(&args[1].as_str()) && args.len() > 2
+    {
         let m = args[1].as_str();
         let f = &args[2];
         let extra = &args[3..];
         (f, m, extra)
     } else {
         let f = &args[1];
-        let m = if args.len() > 2 { args[2].as_str() } else { "summary" };
-        let extra = if args.len() > 3 { &args[3..] } else { &[] as &[String] };
+        let m = if args.len() > 2 {
+            args[2].as_str()
+        } else {
+            "summary"
+        };
+        let extra = if args.len() > 3 {
+            &args[3..]
+        } else {
+            &[] as &[String]
+        };
         (f, m, extra)
     };
-
 
     let file_content = match fs::read_to_string(file_path) {
         Ok(c) => c,
@@ -5063,7 +5543,9 @@ fn main() {
         match extract_scene_json_from_obsidian_md(&file_content) {
             Ok(j) => (j, true),
             Err(e) => {
-                eprintln!("failed to extract JSON from Obsidian Excalidraw file {file_path:?}: {e}");
+                eprintln!(
+                    "failed to extract JSON from Obsidian Excalidraw file {file_path:?}: {e}"
+                );
                 process::exit(1);
             }
         }
@@ -5137,7 +5619,10 @@ fn main() {
                 process::exit(0);
             }
             Err(collisions) => {
-                println!("ARROW INTERSECTION DETECTED ({} collisions):", collisions.len());
+                println!(
+                    "ARROW INTERSECTION DETECTED ({} collisions):",
+                    collisions.len()
+                );
                 for c in collisions {
                     println!("  {c}");
                 }
@@ -5237,7 +5722,7 @@ fn main() {
 
             cmd_item(&doc, selector, &after, at);
         }
-        
+
         "update-node" => {
             let mut opts = extra_args;
             let mut target_id = "".to_string();
@@ -5480,7 +5965,15 @@ fn main() {
                 process::exit(1);
             }
 
-            match mutate_connect(&mut doc, &from_id, &to_id, label.as_deref(), color.as_deref(), curved, stroke_style.as_deref()) {
+            match mutate_connect(
+                &mut doc,
+                &from_id,
+                &to_id,
+                label.as_deref(),
+                color.as_deref(),
+                curved,
+                stroke_style.as_deref(),
+            ) {
                 Ok(aid) => {
                     if let Err(e) = atomic_save_ex(file_path, &mut doc, is_obsidian) {
                         eprintln!("error saving file: {e}");
@@ -5613,7 +6106,9 @@ fn main() {
             }
             let batch_input = if extra_args[0] == "-" {
                 let mut buf = String::new();
-                std::io::stdin().read_to_string(&mut buf).unwrap_or_default();
+                std::io::stdin()
+                    .read_to_string(&mut buf)
+                    .unwrap_or_default();
                 buf
             } else {
                 fs::read_to_string(&extra_args[0]).unwrap_or_default()
@@ -5638,23 +6133,39 @@ fn main() {
             for (idx, mut_obj) in changes_arr.iter().enumerate() {
                 let action = mut_obj.get("action").and_then(|v| v.as_str()).unwrap_or("");
                 match action {
-                    
                     "update-node" | "update_node" => {
                         let target_id = mut_obj.get("id").and_then(|v| v.as_str()).unwrap_or("");
                         let angle = mut_obj.get("angle").and_then(|v| v.as_f64());
                         let roughness = mut_obj.get("roughness").and_then(|v| v.as_f64());
-                        let fill_style = mut_obj.get("fill_style").or_else(|| mut_obj.get("fillStyle")).and_then(|v| v.as_str());
-                        let stroke_style = mut_obj.get("stroke_style").or_else(|| mut_obj.get("strokeStyle")).and_then(|v| v.as_str());
+                        let fill_style = mut_obj
+                            .get("fill_style")
+                            .or_else(|| mut_obj.get("fillStyle"))
+                            .and_then(|v| v.as_str());
+                        let stroke_style = mut_obj
+                            .get("stroke_style")
+                            .or_else(|| mut_obj.get("strokeStyle"))
+                            .and_then(|v| v.as_str());
                         let preset = mut_obj.get("preset").and_then(|v| v.as_str());
 
-                        if let Err(e) = mutate_update_node(&mut doc, target_id, angle, roughness, fill_style, stroke_style, preset) {
+                        if let Err(e) = mutate_update_node(
+                            &mut doc,
+                            target_id,
+                            angle,
+                            roughness,
+                            fill_style,
+                            stroke_style,
+                            preset,
+                        ) {
                             eprintln!("batch mutation #{idx} (update-node) failed: {e}");
                             std::process::exit(1);
                         }
                     }
 
                     "add-node" | "add_node" => {
-                        let elem_type = mut_obj.get("type").and_then(|v| v.as_str()).unwrap_or("rectangle");
+                        let elem_type = mut_obj
+                            .get("type")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("rectangle");
                         let text = mut_obj.get("text").and_then(|v| v.as_str()).unwrap_or("");
                         let at = mut_obj.get("at").and_then(|v| v.as_array()).and_then(|a| {
                             if a.len() == 2 {
@@ -5663,37 +6174,74 @@ fn main() {
                                 None
                             }
                         });
-                        let size = mut_obj.get("size").and_then(|v| v.as_array()).and_then(|a| {
-                            if a.len() == 2 {
-                                Some((a[0].as_f64().unwrap_or(0.0), a[1].as_f64().unwrap_or(0.0)))
-                            } else {
-                                None
-                            }
-                        });
+                        let size = mut_obj
+                            .get("size")
+                            .and_then(|v| v.as_array())
+                            .and_then(|a| {
+                                if a.len() == 2 {
+                                    Some((
+                                        a[0].as_f64().unwrap_or(0.0),
+                                        a[1].as_f64().unwrap_or(0.0),
+                                    ))
+                                } else {
+                                    None
+                                }
+                            });
                         let role = mut_obj.get("role").and_then(|v| v.as_str());
                         let color = mut_obj.get("color").and_then(|v| v.as_str());
                         let custom_id = mut_obj.get("id").and_then(|v| v.as_str());
                         let angle = mut_obj.get("angle").and_then(|v| v.as_f64());
                         let roughness = mut_obj.get("roughness").and_then(|v| v.as_f64());
-                        let fill_style = mut_obj.get("fill_style").or_else(|| mut_obj.get("fillStyle")).and_then(|v| v.as_str());
-                        let stroke_style = mut_obj.get("stroke_style").or_else(|| mut_obj.get("strokeStyle")).and_then(|v| v.as_str());
+                        let fill_style = mut_obj
+                            .get("fill_style")
+                            .or_else(|| mut_obj.get("fillStyle"))
+                            .and_then(|v| v.as_str());
+                        let stroke_style = mut_obj
+                            .get("stroke_style")
+                            .or_else(|| mut_obj.get("strokeStyle"))
+                            .and_then(|v| v.as_str());
                         let preset = mut_obj.get("preset").and_then(|v| v.as_str());
 
-                        if let Err(e) = mutate_add_node(&mut doc, elem_type, text, at, size, role, color, None, custom_id, angle, roughness, fill_style, stroke_style, preset) {
+                        if let Err(e) = mutate_add_node(
+                            &mut doc,
+                            elem_type,
+                            text,
+                            at,
+                            size,
+                            role,
+                            color,
+                            None,
+                            custom_id,
+                            angle,
+                            roughness,
+                            fill_style,
+                            stroke_style,
+                            preset,
+                        ) {
                             eprintln!("batch mutation #{idx} (add-node) failed: {e}");
                             process::exit(1);
                         }
                     }
                     "add-text" | "add_text" => {
                         let text = mut_obj.get("text").and_then(|v| v.as_str()).unwrap_or("");
-                        let at = mut_obj.get("at").and_then(|v| v.as_array()).and_then(|a| {
-                            if a.len() == 2 {
-                                Some((a[0].as_f64().unwrap_or(0.0), a[1].as_f64().unwrap_or(0.0)))
-                            } else {
-                                None
-                            }
-                        }).unwrap_or((100.0, 100.0));
-                        let font_size = mut_obj.get("fontSize").or_else(|| mut_obj.get("font_size")).and_then(|v| v.as_f64());
+                        let at = mut_obj
+                            .get("at")
+                            .and_then(|v| v.as_array())
+                            .and_then(|a| {
+                                if a.len() == 2 {
+                                    Some((
+                                        a[0].as_f64().unwrap_or(0.0),
+                                        a[1].as_f64().unwrap_or(0.0),
+                                    ))
+                                } else {
+                                    None
+                                }
+                            })
+                            .unwrap_or((100.0, 100.0));
+                        let font_size = mut_obj
+                            .get("fontSize")
+                            .or_else(|| mut_obj.get("font_size"))
+                            .and_then(|v| v.as_f64());
                         let color = mut_obj.get("color").and_then(|v| v.as_str());
 
                         if let Err(e) = mutate_add_text(&mut doc, text, at, font_size, color) {
@@ -5707,9 +6255,20 @@ fn main() {
                         let label = mut_obj.get("label").and_then(|v| v.as_str());
                         let color = mut_obj.get("color").and_then(|v| v.as_str());
                         let curved = mut_obj.get("curved").and_then(|v| v.as_bool());
-                        let stroke_style = mut_obj.get("stroke_style").or_else(|| mut_obj.get("strokeStyle")).and_then(|v| v.as_str());
+                        let stroke_style = mut_obj
+                            .get("stroke_style")
+                            .or_else(|| mut_obj.get("strokeStyle"))
+                            .and_then(|v| v.as_str());
 
-                        if let Err(e) = mutate_connect(&mut doc, from_id, to_id, label, color, curved, stroke_style) {
+                        if let Err(e) = mutate_connect(
+                            &mut doc,
+                            from_id,
+                            to_id,
+                            label,
+                            color,
+                            curved,
+                            stroke_style,
+                        ) {
                             eprintln!("batch mutation #{idx} (connect) failed: {e}");
                             process::exit(1);
                         }
@@ -5747,7 +6306,11 @@ fn main() {
                     }
                     "delete" | "delete-elem" | "delete_elem" => {
                         let target_id = mut_obj.get("id").and_then(|v| v.as_str()).unwrap_or("");
-                        let cascade_arrows = mut_obj.get("cascade_arrows").or_else(|| mut_obj.get("cascadeArrows")).and_then(|v| v.as_bool()).unwrap_or(false);
+                        let cascade_arrows = mut_obj
+                            .get("cascade_arrows")
+                            .or_else(|| mut_obj.get("cascadeArrows"))
+                            .and_then(|v| v.as_bool())
+                            .unwrap_or(false);
 
                         if let Err(e) = mutate_delete_elem(&mut doc, target_id, cascade_arrows) {
                             eprintln!("batch mutation #{idx} (delete) failed: {e}");
@@ -5765,7 +6328,10 @@ fn main() {
                         let ids_arr = mut_obj.get("ids").and_then(|v| v.as_array());
                         let to = mut_obj.get("to").and_then(|v| v.as_str()).unwrap_or("left");
                         if let Some(arr) = ids_arr {
-                            let ids_vec: Vec<String> = arr.iter().filter_map(|s| s.as_str().map(|v| v.to_string())).collect();
+                            let ids_vec: Vec<String> = arr
+                                .iter()
+                                .filter_map(|s| s.as_str().map(|v| v.to_string()))
+                                .collect();
                             if let Err(e) = mutate_align(&mut doc, &ids_vec, to) {
                                 eprintln!("batch mutation #{idx} (align) failed: {e}");
                                 process::exit(1);
@@ -5774,9 +6340,15 @@ fn main() {
                     }
                     "distribute" | "arrange-distribute" => {
                         let ids_arr = mut_obj.get("ids").and_then(|v| v.as_array());
-                        let to = mut_obj.get("to").and_then(|v| v.as_str()).unwrap_or("horizontal");
+                        let to = mut_obj
+                            .get("to")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("horizontal");
                         if let Some(arr) = ids_arr {
-                            let ids_vec: Vec<String> = arr.iter().filter_map(|s| s.as_str().map(|v| v.to_string())).collect();
+                            let ids_vec: Vec<String> = arr
+                                .iter()
+                                .filter_map(|s| s.as_str().map(|v| v.to_string()))
+                                .collect();
                             if let Err(e) = mutate_distribute(&mut doc, &ids_vec, to) {
                                 eprintln!("batch mutation #{idx} (distribute) failed: {e}");
                                 process::exit(1);
@@ -5786,7 +6358,10 @@ fn main() {
                     "group" | "arrange-group" => {
                         let ids_arr = mut_obj.get("ids").and_then(|v| v.as_array());
                         if let Some(arr) = ids_arr {
-                            let ids_vec: Vec<String> = arr.iter().filter_map(|s| s.as_str().map(|v| v.to_string())).collect();
+                            let ids_vec: Vec<String> = arr
+                                .iter()
+                                .filter_map(|s| s.as_str().map(|v| v.to_string()))
+                                .collect();
                             if let Err(e) = mutate_group(&mut doc, &ids_vec) {
                                 eprintln!("batch mutation #{idx} (group) failed: {e}");
                                 process::exit(1);
@@ -5796,7 +6371,11 @@ fn main() {
                     "ungroup" | "arrange-ungroup" => {
                         let group_id = mut_obj.get("group").and_then(|v| v.as_str());
                         let ids_arr = mut_obj.get("ids").and_then(|v| v.as_array());
-                        let ids_vec: Option<Vec<String>> = ids_arr.map(|a| a.iter().filter_map(|s| s.as_str().map(|v| v.to_string())).collect());
+                        let ids_vec: Option<Vec<String>> = ids_arr.map(|a| {
+                            a.iter()
+                                .filter_map(|s| s.as_str().map(|v| v.to_string()))
+                                .collect()
+                        });
                         if let Err(e) = mutate_ungroup(&mut doc, group_id, ids_vec.as_deref()) {
                             eprintln!("batch mutation #{idx} (ungroup) failed: {e}");
                             process::exit(1);
@@ -5805,7 +6384,10 @@ fn main() {
                     "lock" | "arrange-lock" => {
                         let ids_arr = mut_obj.get("ids").and_then(|v| v.as_array());
                         if let Some(arr) = ids_arr {
-                            let ids_vec: Vec<String> = arr.iter().filter_map(|s| s.as_str().map(|v| v.to_string())).collect();
+                            let ids_vec: Vec<String> = arr
+                                .iter()
+                                .filter_map(|s| s.as_str().map(|v| v.to_string()))
+                                .collect();
                             if let Err(e) = mutate_lock(&mut doc, &ids_vec, true) {
                                 eprintln!("batch mutation #{idx} (lock) failed: {e}");
                                 process::exit(1);
@@ -5815,7 +6397,10 @@ fn main() {
                     "unlock" | "arrange-unlock" => {
                         let ids_arr = mut_obj.get("ids").and_then(|v| v.as_array());
                         if let Some(arr) = ids_arr {
-                            let ids_vec: Vec<String> = arr.iter().filter_map(|s| s.as_str().map(|v| v.to_string())).collect();
+                            let ids_vec: Vec<String> = arr
+                                .iter()
+                                .filter_map(|s| s.as_str().map(|v| v.to_string()))
+                                .collect();
                             if let Err(e) = mutate_lock(&mut doc, &ids_vec, false) {
                                 eprintln!("batch mutation #{idx} (unlock) failed: {e}");
                                 process::exit(1);
@@ -5824,15 +6409,25 @@ fn main() {
                     }
                     "duplicate" | "arrange-duplicate" => {
                         let ids_arr = mut_obj.get("ids").and_then(|v| v.as_array());
-                        let offset = mut_obj.get("offset").and_then(|v| v.as_array()).and_then(|a| {
-                            if a.len() == 2 {
-                                Some((a[0].as_f64().unwrap_or(20.0), a[1].as_f64().unwrap_or(20.0)))
-                            } else {
-                                None
-                            }
-                        }).unwrap_or((20.0, 20.0));
+                        let offset = mut_obj
+                            .get("offset")
+                            .and_then(|v| v.as_array())
+                            .and_then(|a| {
+                                if a.len() == 2 {
+                                    Some((
+                                        a[0].as_f64().unwrap_or(20.0),
+                                        a[1].as_f64().unwrap_or(20.0),
+                                    ))
+                                } else {
+                                    None
+                                }
+                            })
+                            .unwrap_or((20.0, 20.0));
                         if let Some(arr) = ids_arr {
-                            let ids_vec: Vec<String> = arr.iter().filter_map(|s| s.as_str().map(|v| v.to_string())).collect();
+                            let ids_vec: Vec<String> = arr
+                                .iter()
+                                .filter_map(|s| s.as_str().map(|v| v.to_string()))
+                                .collect();
                             if let Err(e) = mutate_duplicate(&mut doc, &ids_vec, offset) {
                                 eprintln!("batch mutation #{idx} (duplicate) failed: {e}");
                                 process::exit(1);
@@ -5865,7 +6460,10 @@ fn main() {
                 eprintln!("error saving batch changes: {e}");
                 process::exit(1);
             }
-            println!("OK: applied {} batch mutations atomically", changes_arr.len());
+            println!(
+                "OK: applied {} batch mutations atomically",
+                changes_arr.len()
+            );
         }
         "theme" => {
             if extra_args.is_empty() {
@@ -5896,7 +6494,10 @@ fn main() {
                         process::exit(1);
                     }
                     let theme_name = &sub_opts[0];
-                    let theme = if theme_name == "default" || theme_name == "retro-terminal" || theme_name == "aops-default" {
+                    let theme = if theme_name == "default"
+                        || theme_name == "retro-terminal"
+                        || theme_name == "aops-default"
+                    {
                         Theme::default_retro()
                     } else {
                         let content = match fs::read_to_string(theme_name) {
@@ -5976,7 +6577,8 @@ fn main() {
 
             cmd_screenshot(&doc, out_path.as_deref(), format.as_deref(), no_background);
         }
-        "arrange" | "align" | "distribute" | "group" | "ungroup" | "lock" | "unlock" | "duplicate" => {
+        "arrange" | "align" | "distribute" | "group" | "ungroup" | "lock" | "unlock"
+        | "duplicate" => {
             let (op, opts) = if mode == "arrange" {
                 if extra_args.is_empty() {
                     eprintln!("arrange requires a subcommand: align|distribute|group|ungroup|lock|unlock|duplicate");
@@ -5997,7 +6599,11 @@ fn main() {
                 let flag = &cur_opts[0];
                 cur_opts = &cur_opts[1..];
                 if flag == "--ids" && !cur_opts.is_empty() {
-                    ids = cur_opts[0].split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+                    ids = cur_opts[0]
+                        .split(',')
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty())
+                        .collect();
                     cur_opts = &cur_opts[1..];
                 } else if flag == "--to" && !cur_opts.is_empty() {
                     to = Some(cur_opts[0].clone());
@@ -6021,7 +6627,9 @@ fn main() {
                     let to_dir = match to {
                         Some(d) => d,
                         None => {
-                            eprintln!("arrange align requires --to left|center|right|top|middle|bottom");
+                            eprintln!(
+                                "arrange align requires --to left|center|right|top|middle|bottom"
+                            );
                             process::exit(1);
                         }
                     };
@@ -6061,23 +6669,25 @@ fn main() {
                         }
                     }
                 }
-                "group" => {
-                    match mutate_group(&mut doc, &ids) {
-                        Ok(gid) => {
-                            atomic_save_ex(file_path, &mut doc, is_obsidian).unwrap_or_else(|e| {
-                                eprintln!("error saving: {e}");
-                                process::exit(1);
-                            });
-                            println!("OK: grouped {} elements into {gid}", ids.len());
-                        }
-                        Err(e) => {
-                            eprintln!("error grouping: {e}");
+                "group" => match mutate_group(&mut doc, &ids) {
+                    Ok(gid) => {
+                        atomic_save_ex(file_path, &mut doc, is_obsidian).unwrap_or_else(|e| {
+                            eprintln!("error saving: {e}");
                             process::exit(1);
-                        }
+                        });
+                        println!("OK: grouped {} elements into {gid}", ids.len());
                     }
-                }
+                    Err(e) => {
+                        eprintln!("error grouping: {e}");
+                        process::exit(1);
+                    }
+                },
                 "ungroup" => {
-                    let ids_opt = if ids.is_empty() { None } else { Some(ids.as_slice()) };
+                    let ids_opt = if ids.is_empty() {
+                        None
+                    } else {
+                        Some(ids.as_slice())
+                    };
                     match mutate_ungroup(&mut doc, group_id.as_deref(), ids_opt) {
                         Ok(cnt) => {
                             atomic_save_ex(file_path, &mut doc, is_obsidian).unwrap_or_else(|e| {
@@ -6092,51 +6702,49 @@ fn main() {
                         }
                     }
                 }
-                "lock" => {
-                    match mutate_lock(&mut doc, &ids, true) {
-                        Ok(cnt) => {
-                            atomic_save_ex(file_path, &mut doc, is_obsidian).unwrap_or_else(|e| {
-                                eprintln!("error saving: {e}");
-                                process::exit(1);
-                            });
-                            println!("OK: locked {cnt} elements");
-                        }
-                        Err(e) => {
-                            eprintln!("error locking: {e}");
+                "lock" => match mutate_lock(&mut doc, &ids, true) {
+                    Ok(cnt) => {
+                        atomic_save_ex(file_path, &mut doc, is_obsidian).unwrap_or_else(|e| {
+                            eprintln!("error saving: {e}");
                             process::exit(1);
-                        }
+                        });
+                        println!("OK: locked {cnt} elements");
                     }
-                }
-                "unlock" => {
-                    match mutate_lock(&mut doc, &ids, false) {
-                        Ok(cnt) => {
-                            atomic_save_ex(file_path, &mut doc, is_obsidian).unwrap_or_else(|e| {
-                                eprintln!("error saving: {e}");
-                                process::exit(1);
-                            });
-                            println!("OK: unlocked {cnt} elements");
-                        }
-                        Err(e) => {
-                            eprintln!("error unlocking: {e}");
+                    Err(e) => {
+                        eprintln!("error locking: {e}");
+                        process::exit(1);
+                    }
+                },
+                "unlock" => match mutate_lock(&mut doc, &ids, false) {
+                    Ok(cnt) => {
+                        atomic_save_ex(file_path, &mut doc, is_obsidian).unwrap_or_else(|e| {
+                            eprintln!("error saving: {e}");
                             process::exit(1);
-                        }
+                        });
+                        println!("OK: unlocked {cnt} elements");
                     }
-                }
-                "duplicate" => {
-                    match mutate_duplicate(&mut doc, &ids, offset) {
-                        Ok(new_ids) => {
-                            atomic_save_ex(file_path, &mut doc, is_obsidian).unwrap_or_else(|e| {
-                                eprintln!("error saving: {e}");
-                                process::exit(1);
-                            });
-                            println!("OK: duplicated {} elements: {}", new_ids.len(), new_ids.join(", "));
-                        }
-                        Err(e) => {
-                            eprintln!("error duplicating: {e}");
+                    Err(e) => {
+                        eprintln!("error unlocking: {e}");
+                        process::exit(1);
+                    }
+                },
+                "duplicate" => match mutate_duplicate(&mut doc, &ids, offset) {
+                    Ok(new_ids) => {
+                        atomic_save_ex(file_path, &mut doc, is_obsidian).unwrap_or_else(|e| {
+                            eprintln!("error saving: {e}");
                             process::exit(1);
-                        }
+                        });
+                        println!(
+                            "OK: duplicated {} elements: {}",
+                            new_ids.len(),
+                            new_ids.join(", ")
+                        );
                     }
-                }
+                    Err(e) => {
+                        eprintln!("error duplicating: {e}");
+                        process::exit(1);
+                    }
+                },
                 other => {
                     eprintln!("unknown arrange operation {other:?}");
                     process::exit(1);
@@ -6225,12 +6833,20 @@ fn main() {
                 }
             }
 
-            cmd_query(&doc, elem_type.as_deref(), bbox, &filters, filter_json.as_ref());
+            cmd_query(
+                &doc,
+                elem_type.as_deref(),
+                bbox,
+                &filters,
+                filter_json.as_ref(),
+            );
         }
         "apply" => {
             let input_raw = if extra_args.is_empty() || extra_args[0] == "-" {
                 let mut buf = String::new();
-                std::io::stdin().read_to_string(&mut buf).unwrap_or_default();
+                std::io::stdin()
+                    .read_to_string(&mut buf)
+                    .unwrap_or_default();
                 buf
             } else {
                 fs::read_to_string(&extra_args[0]).unwrap_or_default()
@@ -6278,7 +6894,10 @@ fn main() {
             let is_obs = match format.as_deref() {
                 Some("obsidian") => true,
                 Some("json") => false,
-                _ => out_path.as_deref().map(|p| p.ends_with(".md")).unwrap_or(false),
+                _ => out_path
+                    .as_deref()
+                    .map(|p| p.ends_with(".md"))
+                    .unwrap_or(false),
             };
 
             let output = if is_obs {
@@ -6316,7 +6935,9 @@ fn main() {
 
             let input_raw = if src_file == "-" {
                 let mut buf = String::new();
-                std::io::stdin().read_to_string(&mut buf).unwrap_or_default();
+                std::io::stdin()
+                    .read_to_string(&mut buf)
+                    .unwrap_or_default();
                 buf
             } else {
                 fs::read_to_string(src_file).unwrap_or_else(|e| {
@@ -6355,7 +6976,10 @@ fn main() {
                     eprintln!("failed to mint indices: {e}");
                     process::exit(1);
                 });
-                let elements_mut = doc.get_mut("elements").and_then(|v| v.as_array_mut()).unwrap();
+                let elements_mut = doc
+                    .get_mut("elements")
+                    .and_then(|v| v.as_array_mut())
+                    .unwrap();
                 for (i, el) in src_elements.iter().enumerate() {
                     let mut clone = el.clone();
                     clone["index"] = json!(new_indices[i]);
@@ -6367,7 +6991,11 @@ fn main() {
                 eprintln!("error saving file: {e}");
                 process::exit(1);
             });
-            println!("OK: imported {} elements ({})", src_elements.len(), if replace { "replace" } else { "merge" });
+            println!(
+                "OK: imported {} elements ({})",
+                src_elements.len(),
+                if replace { "replace" } else { "merge" }
+            );
         }
         "snapshot" => {
             if extra_args.is_empty() {
@@ -6430,13 +7058,49 @@ fn main() {
         }
         _ => {
             let modes = [
-                "summary", "map", "style", "check", "diff", "struct-diff", "lib", "item",
-                "nodes", "edges", "arrows", "inspect", "get", "add-node", "update-node", "add-text",
-                "connect", "set-text", "fit", "set-stroke-style", "move-elem", "delete-elem", "batch",
-                "theme", "overlap", "arrows-check",
-                "describe", "screenshot", "arrange", "align", "distribute", "group",
-                "ungroup", "lock", "unlock", "duplicate", "update", "query", "apply",
-                "export", "import", "snapshot", "clear"
+                "summary",
+                "map",
+                "style",
+                "check",
+                "diff",
+                "struct-diff",
+                "lib",
+                "item",
+                "nodes",
+                "edges",
+                "arrows",
+                "inspect",
+                "get",
+                "add-node",
+                "update-node",
+                "add-text",
+                "connect",
+                "set-text",
+                "fit",
+                "set-stroke-style",
+                "move-elem",
+                "delete-elem",
+                "batch",
+                "theme",
+                "overlap",
+                "arrows-check",
+                "describe",
+                "screenshot",
+                "arrange",
+                "align",
+                "distribute",
+                "group",
+                "ungroup",
+                "lock",
+                "unlock",
+                "duplicate",
+                "update",
+                "query",
+                "apply",
+                "export",
+                "import",
+                "snapshot",
+                "clear",
             ];
             eprintln!(
                 "unknown mode {mode:?}; expected one of: {}",
@@ -6512,7 +7176,9 @@ mod tests {
         let res = cmd_check(&doc_half_start);
         assert!(res.is_err());
         let fails = res.unwrap_err();
-        assert!(fails.iter().any(|f| f.contains("arrow a1 is half-bound: startBinding=r1, endBinding=none")));
+        assert!(fails
+            .iter()
+            .any(|f| f.contains("arrow a1 is half-bound: startBinding=r1, endBinding=none")));
 
         let doc_half_end = json!({
             "elements": [
@@ -6523,7 +7189,9 @@ mod tests {
         let res = cmd_check(&doc_half_end);
         assert!(res.is_err());
         let fails = res.unwrap_err();
-        assert!(fails.iter().any(|f| f.contains("arrow a1 is half-bound: startBinding=none, endBinding=r2")));
+        assert!(fails
+            .iter()
+            .any(|f| f.contains("arrow a1 is half-bound: startBinding=none, endBinding=r2")));
 
         let doc_unbound = json!({
             "elements": [

@@ -178,7 +178,8 @@ fn test_ranking_spec_exists_and_contains_canonical_sections() {
 
     // Must state the mechanism vs model validation distinction
     assert!(
-        content.contains("Mechanism Tests Exist") && content.contains("Model Validation Does NOT Exist"),
+        content.contains("Mechanism Tests Exist")
+            && content.contains("Model Validation Does NOT Exist"),
         "specs/ranking.md must distinguish between mechanism tests and empirical model validation"
     );
 }

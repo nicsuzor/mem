@@ -74,9 +74,8 @@ pub fn is_excluded_status(status: Option<&str>) -> bool {
 /// Returns true if the node should receive a prominent red ring (someone waiting on Nic).
 pub fn is_red_ring(has_stakeholder: bool, status: Option<&str>) -> bool {
     has_stakeholder
-        || status.is_some_and(|s| {
-            s.eq_ignore_ascii_case("review") || s.eq_ignore_ascii_case("testing")
-        })
+        || status
+            .is_some_and(|s| s.eq_ignore_ascii_case("review") || s.eq_ignore_ascii_case("testing"))
 }
 
 /// Computes card width and height dimensions based on size tiers and focus score bump.
@@ -99,10 +98,7 @@ pub fn compute_card_dimensions(node: &crate::graph::GraphNode) -> (f64, f64) {
     }
 
     let p = node.effective_intent.or(node.intent).unwrap_or(3);
-    let is_container = t == "epic"
-        || t == "area"
-        || t == "project"
-        || !node.children.is_empty();
+    let is_container = t == "epic" || t == "area" || t == "project" || !node.children.is_empty();
 
     let base_tier = if is_container {
         if p <= 2 {
@@ -161,25 +157,27 @@ struct PresetConfig {
 static THEME_CONFIG: OnceLock<Option<ThemeConfig>> = OnceLock::new();
 
 fn get_theme_config() -> Option<&'static ThemeConfig> {
-    THEME_CONFIG.get_or_init(|| {
-        let config_path = std::env::var("EXCALIDRAW_THEME_PATH")
-            .map(PathBuf::from)
-            .unwrap_or_else(|_| {
-                dirs::home_dir()
-                    .unwrap_or_default()
-                    .join(".gemini/config/excalidraw_theme.json")
-            });
-        if let Ok(config_str) = fs::read_to_string(&config_path) {
-            serde_json::from_str::<ThemeConfig>(&config_str).ok()
-        } else {
-            None
-        }
-    }).as_ref()
+    THEME_CONFIG
+        .get_or_init(|| {
+            let config_path = std::env::var("EXCALIDRAW_THEME_PATH")
+                .map(PathBuf::from)
+                .unwrap_or_else(|_| {
+                    dirs::home_dir()
+                        .unwrap_or_default()
+                        .join(".gemini/config/excalidraw_theme.json")
+                });
+            if let Ok(config_str) = fs::read_to_string(&config_path) {
+                serde_json::from_str::<ThemeConfig>(&config_str).ok()
+            } else {
+                None
+            }
+        })
+        .as_ref()
 }
 
 pub fn node_preset_style(preset: &str) -> ElementColorStyle {
     let p = preset.to_lowercase();
-    
+
     if let Some(config) = get_theme_config() {
         if let Some(cfg) = config.presets.get(&p) {
             return ElementColorStyle::new(
@@ -229,9 +227,7 @@ pub fn node_color_style(status: Option<&str>, node_type: Option<&str>) -> Elemen
         "blocked" | "waiting" | "paused" => {
             ElementColorStyle::new("#ffe9bf", "#e8590c", "solid", "solid", 100)
         }
-        "review" | "testing" => {
-            ElementColorStyle::new("#efe8f5", "#e03131", "solid", "solid", 100)
-        }
+        "review" | "testing" => ElementColorStyle::new("#efe8f5", "#e03131", "solid", "solid", 100),
         "done" | "completed" | "released" => {
             ElementColorStyle::new("#ededed", "#adb5bd", "solid", "solid", 60)
         }
@@ -308,10 +304,7 @@ impl Default for ExcalidrawFile {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AppState {
-    #[serde(
-        rename = "viewBackgroundColor",
-        default = "default_view_bg_color"
-    )]
+    #[serde(rename = "viewBackgroundColor", default = "default_view_bg_color")]
     pub view_background_color: String,
     #[serde(rename = "gridSize", skip_serializing_if = "Option::is_none")]
     pub grid_size: Option<i32>,
@@ -433,10 +426,7 @@ pub struct ExcalidrawElement {
     // Linear / Arrow / Line specific
     #[serde(skip_serializing_if = "Option::is_none")]
     pub points: Option<Vec<[f64; 2]>>,
-    #[serde(
-        rename = "lastCommittedPoint",
-        skip_serializing_if = "Option::is_none"
-    )]
+    #[serde(rename = "lastCommittedPoint", skip_serializing_if = "Option::is_none")]
     pub last_committed_point: Option<[f64; 2]>,
     #[serde(rename = "startBinding", skip_serializing_if = "Option::is_none")]
     pub start_binding: Option<PointBinding>,
@@ -456,10 +446,7 @@ pub struct ExcalidrawElement {
     // Freedraw specific
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pressures: Option<Vec<f64>>,
-    #[serde(
-        rename = "simulatePressure",
-        skip_serializing_if = "Option::is_none"
-    )]
+    #[serde(rename = "simulatePressure", skip_serializing_if = "Option::is_none")]
     pub simulate_pressure: Option<bool>,
 
     // Catch-all for extra Excalidraw attributes
@@ -566,8 +553,13 @@ impl Default for ExcalidrawElement {
 
 impl ExcalidrawElement {
     pub fn is_card(&self) -> bool {
-        (self.element_type == "rectangle" || self.element_type == "diamond" || self.element_type == "ellipse")
-            && self.custom_data.as_ref().is_some_and(|c| c.pkb.as_ref().is_some_and(|p| p.node_id.is_some()))
+        (self.element_type == "rectangle"
+            || self.element_type == "diamond"
+            || self.element_type == "ellipse")
+            && self
+                .custom_data
+                .as_ref()
+                .is_some_and(|c| c.pkb.as_ref().is_some_and(|p| p.node_id.is_some()))
     }
 
     pub fn is_frame(&self) -> bool {
@@ -771,29 +763,47 @@ mod tests {
         let mut n_target = GraphNode::default();
         n_target.id = "targ_123".to_string();
         n_target.node_type = Some("target".to_string());
-        assert_eq!(compute_card_dimensions(&n_target), (CARD_WIDTH_A, CARD_HEIGHT));
+        assert_eq!(
+            compute_card_dimensions(&n_target),
+            (CARD_WIDTH_A, CARD_HEIGHT)
+        );
 
         let mut n_epic_p2 = GraphNode::default();
         n_epic_p2.node_type = Some("epic".to_string());
         n_epic_p2.intent = Some(2);
-        assert_eq!(compute_card_dimensions(&n_epic_p2), (CARD_WIDTH_L, CARD_HEIGHT));
+        assert_eq!(
+            compute_card_dimensions(&n_epic_p2),
+            (CARD_WIDTH_L, CARD_HEIGHT)
+        );
 
         let mut n_task_p2 = GraphNode::default();
         n_task_p2.node_type = Some("task".to_string());
         n_task_p2.intent = Some(2);
-        assert_eq!(compute_card_dimensions(&n_task_p2), (CARD_WIDTH_M, CARD_HEIGHT));
+        assert_eq!(
+            compute_card_dimensions(&n_task_p2),
+            (CARD_WIDTH_M, CARD_HEIGHT)
+        );
 
         let mut n_task_p4 = GraphNode::default();
         n_task_p4.node_type = Some("task".to_string());
         n_task_p4.intent = Some(4);
-        assert_eq!(compute_card_dimensions(&n_task_p4), (CARD_WIDTH_S, CARD_HEIGHT));
+        assert_eq!(
+            compute_card_dimensions(&n_task_p4),
+            (CARD_WIDTH_S, CARD_HEIGHT)
+        );
 
         // Focus score bump >= 1000: S -> M, M -> L
         n_task_p4.focus_score = Some(1200);
-        assert_eq!(compute_card_dimensions(&n_task_p4), (CARD_WIDTH_M, CARD_HEIGHT));
+        assert_eq!(
+            compute_card_dimensions(&n_task_p4),
+            (CARD_WIDTH_M, CARD_HEIGHT)
+        );
 
         n_task_p2.focus_score = Some(1500);
-        assert_eq!(compute_card_dimensions(&n_task_p2), (CARD_WIDTH_L, CARD_HEIGHT));
+        assert_eq!(
+            compute_card_dimensions(&n_task_p2),
+            (CARD_WIDTH_L, CARD_HEIGHT)
+        );
 
         assert!(is_red_ring(true, Some("ready")));
         assert!(is_red_ring(false, Some("review")));

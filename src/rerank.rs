@@ -77,8 +77,8 @@ impl CrossEncoderReranker {
                     if let Ok(tok) = tokenizers::Tokenizer::from_file(t_path) {
                         tokenizer = Some(tok);
                     }
-                    if let Ok(sess) = ort::session::Session::builder()
-                        .and_then(|b| b.commit_from_file(m_path))
+                    if let Ok(sess) =
+                        ort::session::Session::builder().and_then(|b| b.commit_from_file(m_path))
                     {
                         session = Some(Arc::new(Mutex::new(sess)));
                     }
@@ -138,7 +138,9 @@ impl CrossEncoderReranker {
                             let mut sess = sess_mutex.lock();
                             let run_res = sess.run(ort::inputs![input_ids_val, attention_val]);
                             if let Ok(outputs) = run_res {
-                                if let Some(tensor) = outputs.get("logits").or_else(|| outputs.get("output")) {
+                                if let Some(tensor) =
+                                    outputs.get("logits").or_else(|| outputs.get("output"))
+                                {
                                     if let Ok(val) = tensor.try_extract_tensor::<f32>() {
                                         score_val = val.1.first().copied();
                                     }
@@ -166,7 +168,11 @@ impl CrossEncoderReranker {
                 let query_lower = query.to_lowercase();
                 let doc_lower = format!("{} {} {}", r.id, r.title, r.chunk_text).to_lowercase();
 
-                let exact_id_match = if doc_lower.contains(&query_lower) { 1.5 } else { 1.0 };
+                let exact_id_match = if doc_lower.contains(&query_lower) {
+                    1.5
+                } else {
+                    1.0
+                };
                 r.score = r.score * (1.0 + boost) * exact_id_match;
             }
         }

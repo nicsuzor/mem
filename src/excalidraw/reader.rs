@@ -14,11 +14,13 @@ use std::collections::{HashMap, HashSet};
 use std::sync::LazyLock;
 
 static STATUS_HEADER_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^\s*\[\s*([A-Za-z0-9_-]+)(?:\s*·\s*[Pp]?(\d+))?(?:\s*·\s*([^\]]+))?\s*\]\s*").unwrap()
+    Regex::new(r"^\s*\[\s*([A-Za-z0-9_-]+)(?:\s*·\s*[Pp]?(\d+))?(?:\s*·\s*([^\]]+))?\s*\]\s*")
+        .unwrap()
 });
 
 static MARKERS_LINE_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^\s*\[\s*(?:(?:START|LSL|WORK|now|\d+[hdwms])(?:\s*·\s*|\s*,\s*|\s+)?)+\s*\]\s*$").unwrap()
+    Regex::new(r"^\s*\[\s*(?:(?:START|LSL|WORK|now|\d+[hdwms])(?:\s*·\s*|\s*,\s*|\s+)?)+\s*\]\s*$")
+        .unwrap()
 });
 
 static TAG_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"#([a-zA-Z0-9_\-]+)").unwrap());
@@ -144,11 +146,15 @@ impl CanvasReader {
             match elem.element_type.as_str() {
                 "rectangle" | "diamond" | "ellipse" => {
                     // Check if card or user shape
-                    if elem.custom_data.as_ref().is_some_and(|c| {
-                        c.pkb.as_ref().is_some_and(|p| p.node_id.is_some())
-                    }) || elem.bound_elements.as_ref().is_some_and(|b| {
-                        b.iter().any(|x| x.element_type == "text")
-                    }) {
+                    if elem
+                        .custom_data
+                        .as_ref()
+                        .is_some_and(|c| c.pkb.as_ref().is_some_and(|p| p.node_id.is_some()))
+                        || elem
+                            .bound_elements
+                            .as_ref()
+                            .is_some_and(|b| b.iter().any(|x| x.element_type == "text"))
+                    {
                         card_elements.push(elem.clone());
                     } else {
                         // Unbound shape without PKB custom data -> user annotation
@@ -221,34 +227,27 @@ impl CanvasReader {
             let (status_from_text, intent_from_text, parsed_title, tags_from_text) =
                 parse_card_text(raw_text_content);
 
-            let custom_pkb = card_elem
-                .custom_data
-                .as_ref()
-                .and_then(|c| c.pkb.as_ref());
+            let custom_pkb = card_elem.custom_data.as_ref().and_then(|c| c.pkb.as_ref());
 
             let node_id = custom_pkb
                 .and_then(|p| p.node_id.clone())
                 .or_else(|| extract_id_from_text(raw_text_content));
 
-            let node_type = custom_pkb
-                .and_then(|p| p.node_type.clone())
-                .or_else(|| {
-                    if card_elem.element_type == "diamond" {
-                        Some("target".to_string())
-                    } else if card_elem.element_type == "ellipse" {
-                        Some("area".to_string())
-                    } else {
-                        Some("task".to_string())
-                    }
-                });
+            let node_type = custom_pkb.and_then(|p| p.node_type.clone()).or_else(|| {
+                if card_elem.element_type == "diamond" {
+                    Some("target".to_string())
+                } else if card_elem.element_type == "ellipse" {
+                    Some("area".to_string())
+                } else {
+                    Some("task".to_string())
+                }
+            });
 
             let status = custom_pkb
                 .and_then(|p| p.status.clone())
                 .or(status_from_text);
 
-            let intent = custom_pkb
-                .and_then(|p| p.intent)
-                .or(intent_from_text);
+            let intent = custom_pkb.and_then(|p| p.intent).or(intent_from_text);
 
             let parent = custom_pkb.and_then(|p| p.parent.clone());
 
@@ -312,7 +311,10 @@ impl CanvasReader {
         // Pass 3: Frame Hierarchy Resolution
         let mut parsed_frames: Vec<CanvasFrame> = Vec::new();
         for frame_elem in frame_elements {
-            let name = frame_elem.name.clone().unwrap_or_else(|| "Frame".to_string());
+            let name = frame_elem
+                .name
+                .clone()
+                .unwrap_or_else(|| "Frame".to_string());
             let node_id = frame_elem
                 .custom_data
                 .as_ref()
@@ -349,11 +351,21 @@ impl CanvasReader {
         // Pass 4: Bound Arrow Resolution & Safe Arrow Typing
         let mut parsed_arrows: Vec<CanvasArrow> = Vec::new();
         for arrow_elem in arrow_elements {
-            let start_elem_id = arrow_elem.start_binding.as_ref().map(|b| b.element_id.clone());
-            let end_elem_id = arrow_elem.end_binding.as_ref().map(|b| b.element_id.clone());
+            let start_elem_id = arrow_elem
+                .start_binding
+                .as_ref()
+                .map(|b| b.element_id.clone());
+            let end_elem_id = arrow_elem
+                .end_binding
+                .as_ref()
+                .map(|b| b.element_id.clone());
 
-            let source_node_id = start_elem_id.as_ref().and_then(|id| elem_to_node_id.get(id).cloned());
-            let target_node_id = end_elem_id.as_ref().and_then(|id| elem_to_node_id.get(id).cloned());
+            let source_node_id = start_elem_id
+                .as_ref()
+                .and_then(|id| elem_to_node_id.get(id).cloned());
+            let target_node_id = end_elem_id
+                .as_ref()
+                .and_then(|id| elem_to_node_id.get(id).cloned());
 
             if source_node_id.is_none() || target_node_id.is_none() {
                 user_annotations.push(arrow_elem);
@@ -485,7 +497,10 @@ fn parse_arrow_edge_type(custom_edge_type: Option<&str>, label: Option<&str>) ->
 
     if let Some(lbl) = label {
         let trimmed = lbl.trim().to_lowercase();
-        if trimmed.starts_with("dep:") || trimmed.starts_with("depends:") || trimmed.starts_with("depends_on:") {
+        if trimmed.starts_with("dep:")
+            || trimmed.starts_with("depends:")
+            || trimmed.starts_with("depends_on:")
+        {
             return EdgeType::DependsOn;
         }
         if trimmed.starts_with("soft:") || trimmed.starts_with("soft_dep:") {
@@ -494,7 +509,10 @@ fn parse_arrow_edge_type(custom_edge_type: Option<&str>, label: Option<&str>) ->
         if trimmed.starts_with("parent:") || trimmed.starts_with("child:") {
             return EdgeType::Parent;
         }
-        if trimmed.starts_with("contrib:") || trimmed.starts_with("contributes:") || trimmed.starts_with("weight:") {
+        if trimmed.starts_with("contrib:")
+            || trimmed.starts_with("contributes:")
+            || trimmed.starts_with("weight:")
+        {
             return EdgeType::ContributesTo;
         }
         if trimmed.starts_with("close:") || trimmed.starts_with("closes:") {
@@ -513,16 +531,14 @@ fn parse_arrow_edge_type(custom_edge_type: Option<&str>, label: Option<&str>) ->
 }
 
 fn extract_id_from_text(text: &str) -> Option<String> {
-    static ID_RE: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(r"(?:task|epic|mem|target|goal)-[a-zA-Z0-9]{4,16}").unwrap()
-    });
+    static ID_RE: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"(?:task|epic|mem|target|goal)-[a-zA-Z0-9]{4,16}").unwrap());
     ID_RE.find(text).map(|m| m.as_str().to_string())
 }
 
 fn extract_id_from_frame_name(name: &str) -> Option<String> {
-    static FRAME_ID_RE: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(r"(?:epic|area|project)-[a-zA-Z0-9_-]+").unwrap()
-    });
+    static FRAME_ID_RE: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"(?:epic|area|project)-[a-zA-Z0-9_-]+").unwrap());
     FRAME_ID_RE.find(name).map(|m| m.as_str().to_string())
 }
 
@@ -707,7 +723,11 @@ mod tests {
             file.elements.push(arrow);
 
             let model = CanvasReader::parse_file(file);
-            assert_eq!(model.arrows[0].edge_type, expected_type, "Failed on label: {}", label);
+            assert_eq!(
+                model.arrows[0].edge_type, expected_type,
+                "Failed on label: {}",
+                label
+            );
         }
     }
 
@@ -731,7 +751,11 @@ mod tests {
 
         let model = CanvasReader::parse_file(file);
         assert_eq!(model.cards.len(), 0);
-        assert_eq!(model.annotations.len(), 2, "Must preserve both freehand doodle and sticky note");
+        assert_eq!(
+            model.annotations.len(),
+            2,
+            "Must preserve both freehand doodle and sticky note"
+        );
         assert!(model.annotations.iter().any(|e| e.id == "doodle-1"));
         assert!(model.annotations.iter().any(|e| e.id == "sticky-note-1"));
     }
@@ -751,7 +775,8 @@ mod tests {
            "containerId":"targ_4e2cc92a","text":"Enjoy your long service leave",
            "originalText":"Enjoy your long service leave"}
         ]}"#;
-        let file: crate::excalidraw::schema::ExcalidrawFile = serde_json::from_str(json).expect("deser");
+        let file: crate::excalidraw::schema::ExcalidrawFile =
+            serde_json::from_str(json).expect("deser");
         let canvas = CanvasReader::parse_file(file);
         assert_eq!(canvas.cards.len(), 1);
         assert_eq!(
@@ -777,7 +802,8 @@ mod tests {
            "containerId":"r1","text":"Finish LED strip\ntask-48234949",
            "originalText":"Finish LED strip\ntask-48234949"}
         ]}"#;
-        let file: crate::excalidraw::schema::ExcalidrawFile = serde_json::from_str(json).expect("deser");
+        let file: crate::excalidraw::schema::ExcalidrawFile =
+            serde_json::from_str(json).expect("deser");
         let canvas = CanvasReader::parse_file(file);
         assert_eq!(canvas.cards.len(), 1);
         assert_eq!(canvas.cards[0].node_id.as_deref(), Some("task-48234949"));

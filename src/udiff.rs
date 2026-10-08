@@ -27,10 +27,7 @@ pub enum UdiffError {
     #[error("No valid diff hunks found in input")]
     NoHunksFound,
     #[error("Invalid hunk syntax at hunk {hunk_index}: {reason}")]
-    InvalidHunk {
-        hunk_index: usize,
-        reason: String,
-    },
+    InvalidHunk { hunk_index: usize, reason: String },
 }
 
 pub type UnifiedDiffError = UdiffError;
@@ -380,9 +377,15 @@ fn try_strategy(
     let mut ri = None;
     if rel_indent {
         let indenter = RelativeIndenter::new(&[&s, &r, &o]);
-        let s_rel = indenter.make_relative(&s).map_err(|_| SearchReplaceError::NoMatch)?;
-        let r_rel = indenter.make_relative(&r).map_err(|_| SearchReplaceError::NoMatch)?;
-        let o_rel = indenter.make_relative(&o).map_err(|_| SearchReplaceError::NoMatch)?;
+        let s_rel = indenter
+            .make_relative(&s)
+            .map_err(|_| SearchReplaceError::NoMatch)?;
+        let r_rel = indenter
+            .make_relative(&r)
+            .map_err(|_| SearchReplaceError::NoMatch)?;
+        let o_rel = indenter
+            .make_relative(&o)
+            .map_err(|_| SearchReplaceError::NoMatch)?;
         s = s_rel;
         r = r_rel;
         o = o_rel;
@@ -392,7 +395,9 @@ fn try_strategy(
     let res = search_and_replace(&s, &r, &o)?;
 
     if let Some(indenter) = ri {
-        let abs = indenter.make_absolute(&res).map_err(|_| SearchReplaceError::NoMatch)?;
+        let abs = indenter
+            .make_absolute(&res)
+            .map_err(|_| SearchReplaceError::NoMatch)?;
         Ok(abs)
     } else {
         Ok(res)
@@ -414,7 +419,13 @@ pub fn flexible_search_and_replace(
     let mut saw_not_unique = false;
 
     for (strip_blank, rel_indent) in preprocs {
-        match try_strategy(search_text, replace_text, original_text, strip_blank, rel_indent) {
+        match try_strategy(
+            search_text,
+            replace_text,
+            original_text,
+            strip_blank,
+            rel_indent,
+        ) {
             Ok(res) => return Ok(res),
             Err(SearchReplaceError::NotUnique) => {
                 saw_not_unique = true;
@@ -430,10 +441,7 @@ pub fn flexible_search_and_replace(
     }
 }
 
-pub fn directly_apply_hunk(
-    content: &str,
-    hunk: &[String],
-) -> Result<String, SearchReplaceError> {
+pub fn directly_apply_hunk(content: &str, hunk: &[String]) -> Result<String, SearchReplaceError> {
     let (before_vec, after_vec) = hunk_to_before_after(hunk, false);
     let before = before_vec.concat();
     let after = after_vec.concat();
@@ -624,13 +632,12 @@ fn process_fenced_block(lines: &[String], start_line_num: usize) -> (usize, Vec<
         let a_fname = block[0][4..].trim();
         let b_fname = block[1][4..].trim();
 
-        let parsed_fname = if (a_fname.starts_with("a/") || a_fname == "/dev/null")
-            && b_fname.starts_with("b/")
-        {
-            &b_fname[2..]
-        } else {
-            b_fname
-        };
+        let parsed_fname =
+            if (a_fname.starts_with("a/") || a_fname == "/dev/null") && b_fname.starts_with("b/") {
+                &b_fname[2..]
+            } else {
+                b_fname
+            };
         fname = Some(parsed_fname.to_string());
         block = block[2..].to_vec();
     }
@@ -949,7 +956,11 @@ These changes will add the `--check-update` option...
         let diff = "```diff\n@@ ... @@\n-nonexistent line\n+something\n```";
         let err = apply_diff(original, diff).unwrap_err();
         match err {
-            UdiffError::NoMatch { hunk_index, num_lines, .. } => {
+            UdiffError::NoMatch {
+                hunk_index,
+                num_lines,
+                ..
+            } => {
                 assert_eq!(hunk_index, 1);
                 assert_eq!(num_lines, 1);
             }

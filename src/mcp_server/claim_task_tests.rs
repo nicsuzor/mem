@@ -921,10 +921,15 @@ project: aops
         let tools = PkbSearchServer::get_all_tools();
         let get_tool = |name: &str| tools.iter().find(|t| t.name.as_ref() == name).unwrap();
         let get_enum = |tool: &rmcp::model::Tool, prop: &str| -> Vec<String> {
-            tool.input_schema.get("properties").unwrap()
-                .get(prop).unwrap()
-                .get("enum").unwrap()
-                .as_array().unwrap()
+            tool.input_schema
+                .get("properties")
+                .unwrap()
+                .get(prop)
+                .unwrap()
+                .get("enum")
+                .unwrap()
+                .as_array()
+                .unwrap()
                 .iter()
                 .map(|v| v.as_str().unwrap().to_string())
                 .collect()
@@ -933,13 +938,19 @@ project: aops
         let create_task = get_tool("create_task");
         let task_types = get_enum(create_task, "type");
         for t in task_types {
-            assert!(crate::graph::is_valid_node_type(&t), "create_task schema advertises invalid type: {t}");
+            assert!(
+                crate::graph::is_valid_node_type(&t),
+                "create_task schema advertises invalid type: {t}"
+            );
         }
 
         let create = get_tool("create");
         let create_types = get_enum(create, "type");
         for t in create_types {
-            assert!(crate::graph::is_valid_node_type(&t), "create schema advertises invalid type: {t}");
+            assert!(
+                crate::graph::is_valid_node_type(&t),
+                "create schema advertises invalid type: {t}"
+            );
         }
     }
 
@@ -1005,28 +1016,53 @@ project: aops
         );
 
         // 1. Test graph_excalidraw
-        let res = server.handle_graph_excalidraw(&serde_json::json!({
-            "node_id": "task-init",
-            "hops": 1
-        })).expect("graph_excalidraw should succeed");
-        let text: String = res.content.iter().filter_map(|c| c.raw.as_text().map(|t| t.text.as_str())).collect();
-        assert!(text.contains("Initial Task"), "diagram JSON should contain Initial Task");
+        let res = server
+            .handle_graph_excalidraw(&serde_json::json!({
+                "node_id": "task-init",
+                "hops": 1
+            }))
+            .expect("graph_excalidraw should succeed");
+        let text: String = res
+            .content
+            .iter()
+            .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+            .collect();
+        assert!(
+            text.contains("Initial Task"),
+            "diagram JSON should contain Initial Task"
+        );
 
         // 2. Test diff_excalidraw
-        let diff_res = server.handle_diff_excalidraw(&serde_json::json!({
-            "canvas": text
-        })).expect("diff_excalidraw should succeed");
-        let diff_text: String = diff_res.content.iter().filter_map(|c| c.raw.as_text().map(|t| t.text.as_str())).collect();
-        let diff: crate::excalidraw::GraphDiff = serde_json::from_str(&diff_text).expect("valid diff json");
+        let diff_res = server
+            .handle_diff_excalidraw(&serde_json::json!({
+                "canvas": text
+            }))
+            .expect("diff_excalidraw should succeed");
+        let diff_text: String = diff_res
+            .content
+            .iter()
+            .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+            .collect();
+        let diff: crate::excalidraw::GraphDiff =
+            serde_json::from_str(&diff_text).expect("valid diff json");
         assert!(diff.is_empty(), "clean canvas diff should be empty");
 
         // 3. Test sync_excalidraw dry_run
-        let sync_dry_res = server.handle_sync_excalidraw(&serde_json::json!({
-            "canvas": text,
-            "dry_run": true
-        })).expect("sync dry_run should succeed");
-        let dry_text: String = sync_dry_res.content.iter().filter_map(|c| c.raw.as_text().map(|t| t.text.as_str())).collect();
-        assert!(dry_text.contains("Dry run"), "dry run response mentions dry run");
+        let sync_dry_res = server
+            .handle_sync_excalidraw(&serde_json::json!({
+                "canvas": text,
+                "dry_run": true
+            }))
+            .expect("sync dry_run should succeed");
+        let dry_text: String = sync_dry_res
+            .content
+            .iter()
+            .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+            .collect();
+        assert!(
+            dry_text.contains("Dry run"),
+            "dry run response mentions dry run"
+        );
     }
 
     #[test]
@@ -1309,7 +1345,10 @@ project: aops
         assert_eq!(s1["freshness"]["is_fresh"], false);
 
         // Mutation 2: Refresh graph index -> immediately reflects updated document_count and last_reindex timestamp
-        let initial_reindex_ts = s1["index"]["last_reindex"]["timestamp"].as_str().unwrap().to_string();
+        let initial_reindex_ts = s1["index"]["last_reindex"]["timestamp"]
+            .as_str()
+            .unwrap()
+            .to_string();
         std::thread::sleep(std::time::Duration::from_millis(10));
         server
             .handle_refresh_graph(&serde_json::json!({}))
@@ -1325,7 +1364,10 @@ project: aops
 
         // Mutation 3: Insert into embed_pending queue -> immediately live in queue diagnostics
         let doc2 = crate::pkb::parse_file_relative(&task2_file, root).unwrap();
-        server.embed_pending.lock().insert("tasks/task-2.md".to_string(), doc2);
+        server
+            .embed_pending
+            .lock()
+            .insert("tasks/task-2.md".to_string(), doc2);
 
         let s3 = get_status();
         assert_eq!(s3["queue"]["depth"], 1);

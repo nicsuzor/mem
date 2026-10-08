@@ -433,11 +433,25 @@ mod tests {
             "content",
         );
 
-        let tasks = idx.search("optimization", 5, Path::new("/pkb"), None, None, Some("task"));
+        let tasks = idx.search(
+            "optimization",
+            5,
+            Path::new("/pkb"),
+            None,
+            None,
+            Some("task"),
+        );
         assert_eq!(tasks.len(), 1);
         assert_eq!(tasks[0].id, "doc1");
 
-        let notes = idx.search("optimization", 5, Path::new("/pkb"), None, None, Some("!task"));
+        let notes = idx.search(
+            "optimization",
+            5,
+            Path::new("/pkb"),
+            None,
+            None,
+            Some("!task"),
+        );
         assert_eq!(notes.len(), 1);
         assert_eq!(notes[0].id, "doc2");
     }

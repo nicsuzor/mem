@@ -1,64 +1,64 @@
 use super::*;
 
-    #[test]
-    fn test_partial_status_release_and_list_roundtrip() {
-        let tmp = tempfile::tempdir().unwrap();
-        let root = tmp.path();
-        std::fs::create_dir_all(root.join("tasks")).unwrap();
-        write_test_polecat_yaml(root);
+#[test]
+fn test_partial_status_release_and_list_roundtrip() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    std::fs::create_dir_all(root.join("tasks")).unwrap();
+    write_test_polecat_yaml(root);
 
-        let graph = GraphStore::build(&[], root);
-        let store = VectorStore::new(3);
-        let embedder = Embedder::new_dummy();
-        let db_path = root.join("db");
-        let server = PkbSearchServer::new(
-            Arc::new(RwLock::new(store)),
-            Arc::new(embedder),
-            root.to_path_buf(),
-            db_path,
-            Arc::new(RwLock::new(graph)),
-        );
+    let graph = GraphStore::build(&[], root);
+    let store = VectorStore::new(3);
+    let embedder = Embedder::new_dummy();
+    let db_path = root.join("db");
+    let server = PkbSearchServer::new(
+        Arc::new(RwLock::new(store)),
+        Arc::new(embedder),
+        root.to_path_buf(),
+        db_path,
+        Arc::new(RwLock::new(graph)),
+    );
 
-        // helper: pull the JSON object out of a handler result and read a field
-        let id_from = |res: &CallToolResult| -> String {
-            let text = res
-                .content
-                .iter()
-                .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
-                .collect::<String>();
-            let val: serde_json::Value = serde_json::from_str(&text)
-                .unwrap_or_else(|_| panic!("create_task should return JSON, got: {text}"));
-            val.get("id").and_then(|v| v.as_str()).unwrap().to_string()
-        };
+    // helper: pull the JSON object out of a handler result and read a field
+    let id_from = |res: &CallToolResult| -> String {
+        let text = res
+            .content
+            .iter()
+            .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+            .collect::<String>();
+        let val: serde_json::Value = serde_json::from_str(&text)
+            .unwrap_or_else(|_| panic!("create_task should return JSON, got: {text}"));
+        val.get("id").and_then(|v| v.as_str()).unwrap().to_string()
+    };
 
-        // 1. create the task that will be released `partial`
-        let partial_id = id_from(
-            &server
-                .handle_create_task(&json!({
-                    "title": "Partial round-trip task",
-                    "type": "task",
-                    "project": "proj-partial",
-                    "parent": "proj-partial",
-                    "allow_missing_parent": true,
-                }))
-                .unwrap(),
-        );
+    // 1. create the task that will be released `partial`
+    let partial_id = id_from(
+        &server
+            .handle_create_task(&json!({
+                "title": "Partial round-trip task",
+                "type": "task",
+                "project": "proj-partial",
+                "parent": "proj-partial",
+                "allow_missing_parent": true,
+            }))
+            .unwrap(),
+    );
 
-        // 2. create a control task that stays open (must NOT leak into the filter)
-        let control_id = id_from(
-            &server
-                .handle_create_task(&json!({
-                    "title": "Control open task",
-                    "type": "task",
-                    "project": "proj-partial",
-                    "parent": "proj-partial",
-                    "allow_missing_parent": true,
-                }))
-                .unwrap(),
-        );
+    // 2. create a control task that stays open (must NOT leak into the filter)
+    let control_id = id_from(
+        &server
+            .handle_create_task(&json!({
+                "title": "Control open task",
+                "type": "task",
+                "project": "proj-partial",
+                "parent": "proj-partial",
+                "allow_missing_parent": true,
+            }))
+            .unwrap(),
+    );
 
-        // 3. release the first task as `partial` — must be accepted, not rejected
-        let released = server
+    // 3. release the first task as `partial` — must be accepted, not rejected
+    let released = server
             .handle_release_task(&json!({
                 "id": partial_id,
                 "status": "partial",
@@ -66,663 +66,669 @@ use super::*;
                 "reason": "Remainder scoped out for a follow-up task; not needed for this round-trip check.",
             }))
             .expect("release_task(status=\"partial\") must be accepted");
-        let released_text = released
-            .content
-            .iter()
-            .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
-            .collect::<String>();
-        assert!(
-            released_text.contains("partial"),
-            "release response should confirm the partial transition: {released_text}"
-        );
+    let released_text = released
+        .content
+        .iter()
+        .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+        .collect::<String>();
+    assert!(
+        released_text.contains("partial"),
+        "release response should confirm the partial transition: {released_text}"
+    );
 
-        // 4. list_tasks(status="partial") must contain the partial task …
-        let listed = server
-            .handle_list_tasks(&json!({"status": "partial", "format": "json"}))
-            .unwrap();
-        let ids = extract_task_ids(&listed);
-        assert!(
-            ids.contains(&partial_id),
-            "partial task {partial_id} must appear in status=partial filter, got {ids:?}"
-        );
-        // … and NOT the still-open control — proving the filter is real, not match-all.
-        assert!(
-            !ids.contains(&control_id),
-            "non-partial control {control_id} must NOT appear in status=partial filter \
+    // 4. list_tasks(status="partial") must contain the partial task …
+    let listed = server
+        .handle_list_tasks(&json!({"status": "partial", "format": "json"}))
+        .unwrap();
+    let ids = extract_task_ids(&listed);
+    assert!(
+        ids.contains(&partial_id),
+        "partial task {partial_id} must appear in status=partial filter, got {ids:?}"
+    );
+    // … and NOT the still-open control — proving the filter is real, not match-all.
+    assert!(
+        !ids.contains(&control_id),
+        "non-partial control {control_id} must NOT appear in status=partial filter \
              (guards against the old alias/match-everything behaviour), got {ids:?}"
-        );
-    }
+    );
+}
 
-    // ── create_task: project required ──
+// ── create_task: project required ──
 
-    #[test]
-    fn test_create_task_severity_coercion() {
-        let server = build_test_server();
-        std::fs::create_dir_all("/tmp/test-pkb-project/targets").unwrap();
-        std::fs::create_dir_all("/tmp/test-pkb-project/tasks").unwrap();
-        // 1. Create a target task with severity
-        let res_target = server
-            .handle_create_task(&json!({
-                "title": "target with sev",
-                "type": "target",
-                "severity": 3,
-                "project": "proj-alpha",
-                "parent": "proj-alpha"
-            }))
-            .unwrap();
-        let target_text = res_target
-            .content
-            .iter()
-            .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
-            .collect::<String>();
-        let target_val: serde_json::Value = serde_json::from_str(&target_text).unwrap();
-        let target_id = target_val.get("id").unwrap().as_str().unwrap().to_string();
+#[test]
+fn test_create_task_severity_coercion() {
+    let server = build_test_server();
+    std::fs::create_dir_all("/tmp/test-pkb-project/targets").unwrap();
+    std::fs::create_dir_all("/tmp/test-pkb-project/tasks").unwrap();
+    // 1. Create a target task with severity
+    let res_target = server
+        .handle_create_task(&json!({
+            "title": "target with sev",
+            "type": "target",
+            "severity": 3,
+            "project": "proj-alpha",
+            "parent": "proj-alpha"
+        }))
+        .unwrap();
+    let target_text = res_target
+        .content
+        .iter()
+        .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+        .collect::<String>();
+    let target_val: serde_json::Value = serde_json::from_str(&target_text).unwrap();
+    let target_id = target_val.get("id").unwrap().as_str().unwrap().to_string();
 
-        let get_target = server.handle_get_task(&json!({"id": target_id})).unwrap();
-        let get_target_text = get_target
-            .content
-            .iter()
-            .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
-            .collect::<String>();
-        assert!(
-            get_target_text.contains("\"severity\": 3"),
-            "Target node should retain severity. text: {}",
-            get_target_text
-        );
+    let get_target = server.handle_get_task(&json!({"id": target_id})).unwrap();
+    let get_target_text = get_target
+        .content
+        .iter()
+        .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+        .collect::<String>();
+    assert!(
+        get_target_text.contains("\"severity\": 3"),
+        "Target node should retain severity. text: {}",
+        get_target_text
+    );
 
-        // 2. Create a standard task with severity
-        let res_task = server
-            .handle_create_task(&json!({
-                "title": "task with sev",
-                "type": "task",
-                "severity": 3,
-                "project": "proj-alpha",
-                "parent": "proj-alpha"
-            }))
-            .unwrap();
+    // 2. Create a standard task with severity
+    let res_task = server
+        .handle_create_task(&json!({
+            "title": "task with sev",
+            "type": "task",
+            "severity": 3,
+            "project": "proj-alpha",
+            "parent": "proj-alpha"
+        }))
+        .unwrap();
 
-        let mut has_warning = false;
-        let mut task_json_text = String::new();
-        for c in &res_task.content {
-            if let Some(t) = c.raw.as_text() {
-                if t.text.contains("severity ignored: not a target node") {
-                    has_warning = true;
-                } else if t.text.trim().starts_with('{') {
-                    task_json_text = t.text.clone();
-                }
+    let mut has_warning = false;
+    let mut task_json_text = String::new();
+    for c in &res_task.content {
+        if let Some(t) = c.raw.as_text() {
+            if t.text.contains("severity ignored: not a target node") {
+                has_warning = true;
+            } else if t.text.trim().starts_with('{') {
+                task_json_text = t.text.clone();
             }
         }
-        assert!(
-            has_warning,
-            "Standard task should return a warning about severity coercion"
-        );
-
-        let task_val: serde_json::Value = serde_json::from_str(&task_json_text).unwrap();
-        let task_id = task_val.get("id").unwrap().as_str().unwrap().to_string();
-        let get_task = server.handle_get_task(&json!({"id": task_id})).unwrap();
-        let get_task_text = get_task
-            .content
-            .iter()
-            .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
-            .collect::<String>();
-        assert!(
-            !get_task_text.contains("\"severity\": 3"),
-            "Standard task should coerce severity to 0 or null"
-        );
     }
+    assert!(
+        has_warning,
+        "Standard task should return a warning about severity coercion"
+    );
 
-    #[test]
-    fn test_decompose_task_severity_coercion() {
-        let server = build_test_server();
-        std::fs::create_dir_all("/tmp/test-pkb-project/tasks").unwrap();
+    let task_val: serde_json::Value = serde_json::from_str(&task_json_text).unwrap();
+    let task_id = task_val.get("id").unwrap().as_str().unwrap().to_string();
+    let get_task = server.handle_get_task(&json!({"id": task_id})).unwrap();
+    let get_task_text = get_task
+        .content
+        .iter()
+        .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+        .collect::<String>();
+    assert!(
+        !get_task_text.contains("\"severity\": 3"),
+        "Standard task should coerce severity to 0 or null"
+    );
+}
 
-        // Create a real parent task so it has a project field and exists on disk
-        let parent_res = server
-            .handle_create_task(&json!({
-                "title": "Parent Task for Decompose",
-                "type": "task",
-                "project": "proj-alpha",
-                "parent": "proj-alpha"
-            }))
-            .unwrap();
+#[test]
+fn test_decompose_task_severity_coercion() {
+    let server = build_test_server();
+    std::fs::create_dir_all("/tmp/test-pkb-project/tasks").unwrap();
 
-        let mut parent_id = String::new();
-        for c in &parent_res.content {
-            if let Some(t) = c.raw.as_text() {
-                if t.text.trim().starts_with('{') {
-                    let parent_val: serde_json::Value = serde_json::from_str(&t.text).unwrap();
-                    parent_id = parent_val.get("id").unwrap().as_str().unwrap().to_string();
-                }
+    // Create a real parent task so it has a project field and exists on disk
+    let parent_res = server
+        .handle_create_task(&json!({
+            "title": "Parent Task for Decompose",
+            "type": "task",
+            "project": "proj-alpha",
+            "parent": "proj-alpha"
+        }))
+        .unwrap();
+
+    let mut parent_id = String::new();
+    for c in &parent_res.content {
+        if let Some(t) = c.raw.as_text() {
+            if t.text.trim().starts_with('{') {
+                let parent_val: serde_json::Value = serde_json::from_str(&t.text).unwrap();
+                parent_id = parent_val.get("id").unwrap().as_str().unwrap().to_string();
             }
         }
-
-        let subtasks = json!([
-            {
-                "title": "Subtask Target Sev",
-                "type": "target",
-                "severity": 3
-            },
-            {
-                "title": "Subtask Sev",
-                "type": "task",
-                "severity": 3
-            }
-        ]);
-
-        let res = server
-            .handle_decompose_task(&json!({
-                "parent_id": parent_id,
-                "subtasks": subtasks
-            }))
-            .unwrap();
-
-        let res_text = res
-            .content
-            .iter()
-            .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
-            .collect::<String>();
-        assert!(
-            res_text.contains("severity ignored for one or more non-target nodes"),
-            "Should have warning"
-        );
-
-        let graph = server.graph.read();
-
-        let target_node = graph.resolve("Subtask Target Sev").unwrap();
-        assert_eq!(target_node.severity, Some(3));
-
-        let subtask_node = graph.resolve("Subtask Sev").unwrap();
-        assert_eq!(subtask_node.severity, Some(0)); // Coerced to 0
     }
 
-    #[test]
-    fn test_decompose_task_accepts_agent_intent() {
-        // Agent-set subtask intent is accepted under Nic's standing delegation
-        // (specs/pkb-rules.md §6.3, aops_intent_delegation_tooling).
-        let server = build_test_server();
-        std::fs::create_dir_all("/tmp/test-pkb-project/tasks").unwrap();
+    let subtasks = json!([
+        {
+            "title": "Subtask Target Sev",
+            "type": "target",
+            "severity": 3
+        },
+        {
+            "title": "Subtask Sev",
+            "type": "task",
+            "severity": 3
+        }
+    ]);
 
-        let parent_res = server
-            .handle_create_task(&json!({
-                "title": "Parent Task for Decompose Intent",
-                "type": "task",
-                "project": "proj-alpha",
-                "parent": "proj-alpha"
-            }))
-            .unwrap();
+    let res = server
+        .handle_decompose_task(&json!({
+            "parent_id": parent_id,
+            "subtasks": subtasks
+        }))
+        .unwrap();
 
-        let mut parent_id = String::new();
-        for c in &parent_res.content {
-            if let Some(t) = c.raw.as_text() {
-                if t.text.trim().starts_with('{') {
-                    let parent_val: serde_json::Value = serde_json::from_str(&t.text).unwrap();
-                    parent_id = parent_val.get("id").unwrap().as_str().unwrap().to_string();
-                }
+    let res_text = res
+        .content
+        .iter()
+        .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+        .collect::<String>();
+    assert!(
+        res_text.contains("severity ignored for one or more non-target nodes"),
+        "Should have warning"
+    );
+
+    let graph = server.graph.read();
+
+    let target_node = graph.resolve("Subtask Target Sev").unwrap();
+    assert_eq!(target_node.severity, Some(3));
+
+    let subtask_node = graph.resolve("Subtask Sev").unwrap();
+    assert_eq!(subtask_node.severity, Some(0)); // Coerced to 0
+}
+
+#[test]
+fn test_decompose_task_accepts_agent_intent() {
+    // Agent-set subtask intent is accepted under Nic's standing delegation
+    // (specs/pkb-rules.md §6.3, aops_intent_delegation_tooling).
+    let server = build_test_server();
+    std::fs::create_dir_all("/tmp/test-pkb-project/tasks").unwrap();
+
+    let parent_res = server
+        .handle_create_task(&json!({
+            "title": "Parent Task for Decompose Intent",
+            "type": "task",
+            "project": "proj-alpha",
+            "parent": "proj-alpha"
+        }))
+        .unwrap();
+
+    let mut parent_id = String::new();
+    for c in &parent_res.content {
+        if let Some(t) = c.raw.as_text() {
+            if t.text.trim().starts_with('{') {
+                let parent_val: serde_json::Value = serde_json::from_str(&t.text).unwrap();
+                parent_id = parent_val.get("id").unwrap().as_str().unwrap().to_string();
             }
         }
-
-        let subtasks = json!([
-            { "title": "Subtask With Intent", "type": "task", "intent": 1 }
-        ]);
-
-        server
-            .handle_decompose_task(&json!({
-                "parent_id": parent_id,
-                "subtasks": subtasks
-            }))
-            .expect("agent-supplied subtask intent via decompose_task should be accepted");
-
-        let graph = server.graph.read();
-        let node = graph
-            .resolve("Subtask With Intent")
-            .expect("subtask must have been created");
-        assert_eq!(node.intent, Some(1), "subtask intent must have been written");
     }
 
-    // ── epic_882b7576: soft session-identity display on subtasks (D1, display-only) ──
+    let subtasks = json!([
+        { "title": "Subtask With Intent", "type": "task", "intent": 1 }
+    ]);
 
-    #[test]
-    fn test_subtask_identity_visible_on_get_task_and_children() {
-        let server = build_test_server();
-        std::fs::create_dir_all("/tmp/test-pkb-project/tasks").unwrap();
+    server
+        .handle_decompose_task(&json!({
+            "parent_id": parent_id,
+            "subtasks": subtasks
+        }))
+        .expect("agent-supplied subtask intent via decompose_task should be accepted");
 
-        let parent_res = server
-            .handle_create_task(&json!({
-                "title": "Parent Epic for Identity Display",
-                "type": "task",
-                "project": "proj-alpha",
-                "parent": "proj-alpha"
-            }))
-            .unwrap();
-        let mut parent_id = String::new();
-        for c in &parent_res.content {
-            if let Some(t) = c.raw.as_text() {
-                if t.text.trim().starts_with('{') {
-                    let v: serde_json::Value = serde_json::from_str(&t.text).unwrap();
-                    parent_id = v.get("id").unwrap().as_str().unwrap().to_string();
-                }
+    let graph = server.graph.read();
+    let node = graph
+        .resolve("Subtask With Intent")
+        .expect("subtask must have been created");
+    assert_eq!(
+        node.intent,
+        Some(1),
+        "subtask intent must have been written"
+    );
+}
+
+// ── epic_882b7576: soft session-identity display on subtasks (D1, display-only) ──
+
+#[test]
+fn test_subtask_identity_visible_on_get_task_and_children() {
+    let server = build_test_server();
+    std::fs::create_dir_all("/tmp/test-pkb-project/tasks").unwrap();
+
+    let parent_res = server
+        .handle_create_task(&json!({
+            "title": "Parent Epic for Identity Display",
+            "type": "task",
+            "project": "proj-alpha",
+            "parent": "proj-alpha"
+        }))
+        .unwrap();
+    let mut parent_id = String::new();
+    for c in &parent_res.content {
+        if let Some(t) = c.raw.as_text() {
+            if t.text.trim().starts_with('{') {
+                let v: serde_json::Value = serde_json::from_str(&t.text).unwrap();
+                parent_id = v.get("id").unwrap().as_str().unwrap().to_string();
             }
         }
-        assert!(
-            !parent_id.is_empty(),
-            "parent task should have been created"
-        );
+    }
+    assert!(
+        !parent_id.is_empty(),
+        "parent task should have been created"
+    );
 
-        // Decompose into an executor subtask and a reviewer subtask, each
-        // claimed by a distinct session/agent identity via `assignee`.
-        let subtasks = json!([
-            { "title": "Executor Subtask", "type": "task", "assignee": "session-executor-A" },
-            { "title": "Reviewer Subtask", "type": "task", "assignee": "session-reviewer-B" }
-        ]);
-        server
-            .handle_decompose_task(&json!({
-                "parent_id": parent_id,
-                "subtasks": subtasks
-            }))
-            .unwrap();
+    // Decompose into an executor subtask and a reviewer subtask, each
+    // claimed by a distinct session/agent identity via `assignee`.
+    let subtasks = json!([
+        { "title": "Executor Subtask", "type": "task", "assignee": "session-executor-A" },
+        { "title": "Reviewer Subtask", "type": "task", "assignee": "session-reviewer-B" }
+    ]);
+    server
+        .handle_decompose_task(&json!({
+            "parent_id": parent_id,
+            "subtasks": subtasks
+        }))
+        .unwrap();
 
-        // AC1: identity visible on get_task's child-task listing (decompose_task's
-        // default node_type "task" lands in `children`, not the separate
-        // node_type=="subtask" `subtasks` array).
-        let get_res = server.handle_get_task(&json!({"id": parent_id})).unwrap();
-        let get_text = get_res
-            .content
-            .iter()
-            .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
-            .collect::<String>();
-        let get_val: serde_json::Value = serde_json::from_str(&get_text).unwrap();
-        let subtask_list = get_val
-            .get("children")
-            .and_then(|s| s.as_array())
-            .expect("children array should be present");
-        assert_eq!(subtask_list.len(), 2);
-        let assignees: Vec<Option<&str>> = subtask_list
-            .iter()
-            .map(|s| s.get("assignee").and_then(|a| a.as_str()))
-            .collect();
-        assert!(
-            assignees.contains(&Some("session-executor-A")),
-            "get_task children should surface executor identity, got: {get_text}"
-        );
-        assert!(
-            assignees.contains(&Some("session-reviewer-B")),
-            "get_task children should surface reviewer identity, got: {get_text}"
-        );
+    // AC1: identity visible on get_task's child-task listing (decompose_task's
+    // default node_type "task" lands in `children`, not the separate
+    // node_type=="subtask" `subtasks` array).
+    let get_res = server.handle_get_task(&json!({"id": parent_id})).unwrap();
+    let get_text = get_res
+        .content
+        .iter()
+        .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+        .collect::<String>();
+    let get_val: serde_json::Value = serde_json::from_str(&get_text).unwrap();
+    let subtask_list = get_val
+        .get("children")
+        .and_then(|s| s.as_array())
+        .expect("children array should be present");
+    assert_eq!(subtask_list.len(), 2);
+    let assignees: Vec<Option<&str>> = subtask_list
+        .iter()
+        .map(|s| s.get("assignee").and_then(|a| a.as_str()))
+        .collect();
+    assert!(
+        assignees.contains(&Some("session-executor-A")),
+        "get_task children should surface executor identity, got: {get_text}"
+    );
+    assert!(
+        assignees.contains(&Some("session-reviewer-B")),
+        "get_task children should surface reviewer identity, got: {get_text}"
+    );
 
-        // AC1 (continued): identity also visible on get_task_children listing.
-        let children_res = server
-            .handle_get_task_children(&json!({"id": parent_id}))
-            .unwrap();
-        let children_text = children_res
-            .content
-            .iter()
-            .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
-            .collect::<String>();
-        assert!(
-            children_text.contains("(@session-executor-A)"),
-            "get_task_children should display executor identity, got: {children_text}"
-        );
-        assert!(
-            children_text.contains("(@session-reviewer-B)"),
-            "get_task_children should display reviewer identity, got: {children_text}"
-        );
+    // AC1 (continued): identity also visible on get_task_children listing.
+    let children_res = server
+        .handle_get_task_children(&json!({"id": parent_id}))
+        .unwrap();
+    let children_text = children_res
+        .content
+        .iter()
+        .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+        .collect::<String>();
+    assert!(
+        children_text.contains("(@session-executor-A)"),
+        "get_task_children should display executor identity, got: {children_text}"
+    );
+    assert!(
+        children_text.contains("(@session-reviewer-B)"),
+        "get_task_children should display reviewer identity, got: {children_text}"
+    );
 
-        // AC2: zero blocking behaviour — a review subtask claimed by the SAME
-        // identity as the executor must still release cleanly (D1: display
-        // only, never a hard gate on identity match).
-        let reviewer_task_id = subtask_list
-            .iter()
-            .find(|s| s.get("title").and_then(|t| t.as_str()) == Some("Reviewer Subtask"))
-            .and_then(|s| s.get("id"))
-            .and_then(|i| i.as_str())
-            .unwrap()
-            .to_string();
+    // AC2: zero blocking behaviour — a review subtask claimed by the SAME
+    // identity as the executor must still release cleanly (D1: display
+    // only, never a hard gate on identity match).
+    let reviewer_task_id = subtask_list
+        .iter()
+        .find(|s| s.get("title").and_then(|t| t.as_str()) == Some("Reviewer Subtask"))
+        .and_then(|s| s.get("id"))
+        .and_then(|i| i.as_str())
+        .unwrap()
+        .to_string();
 
-        // Re-claim the reviewer subtask under the *same* identity that owns
-        // the executor subtask, simulating a reviewer==executor collision.
-        server
-            .handle_update_task(&json!({
-                "id": reviewer_task_id,
-                "updates": { "assignee": "session-executor-A" }
-            }))
-            .unwrap();
-
-        let release_res = server.handle_release_task(&json!({
+    // Re-claim the reviewer subtask under the *same* identity that owns
+    // the executor subtask, simulating a reviewer==executor collision.
+    server
+        .handle_update_task(&json!({
             "id": reviewer_task_id,
-            "status": "done",
-            "summary": "same-identity release should not be blocked (D1)"
-        }));
-        assert!(
-            release_res.is_ok(),
-            "same-identity review subtask must still release cleanly under D1: {release_res:?}"
-        );
-        let release_res = release_res.unwrap();
-        assert!(
-            !release_res.is_error.unwrap_or(false),
-            "release_task should not return an error result for same-identity release"
-        );
+            "updates": { "assignee": "session-executor-A" }
+        }))
+        .unwrap();
+
+    let release_res = server.handle_release_task(&json!({
+        "id": reviewer_task_id,
+        "status": "done",
+        "summary": "same-identity release should not be blocked (D1)"
+    }));
+    assert!(
+        release_res.is_ok(),
+        "same-identity review subtask must still release cleanly under D1: {release_res:?}"
+    );
+    let release_res = release_res.unwrap();
+    assert!(
+        !release_res.is_error.unwrap_or(false),
+        "release_task should not return an error result for same-identity release"
+    );
+}
+
+#[test]
+fn test_create_task_allows_missing_project() {
+    let server = build_test_server();
+    let result = server
+        .handle_create_task(&json!({
+            "title": "no project",
+            "parent": "proj-alpha"
+        }))
+        .expect("missing project should be allowed when parent resolves project");
+    assert!(!result.is_error.unwrap_or(false));
+}
+
+#[test]
+fn test_create_task_allows_blank_project() {
+    let server = build_test_server();
+    let result = server
+        .handle_create_task(&json!({
+            "title": "blank project",
+            "parent": "proj-alpha",
+            "project": "   "
+        }))
+        .expect("blank project should be allowed when parent resolves project");
+    assert!(!result.is_error.unwrap_or(false));
+}
+
+#[test]
+fn test_create_task_schema_does_not_require_project() {
+    let tools = PkbSearchServer::get_all_tools();
+    let create = tools
+        .iter()
+        .find(|t| t.name.as_ref() == "create_task")
+        .expect("create_task tool should exist");
+    let schema = serde_json::to_string(&create.input_schema).unwrap();
+    assert!(
+        schema.contains("\"project\""),
+        "create_task schema should include project field"
+    );
+    assert!(
+        !schema.contains("\"required\":[\"title\",\"project\"]")
+            && !schema.contains("\"required\": [\"title\", \"project\"]"),
+        "create_task should not mark project required, got: {schema}"
+    );
+}
+
+// ── update_task: parent cycle rejection ──
+
+#[test]
+fn test_update_task_rejects_self_parent() {
+    let server = build_test_server();
+    let err = server
+        .handle_update_task(&json!({
+            "id": "task-a1",
+            "parent": "task-a1"
+        }))
+        .expect_err("self-parent should be rejected");
+    let msg = format!("{}", err.message);
+    assert!(
+        msg.to_lowercase().contains("cycle") || msg.to_lowercase().contains("own parent"),
+        "error should mention cycle/own-parent, got: {msg}"
+    );
+}
+
+// ── update_task: agent-set intent under Nic's standing delegation (specs/pkb-rules.md §6.3, aops_intent_delegation_tooling) ──
+
+#[test]
+fn test_update_task_accepts_agent_intent_nested() {
+    let server = build_test_server();
+    std::fs::create_dir_all("/tmp/test-pkb-project/tasks").unwrap();
+    server
+        .handle_create_task(&json!({
+            "title": "Update Intent Nested Task",
+            "type": "task",
+            "project": "proj-alpha",
+            "parent": "proj-alpha",
+        }))
+        .expect("create_task failed");
+
+    server
+        .handle_update_task(&json!({
+            "id": "Update Intent Nested Task",
+            "updates": { "intent": 1 }
+        }))
+        .expect("agent-supplied intent via update_task should be accepted");
+
+    let graph = server.graph.read();
+    let node = graph.resolve("Update Intent Nested Task").unwrap();
+    assert_eq!(
+        node.intent,
+        Some(1),
+        "intent must have been written to the graph"
+    );
+}
+
+#[test]
+fn test_update_task_accepts_agent_intent_flat() {
+    let server = build_test_server();
+    std::fs::create_dir_all("/tmp/test-pkb-project/tasks").unwrap();
+    server
+        .handle_create_task(&json!({
+            "title": "Update Intent Flat Task",
+            "type": "task",
+            "project": "proj-alpha",
+            "parent": "proj-alpha",
+        }))
+        .expect("create_task failed");
+
+    server
+        .handle_update_task(&json!({
+            "id": "Update Intent Flat Task",
+            "intent": 0
+        }))
+        .expect("agent-supplied intent via update_task (flat form) should be accepted");
+
+    let graph = server.graph.read();
+    let node = graph.resolve("Update Intent Flat Task").unwrap();
+    assert_eq!(
+        node.intent,
+        Some(0),
+        "intent must have been written to the graph"
+    );
+}
+
+#[test]
+fn test_update_task_rejects_descendant_parent() {
+    // proj-alpha is parent of task-a1. Setting proj-alpha's parent to
+    // task-a1 would create a cycle proj-alpha → task-a1 → proj-alpha.
+    let server = build_test_server();
+    let err = server
+        .handle_update_task(&json!({
+            "id": "proj-alpha",
+            "parent": "task-a1"
+        }))
+        .expect_err("descendant parent should be rejected");
+    let msg = format!("{}", err.message);
+    assert!(
+        msg.to_lowercase().contains("cycle") || msg.to_lowercase().contains("circular"),
+        "error should mention cycle/circular, got: {msg}"
+    );
+}
+
+// ── Bug 2 (task-d802855c): unparent removes parent, never writes junk ──
+
+/// Build a server backed by a real temp directory with the given
+/// `<relative-path>, <full-file-contents>` task files on disk, so
+/// handle_update_task can actually read and rewrite them.
+pub(crate) fn build_disk_backed_server(
+    files: &[(&str, &str)],
+) -> (tempfile::TempDir, PkbSearchServer) {
+    use std::fs;
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().to_path_buf();
+    for (rel, contents) in files {
+        let path = root.join(rel);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, contents).unwrap();
     }
+    let docs: Vec<PkbDocument> = crate::pkb::scan_directory(&root)
+        .iter()
+        .filter_map(|p| crate::pkb::parse_file_relative(p, &root))
+        .collect();
+    let graph = GraphStore::build(&docs, &root);
+    let store = VectorStore::new(3);
+    let embedder = Embedder::new_dummy();
+    let server = PkbSearchServer::new(
+        Arc::new(RwLock::new(store)),
+        Arc::new(embedder),
+        root.clone(),
+        root.join("db"),
+        Arc::new(RwLock::new(graph)),
+    );
+    (tmp, server)
+}
 
-    #[test]
-    fn test_create_task_allows_missing_project() {
-        let server = build_test_server();
-        let result = server
-            .handle_create_task(&json!({
-                "title": "no project",
-                "parent": "proj-alpha"
-            }))
-            .expect("missing project should be allowed when parent resolves project");
-        assert!(!result.is_error.unwrap_or(false));
-    }
-
-    #[test]
-    fn test_create_task_allows_blank_project() {
-        let server = build_test_server();
-        let result = server
-            .handle_create_task(&json!({
-                "title": "blank project",
-                "parent": "proj-alpha",
-                "project": "   "
-            }))
-            .expect("blank project should be allowed when parent resolves project");
-        assert!(!result.is_error.unwrap_or(false));
-    }
-
-    #[test]
-    fn test_create_task_schema_does_not_require_project() {
-        let tools = PkbSearchServer::get_all_tools();
-        let create = tools
-            .iter()
-            .find(|t| t.name.as_ref() == "create_task")
-            .expect("create_task tool should exist");
-        let schema = serde_json::to_string(&create.input_schema).unwrap();
-        assert!(
-            schema.contains("\"project\""),
-            "create_task schema should include project field"
-        );
-        assert!(
-            !schema.contains("\"required\":[\"title\",\"project\"]")
-                && !schema.contains("\"required\": [\"title\", \"project\"]"),
-            "create_task should not mark project required, got: {schema}"
-        );
-    }
-
-    // ── update_task: parent cycle rejection ──
-
-    #[test]
-    fn test_update_task_rejects_self_parent() {
-        let server = build_test_server();
-        let err = server
-            .handle_update_task(&json!({
-                "id": "task-a1",
-                "parent": "task-a1"
-            }))
-            .expect_err("self-parent should be rejected");
-        let msg = format!("{}", err.message);
-        assert!(
-            msg.to_lowercase().contains("cycle") || msg.to_lowercase().contains("own parent"),
-            "error should mention cycle/own-parent, got: {msg}"
-        );
-    }
-
-    // ── update_task: agent-set intent under Nic's standing delegation (specs/pkb-rules.md §6.3, aops_intent_delegation_tooling) ──
-
-    #[test]
-    fn test_update_task_accepts_agent_intent_nested() {
-        let server = build_test_server();
-        std::fs::create_dir_all("/tmp/test-pkb-project/tasks").unwrap();
-        server
-            .handle_create_task(&json!({
-                "title": "Update Intent Nested Task",
-                "type": "task",
-                "project": "proj-alpha",
-                "parent": "proj-alpha",
-            }))
-            .expect("create_task failed");
-
-        server
-            .handle_update_task(&json!({
-                "id": "Update Intent Nested Task",
-                "updates": { "intent": 1 }
-            }))
-            .expect("agent-supplied intent via update_task should be accepted");
-
-        let graph = server.graph.read();
-        let node = graph.resolve("Update Intent Nested Task").unwrap();
-        assert_eq!(
-            node.intent,
-            Some(1),
-            "intent must have been written to the graph"
-        );
-    }
-
-    #[test]
-    fn test_update_task_accepts_agent_intent_flat() {
-        let server = build_test_server();
-        std::fs::create_dir_all("/tmp/test-pkb-project/tasks").unwrap();
-        server
-            .handle_create_task(&json!({
-                "title": "Update Intent Flat Task",
-                "type": "task",
-                "project": "proj-alpha",
-                "parent": "proj-alpha",
-            }))
-            .expect("create_task failed");
-
-        server
-            .handle_update_task(&json!({
-                "id": "Update Intent Flat Task",
-                "intent": 0
-            }))
-            .expect("agent-supplied intent via update_task (flat form) should be accepted");
-
-        let graph = server.graph.read();
-        let node = graph.resolve("Update Intent Flat Task").unwrap();
-        assert_eq!(
-            node.intent,
-            Some(0),
-            "intent must have been written to the graph"
-        );
-    }
-
-    #[test]
-    fn test_update_task_rejects_descendant_parent() {
-        // proj-alpha is parent of task-a1. Setting proj-alpha's parent to
-        // task-a1 would create a cycle proj-alpha → task-a1 → proj-alpha.
-        let server = build_test_server();
-        let err = server
-            .handle_update_task(&json!({
-                "id": "proj-alpha",
-                "parent": "task-a1"
-            }))
-            .expect_err("descendant parent should be rejected");
-        let msg = format!("{}", err.message);
-        assert!(
-            msg.to_lowercase().contains("cycle") || msg.to_lowercase().contains("circular"),
-            "error should mention cycle/circular, got: {msg}"
-        );
-    }
-
-    // ── Bug 2 (task-d802855c): unparent removes parent, never writes junk ──
-
-    /// Build a server backed by a real temp directory with the given
-    /// `<relative-path>, <full-file-contents>` task files on disk, so
-    /// handle_update_task can actually read and rewrite them.
-    pub(crate) fn build_disk_backed_server(files: &[(&str, &str)]) -> (tempfile::TempDir, PkbSearchServer) {
-        use std::fs;
-        let tmp = tempfile::tempdir().unwrap();
-        let root = tmp.path().to_path_buf();
-        for (rel, contents) in files {
-            let path = root.join(rel);
-            fs::create_dir_all(path.parent().unwrap()).unwrap();
-            fs::write(&path, contents).unwrap();
-        }
-        let docs: Vec<PkbDocument> = crate::pkb::scan_directory(&root)
-            .iter()
-            .filter_map(|p| crate::pkb::parse_file_relative(p, &root))
-            .collect();
-        let graph = GraphStore::build(&docs, &root);
-        let store = VectorStore::new(3);
-        let embedder = Embedder::new_dummy();
-        let server = PkbSearchServer::new(
-            Arc::new(RwLock::new(store)),
-            Arc::new(embedder),
-            root.clone(),
-            root.join("db"),
-            Arc::new(RwLock::new(graph)),
-        );
-        (tmp, server)
-    }
-
-    #[test]
-    fn test_update_task_unparent_top_level_removes_parent_no_junk() {
-        let (tmp, server) = build_disk_backed_server(&[
+#[test]
+fn test_update_task_unparent_top_level_removes_parent_no_junk() {
+    let (tmp, server) = build_disk_backed_server(&[
             ("tasks/task-child.md", "---\nid: task-child\ntitle: Child\ntype: task\nstatus: ready\nparent: task-parent\n---\n\n# Child\n"),
             ("tasks/task-parent.md", "---\nid: task-parent\ntitle: Parent\ntype: task\nstatus: ready\n---\n\n# Parent\n"),
         ]);
 
-        // Top-level form: was previously rejected with "No fields to update".
-        server
-            .handle_update_task(&json!({"id": "task-child", "unparent": true}))
-            .expect("unparent=true should succeed");
+    // Top-level form: was previously rejected with "No fields to update".
+    server
+        .handle_update_task(&json!({"id": "task-child", "unparent": true}))
+        .expect("unparent=true should succeed");
 
-        let content = std::fs::read_to_string(tmp.path().join("tasks/task-child.md")).unwrap();
-        assert!(
-            !content.contains("parent:"),
-            "parent key must be gone, got:\n{content}"
-        );
-        assert!(
-            !content.contains("unparent"),
-            "unparent must never be persisted, got:\n{content}"
-        );
-        // Round-trip: the rest of the frontmatter survives.
-        assert!(
-            content.contains("id: task-child"),
-            "id preserved:\n{content}"
-        );
-        assert!(
-            content.contains("title: Child"),
-            "title preserved:\n{content}"
-        );
-        assert!(content.contains("type: task"), "type preserved:\n{content}");
-    }
+    let content = std::fs::read_to_string(tmp.path().join("tasks/task-child.md")).unwrap();
+    assert!(
+        !content.contains("parent:"),
+        "parent key must be gone, got:\n{content}"
+    );
+    assert!(
+        !content.contains("unparent"),
+        "unparent must never be persisted, got:\n{content}"
+    );
+    // Round-trip: the rest of the frontmatter survives.
+    assert!(
+        content.contains("id: task-child"),
+        "id preserved:\n{content}"
+    );
+    assert!(
+        content.contains("title: Child"),
+        "title preserved:\n{content}"
+    );
+    assert!(content.contains("type: task"), "type preserved:\n{content}");
+}
 
-    #[test]
-    fn test_update_task_unparent_nested_form_removes_parent_no_junk() {
-        let (tmp, server) = build_disk_backed_server(&[
+#[test]
+fn test_update_task_unparent_nested_form_removes_parent_no_junk() {
+    let (tmp, server) = build_disk_backed_server(&[
             ("tasks/task-child.md", "---\nid: task-child\ntitle: Child\ntype: task\nstatus: ready\nparent: task-parent\n---\n\n# Child\n"),
             ("tasks/task-parent.md", "---\nid: task-parent\ntitle: Parent\ntype: task\nstatus: ready\n---\n\n# Parent\n"),
         ]);
 
-        // Nested form: previously wrote a literal `unparent: true` frontmatter
-        // key and left `parent` in place.
-        server
-            .handle_update_task(&json!({"id": "task-child", "updates": {"unparent": true}}))
-            .expect("nested unparent should succeed");
+    // Nested form: previously wrote a literal `unparent: true` frontmatter
+    // key and left `parent` in place.
+    server
+        .handle_update_task(&json!({"id": "task-child", "updates": {"unparent": true}}))
+        .expect("nested unparent should succeed");
 
-        let content = std::fs::read_to_string(tmp.path().join("tasks/task-child.md")).unwrap();
-        assert!(
-            !content.contains("parent:"),
-            "parent key must be gone, got:\n{content}"
-        );
-        assert!(
-            !content.contains("unparent"),
-            "unparent must never be persisted, got:\n{content}"
-        );
-        assert!(
-            content.contains("id: task-child"),
-            "id preserved:\n{content}"
-        );
-    }
+    let content = std::fs::read_to_string(tmp.path().join("tasks/task-child.md")).unwrap();
+    assert!(
+        !content.contains("parent:"),
+        "parent key must be gone, got:\n{content}"
+    );
+    assert!(
+        !content.contains("unparent"),
+        "unparent must never be persisted, got:\n{content}"
+    );
+    assert!(
+        content.contains("id: task-child"),
+        "id preserved:\n{content}"
+    );
+}
 
-    #[test]
-    fn test_update_task_bare_parent_null_still_requires_unparent_flag() {
-        let (_tmp, server) = build_disk_backed_server(&[
+#[test]
+fn test_update_task_bare_parent_null_still_requires_unparent_flag() {
+    let (_tmp, server) = build_disk_backed_server(&[
             ("tasks/task-child.md", "---\nid: task-child\ntitle: Child\ntype: task\nstatus: ready\nparent: task-parent\n---\n\n# Child\n"),
             ("tasks/task-parent.md", "---\nid: task-parent\ntitle: Parent\ntype: task\nstatus: ready\n---\n\n# Parent\n"),
         ]);
 
-        // Setting parent:null WITHOUT the unparent flag must still be rejected
-        // (guards against accidental parent clearing).
-        let err = server
-            .handle_update_task(&json!({"id": "task-child", "updates": {"parent": null}}))
-            .expect_err("bare parent:null should require explicit unparent");
-        let msg = format!("{}", err.message);
-        assert!(
-            msg.to_lowercase().contains("unparent"),
-            "error should direct caller to pass unparent=true, got: {msg}"
-        );
-    }
+    // Setting parent:null WITHOUT the unparent flag must still be rejected
+    // (guards against accidental parent clearing).
+    let err = server
+        .handle_update_task(&json!({"id": "task-child", "updates": {"parent": null}}))
+        .expect_err("bare parent:null should require explicit unparent");
+    let msg = format!("{}", err.message);
+    assert!(
+        msg.to_lowercase().contains("unparent"),
+        "error should direct caller to pass unparent=true, got: {msg}"
+    );
+}
 
-    // ── task_search: schema advertises include_done ──
+// ── task_search: schema advertises include_done ──
 
-    // ── Closed-parent validation (task-8f232401) ──────────────────────────────
+// ── Closed-parent validation (task-8f232401) ──────────────────────────────
 
-    #[test]
-    fn test_create_task_rejects_closed_parent() {
-        // The test graph has task-a3 with status=done.
-        // Creating a child under a done parent should be rejected.
-        let server = build_test_server();
-        let err = server
-            .handle_create_task(&json!({
-                "title": "child of done parent",
-                "project": "test",
-                "parent": "task-a3"
-            }))
-            .expect_err("should reject create under done parent");
-        let msg = err.message.to_string();
-        assert!(
-            msg.to_lowercase().contains("closed") || msg.contains("done"),
-            "error should mention closed/done status; got: {msg}"
-        );
-        assert!(
-            matches!(err.code, ErrorCode::INVALID_PARAMS),
-            "should be INVALID_PARAMS, got: {:?}",
-            err.code
-        );
-    }
-
-    #[test]
-    fn test_create_task_allows_force_override_for_closed_parent() {
-        // With force=true, creating under a done parent should not be rejected by
-        // the graph validation. It will still fail on disk I/O (test server has
-        // no real pkb_root), but must NOT fail on the closed-parent check.
-        let server = build_test_server();
-        let result = server.handle_create_task(&json!({
-            "title": "child of done parent with force",
+#[test]
+fn test_create_task_rejects_closed_parent() {
+    // The test graph has task-a3 with status=done.
+    // Creating a child under a done parent should be rejected.
+    let server = build_test_server();
+    let err = server
+        .handle_create_task(&json!({
+            "title": "child of done parent",
             "project": "test",
-            "parent": "task-a3",
-            "force": true
-        }));
-        // The test server's pkb_root (/tmp/test-pkb-project) likely does not have
-        // real dirs, so we expect an error — but it must be a disk/IO error, NOT
-        // the closed-parent error.
-        match result {
-            Ok(_) => { /* if disk happens to succeed, that's fine */ }
-            Err(e) => {
-                let msg = e.message.to_string();
-                assert!(
-                    !msg.to_lowercase().contains("closed"),
-                    "force=true should bypass the closed-parent check; got: {msg}"
-                );
-            }
+            "parent": "task-a3"
+        }))
+        .expect_err("should reject create under done parent");
+    let msg = err.message.to_string();
+    assert!(
+        msg.to_lowercase().contains("closed") || msg.contains("done"),
+        "error should mention closed/done status; got: {msg}"
+    );
+    assert!(
+        matches!(err.code, ErrorCode::INVALID_PARAMS),
+        "should be INVALID_PARAMS, got: {:?}",
+        err.code
+    );
+}
+
+#[test]
+fn test_create_task_allows_force_override_for_closed_parent() {
+    // With force=true, creating under a done parent should not be rejected by
+    // the graph validation. It will still fail on disk I/O (test server has
+    // no real pkb_root), but must NOT fail on the closed-parent check.
+    let server = build_test_server();
+    let result = server.handle_create_task(&json!({
+        "title": "child of done parent with force",
+        "project": "test",
+        "parent": "task-a3",
+        "force": true
+    }));
+    // The test server's pkb_root (/tmp/test-pkb-project) likely does not have
+    // real dirs, so we expect an error — but it must be a disk/IO error, NOT
+    // the closed-parent error.
+    match result {
+        Ok(_) => { /* if disk happens to succeed, that's fine */ }
+        Err(e) => {
+            let msg = e.message.to_string();
+            assert!(
+                !msg.to_lowercase().contains("closed"),
+                "force=true should bypass the closed-parent check; got: {msg}"
+            );
         }
     }
+}
 
-    // ── Open-children validation (task-8f232401) ──────────────────────────────
+// ── Open-children validation (task-8f232401) ──────────────────────────────
 
-    /// Regression test for task-31a499fe:
-    ///
-    /// Scenario: oldParent has exactly one open child. Agent reparents the child
-    /// to newParent. The close-gate must immediately reflect the reparent so that
-    /// `complete_task(oldParent)` succeeds without waiting for the Tier-2 rebuild.
-    ///
-    /// Before the fix, `upsert_node_in_place` updated the child's `parent` field
-    /// but left `oldParent.children` stale; `open_descendants(oldParent)` still
-    /// found the child, causing `complete_task` to reject with "open children".
-    #[test]
-    fn test_reparent_only_child_then_complete_old_parent_succeeds() {
-        let (tmp, server) = build_disk_backed_server(&[
+/// Regression test for task-31a499fe:
+///
+/// Scenario: oldParent has exactly one open child. Agent reparents the child
+/// to newParent. The close-gate must immediately reflect the reparent so that
+/// `complete_task(oldParent)` succeeds without waiting for the Tier-2 rebuild.
+///
+/// Before the fix, `upsert_node_in_place` updated the child's `parent` field
+/// but left `oldParent.children` stale; `open_descendants(oldParent)` still
+/// found the child, causing `complete_task` to reject with "open children".
+#[test]
+fn test_reparent_only_child_then_complete_old_parent_succeeds() {
+    let (tmp, server) = build_disk_backed_server(&[
             (
                 "tasks/old-parent.md",
                 "---\nid: old-parent\ntitle: Old Parent\ntype: task\nstatus: ready\n---\n\n# Old Parent\n",
@@ -737,46 +743,43 @@ use super::*;
             ),
         ]);
 
-        // Step 1: reparent the only child to new-parent.
-        server
-            .handle_update_task(&json!({
-                "id": "only-child",
-                "parent": "new-parent",
-                "allow_missing_parent": false
-            }))
-            .expect("reparent should succeed");
+    // Step 1: reparent the only child to new-parent.
+    server
+        .handle_update_task(&json!({
+            "id": "only-child",
+            "parent": "new-parent",
+            "allow_missing_parent": false
+        }))
+        .expect("reparent should succeed");
 
-        // Step 2: disk must reflect the new parent.
-        let child_content =
-            std::fs::read_to_string(tmp.path().join("tasks/only-child.md")).unwrap();
-        assert!(
-            child_content.contains("parent: new-parent"),
-            "child's frontmatter must have new-parent on disk; got:\n{child_content}"
-        );
-        assert!(
-            !child_content.contains("parent: old-parent"),
-            "child must no longer reference old-parent on disk; got:\n{child_content}"
-        );
-        // modified must be bumped on every update.
-        assert!(
-            child_content.contains("modified:"),
-            "modified timestamp must be present; got:\n{child_content}"
-        );
+    // Step 2: disk must reflect the new parent.
+    let child_content = std::fs::read_to_string(tmp.path().join("tasks/only-child.md")).unwrap();
+    assert!(
+        child_content.contains("parent: new-parent"),
+        "child's frontmatter must have new-parent on disk; got:\n{child_content}"
+    );
+    assert!(
+        !child_content.contains("parent: old-parent"),
+        "child must no longer reference old-parent on disk; got:\n{child_content}"
+    );
+    // modified must be bumped on every update.
+    assert!(
+        child_content.contains("modified:"),
+        "modified timestamp must be present; got:\n{child_content}"
+    );
 
-        // Step 3: old-parent now has zero open children — complete_task must succeed.
-        server
-            .handle_complete_task(&json!({
-                "id": "old-parent",
-                "completion_evidence": "all children reparented"
-            }))
-            .expect(
-                "complete_task(old-parent) must succeed after its only child was reparented out",
-            );
-    }
+    // Step 3: old-parent now has zero open children — complete_task must succeed.
+    server
+        .handle_complete_task(&json!({
+            "id": "old-parent",
+            "completion_evidence": "all children reparented"
+        }))
+        .expect("complete_task(old-parent) must succeed after its only child was reparented out");
+}
 
-    #[test]
-    fn test_template_child_does_not_block_parent_completion() {
-        let (_tmp, server) = build_disk_backed_server(&[
+#[test]
+fn test_template_child_does_not_block_parent_completion() {
+    let (_tmp, server) = build_disk_backed_server(&[
             (
                 "tasks/parent-task.md",
                 "---\nid: parent-task\ntitle: Parent Task\ntype: task\nstatus: ready\n---\n\n# Parent Task\n",
@@ -787,459 +790,417 @@ use super::*;
             ),
         ]);
 
-        // Completing parent-task must succeed despite child-template being open,
-        // because templates are perpetual definitions excluded from open_descendants.
-        server
-            .handle_complete_task(&json!({
-                "id": "parent-task",
-                "completion_evidence": "work is finished; template child is a perpetual definition"
-            }))
-            .expect("complete_task(parent-task) must succeed with a template child");
-    }
+    // Completing parent-task must succeed despite child-template being open,
+    // because templates are perpetual definitions excluded from open_descendants.
+    server
+        .handle_complete_task(&json!({
+            "id": "parent-task",
+            "completion_evidence": "work is finished; template child is a perpetual definition"
+        }))
+        .expect("complete_task(parent-task) must succeed with a template child");
+}
 
-    // ── Mutation neighborhood (specs/mutation-neighborhood.md) ────────────────
+// ── Mutation neighborhood (specs/mutation-neighborhood.md) ────────────────
 
-    #[test]
-    fn test_mutation_neighborhood_shape() {
-        // Graph:
-        //   epic-x ── children: task-c (done, the closed task),
-        //             s1/s2/s3/s4 (open), s-arch (archived), s-done (done)
-        //   task-c blocks task-d (active, only dep is task-c → now unblocked)
-        //          and task-e (active, also depends on s1 which is open → still blocked)
-        let docs = vec![
-            make_doc("e.md", "Epic X", "epic", "active", "epic-x", None, &[]),
-            make_doc(
-                "c.md",
-                "Closed task",
-                "task",
-                "done",
-                "task-c",
-                Some("epic-x"),
-                &[],
-            ),
-            make_doc(
-                "s1.md",
-                "Sibling 1",
-                "task",
-                "active",
-                "task-s1",
-                Some("epic-x"),
-                &[],
-            ),
-            make_doc(
-                "s2.md",
-                "Sibling 2",
-                "task",
-                "active",
-                "task-s2",
-                Some("epic-x"),
-                &[],
-            ),
-            make_doc(
-                "s3.md",
-                "Sibling 3",
-                "task",
-                "active",
-                "task-s3",
-                Some("epic-x"),
-                &[],
-            ),
-            make_doc(
-                "s4.md",
-                "Sibling 4",
-                "task",
-                "active",
-                "task-s4",
-                Some("epic-x"),
-                &[],
-            ),
-            make_doc(
-                "sa.md",
-                "Archived sib",
-                "task",
-                "archived",
-                "task-sa",
-                Some("epic-x"),
-                &[],
-            ),
-            make_doc(
-                "sd.md",
-                "Done sib",
-                "task",
-                "done",
-                "task-sd",
-                Some("epic-x"),
-                &[],
-            ),
-            make_doc(
-                "d.md",
-                "Dependent D",
-                "task",
-                "active",
-                "task-d",
-                None,
-                &["task-c"],
-            ),
-            make_doc(
-                "ee.md",
-                "Dependent E",
-                "task",
-                "active",
-                "task-e",
-                None,
-                &["task-c", "task-s1"],
-            ),
-            // A bare leaf with no parent and no dependents.
-            make_doc(
-                "lone.md",
-                "Lone leaf",
-                "task",
-                "done",
-                "task-lone",
-                None,
-                &[],
-            ),
-        ];
-        let graph = GraphStore::build(&docs, Path::new("/tmp/test-pkb-nbhd"));
-
-        let n = PkbSearchServer::build_mutation_neighborhood(&graph, "task-c", 0);
-
-        // parent present with sibling counts; archived + done excluded from open.
-        let parent = &n["parent"];
-        assert_eq!(parent["id"], "epic-x");
-        assert_eq!(
-            parent["siblings_open"], 4,
-            "s1..s4 are the only open siblings (archived/done excluded): {n}"
-        );
-        // siblings_sample capped at 3.
-        assert_eq!(
-            parent["siblings_sample"].as_array().unwrap().len(),
-            3,
-            "siblings_sample must cap at 3: {n}"
-        );
-
-        // unblocked: task-d cleared (only dep was task-c), task-e still blocked by task-s1.
-        let unblocked: Vec<&str> = n["unblocked"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|o| o["id"].as_str().unwrap())
-            .collect();
-        assert!(
-            unblocked.contains(&"task-d"),
-            "task-d must be unblocked: {n}"
-        );
-        assert!(
-            !unblocked.contains(&"task-e"),
-            "task-e is still blocked by open task-s1 and must NOT appear: {n}"
-        );
-
-        // task-c has no open children and no cascade → children omitted.
-        assert!(
-            n.get("children").is_none(),
-            "children must be omitted for a clean close: {n}"
-        );
-
-        // Omit-when-empty: a lone leaf returns null.
-        let empty = PkbSearchServer::build_mutation_neighborhood(&graph, "task-lone", 0);
-        assert!(
-            empty.is_null(),
-            "lone leaf must yield null neighborhood: {empty}"
-        );
-    }
-
-    #[test]
-    fn test_mutation_neighborhood_cascade_count() {
-        // A recursive close reports closed_by_cascade and omits parent when none.
-        let docs = vec![make_doc(
-            "p.md",
-            "Parent task",
+#[test]
+fn test_mutation_neighborhood_shape() {
+    // Graph:
+    //   epic-x ── children: task-c (done, the closed task),
+    //             s1/s2/s3/s4 (open), s-arch (archived), s-done (done)
+    //   task-c blocks task-d (active, only dep is task-c → now unblocked)
+    //          and task-e (active, also depends on s1 which is open → still blocked)
+    let docs = vec![
+        make_doc("e.md", "Epic X", "epic", "active", "epic-x", None, &[]),
+        make_doc(
+            "c.md",
+            "Closed task",
             "task",
             "done",
-            "task-p",
+            "task-c",
+            Some("epic-x"),
+            &[],
+        ),
+        make_doc(
+            "s1.md",
+            "Sibling 1",
+            "task",
+            "active",
+            "task-s1",
+            Some("epic-x"),
+            &[],
+        ),
+        make_doc(
+            "s2.md",
+            "Sibling 2",
+            "task",
+            "active",
+            "task-s2",
+            Some("epic-x"),
+            &[],
+        ),
+        make_doc(
+            "s3.md",
+            "Sibling 3",
+            "task",
+            "active",
+            "task-s3",
+            Some("epic-x"),
+            &[],
+        ),
+        make_doc(
+            "s4.md",
+            "Sibling 4",
+            "task",
+            "active",
+            "task-s4",
+            Some("epic-x"),
+            &[],
+        ),
+        make_doc(
+            "sa.md",
+            "Archived sib",
+            "task",
+            "archived",
+            "task-sa",
+            Some("epic-x"),
+            &[],
+        ),
+        make_doc(
+            "sd.md",
+            "Done sib",
+            "task",
+            "done",
+            "task-sd",
+            Some("epic-x"),
+            &[],
+        ),
+        make_doc(
+            "d.md",
+            "Dependent D",
+            "task",
+            "active",
+            "task-d",
+            None,
+            &["task-c"],
+        ),
+        make_doc(
+            "ee.md",
+            "Dependent E",
+            "task",
+            "active",
+            "task-e",
+            None,
+            &["task-c", "task-s1"],
+        ),
+        // A bare leaf with no parent and no dependents.
+        make_doc(
+            "lone.md",
+            "Lone leaf",
+            "task",
+            "done",
+            "task-lone",
             None,
             &[],
-        )];
-        let graph = GraphStore::build(&docs, Path::new("/tmp/test-pkb-nbhd2"));
-        let n = PkbSearchServer::build_mutation_neighborhood(&graph, "task-p", 3);
-        assert_eq!(
-            n["children"]["closed_by_cascade"], 3,
-            "cascade count surfaced: {n}"
-        );
-        assert!(n.get("parent").is_none(), "no parent → parent omitted: {n}");
-    }
+        ),
+    ];
+    let graph = GraphStore::build(&docs, Path::new("/tmp/test-pkb-nbhd"));
 
-    #[test]
-    fn test_complete_task_returns_neighborhood_end_to_end() {
-        // Full write path: epic-z parents z1 + z2; z2 depends on z1.
-        // Completing z1 should return a JSON envelope whose neighborhood names
-        // the parent and reports z2 as newly unblocked.
-        let (tmp, server) = build_disk_backed_server(&[
+    let n = PkbSearchServer::build_mutation_neighborhood(&graph, "task-c", 0);
+
+    // parent present with sibling counts; archived + done excluded from open.
+    let parent = &n["parent"];
+    assert_eq!(parent["id"], "epic-x");
+    assert_eq!(
+        parent["siblings_open"], 4,
+        "s1..s4 are the only open siblings (archived/done excluded): {n}"
+    );
+    // siblings_sample capped at 3.
+    assert_eq!(
+        parent["siblings_sample"].as_array().unwrap().len(),
+        3,
+        "siblings_sample must cap at 3: {n}"
+    );
+
+    // unblocked: task-d cleared (only dep was task-c), task-e still blocked by task-s1.
+    let unblocked: Vec<&str> = n["unblocked"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|o| o["id"].as_str().unwrap())
+        .collect();
+    assert!(
+        unblocked.contains(&"task-d"),
+        "task-d must be unblocked: {n}"
+    );
+    assert!(
+        !unblocked.contains(&"task-e"),
+        "task-e is still blocked by open task-s1 and must NOT appear: {n}"
+    );
+
+    // task-c has no open children and no cascade → children omitted.
+    assert!(
+        n.get("children").is_none(),
+        "children must be omitted for a clean close: {n}"
+    );
+
+    // Omit-when-empty: a lone leaf returns null.
+    let empty = PkbSearchServer::build_mutation_neighborhood(&graph, "task-lone", 0);
+    assert!(
+        empty.is_null(),
+        "lone leaf must yield null neighborhood: {empty}"
+    );
+}
+
+#[test]
+fn test_mutation_neighborhood_cascade_count() {
+    // A recursive close reports closed_by_cascade and omits parent when none.
+    let docs = vec![make_doc(
+        "p.md",
+        "Parent task",
+        "task",
+        "done",
+        "task-p",
+        None,
+        &[],
+    )];
+    let graph = GraphStore::build(&docs, Path::new("/tmp/test-pkb-nbhd2"));
+    let n = PkbSearchServer::build_mutation_neighborhood(&graph, "task-p", 3);
+    assert_eq!(
+        n["children"]["closed_by_cascade"], 3,
+        "cascade count surfaced: {n}"
+    );
+    assert!(n.get("parent").is_none(), "no parent → parent omitted: {n}");
+}
+
+#[test]
+fn test_complete_task_returns_neighborhood_end_to_end() {
+    // Full write path: epic-z parents z1 + z2; z2 depends on z1.
+    // Completing z1 should return a JSON envelope whose neighborhood names
+    // the parent and reports z2 as newly unblocked.
+    let (tmp, server) = build_disk_backed_server(&[
             ("e.md", "---\nid: epic-z\ntitle: Epic Z\ntype: epic\nstatus: active\n---\n\n# Epic Z\n"),
             ("z1.md", "---\nid: task-z1\ntitle: Task Z1\ntype: task\nstatus: ready\nparent: epic-z\n---\n\n# Z1\n"),
             ("z2.md", "---\nid: task-z2\ntitle: Task Z2\ntype: task\nstatus: ready\nparent: epic-z\ndepends_on: [task-z1]\n---\n\n# Z2\n"),
         ]);
 
-        let res = server
-            .handle_complete_task(&json!({
-                "id": "task-z1",
-                "completion_evidence": "Implemented Z1 in the test fixture.",
-            }))
-            .expect("complete_task should succeed for a leaf task");
-        let text = res
-            .content
-            .iter()
-            .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
-            .collect::<String>();
-        let v: serde_json::Value = serde_json::from_str(&text)
-            .unwrap_or_else(|e| panic!("response must be JSON: {e}\n{text}"));
+    let res = server
+        .handle_complete_task(&json!({
+            "id": "task-z1",
+            "completion_evidence": "Implemented Z1 in the test fixture.",
+        }))
+        .expect("complete_task should succeed for a leaf task");
+    let text = res
+        .content
+        .iter()
+        .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+        .collect::<String>();
+    let v: serde_json::Value = serde_json::from_str(&text)
+        .unwrap_or_else(|e| panic!("response must be JSON: {e}\n{text}"));
 
-        assert_eq!(v["ok"], true, "envelope ok flag: {v}");
-        assert_eq!(v["status"], "done", "status: {v}");
-        assert_eq!(
-            v["neighborhood"]["parent"]["id"], "epic-z",
-            "parent surfaced: {v}"
-        );
-        let unblocked: Vec<&str> = v["neighborhood"]["unblocked"]
-            .as_array()
-            .map(|a| a.iter().filter_map(|o| o["id"].as_str()).collect())
-            .unwrap_or_default();
-        assert!(
-            unblocked.contains(&"task-z2"),
-            "z2 should be unblocked once z1 closes: {v}"
-        );
-        drop(tmp);
-    }
+    assert_eq!(v["ok"], true, "envelope ok flag: {v}");
+    assert_eq!(v["status"], "done", "status: {v}");
+    assert_eq!(
+        v["neighborhood"]["parent"]["id"], "epic-z",
+        "parent surfaced: {v}"
+    );
+    let unblocked: Vec<&str> = v["neighborhood"]["unblocked"]
+        .as_array()
+        .map(|a| a.iter().filter_map(|o| o["id"].as_str()).collect())
+        .unwrap_or_default();
+    assert!(
+        unblocked.contains(&"task-z2"),
+        "z2 should be unblocked once z1 closes: {v}"
+    );
+    drop(tmp);
+}
 
-    #[test]
-    fn test_complete_task_rejects_with_open_children() {
-        // proj-alpha has children: task-a1 (active), task-a2 (active), task-a3 (done).
-        // Completing proj-alpha without recursive=true should fail.
-        let server = build_test_server();
-        let err = server
-            .handle_complete_task(&json!({
-                "id": "proj-alpha",
-                "completion_evidence": "done"
-            }))
-            .expect_err("should reject complete when open children exist");
-        let msg = err.message.to_string();
-        assert!(
-            msg.to_lowercase().contains("open child") || msg.to_lowercase().contains("children"),
-            "error should mention open children; got: {msg}"
-        );
-        assert!(
-            matches!(err.code, ErrorCode::INVALID_PARAMS),
-            "should be INVALID_PARAMS, got: {:?}",
-            err.code
-        );
-    }
+#[test]
+fn test_complete_task_rejects_with_open_children() {
+    // proj-alpha has children: task-a1 (active), task-a2 (active), task-a3 (done).
+    // Completing proj-alpha without recursive=true should fail.
+    let server = build_test_server();
+    let err = server
+        .handle_complete_task(&json!({
+            "id": "proj-alpha",
+            "completion_evidence": "done"
+        }))
+        .expect_err("should reject complete when open children exist");
+    let msg = err.message.to_string();
+    assert!(
+        msg.to_lowercase().contains("open child") || msg.to_lowercase().contains("children"),
+        "error should mention open children; got: {msg}"
+    );
+    assert!(
+        matches!(err.code, ErrorCode::INVALID_PARAMS),
+        "should be INVALID_PARAMS, got: {:?}",
+        err.code
+    );
+}
 
-    // ── mem_a1668542: release_task failure-reason-mandatory gate
-    //  specs/enforcement/evidence-contract.md. Releasing to
-    // a handback status (blocked/cancelled/review/partial) requires a
-    // non-empty `reason` (or `blocker`, for `blocked`).
+// ── mem_a1668542: release_task failure-reason-mandatory gate
+//  specs/enforcement/evidence-contract.md. Releasing to
+// a handback status (blocked/cancelled/review/partial) requires a
+// non-empty `reason` (or `blocker`, for `blocked`).
 
-    
-
-    
-
-    
-
-    #[test]
-    fn test_release_task_cancelled_review_partial_without_reason_are_rejected() {
-        for status in ["cancelled", "review", "partial"] {
-            let (_tmp, server) = build_disk_backed_server(&[(
-                "tasks/task-new.md",
-                "---\nid: task-new\ntitle: New task\ntype: task\nstatus: ready\ncreated: 2026-07-23T10:00:00+00:00\n---\n\n# New task\n",
-            )]);
-            let err = server
-                .handle_release_task(&json!({
-                    "id": "task-new",
-                    "status": status,
-                    "summary": format!("Releasing as {status} with no reason given."),
-                }))
-                .expect_err(&format!("{status} with no reason must be rejected"));
-            assert!(
-                matches!(err.code, ErrorCode::INVALID_PARAMS),
-                "status={status}: should be INVALID_PARAMS, got: {:?}",
-                err.code
-            );
-            assert!(
-                err.message.to_lowercase().contains("reason"),
-                "status={status}: error should mention reason requirement; got: {}",
-                err.message
-            );
-
-            // ... and accepted once a reason is given.
-            let (_tmp2, server2) = build_disk_backed_server(&[(
-                "tasks/task-new.md",
-                "---\nid: task-new\ntitle: New task\ntype: task\nstatus: ready\ncreated: 2026-07-23T10:00:00+00:00\n---\n\n# New task\n",
-            )]);
-            let res = server2
-                .handle_release_task(&json!({
-                    "id": "task-new",
-                    "status": status,
-                    "summary": format!("Releasing as {status} with a reason."),
-                    "reason": "declared explicitly for this test",
-                }))
-                .unwrap_or_else(|e| panic!("{status} with a reason must be accepted: {e:?}"));
-            assert!(
-                !res.is_error.unwrap_or(false),
-                "status={status}: should not error: {res:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn test_release_task_success_status_unaffected_by_reason_gate() {
-        // done is not a handback status — no reason/blocker
-        // is required, only `summary` (unchanged behavior).
-        let status = "done";
+#[test]
+fn test_release_task_cancelled_review_partial_without_reason_are_rejected() {
+    for status in ["cancelled", "review", "partial"] {
         let (_tmp, server) = build_disk_backed_server(&[(
-            "tasks/task-new.md",
-            "---\nid: task-new\ntitle: New task\ntype: task\nstatus: ready\ncreated: 2026-07-23T10:00:00+00:00\n---\n\n# New task\n",
-        )]);
-        let res = server
+                "tasks/task-new.md",
+                "---\nid: task-new\ntitle: New task\ntype: task\nstatus: ready\ncreated: 2026-07-23T10:00:00+00:00\n---\n\n# New task\n",
+            )]);
+        let err = server
             .handle_release_task(&json!({
                 "id": "task-new",
                 "status": status,
-                "summary": "Shipped cleanly.",
+                "summary": format!("Releasing as {status} with no reason given."),
             }))
-            .unwrap_or_else(|e| {
-                panic!("status={status} success path must be unaffected: {e:?}")
-            });
+            .expect_err(&format!("{status} with no reason must be rejected"));
+        assert!(
+            matches!(err.code, ErrorCode::INVALID_PARAMS),
+            "status={status}: should be INVALID_PARAMS, got: {:?}",
+            err.code
+        );
+        assert!(
+            err.message.to_lowercase().contains("reason"),
+            "status={status}: error should mention reason requirement; got: {}",
+            err.message
+        );
+
+        // ... and accepted once a reason is given.
+        let (_tmp2, server2) = build_disk_backed_server(&[(
+                "tasks/task-new.md",
+                "---\nid: task-new\ntitle: New task\ntype: task\nstatus: ready\ncreated: 2026-07-23T10:00:00+00:00\n---\n\n# New task\n",
+            )]);
+        let res = server2
+            .handle_release_task(&json!({
+                "id": "task-new",
+                "status": status,
+                "summary": format!("Releasing as {status} with a reason."),
+                "reason": "declared explicitly for this test",
+            }))
+            .unwrap_or_else(|e| panic!("{status} with a reason must be accepted: {e:?}"));
         assert!(
             !res.is_error.unwrap_or(false),
             "status={status}: should not error: {res:?}"
         );
     }
+}
 
-    #[test]
-    fn test_release_task_missing_created() {
-        // No `created` frontmatter at all — fail-closed.
-        let (_tmp, server) = build_disk_backed_server(&[(
+#[test]
+fn test_release_task_success_status_unaffected_by_reason_gate() {
+    // done is not a handback status — no reason/blocker
+    // is required, only `summary` (unchanged behavior).
+    let status = "done";
+    let (_tmp, server) = build_disk_backed_server(&[(
+            "tasks/task-new.md",
+            "---\nid: task-new\ntitle: New task\ntype: task\nstatus: ready\ncreated: 2026-07-23T10:00:00+00:00\n---\n\n# New task\n",
+        )]);
+    let res = server
+        .handle_release_task(&json!({
+            "id": "task-new",
+            "status": status,
+            "summary": "Shipped cleanly.",
+        }))
+        .unwrap_or_else(|e| panic!("status={status} success path must be unaffected: {e:?}"));
+    assert!(
+        !res.is_error.unwrap_or(false),
+        "status={status}: should not error: {res:?}"
+    );
+}
+
+#[test]
+fn test_release_task_missing_created() {
+    // No `created` frontmatter at all — fail-closed.
+    let (_tmp, server) = build_disk_backed_server(&[(
             "tasks/task-nocreated.md",
             "---\nid: task-nocreated\ntitle: No created field\ntype: task\nstatus: ready\n---\n\n# No created field\n",
         )]);
-        let err = server
-            .handle_release_task(&json!({
-                "id": "task-nocreated",
-                "status": "in_progress",
-                "summary": "No created field, no reason given.",
-            }))
-            .expect_err("missing `created` must fail closed");
-        assert!(
-            matches!(err.code, ErrorCode::INVALID_PARAMS),
-            "should be INVALID_PARAMS, got: {:?}",
-            err.code
-        );
-    }
+    let err = server
+        .handle_release_task(&json!({
+            "id": "task-nocreated",
+            "status": "in_progress",
+            "summary": "No created field, no reason given.",
+        }))
+        .expect_err("missing `created` must fail closed");
+    assert!(
+        matches!(err.code, ErrorCode::INVALID_PARAMS),
+        "should be INVALID_PARAMS, got: {:?}",
+        err.code
+    );
+}
 
-    #[test]
-    fn test_update_task_rejects_closing_with_open_children() {
-        // proj-alpha has active children; setting its status to done should be rejected.
-        let server = build_test_server();
-        let err = server
-            .handle_update_task(&json!({
-                "id": "proj-alpha",
-                "status": "done",
-                "completion_evidence": "done"
-            }))
-            .expect_err("should reject status=done when open children exist");
-        let msg = err.message.to_string();
-        assert!(
-            msg.to_lowercase().contains("open child") || msg.to_lowercase().contains("children"),
-            "error should mention open children; got: {msg}"
-        );
-        assert!(
-            matches!(err.code, ErrorCode::INVALID_PARAMS),
-            "should be INVALID_PARAMS, got: {:?}",
-            err.code
-        );
-    }
-
-    #[test]
-    fn test_update_task_allows_cancelled_without_children_check() {
-        // task-g1 has no children — closing it should not be blocked.
-        // (Will fail on disk I/O since test server has no real files, but
-        // must NOT fail on the open-children guard.)
-        let server = build_test_server();
-        let result = server.handle_update_task(&json!({
-            "id": "task-g1",
-            "status": "cancelled"
-        }));
-        match result {
-            Ok(_) => { /* success is fine */ }
-            Err(e) => {
-                let msg = e.message.to_string();
-                assert!(
-                    !msg.to_lowercase().contains("open child"),
-                    "task with no children should not trigger open-children guard; got: {msg}"
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn test_update_task_allows_closed_status_with_recursive() {
-        // proj-alpha has open children but recursive=true should bypass the block.
-        // Will still fail on disk I/O, but must NOT fail on the open-children guard.
-        let server = build_test_server();
-        let result = server.handle_update_task(&json!({
+#[test]
+fn test_update_task_rejects_closing_with_open_children() {
+    // proj-alpha has active children; setting its status to done should be rejected.
+    let server = build_test_server();
+    let err = server
+        .handle_update_task(&json!({
             "id": "proj-alpha",
-            "status": "cancelled",
-            "recursive": true
-        }));
-        match result {
-            Ok(_) => { /* success is fine */ }
-            Err(e) => {
-                let msg = e.message.to_string();
-                assert!(
-                    !msg.to_lowercase().contains("open child"),
-                    "recursive=true should bypass the open-children guard; got: {msg}"
-                );
-            }
+            "status": "done",
+            "completion_evidence": "done"
+        }))
+        .expect_err("should reject status=done when open children exist");
+    let msg = err.message.to_string();
+    assert!(
+        msg.to_lowercase().contains("open child") || msg.to_lowercase().contains("children"),
+        "error should mention open children; got: {msg}"
+    );
+    assert!(
+        matches!(err.code, ErrorCode::INVALID_PARAMS),
+        "should be INVALID_PARAMS, got: {:?}",
+        err.code
+    );
+}
+
+#[test]
+fn test_update_task_allows_cancelled_without_children_check() {
+    // task-g1 has no children — closing it should not be blocked.
+    // (Will fail on disk I/O since test server has no real files, but
+    // must NOT fail on the open-children guard.)
+    let server = build_test_server();
+    let result = server.handle_update_task(&json!({
+        "id": "task-g1",
+        "status": "cancelled"
+    }));
+    match result {
+        Ok(_) => { /* success is fine */ }
+        Err(e) => {
+            let msg = e.message.to_string();
+            assert!(
+                !msg.to_lowercase().contains("open child"),
+                "task with no children should not trigger open-children guard; got: {msg}"
+            );
         }
     }
+}
 
-    // ── epic-50b5ade9.2: release_task rejects terminal status (done) when task has open subtasks
-    #[test]
-    fn test_release_task_rejects_done_with_open_children() {
-        let (_tmp, server) = build_disk_backed_server(&[
-            (
-                "tasks/task-parent.md",
-                "---\nid: task-parent\ntitle: Parent\ntype: task\nstatus: ready\ncreated: 2026-07-23T10:00:00+00:00\n---\n\n# Parent\n",
-            ),
-            (
-                "tasks/task-child.md",
-                "---\nid: task-child\ntitle: Child\ntype: task\nstatus: ready\nparent: task-parent\ncreated: 2026-07-23T10:00:00+00:00\n---\n\n# Child\n",
-            ),
-        ]);
-
-        let terminal_status = "done";
-        let err = server
-            .handle_release_task(&json!({
-                "id": "task-parent",
-                "status": terminal_status,
-                "summary": format!("Attempting to release parent as {terminal_status}"),
-            }))
-            .expect_err(&format!("{terminal_status} must be rejected when child is open"));
-
-        assert!(
-            matches!(err.code, ErrorCode::INVALID_PARAMS),
-            "status={terminal_status}: should be INVALID_PARAMS, got: {:?}",
-            err.code
-        );
-        let msg = err.message.to_string();
-        assert!(
-            msg.contains("open child task(s)") && msg.contains("task-child"),
-            "status={terminal_status}: error should name open child ID 'task-child'; got: {msg}"
-        );
+#[test]
+fn test_update_task_allows_closed_status_with_recursive() {
+    // proj-alpha has open children but recursive=true should bypass the block.
+    // Will still fail on disk I/O, but must NOT fail on the open-children guard.
+    let server = build_test_server();
+    let result = server.handle_update_task(&json!({
+        "id": "proj-alpha",
+        "status": "cancelled",
+        "recursive": true
+    }));
+    match result {
+        Ok(_) => { /* success is fine */ }
+        Err(e) => {
+            let msg = e.message.to_string();
+            assert!(
+                !msg.to_lowercase().contains("open child"),
+                "recursive=true should bypass the open-children guard; got: {msg}"
+            );
+        }
     }
+}
 
-    #[test]
-    fn test_release_task_allows_blocked_and_cancelled_with_open_children() {
-        let (_tmp, server) = build_disk_backed_server(&[
+// ── epic-50b5ade9.2: release_task rejects terminal status (done) when task has open subtasks
+#[test]
+fn test_release_task_rejects_done_with_open_children() {
+    let (_tmp, server) = build_disk_backed_server(&[
             (
                 "tasks/task-parent.md",
                 "---\nid: task-parent\ntitle: Parent\ntype: task\nstatus: ready\ncreated: 2026-07-23T10:00:00+00:00\n---\n\n# Parent\n",
@@ -1250,19 +1211,55 @@ use super::*;
             ),
         ]);
 
-        // blocked must succeed regardless of open children (with blocker or reason)
-        let res_blocked = server
-            .handle_release_task(&json!({
-                "id": "task-parent",
-                "status": "review",
-                "summary": "Escalating as review.",
-                "reason": "waiting on external decision",
-            }))
-            .expect("release_task(status=review) with open children must succeed");
-        assert!(!res_blocked.is_error.unwrap_or(false));
+    let terminal_status = "done";
+    let err = server
+        .handle_release_task(&json!({
+            "id": "task-parent",
+            "status": terminal_status,
+            "summary": format!("Attempting to release parent as {terminal_status}"),
+        }))
+        .expect_err(&format!(
+            "{terminal_status} must be rejected when child is open"
+        ));
 
-        // cancelled must succeed regardless of open children (with reason)
-        let (_tmp2, server2) = build_disk_backed_server(&[
+    assert!(
+        matches!(err.code, ErrorCode::INVALID_PARAMS),
+        "status={terminal_status}: should be INVALID_PARAMS, got: {:?}",
+        err.code
+    );
+    let msg = err.message.to_string();
+    assert!(
+        msg.contains("open child task(s)") && msg.contains("task-child"),
+        "status={terminal_status}: error should name open child ID 'task-child'; got: {msg}"
+    );
+}
+
+#[test]
+fn test_release_task_allows_blocked_and_cancelled_with_open_children() {
+    let (_tmp, server) = build_disk_backed_server(&[
+            (
+                "tasks/task-parent.md",
+                "---\nid: task-parent\ntitle: Parent\ntype: task\nstatus: ready\ncreated: 2026-07-23T10:00:00+00:00\n---\n\n# Parent\n",
+            ),
+            (
+                "tasks/task-child.md",
+                "---\nid: task-child\ntitle: Child\ntype: task\nstatus: ready\nparent: task-parent\ncreated: 2026-07-23T10:00:00+00:00\n---\n\n# Child\n",
+            ),
+        ]);
+
+    // blocked must succeed regardless of open children (with blocker or reason)
+    let res_blocked = server
+        .handle_release_task(&json!({
+            "id": "task-parent",
+            "status": "review",
+            "summary": "Escalating as review.",
+            "reason": "waiting on external decision",
+        }))
+        .expect("release_task(status=review) with open children must succeed");
+    assert!(!res_blocked.is_error.unwrap_or(false));
+
+    // cancelled must succeed regardless of open children (with reason)
+    let (_tmp2, server2) = build_disk_backed_server(&[
             (
                 "tasks/task-parent2.md",
                 "---\nid: task-parent2\ntitle: Parent 2\ntype: task\nstatus: ready\ncreated: 2026-07-23T10:00:00+00:00\n---\n\n# Parent 2\n",
@@ -1272,20 +1269,20 @@ use super::*;
                 "---\nid: task-child2\ntitle: Child 2\ntype: task\nstatus: ready\nparent: task-parent2\ncreated: 2026-07-23T10:00:00+00:00\n---\n\n# Child 2\n",
             ),
         ]);
-        let res_cancelled = server2
-            .handle_release_task(&json!({
-                "id": "task-parent2",
-                "status": "cancelled",
-                "summary": "Cancelling parent.",
-                "reason": "project direction pivoted",
-            }))
-            .expect("release_task(status=cancelled) with open children must succeed");
-        assert!(!res_cancelled.is_error.unwrap_or(false));
-    }
+    let res_cancelled = server2
+        .handle_release_task(&json!({
+            "id": "task-parent2",
+            "status": "cancelled",
+            "summary": "Cancelling parent.",
+            "reason": "project direction pivoted",
+        }))
+        .expect("release_task(status=cancelled) with open children must succeed");
+    assert!(!res_cancelled.is_error.unwrap_or(false));
+}
 
-    #[test]
-    fn test_release_task_succeeds_once_children_closed_or_with_recursive() {
-        let (_tmp, server) = build_disk_backed_server(&[
+#[test]
+fn test_release_task_succeeds_once_children_closed_or_with_recursive() {
+    let (_tmp, server) = build_disk_backed_server(&[
             (
                 "tasks/task-parent.md",
                 "---\nid: task-parent\ntitle: Parent\ntype: task\nstatus: ready\ncreated: 2026-07-23T10:00:00+00:00\n---\n\n# Parent\n",
@@ -1296,36 +1293,36 @@ use super::*;
             ),
         ]);
 
-        // First leg: parent release is refused
-        server
-            .handle_release_task(&json!({
-                "id": "task-parent",
-                "status": "done",
-                "summary": "Trying done while child open",
-            }))
-            .expect_err("must be refused while child is open");
+    // First leg: parent release is refused
+    server
+        .handle_release_task(&json!({
+            "id": "task-parent",
+            "status": "done",
+            "summary": "Trying done while child open",
+        }))
+        .expect_err("must be refused while child is open");
 
-        // Close the child task
-        server
-            .handle_release_task(&json!({
-                "id": "task-child",
-                "status": "done",
-                "summary": "Child completed cleanly.",
-            }))
-            .expect("closing child must succeed");
+    // Close the child task
+    server
+        .handle_release_task(&json!({
+            "id": "task-child",
+            "status": "done",
+            "summary": "Child completed cleanly.",
+        }))
+        .expect("closing child must succeed");
 
-        // Second leg: same parent release now succeeds
-        let res = server
-            .handle_release_task(&json!({
-                "id": "task-parent",
-                "status": "done",
-                "summary": "Parent now completed cleanly.",
-            }))
-            .expect("parent release must succeed once child is closed");
-        assert!(!res.is_error.unwrap_or(false));
+    // Second leg: same parent release now succeeds
+    let res = server
+        .handle_release_task(&json!({
+            "id": "task-parent",
+            "status": "done",
+            "summary": "Parent now completed cleanly.",
+        }))
+        .expect("parent release must succeed once child is closed");
+    assert!(!res.is_error.unwrap_or(false));
 
-        // Also test recursive=true cascade
-        let (_tmp3, server3) = build_disk_backed_server(&[
+    // Also test recursive=true cascade
+    let (_tmp3, server3) = build_disk_backed_server(&[
             (
                 "tasks/task-p3.md",
                 "---\nid: task-p3\ntitle: Parent 3\ntype: task\nstatus: ready\ncreated: 2026-07-23T10:00:00+00:00\n---\n\n# Parent 3\n",
@@ -1335,438 +1332,461 @@ use super::*;
                 "---\nid: task-c3\ntitle: Child 3\ntype: task\nstatus: ready\nparent: task-p3\ncreated: 2026-07-23T10:00:00+00:00\n---\n\n# Child 3\n",
             ),
         ]);
-        let res_rec = server3
-            .handle_release_task(&json!({
-                "id": "task-p3",
-                "status": "done",
-                "summary": "Releasing parent and cascading to children.",
-                "recursive": true,
-            }))
-            .expect("recursive=true must cascade close open children");
-        assert!(!res_rec.is_error.unwrap_or(false));
-    }
+    let res_rec = server3
+        .handle_release_task(&json!({
+            "id": "task-p3",
+            "status": "done",
+            "summary": "Releasing parent and cascading to children.",
+            "recursive": true,
+        }))
+        .expect("recursive=true must cascade close open children");
+    assert!(!res_rec.is_error.unwrap_or(false));
+}
 
-    /// refresh_graph must reflect new files written to disk after server startup.
-    #[test]
-    fn test_refresh_graph_reflects_disk_changes() {
-        let (tmp, server) = build_disk_backed_server(&[(
-            "tasks/initial.md",
-            "---\nid: initial-task\ntitle: Initial Task\ntype: task\nstatus: ready\n---\n\n# Initial\n",
-        )]);
+/// refresh_graph must reflect new files written to disk after server startup.
+#[test]
+fn test_refresh_graph_reflects_disk_changes() {
+    let (tmp, server) = build_disk_backed_server(&[(
+        "tasks/initial.md",
+        "---\nid: initial-task\ntitle: Initial Task\ntype: task\nstatus: ready\n---\n\n# Initial\n",
+    )]);
 
-        // new-task is not yet on disk — must be absent from graph.
-        assert!(
-            server.graph.read().get_node("new-task").is_none(),
-            "new-task must not be in graph before disk write"
-        );
+    // new-task is not yet on disk — must be absent from graph.
+    assert!(
+        server.graph.read().get_node("new-task").is_none(),
+        "new-task must not be in graph before disk write"
+    );
 
-        // Write a new file to disk without going through the server mutation path.
-        std::fs::write(
-            tmp.path().join("tasks/new-task.md"),
-            "---\nid: new-task\ntitle: New Task\ntype: task\nstatus: ready\n---\n\n# New\n",
-        )
-        .unwrap();
+    // Write a new file to disk without going through the server mutation path.
+    std::fs::write(
+        tmp.path().join("tasks/new-task.md"),
+        "---\nid: new-task\ntitle: New Task\ntype: task\nstatus: ready\n---\n\n# New\n",
+    )
+    .unwrap();
 
-        // Graph is still stale — in-memory index hasn't been told about the new file.
-        assert!(
-            server.graph.read().get_node("new-task").is_none(),
-            "new-task must not be in graph before refresh_graph"
-        );
+    // Graph is still stale — in-memory index hasn't been told about the new file.
+    assert!(
+        server.graph.read().get_node("new-task").is_none(),
+        "new-task must not be in graph before refresh_graph"
+    );
 
-        // Call refresh_graph — should scan disk and load new-task.
-        let result = server
-            .handle_refresh_graph(&json!({}))
-            .expect("refresh_graph must succeed");
-        let text: String = result
-            .content
-            .iter()
-            .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
-            .collect();
+    // Call refresh_graph — should scan disk and load new-task.
+    let result = server
+        .handle_refresh_graph(&json!({}))
+        .expect("refresh_graph must succeed");
+    let text: String = result
+        .content
+        .iter()
+        .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+        .collect();
 
-        // After refresh, new-task must be in the graph.
-        assert!(
-            server.graph.read().get_node("new-task").is_some(),
-            "new-task must be in graph after refresh_graph; response: {text}"
-        );
+    // After refresh, new-task must be in the graph.
+    assert!(
+        server.graph.read().get_node("new-task").is_some(),
+        "new-task must be in graph after refresh_graph; response: {text}"
+    );
 
-        // Response JSON: ok=true, node_count positive.
-        let parsed: serde_json::Value =
-            serde_json::from_str(&text).expect("response must be valid JSON");
-        assert_eq!(parsed["ok"], true, "response ok must be true: {text}");
-        assert_eq!(
-            parsed["node_count"].as_u64().unwrap_or(0),
-            2,
-            "node_count must be exactly 2 (initial-task + new-task): {text}"
-        );
-    }
+    // Response JSON: ok=true, node_count positive.
+    let parsed: serde_json::Value =
+        serde_json::from_str(&text).expect("response must be valid JSON");
+    assert_eq!(parsed["ok"], true, "response ok must be true: {text}");
+    assert_eq!(
+        parsed["node_count"].as_u64().unwrap_or(0),
+        2,
+        "node_count must be exactly 2 (initial-task + new-task): {text}"
+    );
+}
 
-    #[test]
-    fn test_mcp_add_and_delete_observations() {
-        let (tmp, server) = build_disk_backed_server(&[(
+#[test]
+fn test_mcp_add_and_delete_observations() {
+    let (tmp, server) = build_disk_backed_server(&[(
             "tasks/test-task.md",
             "---\nid: test-task\nmodified: '2026-08-01T00:00:00Z'\ntitle: Test Task\ntype: task\nstatus: in_progress\n---\n\n# Header\n\n## Observations\n- obs 1\n",
         )]);
 
-        // 1. Add observations via MCP dispatch
-        let add_res = server
-            .dispatch_tool_sync(
-                "add_observations",
-                &json!({
-                    "id": "test-task",
-                    "lines": ["obs 2", "- obs 3"],
-                    "section": "Observations",
-                    "expected_modified": "2026-08-01T00:00:00Z"
-                }),
-            )
-            .expect("add_observations must succeed");
+    // 1. Add observations via MCP dispatch
+    let add_res = server
+        .dispatch_tool_sync(
+            "add_observations",
+            &json!({
+                "id": "test-task",
+                "lines": ["obs 2", "- obs 3"],
+                "section": "Observations",
+                "expected_modified": "2026-08-01T00:00:00Z"
+            }),
+        )
+        .expect("add_observations must succeed");
 
-        let add_text: String = add_res
-            .content
-            .iter()
-            .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
-            .collect();
-        let add_json: serde_json::Value = serde_json::from_str(&add_text).unwrap();
-        assert_eq!(add_json["ok"], true);
-        assert_eq!(add_json["added_count"], 2);
-        let new_mod = add_json["modified"].as_str().unwrap();
+    let add_text: String = add_res
+        .content
+        .iter()
+        .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+        .collect();
+    let add_json: serde_json::Value = serde_json::from_str(&add_text).unwrap();
+    assert_eq!(add_json["ok"], true);
+    assert_eq!(add_json["added_count"], 2);
+    let new_mod = add_json["modified"].as_str().unwrap();
 
-        let disk_content = std::fs::read_to_string(tmp.path().join("tasks/test-task.md")).unwrap();
-        assert!(disk_content.contains("- obs 1\n- obs 2\n- obs 3"));
+    let disk_content = std::fs::read_to_string(tmp.path().join("tasks/test-task.md")).unwrap();
+    assert!(disk_content.contains("- obs 1\n- obs 2\n- obs 3"));
 
-        // 2. Delete observation via MCP dispatch
-        let del_res = server
-            .dispatch_tool_sync(
-                "delete_observations",
-                &json!({
-                    "id": "test-task",
-                    "selectors": ["obs 2"],
-                    "expected_modified": new_mod
-                }),
-            )
-            .expect("delete_observations must succeed");
+    // 2. Delete observation via MCP dispatch
+    let del_res = server
+        .dispatch_tool_sync(
+            "delete_observations",
+            &json!({
+                "id": "test-task",
+                "selectors": ["obs 2"],
+                "expected_modified": new_mod
+            }),
+        )
+        .expect("delete_observations must succeed");
 
-        let del_text: String = del_res
-            .content
-            .iter()
-            .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
-            .collect();
-        let del_json: serde_json::Value = serde_json::from_str(&del_text).unwrap();
-        assert_eq!(del_json["ok"], true);
-        assert_eq!(del_json["deleted_count"], 1);
+    let del_text: String = del_res
+        .content
+        .iter()
+        .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+        .collect();
+    let del_json: serde_json::Value = serde_json::from_str(&del_text).unwrap();
+    assert_eq!(del_json["ok"], true);
+    assert_eq!(del_json["deleted_count"], 1);
 
-        let final_disk = std::fs::read_to_string(tmp.path().join("tasks/test-task.md")).unwrap();
-        assert!(final_disk.contains("- obs 1\n- obs 3"));
-        assert!(!final_disk.contains("obs 2"));
-    }
+    let final_disk = std::fs::read_to_string(tmp.path().join("tasks/test-task.md")).unwrap();
+    assert!(final_disk.contains("- obs 1\n- obs 3"));
+    assert!(!final_disk.contains("obs 2"));
+}
 
-    #[test]
-    fn test_mcp_delete_observations_not_found() {
-        let (_tmp, server) = build_disk_backed_server(&[(
+#[test]
+fn test_mcp_delete_observations_not_found() {
+    let (_tmp, server) = build_disk_backed_server(&[(
             "tasks/test-task.md",
             "---\nid: test-task\ntitle: Test Task\ntype: task\nstatus: in_progress\n---\n\n# Header\n\n## Observations\n- obs 1\n",
         )]);
 
-        let err = server
-            .dispatch_tool_sync(
-                "delete_observations",
-                &json!({
-                    "id": "test-task",
-                    "selectors": ["nonexistent"]
-                }),
-            )
-            .unwrap_err();
+    let err = server
+        .dispatch_tool_sync(
+            "delete_observations",
+            &json!({
+                "id": "test-task",
+                "selectors": ["nonexistent"]
+            }),
+        )
+        .unwrap_err();
 
-        assert_eq!(err.code, ErrorCode::INVALID_PARAMS);
-        assert!(err.message.contains("nonexistent"));
-        let data = err.data.unwrap();
-        assert_eq!(data["error_type"], "selector_not_found");
-        assert_eq!(data["selector"], "nonexistent");
-    }
+    assert_eq!(err.code, ErrorCode::INVALID_PARAMS);
+    assert!(err.message.contains("nonexistent"));
+    let data = err.data.unwrap();
+    assert_eq!(data["error_type"], "selector_not_found");
+    assert_eq!(data["selector"], "nonexistent");
+}
 
-    #[test]
-    fn test_mcp_observations_stale_write() {
-        let (_tmp, server) = build_disk_backed_server(&[(
+#[test]
+fn test_mcp_observations_stale_write() {
+    let (_tmp, server) = build_disk_backed_server(&[(
             "tasks/test-task.md",
             "---\nid: test-task\nmodified: '2026-08-01T00:00:00Z'\ntitle: Test Task\ntype: task\nstatus: in_progress\n---\n\n## Observations\n",
         )]);
 
-        let err = server
-            .dispatch_tool_sync(
-                "add_observations",
-                &json!({
-                    "id": "test-task",
-                    "lines": ["obs 1"],
-                    "expected_modified": "2026-07-01T00:00:00Z"
-                }),
-            )
-            .unwrap_err();
+    let err = server
+        .dispatch_tool_sync(
+            "add_observations",
+            &json!({
+                "id": "test-task",
+                "lines": ["obs 1"],
+                "expected_modified": "2026-07-01T00:00:00Z"
+            }),
+        )
+        .unwrap_err();
 
-        assert_eq!(err.code, ErrorCode::INVALID_PARAMS);
-        assert!(err.message.contains("Stale write rejected"));
-        let data = err.data.unwrap();
-        assert_eq!(data["error_type"], "stale_write");
-    }
+    assert_eq!(err.code, ErrorCode::INVALID_PARAMS);
+    assert!(err.message.contains("Stale write rejected"));
+    let data = err.data.unwrap();
+    assert_eq!(data["error_type"], "stale_write");
+}
 
-    #[test]
-    fn test_edit_body_mcp_flow() {
-        let tmp = tempfile::tempdir().unwrap();
-        let root = tmp.path();
-        std::fs::create_dir_all(root.join("tasks")).unwrap();
+#[test]
+fn test_edit_body_mcp_flow() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    std::fs::create_dir_all(root.join("tasks")).unwrap();
 
-        let task_file = root.join("tasks").join("task-target.md");
-        std::fs::write(
+    let task_file = root.join("tasks").join("task-target.md");
+    std::fs::write(
             &task_file,
             "---\nid: task-target\nmodified: '2026-01-01T00:00:00Z'\ntitle: Target Task\ntype: task\nstatus: inbox\n---\n\nFirst line.\nSecond line.\nThird line.\n",
         ).unwrap();
 
-        let doc = crate::pkb::parse_file_relative(&task_file, root).unwrap();
-        let graph = GraphStore::build(&[doc], root);
-        let store = VectorStore::new(3);
-        let embedder = Embedder::new_dummy();
-        let server = PkbSearchServer::new(
-            Arc::new(RwLock::new(store)),
-            Arc::new(embedder),
-            root.to_path_buf(),
-            root.join("db.bin"),
-            Arc::new(RwLock::new(graph)),
-        );
+    let doc = crate::pkb::parse_file_relative(&task_file, root).unwrap();
+    let graph = GraphStore::build(&[doc], root);
+    let store = VectorStore::new(3);
+    let embedder = Embedder::new_dummy();
+    let server = PkbSearchServer::new(
+        Arc::new(RwLock::new(store)),
+        Arc::new(embedder),
+        root.to_path_buf(),
+        root.join("db.bin"),
+        Arc::new(RwLock::new(graph)),
+    );
 
-        // 1. Dry run
-        let dry_diff = "```diff\n@@ ... @@\n-Second line.\n+Changed second line.\n```";
-        let dry_res = server.dispatch_tool_sync("edit_body", &serde_json::json!({
-            "id": "task-target",
-            "diff": dry_diff,
-            "dry_run": true,
-            "expected_modified": "2026-01-01T00:00:00Z"
-        })).expect("dry run should succeed");
-        let dry_text: String = dry_res.content.iter().filter_map(|c| c.raw.as_text().map(|t| t.text.as_str())).collect();
-        assert!(dry_text.contains("\"dry_run\":true"));
-        let disk_text = std::fs::read_to_string(&task_file).unwrap();
-        assert!(disk_text.contains("Second line."));
+    // 1. Dry run
+    let dry_diff = "```diff\n@@ ... @@\n-Second line.\n+Changed second line.\n```";
+    let dry_res = server
+        .dispatch_tool_sync(
+            "edit_body",
+            &serde_json::json!({
+                "id": "task-target",
+                "diff": dry_diff,
+                "dry_run": true,
+                "expected_modified": "2026-01-01T00:00:00Z"
+            }),
+        )
+        .expect("dry run should succeed");
+    let dry_text: String = dry_res
+        .content
+        .iter()
+        .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+        .collect();
+    assert!(dry_text.contains("\"dry_run\":true"));
+    let disk_text = std::fs::read_to_string(&task_file).unwrap();
+    assert!(disk_text.contains("Second line."));
 
-        // 2. Real application via "edit_body"
-        let real_diff = "```diff\n@@ ... @@\n-Second line.\n+Replaced second line.\n```";
-        let res = server.dispatch_tool_sync("edit_body", &serde_json::json!({
-            "id": "task-target",
-            "diff": real_diff,
-            "expected_modified": "2026-01-01T00:00:00Z"
-        })).expect("real edit should succeed");
-        let res_text: String = res.content.iter().filter_map(|c| c.raw.as_text().map(|t| t.text.as_str())).collect();
-        assert!(res_text.contains("\"ok\":true"));
-        let updated_disk = std::fs::read_to_string(&task_file).unwrap();
-        assert!(updated_disk.contains("Replaced second line."));
-        assert!(!updated_disk.contains("Second line."));
-        assert!(updated_disk.contains("status: inbox"));
+    // 2. Real application via "edit_body"
+    let real_diff = "```diff\n@@ ... @@\n-Second line.\n+Replaced second line.\n```";
+    let res = server
+        .dispatch_tool_sync(
+            "edit_body",
+            &serde_json::json!({
+                "id": "task-target",
+                "diff": real_diff,
+                "expected_modified": "2026-01-01T00:00:00Z"
+            }),
+        )
+        .expect("real edit should succeed");
+    let res_text: String = res
+        .content
+        .iter()
+        .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+        .collect();
+    assert!(res_text.contains("\"ok\":true"));
+    let updated_disk = std::fs::read_to_string(&task_file).unwrap();
+    assert!(updated_disk.contains("Replaced second line."));
+    assert!(!updated_disk.contains("Second line."));
+    assert!(updated_disk.contains("status: inbox"));
 
-        // 3. Stale write rejection
-        let stale_diff = "```diff\n@@ ... @@\n-Third line.\n+Stale third line.\n```";
-        let stale_res = server.dispatch_tool_sync("edit_body", &serde_json::json!({
+    // 3. Stale write rejection
+    let stale_diff = "```diff\n@@ ... @@\n-Third line.\n+Stale third line.\n```";
+    let stale_res = server.dispatch_tool_sync(
+        "edit_body",
+        &serde_json::json!({
             "id": "task-target",
             "diff": stale_diff,
             "expected_modified": "2026-01-01T00:00:00Z"
-        }));
-        let stale_err = stale_res.unwrap_err();
-        assert!(stale_err.message.contains("Stale write rejected"));
+        }),
+    );
+    let stale_err = stale_res.unwrap_err();
+    assert!(stale_err.message.contains("Stale write rejected"));
 
-        // 4. Non-matching diff failure
-        let nomatch_diff = "```diff\n@@ ... @@\n-Nonexistent line.\n+Failure line.\n```";
-        let nomatch_res = server.dispatch_tool_sync("edit_body", &serde_json::json!({
+    // 4. Non-matching diff failure
+    let nomatch_diff = "```diff\n@@ ... @@\n-Nonexistent line.\n+Failure line.\n```";
+    let nomatch_res = server.dispatch_tool_sync(
+        "edit_body",
+        &serde_json::json!({
             "id": "task-target",
             "diff": nomatch_diff
-        }));
-        let nomatch_err = nomatch_res.unwrap_err();
-        assert!(nomatch_err.message.contains("diff_application_failed"));
-    }
+        }),
+    );
+    let nomatch_err = nomatch_res.unwrap_err();
+    assert!(nomatch_err.message.contains("diff_application_failed"));
+}
 
-    // ── mem_2ecf862b: `status: "blocked"` is a stored-vs-computed collision
-    // unless it carries new information (a blocker/reason). A bare hand-write
-    // (no blocker, no reason) duplicates what `depends_on` + the computed
-    // `blocked` boolean already say and goes stale silently — reject it at
-    // the shared write path (document_crud::update_document), which both
-    // `update_task` and `release_task` funnel through.
+// ── mem_2ecf862b: `status: "blocked"` is a stored-vs-computed collision
+// unless it carries new information (a blocker/reason). A bare hand-write
+// (no blocker, no reason) duplicates what `depends_on` + the computed
+// `blocked` boolean already say and goes stale silently — reject it at
+// the shared write path (document_crud::update_document), which both
+// `update_task` and `release_task` funnel through.
 
-    
-
-    
-
-    
-
-    #[test]
-    fn test_update_document_rejects_manual_blocked_boolean() {
-        // Pre-existing guard (mem-74b6165e) — reconfirmed still active after
-        // the mem_2ecf862b status=blocked gate was added alongside it.
-        let (_tmp, server) = build_disk_backed_server(&[(
+#[test]
+fn test_update_document_rejects_manual_blocked_boolean() {
+    // Pre-existing guard (mem-74b6165e) — reconfirmed still active after
+    // the mem_2ecf862b status=blocked gate was added alongside it.
+    let (_tmp, server) = build_disk_backed_server(&[(
             "tasks/task-new.md",
             "---\nid: task-new\ntitle: New task\ntype: task\nstatus: ready\ncreated: 2026-07-23T10:00:00+00:00\n---\n\n# New task\n",
         )]);
-        let err = server
-            .handle_update_task(&json!({"id": "task-new", "updates": {"blocked": true}}))
-            .expect_err("manual 'blocked' boolean must be rejected");
-        assert!(err.message.to_lowercase().contains("reserved computed keyword"));
-    }
+    let err = server
+        .handle_update_task(&json!({"id": "task-new", "updates": {"blocked": true}}))
+        .expect_err("manual 'blocked' boolean must be rejected");
+    assert!(err
+        .message
+        .to_lowercase()
+        .contains("reserved computed keyword"));
+}
 
-    // ── mem_8a8aeb2a: release_task must persist the exact status it reports,
-    // and must persist `reason`/`blocker` to frontmatter (not just prose).
+// ── mem_8a8aeb2a: release_task must persist the exact status it reports,
+// and must persist `reason`/`blocker` to frontmatter (not just prose).
 
-    #[test]
-    fn test_release_task_reported_status_matches_persisted_status() {
-        for status in ["cancelled", "review", "partial", "done"] {
-            let (tmp, server) = build_disk_backed_server(&[(
+#[test]
+fn test_release_task_reported_status_matches_persisted_status() {
+    for status in ["cancelled", "review", "partial", "done"] {
+        let (tmp, server) = build_disk_backed_server(&[(
                 "tasks/task-new.md",
                 "---\nid: task-new\ntitle: New task\ntype: task\nstatus: ready\ncreated: 2026-07-23T10:00:00+00:00\n---\n\n# New task\n",
             )]);
-            let mut args = json!({
-                "id": "task-new",
-                "status": status,
-                "summary": format!("Releasing as {status}."),
-            });
-            if status == "cancelled" || status == "review" || status == "partial" {
-                args["reason"] = json!("declared explicitly for this test");
-            }
-            if status == "done" {
-                args["completion_evidence"] = json!("evidence for this test");
-            }
-            let res = server
-                .handle_release_task(&args)
-                .unwrap_or_else(|e| panic!("release to {status} should succeed: {e:?}"));
-            let res_text: String = res
-                .content
-                .iter()
-                .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
-                .collect();
-            let reported: serde_json::Value = serde_json::from_str(&res_text)
-                .unwrap_or_else(|_| panic!("release_task should return JSON, got: {res_text}"));
-            let reported_status = reported.get("status").and_then(|v| v.as_str()).unwrap();
-            assert_eq!(
-                reported_status, status,
-                "reported status must equal the requested status"
-            );
-
-            let disk = std::fs::read_to_string(tmp.path().join("tasks/task-new.md")).unwrap();
-            assert!(
-                disk.contains(&format!("status: {status}")),
-                "status={status}: persisted frontmatter must match reported status, got:\n{disk}"
-            );
-
-            let get_res = server
-                .handle_get_task(&json!({"id": "task-new"}))
-                .expect("get_task should succeed");
-            let get_text: String = get_res
-                .content
-                .iter()
-                .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
-                .collect();
-            let get_json: serde_json::Value = serde_json::from_str(&get_text).unwrap();
-            assert_eq!(
-                get_json
-                    .get("frontmatter")
-                    .and_then(|f| f.get("status"))
-                    .and_then(|v| v.as_str()),
-                Some(status),
-                "status={status}: get_task must read back the same status release_task reported"
-            );
+        let mut args = json!({
+            "id": "task-new",
+            "status": status,
+            "summary": format!("Releasing as {status}."),
+        });
+        if status == "cancelled" || status == "review" || status == "partial" {
+            args["reason"] = json!("declared explicitly for this test");
         }
-    }
+        if status == "done" {
+            args["completion_evidence"] = json!("evidence for this test");
+        }
+        let res = server
+            .handle_release_task(&args)
+            .unwrap_or_else(|e| panic!("release to {status} should succeed: {e:?}"));
+        let res_text: String = res
+            .content
+            .iter()
+            .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+            .collect();
+        let reported: serde_json::Value = serde_json::from_str(&res_text)
+            .unwrap_or_else(|_| panic!("release_task should return JSON, got: {res_text}"));
+        let reported_status = reported.get("status").and_then(|v| v.as_str()).unwrap();
+        assert_eq!(
+            reported_status, status,
+            "reported status must equal the requested status"
+        );
 
-    #[test]
-    fn test_setting_merge_ready_is_rejected() {
-        let (_tmp, server) = build_disk_backed_server(&[(
+        let disk = std::fs::read_to_string(tmp.path().join("tasks/task-new.md")).unwrap();
+        assert!(
+            disk.contains(&format!("status: {status}")),
+            "status={status}: persisted frontmatter must match reported status, got:\n{disk}"
+        );
+
+        let get_res = server
+            .handle_get_task(&json!({"id": "task-new"}))
+            .expect("get_task should succeed");
+        let get_text: String = get_res
+            .content
+            .iter()
+            .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+            .collect();
+        let get_json: serde_json::Value = serde_json::from_str(&get_text).unwrap();
+        assert_eq!(
+            get_json
+                .get("frontmatter")
+                .and_then(|f| f.get("status"))
+                .and_then(|v| v.as_str()),
+            Some(status),
+            "status={status}: get_task must read back the same status release_task reported"
+        );
+    }
+}
+
+#[test]
+fn test_setting_merge_ready_is_rejected() {
+    let (_tmp, server) = build_disk_backed_server(&[(
             "tasks/task-test.md",
             "---\nid: task-test\ntitle: Test task\ntype: task\nstatus: ready\ncreated: 2026-07-23T10:00:00+00:00\n---\n\n# Test task\n",
         )]);
 
-        // 1. release_task with merge_ready must be rejected
-        let err_release = server
-            .handle_release_task(&json!({
-                "id": "task-test",
-                "status": "merge_ready",
-                "summary": "Attempting to release as merge_ready",
-            }))
-            .expect_err("release_task with status=merge_ready must be rejected");
-        assert_eq!(err_release.code, ErrorCode::INVALID_PARAMS);
-        assert!(
-            err_release.message.contains("Invalid status \"merge_ready\""),
-            "unexpected error message: {}",
-            err_release.message
-        );
+    // 1. release_task with merge_ready must be rejected
+    let err_release = server
+        .handle_release_task(&json!({
+            "id": "task-test",
+            "status": "merge_ready",
+            "summary": "Attempting to release as merge_ready",
+        }))
+        .expect_err("release_task with status=merge_ready must be rejected");
+    assert_eq!(err_release.code, ErrorCode::INVALID_PARAMS);
+    assert!(
+        err_release
+            .message
+            .contains("Invalid status \"merge_ready\""),
+        "unexpected error message: {}",
+        err_release.message
+    );
 
-        // 2. update_task with merge_ready must be rejected
-        let err_update = server
-            .handle_update_task(&json!({
-                "id": "task-test",
-                "updates": { "status": "merge_ready" }
-            }))
-            .expect_err("update_task with status=merge_ready must be rejected");
-        assert_eq!(err_update.code, ErrorCode::INVALID_PARAMS);
-        assert!(
-            err_update.message.contains("Invalid status \"merge_ready\""),
-            "unexpected error message: {}",
-            err_update.message
-        );
+    // 2. update_task with merge_ready must be rejected
+    let err_update = server
+        .handle_update_task(&json!({
+            "id": "task-test",
+            "updates": { "status": "merge_ready" }
+        }))
+        .expect_err("update_task with status=merge_ready must be rejected");
+    assert_eq!(err_update.code, ErrorCode::INVALID_PARAMS);
+    assert!(
+        err_update
+            .message
+            .contains("Invalid status \"merge_ready\""),
+        "unexpected error message: {}",
+        err_update.message
+    );
 
-        // 3. create_task with merge_ready must be rejected
-        let err_create = server
-            .handle_create_task(&json!({
-                "title": "New task with merge_ready",
-                "parent": "task-test",
-                "status": "merge_ready",
-            }))
-            .expect_err("create_task with status=merge_ready must be rejected");
-        assert!(
-            err_create.message.contains("Invalid status: merge_ready"),
-            "unexpected error message: {}",
-            err_create.message
-        );
-    }
+    // 3. create_task with merge_ready must be rejected
+    let err_create = server
+        .handle_create_task(&json!({
+            "title": "New task with merge_ready",
+            "parent": "task-test",
+            "status": "merge_ready",
+        }))
+        .expect_err("create_task with status=merge_ready must be rejected");
+    assert!(
+        err_create.message.contains("Invalid status: merge_ready"),
+        "unexpected error message: {}",
+        err_create.message
+    );
+}
 
-    #[test]
-    fn test_release_task_persists_reason_and_blocker_to_frontmatter() {
-        let (tmp, server) = build_disk_backed_server(&[(
+#[test]
+fn test_release_task_persists_reason_and_blocker_to_frontmatter() {
+    let (tmp, server) = build_disk_backed_server(&[(
             "tasks/task-new.md",
             "---\nid: task-new\ntitle: New task\ntype: task\nstatus: ready\ncreated: 2026-07-23T10:00:00+00:00\n---\n\n# New task\n",
         )]);
-        server
-            .handle_release_task(&json!({
-                "id": "task-new",
-                "status": "cancelled",
-                "summary": "Cancelling.",
-                "reason": "Duplicate of task-other, filed concurrently.",
-            }))
-            .expect("release to cancelled with a reason must succeed");
-        let disk = std::fs::read_to_string(tmp.path().join("tasks/task-new.md")).unwrap();
-        assert!(
-            disk.contains("reason: Duplicate of task-other, filed concurrently."),
-            "reason must be persisted to frontmatter, not just prose evidence, got:\n{disk}"
-        );
+    server
+        .handle_release_task(&json!({
+            "id": "task-new",
+            "status": "cancelled",
+            "summary": "Cancelling.",
+            "reason": "Duplicate of task-other, filed concurrently.",
+        }))
+        .expect("release to cancelled with a reason must succeed");
+    let disk = std::fs::read_to_string(tmp.path().join("tasks/task-new.md")).unwrap();
+    assert!(
+        disk.contains("reason: Duplicate of task-other, filed concurrently."),
+        "reason must be persisted to frontmatter, not just prose evidence, got:\n{disk}"
+    );
 
-        let (tmp2, server2) = build_disk_backed_server(&[(
+    let (tmp2, server2) = build_disk_backed_server(&[(
             "tasks/task-blk.md",
             "---\nid: task-blk\ntitle: Blk task\ntype: task\nstatus: ready\ncreated: 2026-07-23T10:00:00+00:00\n---\n\n# Blk task\n",
         )]);
-        server2
-            .handle_release_task(&json!({
-                "id": "task-blk",
-                "status": "review",
-                "summary": "Blocked.",
-                "reason": "waiting on external API access",
-                "blocker": "waiting on external API access",
-            }))
-            .expect("release to review with a blocker must succeed");
-        let disk2 = std::fs::read_to_string(tmp2.path().join("tasks/task-blk.md")).unwrap();
-        assert!(
-            disk2.contains("blocker: waiting on external API access"),
-            "blocker must be persisted to frontmatter, not just prose evidence, got:\n{disk2}"
-        );
-    }
+    server2
+        .handle_release_task(&json!({
+            "id": "task-blk",
+            "status": "review",
+            "summary": "Blocked.",
+            "reason": "waiting on external API access",
+            "blocker": "waiting on external API access",
+        }))
+        .expect("release to review with a blocker must succeed");
+    let disk2 = std::fs::read_to_string(tmp2.path().join("tasks/task-blk.md")).unwrap();
+    assert!(
+        disk2.contains("blocker: waiting on external API access"),
+        "blocker must be persisted to frontmatter, not just prose evidence, got:\n{disk2}"
+    );
+}
 
-    // ── mem_e6245fc2: list_tasks(status=<S>) must filter strictly on the
-    // node's stored frontmatter status, never a computed set.
+// ── mem_e6245fc2: list_tasks(status=<S>) must filter strictly on the
+// node's stored frontmatter status, never a computed set.
 
-    
-
-    #[test]
-    fn test_list_tasks_status_ready_excludes_stored_inbox_and_queued() {
-        let (_tmp, server) = build_disk_backed_server(&[
+#[test]
+fn test_list_tasks_status_ready_excludes_stored_inbox_and_queued() {
+    let (_tmp, server) = build_disk_backed_server(&[
             (
                 "tasks/task-ready.md",
                 "---\nid: task-ready\ntitle: Ready\ntype: task\nstatus: ready\ncreated: 2026-07-23T10:00:00+00:00\n---\n\n# Ready\n",
@@ -1780,31 +1800,31 @@ use super::*;
                 "---\nid: task-queued\ntitle: Queued\ntype: task\nstatus: queued\ncreated: 2026-07-23T10:00:00+00:00\n---\n\n# Queued\n",
             ),
         ]);
-        let result = server
-            .handle_list_tasks(&json!({"status": "ready", "format": "json"}))
-            .unwrap();
-        let ids: Vec<String> = extract_task_objects(&result)
-            .iter()
-            .filter_map(|t| t.get("id").and_then(|v| v.as_str()).map(String::from))
-            .collect();
-        assert!(ids.contains(&"task-ready".to_string()), "got: {ids:?}");
-        assert!(
-            !ids.contains(&"task-inbox".to_string()),
-            "status=\"ready\" must not admit stored inbox; got: {ids:?}"
-        );
-        assert!(
-            !ids.contains(&"task-queued".to_string()),
-            "status=\"ready\" must not admit stored queued; got: {ids:?}"
-        );
-    }
+    let result = server
+        .handle_list_tasks(&json!({"status": "ready", "format": "json"}))
+        .unwrap();
+    let ids: Vec<String> = extract_task_objects(&result)
+        .iter()
+        .filter_map(|t| t.get("id").and_then(|v| v.as_str()).map(String::from))
+        .collect();
+    assert!(ids.contains(&"task-ready".to_string()), "got: {ids:?}");
+    assert!(
+        !ids.contains(&"task-inbox".to_string()),
+        "status=\"ready\" must not admit stored inbox; got: {ids:?}"
+    );
+    assert!(
+        !ids.contains(&"task-queued".to_string()),
+        "status=\"ready\" must not admit stored queued; got: {ids:?}"
+    );
+}
 
-    // ── mem_bc1ed756: a node with stored status: ready, at least one child,
-    // and all depends_on targets closed (non-leaf unblocked stored-ready)
-    // is reachable by status="ready" (and has blocked: false in JSON output).
+// ── mem_bc1ed756: a node with stored status: ready, at least one child,
+// and all depends_on targets closed (non-leaf unblocked stored-ready)
+// is reachable by status="ready" (and has blocked: false in JSON output).
 
-    #[test]
-    fn test_list_tasks_status_ready_includes_unblocked_non_leaf_node() {
-        let (_tmp, server) = build_disk_backed_server(&[
+#[test]
+fn test_list_tasks_status_ready_includes_unblocked_non_leaf_node() {
+    let (_tmp, server) = build_disk_backed_server(&[
             (
                 "tasks/task-dep-closed.md",
                 "---\nid: task-dep-closed\ntitle: Closed Dependency\ntype: task\nstatus: done\ncreated: 2026-07-23T10:00:00+00:00\n---\n\n# Closed Dependency\n",
@@ -1819,65 +1839,63 @@ use super::*;
             ),
         ]);
 
-        let result = server
-            .handle_list_tasks(&json!({"status": "ready", "format": "json"}))
-            .unwrap();
-        let tasks = extract_task_objects(&result);
-        let parent = tasks
-            .iter()
-            .find(|t| t.get("id").and_then(|v| v.as_str()) == Some("task-parent-ready"))
-            .expect("unblocked non-leaf stored-ready node must be returned by status=\"ready\"");
+    let result = server
+        .handle_list_tasks(&json!({"status": "ready", "format": "json"}))
+        .unwrap();
+    let tasks = extract_task_objects(&result);
+    let parent = tasks
+        .iter()
+        .find(|t| t.get("id").and_then(|v| v.as_str()) == Some("task-parent-ready"))
+        .expect("unblocked non-leaf stored-ready node must be returned by status=\"ready\"");
 
-        assert_eq!(
-            parent.get("status").and_then(|v| v.as_str()),
-            Some("ready"),
-            "task-parent-ready status must be ready"
-        );
-        assert_eq!(
-            parent.get("blocked").and_then(|v| v.as_bool()),
-            Some(false),
-            "unblocked task-parent-ready must have blocked: false"
-        );
+    assert_eq!(
+        parent.get("status").and_then(|v| v.as_str()),
+        Some("ready"),
+        "task-parent-ready status must be ready"
+    );
+    assert_eq!(
+        parent.get("blocked").and_then(|v| v.as_bool()),
+        Some(false),
+        "unblocked task-parent-ready must have blocked: false"
+    );
 
-        // Also test markdown output format returns the non-leaf ready task
-        let res_md = server
-            .handle_list_tasks(&json!({"status": "ready", "format": "markdown"}))
-            .unwrap();
-        let md_text = res_md
-            .content
-            .iter()
-            .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
-            .collect::<String>();
-        assert!(
+    // Also test markdown output format returns the non-leaf ready task
+    let res_md = server
+        .handle_list_tasks(&json!({"status": "ready", "format": "markdown"}))
+        .unwrap();
+    let md_text = res_md
+        .content
+        .iter()
+        .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+        .collect::<String>();
+    assert!(
             md_text.contains("task-parent-ready"),
             "markdown status=\"ready\" output must include unblocked non-leaf task-parent-ready: {md_text}"
         );
-    }
+}
 
-    
-
-    #[test]
-    fn test_list_tasks_status_archived_is_rejected_not_aliased_to_done() {
-        let (_tmp, server) = build_disk_backed_server(&[(
+#[test]
+fn test_list_tasks_status_archived_is_rejected_not_aliased_to_done() {
+    let (_tmp, server) = build_disk_backed_server(&[(
             "tasks/task-done.md",
             "---\nid: task-done\ntitle: Done\ntype: task\nstatus: done\ncreated: 2026-07-23T10:00:00+00:00\n---\n\n# Done\n",
         )]);
-        let err = server
-            .handle_list_tasks(&json!({"status": "archived", "format": "json"}))
-            .expect_err(
-                "status=\"archived\" is not a supported stored value and must be rejected, \
+    let err = server
+        .handle_list_tasks(&json!({"status": "archived", "format": "json"}))
+        .expect_err(
+            "status=\"archived\" is not a supported stored value and must be rejected, \
                  not silently aliased to the done set",
-            );
-        assert!(
-            matches!(err.code, ErrorCode::INVALID_PARAMS),
-            "got: {:?}",
-            err.code
         );
-    }
+    assert!(
+        matches!(err.code, ErrorCode::INVALID_PARAMS),
+        "got: {:?}",
+        err.code
+    );
+}
 
-    #[test]
-    fn test_list_tasks_per_status_totals_disjoint_and_sum_correctly() {
-        let (_tmp, server) = build_disk_backed_server(&[
+#[test]
+fn test_list_tasks_per_status_totals_disjoint_and_sum_correctly() {
+    let (_tmp, server) = build_disk_backed_server(&[
             (
                 "tasks/task-r.md",
                 "---\nid: task-r\ntitle: R\ntype: task\nstatus: ready\ncreated: 2026-07-23T10:00:00+00:00\n---\n\n# R\n",
@@ -1895,46 +1913,48 @@ use super::*;
                 "---\nid: task-b\ntitle: B\ntype: task\nstatus: review\nreason: x\ncreated: 2026-07-23T10:00:00+00:00\n---\n\n# B\n",
             ),
         ]);
-        let mut total = 0usize;
-        for status in ["ready", "queued", "in_progress", "review"] {
-            let result = server
-                .handle_list_tasks(&json!({"status": status, "format": "json"}))
-                .unwrap();
-            total += extract_task_objects(&result).len();
-        }
-        assert_eq!(
-            total, 4,
-            "disjoint per-status totals across the 5-leg spine must sum to exactly the \
-             4 fixture tasks stored under those statuses (no overlap, no leak)"
-        );
+    let mut total = 0usize;
+    for status in ["ready", "queued", "in_progress", "review"] {
+        let result = server
+            .handle_list_tasks(&json!({"status": status, "format": "json"}))
+            .unwrap();
+        total += extract_task_objects(&result).len();
     }
+    assert_eq!(
+        total, 4,
+        "disjoint per-status totals across the 5-leg spine must sum to exactly the \
+             4 fixture tasks stored under those statuses (no overlap, no leak)"
+    );
+}
 
-    // ── mem_8035b002: supersedes/superseded_by referential integrity ──
+// ── mem_8035b002: supersedes/superseded_by referential integrity ──
 
-    #[test]
-    fn test_update_task_rejects_dangling_supersedes_target() {
-        let (_tmp, server) = build_disk_backed_server(&[(
+#[test]
+fn test_update_task_rejects_dangling_supersedes_target() {
+    let (_tmp, server) = build_disk_backed_server(&[(
             "tasks/task-new.md",
             "---\nid: task-new\ntitle: New task\ntype: task\nstatus: ready\ncreated: 2026-07-23T10:00:00+00:00\n---\n\n# New task\n",
         )]);
-        let err = server
-            .handle_update_task(&json!({"id": "task-new", "updates": {"supersedes": "task-does-not-exist"}}))
-            .expect_err("a supersedes target that does not resolve must be rejected");
-        assert!(
-            matches!(err.code, ErrorCode::INVALID_PARAMS),
-            "got: {:?}",
-            err.code
-        );
-        assert!(
-            err.message.contains("task-does-not-exist"),
-            "error should name the unresolved target; got: {}",
-            err.message
-        );
-    }
+    let err = server
+        .handle_update_task(
+            &json!({"id": "task-new", "updates": {"supersedes": "task-does-not-exist"}}),
+        )
+        .expect_err("a supersedes target that does not resolve must be rejected");
+    assert!(
+        matches!(err.code, ErrorCode::INVALID_PARAMS),
+        "got: {:?}",
+        err.code
+    );
+    assert!(
+        err.message.contains("task-does-not-exist"),
+        "error should name the unresolved target; got: {}",
+        err.message
+    );
+}
 
-    #[test]
-    fn test_update_task_accepts_supersedes_with_existing_target() {
-        let (tmp, server) = build_disk_backed_server(&[
+#[test]
+fn test_update_task_accepts_supersedes_with_existing_target() {
+    let (tmp, server) = build_disk_backed_server(&[
             (
                 "tasks/task-new.md",
                 "---\nid: task-new\ntitle: New task\ntype: task\nstatus: ready\ncreated: 2026-07-23T10:00:00+00:00\n---\n\n# New task\n",
@@ -1944,40 +1964,42 @@ use super::*;
                 "---\nid: task-old\ntitle: Old task\ntype: task\nstatus: done\ncreated: 2026-07-23T10:00:00+00:00\n---\n\n# Old task\n",
             ),
         ]);
-        server
-            .handle_update_task(&json!({"id": "task-new", "updates": {"supersedes": "task-old"}}))
-            .expect("a supersedes target that resolves must be accepted");
-        let disk = std::fs::read_to_string(tmp.path().join("tasks/task-new.md")).unwrap();
-        assert!(disk.contains("supersedes"));
-        assert!(disk.contains("task-old"));
-    }
+    server
+        .handle_update_task(&json!({"id": "task-new", "updates": {"supersedes": "task-old"}}))
+        .expect("a supersedes target that resolves must be accepted");
+    let disk = std::fs::read_to_string(tmp.path().join("tasks/task-new.md")).unwrap();
+    assert!(disk.contains("supersedes"));
+    assert!(disk.contains("task-old"));
+}
 
-    #[test]
-    fn test_update_task_rejects_manual_superseded_by_write() {
-        // superseded_by is a computed reverse index of supersedes — never a
-        // second hand-written field (mem_8035b002, mirrors mem-74b6165e's
-        // pre-existing 'blocked' guard).
-        let (_tmp, server) = build_disk_backed_server(&[(
+#[test]
+fn test_update_task_rejects_manual_superseded_by_write() {
+    // superseded_by is a computed reverse index of supersedes — never a
+    // second hand-written field (mem_8035b002, mirrors mem-74b6165e's
+    // pre-existing 'blocked' guard).
+    let (_tmp, server) = build_disk_backed_server(&[(
             "tasks/task-new.md",
             "---\nid: task-new\ntitle: New task\ntype: task\nstatus: ready\ncreated: 2026-07-23T10:00:00+00:00\n---\n\n# New task\n",
         )]);
-        let err = server
-            .handle_update_task(&json!({"id": "task-new", "updates": {"superseded_by": "task-other"}}))
-            .expect_err("manual 'superseded_by' write must be rejected");
-        assert!(
-            err.message.to_lowercase().contains("reserved computed keyword"),
-            "got: {}",
-            err.message
-        );
-    }
+    let err = server
+        .handle_update_task(&json!({"id": "task-new", "updates": {"superseded_by": "task-other"}}))
+        .expect_err("manual 'superseded_by' write must be rejected");
+    assert!(
+        err.message
+            .to_lowercase()
+            .contains("reserved computed keyword"),
+        "got: {}",
+        err.message
+    );
+}
 
-    #[test]
-    fn test_supersedes_comma_joined_string_form_parses_as_multiple_targets() {
-        // The cited defect: `supersedes: "id1,id2,id3"` inside a single quoted
-        // scalar must not be stored/read as one id with commas in it — split
-        // via the same parse_string_array convention already used by
-        // depends_on/soft_depends_on/etc.
-        let (_tmp, server) = build_disk_backed_server(&[
+#[test]
+fn test_supersedes_comma_joined_string_form_parses_as_multiple_targets() {
+    // The cited defect: `supersedes: "id1,id2,id3"` inside a single quoted
+    // scalar must not be stored/read as one id with commas in it — split
+    // via the same parse_string_array convention already used by
+    // depends_on/soft_depends_on/etc.
+    let (_tmp, server) = build_disk_backed_server(&[
             (
                 "tasks/task-new.md",
                 "---\nid: task-new\ntitle: New task\ntype: task\nstatus: ready\nsupersedes: \"task-old-1,task-old-2\"\ncreated: 2026-07-23T10:00:00+00:00\n---\n\n# New task\n",
@@ -1991,32 +2013,34 @@ use super::*;
                 "---\nid: task-old-2\ntitle: Old 2\ntype: task\nstatus: done\ncreated: 2026-07-23T10:00:00+00:00\n---\n\n# Old 2\n",
             ),
         ]);
-        // Both old tasks must show task-new in their computed superseded_by.
-        for old_id in ["task-old-1", "task-old-2"] {
-            let res = server
-                .handle_list_tasks(&json!({
-                    "has_superseded_by": true,
-                    "include_done": true,
-                    "format": "json"
-                }))
-                .unwrap();
-            let objs = extract_task_objects(&res);
-            let row = objs
-                .iter()
-                .find(|t| t.get("id").and_then(|v| v.as_str()) == Some(old_id))
-                .unwrap_or_else(|| panic!("{old_id} should be in has_superseded_by=true set, got {objs:?}"));
-            let arr: Vec<&str> = row
-                .get("superseded_by")
-                .and_then(|v| v.as_array())
-                .map(|a| a.iter().filter_map(|v| v.as_str()).collect())
-                .unwrap_or_default();
-            assert_eq!(arr, vec!["task-new"], "for {old_id}, got {arr:?}");
-        }
+    // Both old tasks must show task-new in their computed superseded_by.
+    for old_id in ["task-old-1", "task-old-2"] {
+        let res = server
+            .handle_list_tasks(&json!({
+                "has_superseded_by": true,
+                "include_done": true,
+                "format": "json"
+            }))
+            .unwrap();
+        let objs = extract_task_objects(&res);
+        let row = objs
+            .iter()
+            .find(|t| t.get("id").and_then(|v| v.as_str()) == Some(old_id))
+            .unwrap_or_else(|| {
+                panic!("{old_id} should be in has_superseded_by=true set, got {objs:?}")
+            });
+        let arr: Vec<&str> = row
+            .get("superseded_by")
+            .and_then(|v| v.as_array())
+            .map(|a| a.iter().filter_map(|v| v.as_str()).collect())
+            .unwrap_or_default();
+        assert_eq!(arr, vec!["task-new"], "for {old_id}, got {arr:?}");
     }
+}
 
-    #[test]
-    fn test_merge_node_records_supersedes_on_canonical_not_superseded_by_on_source() {
-        let (tmp, server) = build_disk_backed_server(&[
+#[test]
+fn test_merge_node_records_supersedes_on_canonical_not_superseded_by_on_source() {
+    let (tmp, server) = build_disk_backed_server(&[
             (
                 "tasks/task-canon.md",
                 "---\nid: task-canon\ntitle: Canonical\ntype: task\nstatus: ready\ncreated: 2026-07-23T10:00:00+00:00\n---\n\n# Canonical\n",
@@ -2026,139 +2050,144 @@ use super::*;
                 "---\nid: task-dup\ntitle: Duplicate\ntype: task\nstatus: ready\ncreated: 2026-07-23T10:00:00+00:00\n---\n\n# Duplicate\n",
             ),
         ]);
-        server
-            .handle_merge_node(&json!({
-                "canonical_id": "task-canon",
-                "source_ids": ["task-dup"],
-                "dry_run": false,
-            }))
-            .expect("merge_node should succeed");
+    server
+        .handle_merge_node(&json!({
+            "canonical_id": "task-canon",
+            "source_ids": ["task-dup"],
+            "dry_run": false,
+        }))
+        .expect("merge_node should succeed");
 
-        let canon_disk = std::fs::read_to_string(tmp.path().join("tasks/task-canon.md")).unwrap();
-        assert!(
-            canon_disk.contains("supersedes"),
-            "canonical node must record the merge via its own supersedes list, got:\n{canon_disk}"
-        );
-        let dup_disk = std::fs::read_to_string(tmp.path().join("tasks/task-dup.md")).unwrap();
-        assert!(
-            !dup_disk.contains("superseded_by"),
-            "source node must NOT carry a hand-written superseded_by, got:\n{dup_disk}"
-        );
-        assert!(dup_disk.contains("status: done"));
+    let canon_disk = std::fs::read_to_string(tmp.path().join("tasks/task-canon.md")).unwrap();
+    assert!(
+        canon_disk.contains("supersedes"),
+        "canonical node must record the merge via its own supersedes list, got:\n{canon_disk}"
+    );
+    let dup_disk = std::fs::read_to_string(tmp.path().join("tasks/task-dup.md")).unwrap();
+    assert!(
+        !dup_disk.contains("superseded_by"),
+        "source node must NOT carry a hand-written superseded_by, got:\n{dup_disk}"
+    );
+    assert!(dup_disk.contains("status: done"));
 
-        // The reverse index must resolve via the graph (computed, not stored).
-        let res = server
-            .handle_list_tasks(&json!({"has_superseded_by": true, "include_done": true, "format": "json"}))
-            .unwrap();
-        let objs = extract_task_objects(&res);
-        let row = objs
-            .iter()
-            .find(|t| t.get("id").and_then(|v| v.as_str()) == Some("task-dup"))
-            .expect("task-dup should show up with computed superseded_by");
-        let arr: Vec<&str> = row
-            .get("superseded_by")
-            .and_then(|v| v.as_array())
-            .map(|a| a.iter().filter_map(|v| v.as_str()).collect())
-            .unwrap_or_default();
-        assert_eq!(arr, vec!["task-canon"]);
-    }
+    // The reverse index must resolve via the graph (computed, not stored).
+    let res = server
+        .handle_list_tasks(
+            &json!({"has_superseded_by": true, "include_done": true, "format": "json"}),
+        )
+        .unwrap();
+    let objs = extract_task_objects(&res);
+    let row = objs
+        .iter()
+        .find(|t| t.get("id").and_then(|v| v.as_str()) == Some("task-dup"))
+        .expect("task-dup should show up with computed superseded_by");
+    let arr: Vec<&str> = row
+        .get("superseded_by")
+        .and_then(|v| v.as_array())
+        .map(|a| a.iter().filter_map(|v| v.as_str()).collect())
+        .unwrap_or_default();
+    assert_eq!(arr, vec!["task-canon"]);
+}
 
-    // ── mem_45c5d3c9: `update_body` is a read-modify-write with no CAS by
-    // default; PR #492 added an *optional* `expected_modified` precondition.
-    // Reproduce both the fixed path (CAS supplied → stale write rejected,
-    // content preserved) and the still-reachable gap (CAS omitted → silent
-    // last-write-wins), matching the git-forensics-verified 6208→4597→5147
-    // clobber this defect was filed against.
+// ── mem_45c5d3c9: `update_body` is a read-modify-write with no CAS by
+// default; PR #492 added an *optional* `expected_modified` precondition.
+// Reproduce both the fixed path (CAS supplied → stale write rejected,
+// content preserved) and the still-reachable gap (CAS omitted → silent
+// last-write-wins), matching the git-forensics-verified 6208→4597→5147
+// clobber this defect was filed against.
 
-    #[test]
-    fn test_update_body_concurrent_writers_stale_write_rejected_with_cas() {
-        let (tmp, server) = build_disk_backed_server(&[(
+#[test]
+fn test_update_body_concurrent_writers_stale_write_rejected_with_cas() {
+    let (tmp, server) = build_disk_backed_server(&[(
             "tasks/task-race.md",
             "---\nid: task-race\ntitle: Race\ntype: task\nstatus: ready\nmodified: '2026-08-18T22:50:03Z'\ncreated: 2026-07-23T10:00:00+00:00\n---\n\nOriginal body.\n",
         )]);
-        let path = tmp.path().join("tasks/task-race.md");
+    let path = tmp.path().join("tasks/task-race.md");
 
-        // Both "writers" read the same snapshot (modified=T0).
-        let t0 = "2026-08-18T22:50:03Z";
+    // Both "writers" read the same snapshot (modified=T0).
+    let t0 = "2026-08-18T22:50:03Z";
 
-        // Writer B (the appender in the real incident) writes first and wins.
-        server
-            .handle_update_body(&json!({
-                "id": "task-race",
-                "new_body": "Original body.\n\nWriter B's trailer.",
-                "expected_modified": t0,
-            }))
-            .expect("writer B's write against a fresh snapshot must succeed");
-        let after_b = std::fs::read_to_string(&path).unwrap();
-        assert!(after_b.contains("Writer B's trailer."));
+    // Writer B (the appender in the real incident) writes first and wins.
+    server
+        .handle_update_body(&json!({
+            "id": "task-race",
+            "new_body": "Original body.\n\nWriter B's trailer.",
+            "expected_modified": t0,
+        }))
+        .expect("writer B's write against a fresh snapshot must succeed");
+    let after_b = std::fs::read_to_string(&path).unwrap();
+    assert!(after_b.contains("Writer B's trailer."));
 
-        // Writer A (the "condensing" edit in the incident) still holds the
-        // stale T0 snapshot and must be rejected, not silently overwrite B.
-        let err = server
-            .handle_update_body(&json!({
-                "id": "task-race",
-                "new_body": "Original body, condensed by writer A.",
-                "expected_modified": t0,
-            }))
-            .expect_err("a stale snapshot must be rejected, not silently applied");
-        assert_eq!(
-            err.data.as_ref().and_then(|d| d.get("error_type")).and_then(|v| v.as_str()),
-            Some("stale_write"),
-            "failure must be specifically distinguishable as a stale write, got: {err:?}"
-        );
+    // Writer A (the "condensing" edit in the incident) still holds the
+    // stale T0 snapshot and must be rejected, not silently overwrite B.
+    let err = server
+        .handle_update_body(&json!({
+            "id": "task-race",
+            "new_body": "Original body, condensed by writer A.",
+            "expected_modified": t0,
+        }))
+        .expect_err("a stale snapshot must be rejected, not silently applied");
+    assert_eq!(
+        err.data
+            .as_ref()
+            .and_then(|d| d.get("error_type"))
+            .and_then(|v| v.as_str()),
+        Some("stale_write"),
+        "failure must be specifically distinguishable as a stale write, got: {err:?}"
+    );
 
-        // Writer B's content must survive on disk — the whole point of the guard.
-        let final_disk = std::fs::read_to_string(&path).unwrap();
-        assert!(
-            final_disk.contains("Writer B's trailer."),
-            "writer A's stale write must not have destroyed writer B's content, got:\n{final_disk}"
-        );
-    }
+    // Writer B's content must survive on disk — the whole point of the guard.
+    let final_disk = std::fs::read_to_string(&path).unwrap();
+    assert!(
+        final_disk.contains("Writer B's trailer."),
+        "writer A's stale write must not have destroyed writer B's content, got:\n{final_disk}"
+    );
+}
 
-    #[test]
-    fn test_update_body_without_expected_modified_still_last_write_wins() {
-        // Documents the residual, deliberately-unresolved gap: `expected_modified`
-        // is optional (PR #492), so a caller that omits it still silently
-        // clobbers a concurrent writer's content, unconditionally.
-        let (tmp, server) = build_disk_backed_server(&[(
+#[test]
+fn test_update_body_without_expected_modified_still_last_write_wins() {
+    // Documents the residual, deliberately-unresolved gap: `expected_modified`
+    // is optional (PR #492), so a caller that omits it still silently
+    // clobbers a concurrent writer's content, unconditionally.
+    let (tmp, server) = build_disk_backed_server(&[(
             "tasks/task-race2.md",
             "---\nid: task-race2\ntitle: Race2\ntype: task\nstatus: ready\ncreated: 2026-07-23T10:00:00+00:00\n---\n\nOriginal body.\n",
         )]);
-        let path = tmp.path().join("tasks/task-race2.md");
+    let path = tmp.path().join("tasks/task-race2.md");
 
-        server
-            .handle_update_body(&json!({
-                "id": "task-race2",
-                "new_body": "Original body.\n\nWriter B's trailer.",
-            }))
-            .expect("writer B's write must succeed");
+    server
+        .handle_update_body(&json!({
+            "id": "task-race2",
+            "new_body": "Original body.\n\nWriter B's trailer.",
+        }))
+        .expect("writer B's write must succeed");
 
-        // Writer A, with no expected_modified, clobbers B's write unconditionally.
-        server
-            .handle_update_body(&json!({
-                "id": "task-race2",
-                "new_body": "Original body, condensed by writer A.",
-            }))
-            .expect("writer A's write without a CAS token is still accepted (known gap)");
+    // Writer A, with no expected_modified, clobbers B's write unconditionally.
+    server
+        .handle_update_body(&json!({
+            "id": "task-race2",
+            "new_body": "Original body, condensed by writer A.",
+        }))
+        .expect("writer A's write without a CAS token is still accepted (known gap)");
 
-        let final_disk = std::fs::read_to_string(&path).unwrap();
-        assert!(
-            !final_disk.contains("Writer B's trailer."),
-            "documents the known gap: omitting expected_modified still silently \
+    let final_disk = std::fs::read_to_string(&path).unwrap();
+    assert!(
+        !final_disk.contains("Writer B's trailer."),
+        "documents the known gap: omitting expected_modified still silently \
              destroys a concurrent writer's content"
-        );
-    }
+    );
+}
 
-    #[test]
-    fn test_update_body_with_get_document_wrapper_does_not_duplicate_frontmatter() {
-        let (tmp, server) = build_disk_backed_server(&[(
+#[test]
+fn test_update_body_with_get_document_wrapper_does_not_duplicate_frontmatter() {
+    let (tmp, server) = build_disk_backed_server(&[(
             "tasks/task-ac4.md",
             "---\nid: task-ac4\ntitle: AC4 Task\ntype: task\nstatus: ready\nmodified: 2026-08-31T01:37:26.529977728+00:00\ncreated: 2026-08-31T01:37:26.529977728+00:00\n---\n\nInitial body.\n",
         )]);
-        let path = tmp.path().join("tasks/task-ac4.md");
+    let path = tmp.path().join("tasks/task-ac4.md");
 
-        // Simulate an agent that read via get_document and submits the full text
-        let get_doc_payload = "\
+    // Simulate an agent that read via get_document and submits the full text
+    let get_doc_payload = "\
 ## AC4 Task\n\n\
 ---\n\
 id: task-ac4\n\
@@ -2171,403 +2200,419 @@ created: 2026-08-31T01:37:26.529977728+00:00\n\
 WRITER-B-FRESH-MARKER\n\
 read_timestamp_utc: 2026-08-31T01:38:00.370857830Z\n";
 
-        let res = server.handle_update_body(&json!({
+    let res = server
+        .handle_update_body(&json!({
             "id": "task-ac4",
             "new_body": get_doc_payload,
-        })).expect("update_body must succeed");
+        }))
+        .expect("update_body must succeed");
 
-        assert!(res.is_error.is_none() || res.is_error == Some(false));
+    assert!(res.is_error.is_none() || res.is_error == Some(false));
 
-        let disk_content = std::fs::read_to_string(&path).unwrap();
-        let delimiter_count = disk_content.lines().filter(|l| l.trim() == "---").count();
-        assert_eq!(
+    let disk_content = std::fs::read_to_string(&path).unwrap();
+    let delimiter_count = disk_content.lines().filter(|l| l.trim() == "---").count();
+    assert_eq!(
             delimiter_count, 2,
             "must contain exactly one frontmatter block (2 delimiter lines), but found {delimiter_count}.\nDisk content:\n{disk_content}"
         );
-        assert!(
-            !disk_content.contains("## AC4 Task\n\n---"),
-            "must not contain duplicated frontmatter header in body.\nDisk content:\n{disk_content}"
-        );
-        assert!(
-            disk_content.contains("WRITER-B-FRESH-MARKER"),
-            "must contain intended body content.\nDisk content:\n{disk_content}"
-        );
+    assert!(
+        !disk_content.contains("## AC4 Task\n\n---"),
+        "must not contain duplicated frontmatter header in body.\nDisk content:\n{disk_content}"
+    );
+    assert!(
+        disk_content.contains("WRITER-B-FRESH-MARKER"),
+        "must contain intended body content.\nDisk content:\n{disk_content}"
+    );
 
-        // Immediate get_document read back must have clean body
-        let get_doc = server.handle_get_document(&json!({"id": "task-ac4"})).unwrap();
-        let get_doc_text = get_doc.content.first().and_then(|c| c.as_text()).unwrap().text.clone();
-        let get_doc_delim_count = get_doc_text.lines().filter(|l| l.trim() == "---").count();
-        assert_eq!(
-            get_doc_delim_count, 2,
-            "get_document must reflect exactly one frontmatter block.\nGot:\n{get_doc_text}"
-        );
-    }
+    // Immediate get_document read back must have clean body
+    let get_doc = server
+        .handle_get_document(&json!({"id": "task-ac4"}))
+        .unwrap();
+    let get_doc_text = get_doc
+        .content
+        .first()
+        .and_then(|c| c.as_text())
+        .unwrap()
+        .text
+        .clone();
+    let get_doc_delim_count = get_doc_text.lines().filter(|l| l.trim() == "---").count();
+    assert_eq!(
+        get_doc_delim_count, 2,
+        "get_document must reflect exactly one frontmatter block.\nGot:\n{get_doc_text}"
+    );
+}
 
-    #[test]
-    fn test_update_body_rejects_missing_null_empty_or_whitespace_new_body() {
-        let (tmp, server) = build_disk_backed_server(&[(
+#[test]
+fn test_update_body_rejects_missing_null_empty_or_whitespace_new_body() {
+    let (tmp, server) = build_disk_backed_server(&[(
             "tasks/task-empty-body.md",
             "---\nid: task-empty-body\ntitle: Empty Body Test\ntype: task\nstatus: ready\nmodified: 2026-08-31T01:37:26Z\n---\n\nExisting body that must not be wiped.\n",
         )]);
-        let path = tmp.path().join("tasks/task-empty-body.md");
+    let path = tmp.path().join("tasks/task-empty-body.md");
 
-        // 1. Missing new_body argument entirely
-        let err = server
-            .handle_update_body(&json!({
-                "id": "task-empty-body",
-            }))
-            .expect_err("update_body must reject missing new_body parameter");
-        assert_eq!(err.code, ErrorCode::INVALID_PARAMS);
-        assert!(
-            err.message.contains("Missing required parameter: new_body"),
-            "error message must cite missing new_body: {}",
-            err.message
-        );
+    // 1. Missing new_body argument entirely
+    let err = server
+        .handle_update_body(&json!({
+            "id": "task-empty-body",
+        }))
+        .expect_err("update_body must reject missing new_body parameter");
+    assert_eq!(err.code, ErrorCode::INVALID_PARAMS);
+    assert!(
+        err.message.contains("Missing required parameter: new_body"),
+        "error message must cite missing new_body: {}",
+        err.message
+    );
 
-        // 2. Explicit null new_body
-        let err = server
-            .handle_update_body(&json!({
-                "id": "task-empty-body",
-                "new_body": null,
-            }))
-            .expect_err("update_body must reject null new_body");
-        assert_eq!(err.code, ErrorCode::INVALID_PARAMS);
-        assert!(
-            err.message.contains("Missing required parameter: new_body"),
-            "error message must cite missing new_body: {}",
-            err.message
-        );
+    // 2. Explicit null new_body
+    let err = server
+        .handle_update_body(&json!({
+            "id": "task-empty-body",
+            "new_body": null,
+        }))
+        .expect_err("update_body must reject null new_body");
+    assert_eq!(err.code, ErrorCode::INVALID_PARAMS);
+    assert!(
+        err.message.contains("Missing required parameter: new_body"),
+        "error message must cite missing new_body: {}",
+        err.message
+    );
 
-        // 3. Empty string new_body
-        let err = server
-            .handle_update_body(&json!({
-                "id": "task-empty-body",
-                "new_body": "",
-            }))
-            .expect_err("update_body must reject empty string new_body");
-        assert_eq!(err.code, ErrorCode::INVALID_PARAMS);
-        assert!(
-            err.message.contains("cannot be empty"),
-            "error message must explain new_body cannot be empty: {}",
-            err.message
-        );
+    // 3. Empty string new_body
+    let err = server
+        .handle_update_body(&json!({
+            "id": "task-empty-body",
+            "new_body": "",
+        }))
+        .expect_err("update_body must reject empty string new_body");
+    assert_eq!(err.code, ErrorCode::INVALID_PARAMS);
+    assert!(
+        err.message.contains("cannot be empty"),
+        "error message must explain new_body cannot be empty: {}",
+        err.message
+    );
 
-        // 4. Whitespace-only new_body
-        let err = server
-            .handle_update_body(&json!({
-                "id": "task-empty-body",
-                "new_body": "   \n\t\r\n  ",
-            }))
-            .expect_err("update_body must reject whitespace-only new_body");
-        assert_eq!(err.code, ErrorCode::INVALID_PARAMS);
-        assert!(
-            err.message.contains("cannot be empty"),
-            "error message must explain new_body cannot be empty: {}",
-            err.message
-        );
+    // 4. Whitespace-only new_body
+    let err = server
+        .handle_update_body(&json!({
+            "id": "task-empty-body",
+            "new_body": "   \n\t\r\n  ",
+        }))
+        .expect_err("update_body must reject whitespace-only new_body");
+    assert_eq!(err.code, ErrorCode::INVALID_PARAMS);
+    assert!(
+        err.message.contains("cannot be empty"),
+        "error message must explain new_body cannot be empty: {}",
+        err.message
+    );
 
-        // 5. Missing / empty id parameter
-        let err = server
-            .handle_update_body(&json!({
-                "new_body": "valid body",
-            }))
-            .expect_err("update_body must reject missing id");
-        assert_eq!(err.code, ErrorCode::INVALID_PARAMS);
-        assert!(err.message.contains("Missing required parameter: id"));
+    // 5. Missing / empty id parameter
+    let err = server
+        .handle_update_body(&json!({
+            "new_body": "valid body",
+        }))
+        .expect_err("update_body must reject missing id");
+    assert_eq!(err.code, ErrorCode::INVALID_PARAMS);
+    assert!(err.message.contains("Missing required parameter: id"));
 
-        let err = server
-            .handle_update_body(&json!({
-                "id": "   ",
-                "new_body": "valid body",
-            }))
-            .expect_err("update_body must reject whitespace id");
-        assert_eq!(err.code, ErrorCode::INVALID_PARAMS);
-        assert!(err.message.contains("Missing required parameter: id"));
+    let err = server
+        .handle_update_body(&json!({
+            "id": "   ",
+            "new_body": "valid body",
+        }))
+        .expect_err("update_body must reject whitespace id");
+    assert_eq!(err.code, ErrorCode::INVALID_PARAMS);
+    assert!(err.message.contains("Missing required parameter: id"));
 
-        // Verify disk content was completely preserved and not wiped
-        let on_disk = std::fs::read_to_string(&path).unwrap();
-        assert!(
-            on_disk.contains("Existing body that must not be wiped."),
-            "file body must be intact after rejected calls; actual:\n{on_disk}"
-        );
-    }
+    // Verify disk content was completely preserved and not wiped
+    let on_disk = std::fs::read_to_string(&path).unwrap();
+    assert!(
+        on_disk.contains("Existing body that must not be wiped."),
+        "file body must be intact after rejected calls; actual:\n{on_disk}"
+    );
+}
 
-    // ── aops_81bbdd77: `since=`/`before=` compare the UTC calendar date of
-    // `modified`, not a local one. Pin that explicitly: a task modified late
-    // in the UTC day (which is still "yesterday" in a UTC+ timezone at local
-    // morning) must be excluded by since=<the UTC date + 1>, matching the
-    // documented UTC semantics rather than silently using local dates.
+// ── aops_81bbdd77: `since=`/`before=` compare the UTC calendar date of
+// `modified`, not a local one. Pin that explicitly: a task modified late
+// in the UTC day (which is still "yesterday" in a UTC+ timezone at local
+// morning) must be excluded by since=<the UTC date + 1>, matching the
+// documented UTC semantics rather than silently using local dates.
 
-    #[test]
-    fn test_list_tasks_since_before_compare_utc_calendar_date_of_modified() {
-        let (_tmp, server) = build_disk_backed_server(&[(
+#[test]
+fn test_list_tasks_since_before_compare_utc_calendar_date_of_modified() {
+    let (_tmp, server) = build_disk_backed_server(&[(
             "tasks/task-late-utc.md",
             "---\nid: task-late-utc\ntitle: Late UTC\ntype: task\nstatus: ready\nmodified: '2026-08-17T23:00:00Z'\ncreated: 2026-08-17T23:00:00+00:00\n---\n\n# Late UTC\n",
         )]);
 
-        // since=2026-08-17 (the UTC date) must include it.
-        let res = server
-            .handle_list_tasks(&json!({"since": "2026-08-17", "format": "json"}))
-            .unwrap();
-        let ids: Vec<String> = extract_task_objects(&res)
-            .iter()
-            .filter_map(|t| t.get("id").and_then(|v| v.as_str()).map(String::from))
-            .collect();
-        assert!(
-            ids.contains(&"task-late-utc".to_string()),
-            "since=2026-08-17 (the UTC date of modified) must include the task, got {ids:?}"
-        );
+    // since=2026-08-17 (the UTC date) must include it.
+    let res = server
+        .handle_list_tasks(&json!({"since": "2026-08-17", "format": "json"}))
+        .unwrap();
+    let ids: Vec<String> = extract_task_objects(&res)
+        .iter()
+        .filter_map(|t| t.get("id").and_then(|v| v.as_str()).map(String::from))
+        .collect();
+    assert!(
+        ids.contains(&"task-late-utc".to_string()),
+        "since=2026-08-17 (the UTC date of modified) must include the task, got {ids:?}"
+    );
 
-        // since=2026-08-18 (one day past the UTC date) must exclude it, even
-        // though 2026-08-17T23:00:00Z is already 2026-08-18 local in any
-        // timezone ahead of UTC (e.g. Brisbane, UTC+10) — the comparison is
-        // against the UTC date, documented explicitly in the tool schema.
-        let res2 = server
-            .handle_list_tasks(&json!({"since": "2026-08-18", "format": "json"}))
-            .unwrap();
-        let ids2: Vec<String> = extract_task_objects(&res2)
-            .iter()
-            .filter_map(|t| t.get("id").and_then(|v| v.as_str()).map(String::from))
-            .collect();
-        assert!(
+    // since=2026-08-18 (one day past the UTC date) must exclude it, even
+    // though 2026-08-17T23:00:00Z is already 2026-08-18 local in any
+    // timezone ahead of UTC (e.g. Brisbane, UTC+10) — the comparison is
+    // against the UTC date, documented explicitly in the tool schema.
+    let res2 = server
+        .handle_list_tasks(&json!({"since": "2026-08-18", "format": "json"}))
+        .unwrap();
+    let ids2: Vec<String> = extract_task_objects(&res2)
+        .iter()
+        .filter_map(|t| t.get("id").and_then(|v| v.as_str()).map(String::from))
+        .collect();
+    assert!(
             !ids2.contains(&"task-late-utc".to_string()),
             "since=2026-08-18 must exclude a task whose UTC modified date is still 2026-08-17, got {ids2:?}"
         );
-    }
+}
 
-    #[test]
-    fn test_mcp_endpoints_never_disclose_server_paths() {
-        let tmp = tempfile::tempdir().unwrap();
-        let root = tmp.path();
-        std::fs::create_dir_all(root.join("tasks")).unwrap();
-        std::fs::create_dir_all(root.join("memories")).unwrap();
-        std::fs::create_dir_all(root.join("notes")).unwrap();
-        write_test_polecat_yaml(root);
+#[test]
+fn test_mcp_endpoints_never_disclose_server_paths() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    std::fs::create_dir_all(root.join("tasks")).unwrap();
+    std::fs::create_dir_all(root.join("memories")).unwrap();
+    std::fs::create_dir_all(root.join("notes")).unwrap();
+    write_test_polecat_yaml(root);
 
-        let graph = GraphStore::build(&[], root);
-        let store = VectorStore::new(3);
-        let embedder = Embedder::new_dummy();
-        let db_path = root.join("db.bin");
-        let server = PkbSearchServer::new(
-            Arc::new(RwLock::new(store)),
-            Arc::new(embedder),
-            root.to_path_buf(),
-            db_path,
-            Arc::new(RwLock::new(graph)),
-        );
+    let graph = GraphStore::build(&[], root);
+    let store = VectorStore::new(3);
+    let embedder = Embedder::new_dummy();
+    let db_path = root.join("db.bin");
+    let server = PkbSearchServer::new(
+        Arc::new(RwLock::new(store)),
+        Arc::new(embedder),
+        root.to_path_buf(),
+        db_path,
+        Arc::new(RwLock::new(graph)),
+    );
 
-        let root_str = root.to_str().unwrap();
+    let root_str = root.to_str().unwrap();
 
-        // 1. handle_create_document
-        let create_doc_res = server
-            .handle_create_document(&json!({
-                "title": "Doc Without Path Leak",
-                "type": "note",
-                "body": "Body content"
-            }))
-            .unwrap();
-        let doc_text: String = create_doc_res
-            .content
-            .iter()
-            .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
-            .collect();
-        assert!(doc_text.starts_with("Document created: "));
-        assert!(!doc_text.contains(root_str), "Must not leak root path");
-        assert!(!doc_text.contains(".md"), "Must not leak file extension in path");
+    // 1. handle_create_document
+    let create_doc_res = server
+        .handle_create_document(&json!({
+            "title": "Doc Without Path Leak",
+            "type": "note",
+            "body": "Body content"
+        }))
+        .unwrap();
+    let doc_text: String = create_doc_res
+        .content
+        .iter()
+        .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+        .collect();
+    assert!(doc_text.starts_with("Document created: "));
+    assert!(!doc_text.contains(root_str), "Must not leak root path");
+    assert!(
+        !doc_text.contains(".md"),
+        "Must not leak file extension in path"
+    );
 
-        // 2. handle_create_memory
-        let create_mem_res = server
-            .handle_create_memory(&json!({
-                "title": "Memory Without Path Leak",
-                "body": "Memory body"
-            }))
-            .unwrap();
-        let mem_text: String = create_mem_res
-            .content
-            .iter()
-            .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
-            .collect();
-        assert!(mem_text.starts_with("Memory created: "));
-        assert!(!mem_text.contains(root_str), "Must not leak root path");
-        assert!(!mem_text.contains(".md"), "Must not leak file extension in path");
+    // 2. handle_create_memory
+    let create_mem_res = server
+        .handle_create_memory(&json!({
+            "title": "Memory Without Path Leak",
+            "body": "Memory body"
+        }))
+        .unwrap();
+    let mem_text: String = create_mem_res
+        .content
+        .iter()
+        .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+        .collect();
+    assert!(mem_text.starts_with("Memory created: "));
+    assert!(!mem_text.contains(root_str), "Must not leak root path");
+    assert!(
+        !mem_text.contains(".md"),
+        "Must not leak file extension in path"
+    );
 
-        // 3. handle_delete_document
-        // First create a doc to delete
-        let _del_target_res = server
-            .handle_create_document(&json!({
-                "title": "Doc To Delete",
-                "type": "note",
-                "id": "note-todelete"
-            }))
-            .unwrap();
-        let del_res = server
-            .handle_delete_document(&json!({
-                "id": "note-todelete"
-            }))
-            .unwrap();
-        let del_text: String = del_res
-            .content
-            .iter()
-            .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
-            .collect();
-        assert_eq!(del_text, "Deleted: Doc To Delete (`note-todelete`)");
-        assert!(!del_text.contains(root_str), "Must not leak root path");
+    // 3. handle_delete_document
+    // First create a doc to delete
+    let _del_target_res = server
+        .handle_create_document(&json!({
+            "title": "Doc To Delete",
+            "type": "note",
+            "id": "note-todelete"
+        }))
+        .unwrap();
+    let del_res = server
+        .handle_delete_document(&json!({
+            "id": "note-todelete"
+        }))
+        .unwrap();
+    let del_text: String = del_res
+        .content
+        .iter()
+        .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+        .collect();
+    assert_eq!(del_text, "Deleted: Doc To Delete (`note-todelete`)");
+    assert!(!del_text.contains(root_str), "Must not leak root path");
 
-        // 4. handle_decompose_task
-        let parent_res = server
-            .handle_create_task(&json!({
-                "title": "Parent For Decompose",
-                "type": "task",
-                "project": "proj-alpha",
-                "parent": "proj-alpha",
-                "allow_missing_parent": true,
-            }))
-            .unwrap();
-        let parent_text: String = parent_res
-            .content
-            .iter()
-            .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
-            .collect();
-        let parent_val: serde_json::Value = serde_json::from_str(&parent_text).unwrap();
-        let parent_id = parent_val.get("id").unwrap().as_str().unwrap();
+    // 4. handle_decompose_task
+    let parent_res = server
+        .handle_create_task(&json!({
+            "title": "Parent For Decompose",
+            "type": "task",
+            "project": "proj-alpha",
+            "parent": "proj-alpha",
+            "allow_missing_parent": true,
+        }))
+        .unwrap();
+    let parent_text: String = parent_res
+        .content
+        .iter()
+        .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+        .collect();
+    let parent_val: serde_json::Value = serde_json::from_str(&parent_text).unwrap();
+    let parent_id = parent_val.get("id").unwrap().as_str().unwrap();
 
-        let decomp_res = server
-            .handle_decompose_task(&json!({
-                "parent_id": parent_id,
-                "subtasks": [
-                    { "title": "Subtask 1", "type": "task" },
-                    { "title": "Subtask 2", "type": "task" }
-                ]
-            }))
-            .unwrap();
-        let decomp_text: String = decomp_res
-            .content
-            .iter()
-            .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
-            .collect();
-        assert!(!decomp_text.contains(root_str), "Must not leak root path");
-        assert!(!decomp_text.contains(".md"), "Must not leak .md extension");
+    let decomp_res = server
+        .handle_decompose_task(&json!({
+            "parent_id": parent_id,
+            "subtasks": [
+                { "title": "Subtask 1", "type": "task" },
+                { "title": "Subtask 2", "type": "task" }
+            ]
+        }))
+        .unwrap();
+    let decomp_text: String = decomp_res
+        .content
+        .iter()
+        .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+        .collect();
+    assert!(!decomp_text.contains(root_str), "Must not leak root path");
+    assert!(!decomp_text.contains(".md"), "Must not leak .md extension");
 
-        // 5. handle_sync_excalidraw created_nodes output shape
-        let dummy_canvas = json!({
-            "type": "excalidraw",
-            "version": 2,
-            "source": "https://excalidraw.com",
-            "elements": [],
-            "appState": { "viewBackgroundColor": "#ffffff", "gridSize": null },
-            "files": {}
-        });
-        let sync_res = server
-            .handle_sync_excalidraw(&json!({
-                "canvas": dummy_canvas.to_string(),
-                "dry_run": false
-            }))
-            .unwrap();
-        let sync_text: String = sync_res
-            .content
-            .iter()
-            .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
-            .collect();
-        assert!(!sync_text.contains(root_str), "Must not leak root path");
-        assert!(!sync_text.contains("\"path\":"), "Must not leak path key in created_nodes");
+    // 5. handle_sync_excalidraw created_nodes output shape
+    let dummy_canvas = json!({
+        "type": "excalidraw",
+        "version": 2,
+        "source": "https://excalidraw.com",
+        "elements": [],
+        "appState": { "viewBackgroundColor": "#ffffff", "gridSize": null },
+        "files": {}
+    });
+    let sync_res = server
+        .handle_sync_excalidraw(&json!({
+            "canvas": dummy_canvas.to_string(),
+            "dry_run": false
+        }))
+        .unwrap();
+    let sync_text: String = sync_res
+        .content
+        .iter()
+        .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+        .collect();
+    assert!(!sync_text.contains(root_str), "Must not leak root path");
+    assert!(
+        !sync_text.contains("\"path\":"),
+        "Must not leak path key in created_nodes"
+    );
 
-        // 6. get_document file not found error does not leak path
-        let get_doc_err = server
-            .handle_get_document(&json!({ "id": "non-existent-id" }))
-            .unwrap_err();
-        assert!(!get_doc_err.message.contains(root_str));
-        assert!(!get_doc_err.message.contains("/"));
+    // 6. get_document file not found error does not leak path
+    let get_doc_err = server
+        .handle_get_document(&json!({ "id": "non-existent-id" }))
+        .unwrap_err();
+    assert!(!get_doc_err.message.contains(root_str));
+    assert!(!get_doc_err.message.contains("/"));
 
-        // 7. get_task file not found error does not leak path
-        let get_task_err = server
-            .handle_get_task(&json!({ "id": "non-existent-task" }))
-            .unwrap_err();
-        assert!(!get_task_err.message.contains(root_str));
-        assert!(!get_task_err.message.contains("/"));
-    }
+    // 7. get_task file not found error does not leak path
+    let get_task_err = server
+        .handle_get_task(&json!({ "id": "non-existent-task" }))
+        .unwrap_err();
+    assert!(!get_task_err.message.contains(root_str));
+    assert!(!get_task_err.message.contains("/"));
+}
 
-    #[test]
-    fn test_update_task_empty_updates_returns_unchanged_and_does_not_modify_file() {
-        let (tmp, server) = build_disk_backed_server(&[(
+#[test]
+fn test_update_task_empty_updates_returns_unchanged_and_does_not_modify_file() {
+    let (tmp, server) = build_disk_backed_server(&[(
             "tasks/noop-task.md",
             "---\nid: noop-task\ntitle: Noop Task\ntype: task\nstatus: ready\nassignee: alice\nmodified: \"2026-08-30T10:00:00Z\"\nlast_modified: \"2026-08-30T10:00:00Z\"\n---\n\n# Body\n",
         )]);
 
-        let file_path = tmp.path().join("tasks/noop-task.md");
-        let before_content = std::fs::read_to_string(&file_path).unwrap();
+    let file_path = tmp.path().join("tasks/noop-task.md");
+    let before_content = std::fs::read_to_string(&file_path).unwrap();
 
-        let res = server
-            .handle_update_task(&json!({
-                "id": "noop-task",
-                "status": "ready",
-                "assignee": "alice",
-            }))
-            .unwrap();
+    let res = server
+        .handle_update_task(&json!({
+            "id": "noop-task",
+            "status": "ready",
+            "assignee": "alice",
+        }))
+        .unwrap();
 
-        let text = res
-            .content
-            .iter()
-            .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
-            .collect::<String>();
-        assert!(
-            text.contains("unchanged"),
-            "empty expansion update should report unchanged, got: {text}"
-        );
+    let text = res
+        .content
+        .iter()
+        .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+        .collect::<String>();
+    assert!(
+        text.contains("unchanged"),
+        "empty expansion update should report unchanged, got: {text}"
+    );
 
-        let after_content = std::fs::read_to_string(&file_path).unwrap();
-        assert_eq!(
-            before_content, after_content,
-            "file on disk must NOT be rewritten or modified when expansion is empty"
-        );
-    }
+    let after_content = std::fs::read_to_string(&file_path).unwrap();
+    assert_eq!(
+        before_content, after_content,
+        "file on disk must NOT be rewritten or modified when expansion is empty"
+    );
+}
 
-    #[test]
-    fn test_update_task_noop_evaluated_against_disk_not_stale_index() {
-        let (tmp, server) = build_disk_backed_server(&[(
-            "tasks/stale-index-task.md",
-            "---\nid: stale-index-task\ntitle: Stale Task\ntype: task\nstatus: ready\n---\n\n# Body\n",
-        )]);
+#[test]
+fn test_update_task_noop_evaluated_against_disk_not_stale_index() {
+    let (tmp, server) = build_disk_backed_server(&[(
+        "tasks/stale-index-task.md",
+        "---\nid: stale-index-task\ntitle: Stale Task\ntype: task\nstatus: ready\n---\n\n# Body\n",
+    )]);
 
-        // Artificially corrupt in-memory graph index to believe status is already "done"
-        {
-            let mut g = server.graph.write();
-            if let Some(mut node) = g.get_node("stale-index-task").cloned() {
-                node.status = Some("done".to_string());
-                g.replace_node(node);
-            }
+    // Artificially corrupt in-memory graph index to believe status is already "done"
+    {
+        let mut g = server.graph.write();
+        if let Some(mut node) = g.get_node("stale-index-task").cloned() {
+            node.status = Some("done".to_string());
+            g.replace_node(node);
         }
-
-        // Now call update_task with status="done" and completion_evidence.
-        // Because on disk the status is actually "ready", this is NOT a no-op against disk.
-        let res = server
-            .handle_update_task(&json!({
-                "id": "stale-index-task",
-                "status": "done",
-                "completion_evidence": "Completed work verified on disk",
-            }))
-            .expect("update_task should succeed and write to disk despite stale in-memory graph");
-
-        let text = res
-            .content
-            .iter()
-            .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
-            .collect::<String>();
-        assert!(
-            text.contains("updated"),
-            "must report updated, got: {text}"
-        );
-
-        let file_path = tmp.path().join("tasks/stale-index-task.md");
-        let content = std::fs::read_to_string(&file_path).unwrap();
-        assert!(
-            content.contains("status: done"),
-            "file on disk must have status: done written"
-        );
     }
 
-    #[test]
-    fn test_recursive_close_failure_is_propagated_as_error() {
-        let (tmp, server) = build_disk_backed_server(&[
+    // Now call update_task with status="done" and completion_evidence.
+    // Because on disk the status is actually "ready", this is NOT a no-op against disk.
+    let res = server
+        .handle_update_task(&json!({
+            "id": "stale-index-task",
+            "status": "done",
+            "completion_evidence": "Completed work verified on disk",
+        }))
+        .expect("update_task should succeed and write to disk despite stale in-memory graph");
+
+    let text = res
+        .content
+        .iter()
+        .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+        .collect::<String>();
+    assert!(text.contains("updated"), "must report updated, got: {text}");
+
+    let file_path = tmp.path().join("tasks/stale-index-task.md");
+    let content = std::fs::read_to_string(&file_path).unwrap();
+    assert!(
+        content.contains("status: done"),
+        "file on disk must have status: done written"
+    );
+}
+
+#[test]
+fn test_recursive_close_failure_is_propagated_as_error() {
+    let (tmp, server) = build_disk_backed_server(&[
             (
                 "tasks/parent-task.md",
                 "---\nid: parent-task\ntitle: Parent\ntype: task\nstatus: ready\n---\n\n# Parent\n",
@@ -2578,29 +2623,29 @@ read_timestamp_utc: 2026-08-31T01:38:00.370857830Z\n";
             ),
         ]);
 
-        // Remove child file from disk so that child update_document fails
-        let child_path = tmp.path().join("tasks/child-task.md");
-        std::fs::remove_file(&child_path).unwrap();
+    // Remove child file from disk so that child update_document fails
+    let child_path = tmp.path().join("tasks/child-task.md");
+    std::fs::remove_file(&child_path).unwrap();
 
-        // Attempting recursive complete_task must FAIL and propagate error, not claim success
-        let err = server
-            .handle_complete_task(&json!({
-                "id": "parent-task",
-                "completion_evidence": "Parent done",
-                "recursive": true,
-            }))
-            .unwrap_err();
+    // Attempting recursive complete_task must FAIL and propagate error, not claim success
+    let err = server
+        .handle_complete_task(&json!({
+            "id": "parent-task",
+            "completion_evidence": "Parent done",
+            "recursive": true,
+        }))
+        .unwrap_err();
 
-        assert!(
-            err.message.contains("child task") || err.message.contains("child-task"),
-            "error must mention failure to recursively close child: {}",
-            err.message
-        );
-    }
+    assert!(
+        err.message.contains("child task") || err.message.contains("child-task"),
+        "error must mention failure to recursively close child: {}",
+        err.message
+    );
+}
 
-    #[test]
-    fn test_hard_cycle_rejected_on_update_task() {
-        let (_tmp, server) = build_disk_backed_server(&[
+#[test]
+fn test_hard_cycle_rejected_on_update_task() {
+    let (_tmp, server) = build_disk_backed_server(&[
             (
                 "tasks/task-a.md",
                 "---\nid: task-a\ntitle: Task A\ntype: task\nstatus: ready\ndepends_on: [task-b]\n---\n\n# Task A\n",
@@ -2611,139 +2656,139 @@ read_timestamp_utc: 2026-08-31T01:38:00.370857830Z\n";
             ),
         ]);
 
-        // Attempting to make task-b depend on task-a creates a hard cycle task-a -> task-b -> task-a
-        let err = server
-            .handle_update_task(&json!({
-                "id": "task-b",
-                "depends_on": ["task-a"],
-            }))
-            .unwrap_err();
+    // Attempting to make task-b depend on task-a creates a hard cycle task-a -> task-b -> task-a
+    let err = server
+        .handle_update_task(&json!({
+            "id": "task-b",
+            "depends_on": ["task-a"],
+        }))
+        .unwrap_err();
 
-        assert!(
-            err.message.contains("circular dependency cycle"),
-            "error message should explain cycle rejection: {}",
-            err.message
-        );
-    }
+    assert!(
+        err.message.contains("circular dependency cycle"),
+        "error message should explain cycle rejection: {}",
+        err.message
+    );
+}
 
-    #[test]
-    fn test_hard_cycle_rejected_on_create_task() {
-        let (_tmp, server) = build_disk_backed_server(&[
+#[test]
+fn test_hard_cycle_rejected_on_create_task() {
+    let (_tmp, server) = build_disk_backed_server(&[
             (
                 "tasks/task-a.md",
                 "---\nid: task-a\ntitle: Task A\ntype: task\nstatus: ready\ndepends_on: [task-b]\n---\n\n# Task A\n",
             ),
         ]);
 
-        // Attempting to create task-b with depends_on: ["task-a"] when task-a depends on task-b
-        let err = server
-            .handle_create_task(&json!({
-                "id": "task-b",
-                "title": "Task B",
-                "type": "task",
-                "parent": "task-a",
-                "allow_missing_parent": true,
-                "depends_on": ["task-a"],
-            }))
-            .unwrap_err();
+    // Attempting to create task-b with depends_on: ["task-a"] when task-a depends on task-b
+    let err = server
+        .handle_create_task(&json!({
+            "id": "task-b",
+            "title": "Task B",
+            "type": "task",
+            "parent": "task-a",
+            "allow_missing_parent": true,
+            "depends_on": ["task-a"],
+        }))
+        .unwrap_err();
 
-        assert!(
-            err.message.contains("circular"),
-            "error message should explain cycle rejection: {}",
-            err.message
-        );
-    }
+    assert!(
+        err.message.contains("circular"),
+        "error message should explain cycle rejection: {}",
+        err.message
+    );
+}
 
-    #[test]
-    fn test_classification_field_create_get_list_update_roundtrip() {
-        let (_tmp, server) = build_disk_backed_server(&[]);
+#[test]
+fn test_classification_field_create_get_list_update_roundtrip() {
+    let (_tmp, server) = build_disk_backed_server(&[]);
 
-        // 1. Create task with classification: "bug"
-        let create_res = server
-            .handle_create_task(&json!({
-                "id": "task-bug-1",
-                "title": "Fix critical race condition",
-                "type": "task",
-                "parent": "epic-root",
-                "classification": "bug",
-                "allow_missing_parent": true,
-            }))
-            .unwrap();
+    // 1. Create task with classification: "bug"
+    let create_res = server
+        .handle_create_task(&json!({
+            "id": "task-bug-1",
+            "title": "Fix critical race condition",
+            "type": "task",
+            "parent": "epic-root",
+            "classification": "bug",
+            "allow_missing_parent": true,
+        }))
+        .unwrap();
 
-        let create_text = create_res.content[0].raw.as_text().unwrap().text.clone();
-        assert!(create_text.contains("task-bug-1"));
+    let create_text = create_res.content[0].raw.as_text().unwrap().text.clone();
+    assert!(create_text.contains("task-bug-1"));
 
-        // 2. get_task must return classification
-        let get_res = server
-            .handle_get_task(&json!({ "id": "task-bug-1" }))
-            .unwrap();
-        let get_text = get_res.content[0].raw.as_text().unwrap().text.clone();
-        let get_json: serde_json::Value = serde_json::from_str(&get_text).unwrap();
-        assert_eq!(get_json["classification"], "bug");
-        assert!(get_json["signals"]["criticality"].is_number());
-        assert!(get_json["signals"]["scope"].is_number());
-        assert!(get_json["signals"]["uncertainty"].is_number());
+    // 2. get_task must return classification
+    let get_res = server
+        .handle_get_task(&json!({ "id": "task-bug-1" }))
+        .unwrap();
+    let get_text = get_res.content[0].raw.as_text().unwrap().text.clone();
+    let get_json: serde_json::Value = serde_json::from_str(&get_text).unwrap();
+    assert_eq!(get_json["classification"], "bug");
+    assert!(get_json["signals"]["criticality"].is_number());
+    assert!(get_json["signals"]["scope"].is_number());
+    assert!(get_json["signals"]["uncertainty"].is_number());
 
-        // 3. list_tasks must return classification
-        let list_res = server
-            .handle_list_tasks(&json!({ "format": "json" }))
-            .unwrap();
-        let list_text = list_res.content[0].raw.as_text().unwrap().text.clone();
-        let list_json: serde_json::Value = serde_json::from_str(&list_text).unwrap();
-        let found = list_json["tasks"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|t| t["id"] == "task-bug-1")
-            .expect("created task should be in list_tasks");
-        assert_eq!(found["classification"], "bug");
+    // 3. list_tasks must return classification
+    let list_res = server
+        .handle_list_tasks(&json!({ "format": "json" }))
+        .unwrap();
+    let list_text = list_res.content[0].raw.as_text().unwrap().text.clone();
+    let list_json: serde_json::Value = serde_json::from_str(&list_text).unwrap();
+    let found = list_json["tasks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|t| t["id"] == "task-bug-1")
+        .expect("created task should be in list_tasks");
+    assert_eq!(found["classification"], "bug");
 
-        // 4. update_task with classification: "spike"
-        server
-            .handle_update_task(&json!({
-                "id": "task-bug-1",
-                "classification": "spike",
-            }))
-            .unwrap();
+    // 4. update_task with classification: "spike"
+    server
+        .handle_update_task(&json!({
+            "id": "task-bug-1",
+            "classification": "spike",
+        }))
+        .unwrap();
 
-        let get_res2 = server
-            .handle_get_task(&json!({ "id": "task-bug-1" }))
-            .unwrap();
-        let get_text2 = get_res2.content[0].raw.as_text().unwrap().text.clone();
-        let get_json2: serde_json::Value = serde_json::from_str(&get_text2).unwrap();
-        assert_eq!(get_json2["classification"], "spike");
-    }
+    let get_res2 = server
+        .handle_get_task(&json!({ "id": "task-bug-1" }))
+        .unwrap();
+    let get_text2 = get_res2.content[0].raw.as_text().unwrap().text.clone();
+    let get_json2: serde_json::Value = serde_json::from_str(&get_text2).unwrap();
+    assert_eq!(get_json2["classification"], "spike");
+}
 
-    #[test]
-    fn test_hard_cycle_rejected_on_decompose_task() {
-        let (_tmp, server) = build_disk_backed_server(&[
+#[test]
+fn test_hard_cycle_rejected_on_decompose_task() {
+    let (_tmp, server) = build_disk_backed_server(&[
             (
                 "tasks/epic-parent.md",
                 "---\nid: epic-parent\ntitle: Epic Parent\ntype: epic\nstatus: ready\n---\n\n# Epic Parent\n",
             ),
         ]);
 
-        // Subtasks forming a cycle among themselves ($1 depends on $2, $2 depends on $1)
-        let err = server
-            .handle_decompose_task(&json!({
-                "parent_id": "epic-parent",
-                "subtasks": [
-                    { "title": "Subtask 1", "depends_on": ["$2"] },
-                    { "title": "Subtask 2", "depends_on": ["$1"] },
-                ]
-            }))
-            .unwrap_err();
+    // Subtasks forming a cycle among themselves ($1 depends on $2, $2 depends on $1)
+    let err = server
+        .handle_decompose_task(&json!({
+            "parent_id": "epic-parent",
+            "subtasks": [
+                { "title": "Subtask 1", "depends_on": ["$2"] },
+                { "title": "Subtask 2", "depends_on": ["$1"] },
+            ]
+        }))
+        .unwrap_err();
 
-        assert!(
-            err.message.contains("Circular dependency detected") || err.message.contains("circular"),
-            "error should indicate cycle rejection: {}",
-            err.message
-        );
-    }
+    assert!(
+        err.message.contains("Circular dependency detected") || err.message.contains("circular"),
+        "error should indicate cycle rejection: {}",
+        err.message
+    );
+}
 
-    #[test]
-    fn test_hard_cycle_rejected_on_batch_merge() {
-        let (tmp, server) = build_disk_backed_server(&[
+#[test]
+fn test_hard_cycle_rejected_on_batch_merge() {
+    let (tmp, server) = build_disk_backed_server(&[
             (
                 "tasks/task-a.md",
                 "---\nid: task-a\ntitle: Task A\ntype: task\nstatus: ready\ndepends_on: [task-b]\n---\n\n# Task A\n",
@@ -2758,38 +2803,40 @@ read_timestamp_utc: 2026-08-31T01:38:00.370857830Z\n";
             ),
         ]);
 
-        // Merging task-c into task-b would give task-b a dependency on task-a.
-        // But task-a already depends on task-b, which would create a cycle: task-b -> task-a -> task-b.
-        let graph = server.graph.read();
-        let summary = crate::batch_ops::duplicates::batch_merge(
-            &graph,
-            tmp.path(),
-            "task-b",
-            &["task-c".to_string()],
-            false,
-        );
+    // Merging task-c into task-b would give task-b a dependency on task-a.
+    // But task-a already depends on task-b, which would create a cycle: task-b -> task-a -> task-b.
+    let graph = server.graph.read();
+    let summary = crate::batch_ops::duplicates::batch_merge(
+        &graph,
+        tmp.path(),
+        "task-b",
+        &["task-c".to_string()],
+        false,
+    );
 
-        assert!(
-            !summary.errors.is_empty(),
-            "batch_merge should fail with cycle error"
-        );
-        assert!(
-            summary.errors[0].error.contains("circular dependency cycle")
-                || summary.errors[0].error.contains("DAG"),
-            "error should explain DAG cycle: {}",
-            summary.errors[0].error
-        );
-        // A rejected merge must write nothing: the source keeps its status.
-        let c_disk = std::fs::read_to_string(tmp.path().join("tasks/task-c.md")).unwrap();
-        assert!(
-            c_disk.contains("status: ready"),
-            "rejected merge must not archive the source, got:\n{c_disk}"
-        );
-    }
+    assert!(
+        !summary.errors.is_empty(),
+        "batch_merge should fail with cycle error"
+    );
+    assert!(
+        summary.errors[0]
+            .error
+            .contains("circular dependency cycle")
+            || summary.errors[0].error.contains("DAG"),
+        "error should explain DAG cycle: {}",
+        summary.errors[0].error
+    );
+    // A rejected merge must write nothing: the source keeps its status.
+    let c_disk = std::fs::read_to_string(tmp.path().join("tasks/task-c.md")).unwrap();
+    assert!(
+        c_disk.contains("status: ready"),
+        "rejected merge must not archive the source, got:\n{c_disk}"
+    );
+}
 
-    #[test]
-    fn test_hard_cycle_rejected_on_batch_create_epics() {
-        let (tmp, server) = build_disk_backed_server(&[
+#[test]
+fn test_hard_cycle_rejected_on_batch_create_epics() {
+    let (tmp, server) = build_disk_backed_server(&[
             (
                 "tasks/task-root.md",
                 "---\nid: task-root\ntitle: Root Task\ntype: task\nstatus: ready\ndepends_on: [task-child]\n---\n\n# Root Task\n",
@@ -2800,33 +2847,35 @@ read_timestamp_utc: 2026-08-31T01:38:00.370857830Z\n";
             ),
         ]);
 
-        // Creating an epic under task-root that reparents task-child would mean:
-        // task-child -> epic -> task-root.
-        // But task-root depends on task-child, creating cycle: task-root -> task-child -> epic -> task-root.
-        let graph = server.graph.read();
-        let summary = crate::batch_ops::epics::batch_create_epics(
-            &graph,
-            tmp.path(),
-            Some("task-root"),
-            &[crate::batch_ops::epics::EpicDef {
-                title: "Cycle Epic".to_string(),
-                task_ids: vec!["task-child".to_string()],
-                intent: None,
-                id: Some("epic-cycle".to_string()),
-                depends_on: vec![],
-                body: None,
-            }],
-            false,
-        );
+    // Creating an epic under task-root that reparents task-child would mean:
+    // task-child -> epic -> task-root.
+    // But task-root depends on task-child, creating cycle: task-root -> task-child -> epic -> task-root.
+    let graph = server.graph.read();
+    let summary = crate::batch_ops::epics::batch_create_epics(
+        &graph,
+        tmp.path(),
+        Some("task-root"),
+        &[crate::batch_ops::epics::EpicDef {
+            title: "Cycle Epic".to_string(),
+            task_ids: vec!["task-child".to_string()],
+            intent: None,
+            id: Some("epic-cycle".to_string()),
+            depends_on: vec![],
+            body: None,
+        }],
+        false,
+    );
 
-        assert!(
-            !summary.errors.is_empty(),
-            "batch_create_epics should fail with cycle error"
-        );
-        assert!(
-            summary.errors[0].error.contains("circular dependency cycle")
-                || summary.errors[0].error.contains("DAG"),
-            "error should explain DAG cycle: {}",
-            summary.errors[0].error
-        );
-    }
+    assert!(
+        !summary.errors.is_empty(),
+        "batch_create_epics should fail with cycle error"
+    );
+    assert!(
+        summary.errors[0]
+            .error
+            .contains("circular dependency cycle")
+            || summary.errors[0].error.contains("DAG"),
+        "error should explain DAG cycle: {}",
+        summary.errors[0].error
+    );
+}

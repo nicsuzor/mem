@@ -3,10 +3,7 @@ use std::fmt;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DateParseError {
-    InvalidFormat {
-        param: &'static str,
-        value: String,
-    },
+    InvalidFormat { param: &'static str, value: String },
 }
 
 impl fmt::Display for DateParseError {

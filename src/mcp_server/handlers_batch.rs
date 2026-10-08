@@ -1,14 +1,17 @@
+use crate::graph_store::DEFAULT_DIVERGENCE_THRESHOLD_DAYS;
 use rmcp::model::*;
 use rmcp::ErrorData as McpError;
 use serde_json::Value as JsonValue;
 use std::borrow::Cow;
 use std::sync::atomic::Ordering;
-use crate::graph_store::DEFAULT_DIVERGENCE_THRESHOLD_DAYS;
 
-use super::{PkbSearchServer, MAX_RESULTS, DRY_RUN_WARNING};
+use super::{PkbSearchServer, DRY_RUN_WARNING, MAX_RESULTS};
 
 impl PkbSearchServer {
-    pub(crate) fn handle_get_network_metrics(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+    pub(crate) fn handle_get_network_metrics(
+        &self,
+        args: &JsonValue,
+    ) -> Result<CallToolResult, McpError> {
         self.ensure_graph_fresh();
         let id = args
             .get("id")
@@ -53,7 +56,10 @@ impl PkbSearchServer {
         }
     }
 
-    pub(crate) fn handle_top_n_by_metric(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+    pub(crate) fn handle_top_n_by_metric(
+        &self,
+        args: &JsonValue,
+    ) -> Result<CallToolResult, McpError> {
         self.ensure_graph_fresh();
 
         if let Some(id) = args.get("id").and_then(|v| v.as_str()) {
@@ -95,7 +101,9 @@ impl PkbSearchServer {
             .and_then(|v| v.as_str())
             .ok_or_else(|| McpError {
                 code: ErrorCode::INVALID_PARAMS,
-                message: Cow::from("Missing required parameter: metric (or id for single-node metrics)"),
+                message: Cow::from(
+                    "Missing required parameter: metric (or id for single-node metrics)",
+                ),
                 data: None,
             })?;
 
@@ -249,7 +257,10 @@ impl PkbSearchServer {
         }
     }
 
-    pub(crate) fn handle_batch_reparent(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+    pub(crate) fn handle_batch_reparent(
+        &self,
+        args: &JsonValue,
+    ) -> Result<CallToolResult, McpError> {
         let new_parent = args
             .get("new_parent")
             .and_then(|v| v.as_str())
@@ -290,7 +301,10 @@ impl PkbSearchServer {
         }
     }
 
-    pub(crate) fn handle_batch_archive(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+    pub(crate) fn handle_batch_archive(
+        &self,
+        args: &JsonValue,
+    ) -> Result<CallToolResult, McpError> {
         let filters = crate::batch_ops::filters::parse_filter_set(args);
         let dry_run = args
             .get("dry_run")
@@ -401,17 +415,16 @@ impl PkbSearchServer {
     pub fn handle_graph_excalidraw(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
         self.ensure_graph_fresh();
         let node_id = args.get("node_id").and_then(|v| v.as_str());
-        let hops = args
-            .get("hops")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(2) as usize;
+        let hops = args.get("hops").and_then(|v| v.as_u64()).unwrap_or(2) as usize;
 
         let graph = self.graph.read();
-        let (json, _, _) = graph.output_excalidraw(node_id, hops).map_err(|e| McpError {
-            code: ErrorCode::INTERNAL_ERROR,
-            message: Cow::from(format!("Failed to export Excalidraw graph: {e}")),
-            data: None,
-        })?;
+        let (json, _, _) = graph
+            .output_excalidraw(node_id, hops)
+            .map_err(|e| McpError {
+                code: ErrorCode::INTERNAL_ERROR,
+                message: Cow::from(format!("Failed to export Excalidraw graph: {e}")),
+                data: None,
+            })?;
 
         Ok(CallToolResult::success(vec![Content::text(json)]))
     }
@@ -420,10 +433,7 @@ impl PkbSearchServer {
         self.ensure_graph_fresh();
         let format = args.get("format").and_then(|v| v.as_str()).unwrap_or("dot");
         let focus = args.get("focus").and_then(|v| v.as_str());
-        let max_depth = args
-            .get("max_depth")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(2) as usize;
+        let max_depth = args.get("max_depth").and_then(|v| v.as_u64()).unwrap_or(2) as usize;
         let project = args.get("project").and_then(|v| v.as_str());
         let include_done = args
             .get("include_done")
@@ -487,13 +497,12 @@ impl PkbSearchServer {
         };
 
         let graph = self.graph.read();
-        let diff = crate::excalidraw::diff_canvas(base_snapshot.as_ref(), &graph, &canvas).map_err(|e| {
-            McpError {
+        let diff = crate::excalidraw::diff_canvas(base_snapshot.as_ref(), &graph, &canvas)
+            .map_err(|e| McpError {
                 code: ErrorCode::INTERNAL_ERROR,
                 message: Cow::from(format!("Failed to compute diff: {e}")),
                 data: None,
-            }
-        })?;
+            })?;
 
         let json = serde_json::to_string_pretty(&diff).map_err(|e| McpError {
             code: ErrorCode::INTERNAL_ERROR,
@@ -545,13 +554,13 @@ impl PkbSearchServer {
 
         let diff = {
             let graph = self.graph.read();
-            crate::excalidraw::diff_canvas(base_snapshot.as_ref(), &graph, &canvas).map_err(|e| {
-                McpError {
+            crate::excalidraw::diff_canvas(base_snapshot.as_ref(), &graph, &canvas).map_err(
+                |e| McpError {
                     code: ErrorCode::INTERNAL_ERROR,
                     message: Cow::from(format!("Failed to compute diff: {e}")),
                     data: None,
-                }
-            })?
+                },
+            )?
         };
 
         if dry_run {
@@ -574,13 +583,12 @@ impl PkbSearchServer {
 
         let report = {
             let mut graph = self.graph.write();
-            crate::excalidraw::sync_canvas(&self.pkb_root, &mut graph, &diff, sync_edge_removals).map_err(|e| {
-                McpError {
+            crate::excalidraw::sync_canvas(&self.pkb_root, &mut graph, &diff, sync_edge_removals)
+                .map_err(|e| McpError {
                     code: ErrorCode::INTERNAL_ERROR,
                     message: Cow::from(format!("Failed to sync canvas to disk: {e}")),
                     data: None,
-                }
-            })?
+                })?
         };
 
         // Update vector store and schedule background graph rebuild
@@ -733,7 +741,10 @@ impl PkbSearchServer {
         }
     }
 
-    pub(crate) fn handle_batch_create_epics(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+    pub(crate) fn handle_batch_create_epics(
+        &self,
+        args: &JsonValue,
+    ) -> Result<CallToolResult, McpError> {
         let parent = args.get("parent").and_then(|v| v.as_str());
         let dry_run = args
             .get("dry_run")
@@ -832,7 +843,10 @@ impl PkbSearchServer {
         Ok(CallToolResult::success(vec![Content::text(json)]))
     }
 
-    pub(crate) fn handle_batch_reclassify(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+    pub(crate) fn handle_batch_reclassify(
+        &self,
+        args: &JsonValue,
+    ) -> Result<CallToolResult, McpError> {
         let filters = crate::batch_ops::filters::parse_filter_set(args);
         let new_type = args
             .get("new_type")
@@ -874,7 +888,10 @@ impl PkbSearchServer {
         Ok(CallToolResult::success(vec![Content::text(json)]))
     }
 
-    pub(crate) fn handle_refresh_graph(&self, _args: &JsonValue) -> Result<CallToolResult, McpError> {
+    pub(crate) fn handle_refresh_graph(
+        &self,
+        _args: &JsonValue,
+    ) -> Result<CallToolResult, McpError> {
         let (scanned, parsed, node_count) = self.rebuild_graph();
         let skipped = scanned.saturating_sub(parsed);
         let json = serde_json::json!({
@@ -906,8 +923,14 @@ impl PkbSearchServer {
     /// `dry_run` (default true) only reports; `dry_run: false` purges each
     /// orphan via the same WAL-logged `Remove` + `store.remove` sequence
     /// `try_remove_document` uses for an ordinary delete, then persists.
-    pub(crate) fn handle_repair_index_orphans(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
-        let dry_run = args.get("dry_run").and_then(|v| v.as_bool()).unwrap_or(true);
+    pub(crate) fn handle_repair_index_orphans(
+        &self,
+        args: &JsonValue,
+    ) -> Result<CallToolResult, McpError> {
+        let dry_run = args
+            .get("dry_run")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true);
 
         let orphans = self.store.read().find_orphaned_entries(&self.pkb_root);
 
@@ -975,7 +998,10 @@ impl PkbSearchServer {
         )]))
     }
 
-    pub(crate) fn handle_apply_consolidation_batch(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+    pub(crate) fn handle_apply_consolidation_batch(
+        &self,
+        args: &JsonValue,
+    ) -> Result<CallToolResult, McpError> {
         let seed_id = args
             .get("seed_id")
             .and_then(|v| v.as_str())
@@ -985,14 +1011,17 @@ impl PkbSearchServer {
                 message: Cow::from("Missing required parameter: seed_id"),
                 data: None,
             })?;
-        
+
         let updates_val = args.get("updates").ok_or_else(|| McpError {
             code: ErrorCode::INVALID_PARAMS,
             message: Cow::from("Missing required parameter: updates"),
             data: None,
         })?;
-        
-        let updates: std::collections::HashMap<String, std::collections::HashMap<String, JsonValue>> = serde_json::from_value(updates_val.clone()).map_err(|e| McpError {
+
+        let updates: std::collections::HashMap<
+            String,
+            std::collections::HashMap<String, JsonValue>,
+        > = serde_json::from_value(updates_val.clone()).map_err(|e| McpError {
             code: ErrorCode::INVALID_PARAMS,
             message: Cow::from(format!("Invalid updates format: {}", e)),
             data: None,
@@ -1005,7 +1034,7 @@ impl PkbSearchServer {
                 data: None,
             });
         }
-        
+
         let dry_run = args
             .get("dry_run")
             .and_then(|v| v.as_bool())
@@ -1013,18 +1042,21 @@ impl PkbSearchServer {
 
         let graph = self.graph.read();
         let mut ctx = crate::batch_ops::BatchContext::new(&graph, &self.pkb_root);
-        
-        let summary = crate::batch_ops::consolidation::apply_consolidation_batch(&mut ctx, seed_id, updates, dry_run).map_err(|e| McpError {
+
+        let summary = crate::batch_ops::consolidation::apply_consolidation_batch(
+            &mut ctx, seed_id, updates, dry_run,
+        )
+        .map_err(|e| McpError {
             code: ErrorCode::INTERNAL_ERROR,
             message: Cow::from(format!("Failed to apply consolidation batch: {}", e)),
             data: None,
         })?;
-        
+
         drop(graph);
         if !dry_run && summary.changed > 0 {
             self.finalize_batch(&summary.modified_paths, &summary.removed_paths);
         }
-        
+
         let json = serde_json::to_string_pretty(&summary).unwrap_or_default();
         if dry_run {
             let msg = format!("{}{}", DRY_RUN_WARNING, json);
@@ -1034,11 +1066,17 @@ impl PkbSearchServer {
         }
     }
 
-    pub(crate) fn handle_get_consolidation_cluster(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+    pub(crate) fn handle_get_consolidation_cluster(
+        &self,
+        args: &JsonValue,
+    ) -> Result<CallToolResult, McpError> {
         self.ensure_graph_fresh();
         let seed_id = args.get("seed_id").and_then(|v| v.as_str());
         let max_nodes = args.get("max_nodes").and_then(|v| v.as_i64()).unwrap_or(10) as usize;
-        let vector_top_k = args.get("vector_top_k").and_then(|v| v.as_i64()).unwrap_or(10) as usize;
+        let vector_top_k = args
+            .get("vector_top_k")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(10) as usize;
 
         let graph = self.graph.read();
         let store = self.store.read();
@@ -1050,30 +1088,30 @@ impl PkbSearchServer {
             max_nodes,
             vector_top_k,
             &self.pkb_root,
-        ).map_err(|e| McpError {
+        )
+        .map_err(|e| McpError {
             code: ErrorCode::INTERNAL_ERROR,
             message: Cow::from(format!("Failed to get consolidation cluster: {}", e)),
             data: None,
         })?;
 
         Ok(CallToolResult::success(vec![Content::text(
-            serde_json::to_string_pretty(&cluster).unwrap_or_default()
+            serde_json::to_string_pretty(&cluster).unwrap_or_default(),
         )]))
     }
 
     // =========================================================================
     // CONSOLIDATED TOOLS (Progressive Disclosure)
     // =========================================================================
-
 }
 
 #[cfg(test)]
 mod batch_finalize_tests {
     use super::*;
-    use parking_lot::RwLock;
     use crate::embeddings::Embedder;
     use crate::graph_store::GraphStore;
     use crate::vectordb::VectorStore;
+    use parking_lot::RwLock;
     use serde_json::json;
     use std::path::Path;
     use std::sync::Arc;
@@ -1551,4 +1589,3 @@ mod batch_finalize_tests {
         assert_eq!(dup_disk.matches("Merged into [[task-canon]]").count(), 1);
     }
 }
-

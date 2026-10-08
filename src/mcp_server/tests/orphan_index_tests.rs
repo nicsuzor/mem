@@ -154,12 +154,20 @@ fn test_repair_index_orphans_purges_when_dry_run_false() {
 
     // The orphan is gone from the store...
     assert!(
-        server.store_for_test().read().get_entry("task-ghost").is_none(),
+        server
+            .store_for_test()
+            .read()
+            .get_entry("task-ghost")
+            .is_none(),
         "orphaned entry must be removed from the vector store"
     );
     // ...but the live entry is untouched.
     assert!(
-        server.store_for_test().read().get_entry("task-live").is_some(),
+        server
+            .store_for_test()
+            .read()
+            .get_entry("task-live")
+            .is_some(),
         "live entry must survive the repair"
     );
 
@@ -203,11 +211,13 @@ fn test_pkb_search_withholds_orphaned_hit_and_spares_live_hit() {
     let result_json = server
         .handle_pkb_search(&json!({"query": "zzzghostkeyword", "limit": 10, "format": "json"}))
         .expect("search succeeds");
-    let val: serde_json::Value = serde_json::from_str(&result_text(&result_json)).unwrap_or_default();
+    let val: serde_json::Value =
+        serde_json::from_str(&result_text(&result_json)).unwrap_or_default();
     let results_arr = val.get("results").and_then(|v| v.as_array());
     if let Some(arr) = results_arr {
         assert!(
-            !arr.iter().any(|item| item["id"] == "task-ghost" || item["title"] == "Ghost Task"),
+            !arr.iter()
+                .any(|item| item["id"] == "task-ghost" || item["title"] == "Ghost Task"),
             "orphaned hit must be withheld in json search: {val}"
         );
     }

@@ -98,5 +98,4 @@ impl PkbSearchServer {
             }),
         }
     }
-
 }

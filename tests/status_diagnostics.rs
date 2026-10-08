@@ -133,7 +133,10 @@ fn test_status_diagnostics_live_state_mutations() {
     assert_eq!(s_file["freshness"]["is_fresh"], false);
 
     // Live refresh_graph test
-    let ts_before = s_file["index"]["last_reindex"]["timestamp"].as_str().unwrap().to_string();
+    let ts_before = s_file["index"]["last_reindex"]["timestamp"]
+        .as_str()
+        .unwrap()
+        .to_string();
     std::thread::sleep(std::time::Duration::from_millis(10));
     server
         .dispatch_tool_sync("refresh_graph", &serde_json::json!({}))
@@ -142,7 +145,9 @@ fn test_status_diagnostics_live_state_mutations() {
     let s_refreshed = query_status();
     assert_eq!(s_refreshed["index"]["document_count"], 2);
     assert_ne!(
-        s_refreshed["index"]["last_reindex"]["timestamp"].as_str().unwrap(),
+        s_refreshed["index"]["last_reindex"]["timestamp"]
+            .as_str()
+            .unwrap(),
         ts_before
     );
 }

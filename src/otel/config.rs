@@ -11,13 +11,19 @@ pub struct OtelConfig {
 impl OtelConfig {
     pub fn from_env() -> Option<Self> {
         let endpoint = if let Ok(ep) = env::var("GENAI_ENGINE_TRACE_ENDPOINT") {
-            if ep.is_empty() { return None; }
+            if ep.is_empty() {
+                return None;
+            }
             ep
         } else if let Ok(ep) = env::var("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT") {
-            if ep.is_empty() { return None; }
+            if ep.is_empty() {
+                return None;
+            }
             ep
         } else if let Ok(ep) = env::var("OTEL_EXPORTER_OTLP_ENDPOINT") {
-            if ep.is_empty() { return None; }
+            if ep.is_empty() {
+                return None;
+            }
             if ep.ends_with('/') {
                 format!("{}v1/traces", ep)
             } else {
@@ -60,13 +66,19 @@ mod tests {
     #[test]
     fn test_endpoint_resolution() {
         // Test GENAI_ENGINE_TRACE_ENDPOINT (verbatim)
-        env::set_var("GENAI_ENGINE_TRACE_ENDPOINT", "http://host:4318/my/custom/path");
+        env::set_var(
+            "GENAI_ENGINE_TRACE_ENDPOINT",
+            "http://host:4318/my/custom/path",
+        );
         let config = OtelConfig::from_env().unwrap();
         assert_eq!(config.endpoint, "http://host:4318/my/custom/path");
         env::remove_var("GENAI_ENGINE_TRACE_ENDPOINT");
 
         // Test OTEL_EXPORTER_OTLP_TRACES_ENDPOINT (verbatim)
-        env::set_var("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "http://host:4318/v1/traces");
+        env::set_var(
+            "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
+            "http://host:4318/v1/traces",
+        );
         let config = OtelConfig::from_env().unwrap();
         assert_eq!(config.endpoint, "http://host:4318/v1/traces");
         env::remove_var("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT");

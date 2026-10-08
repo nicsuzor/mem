@@ -2,7 +2,13 @@ fn main() {
     // Embed short git commit SHA (with -dirty suffix if uncommitted changes exist)
     let hash = std::env::var("BUILD_GIT_HASH").unwrap_or_else(|_| {
         std::process::Command::new("git")
-            .args(["describe", "--always", "--dirty", "--abbrev=7", "--exclude=*"])
+            .args([
+                "describe",
+                "--always",
+                "--dirty",
+                "--abbrev=7",
+                "--exclude=*",
+            ])
             .output()
             .ok()
             .filter(|o| o.status.success())

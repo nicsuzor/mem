@@ -1,9 +1,8 @@
 use crate::otel::session_registry::SessionRegistry;
 use http::request::Parts;
-use opentelemetry::{global, Context};
 use opentelemetry::propagation::Extractor;
 use opentelemetry::trace::TraceContextExt;
-
+use opentelemetry::{global, Context};
 
 pub struct HeaderExtractor<'a>(pub &'a http::HeaderMap);
 
@@ -103,23 +102,37 @@ mod tests {
     #[test]
     fn test_session_id_precedence() {
         let registry = SessionRegistry::new();
-        
+
         // 1. HTTP header takes precedence
-        let req = Request::builder().header("x-session-id", "header-session").body(()).unwrap();
+        let req = Request::builder()
+            .header("x-session-id", "header-session")
+            .body(())
+            .unwrap();
         let (parts, _) = req.into_parts();
         let meta = json!({ "session_id": "meta-session" });
-        
-        let cx = ClientContext::extract(Some(&parts), Some(&rmcp::model::Meta(meta.as_object().unwrap().clone())), &registry);
+
+        let cx = ClientContext::extract(
+            Some(&parts),
+            Some(&rmcp::model::Meta(meta.as_object().unwrap().clone())),
+            &registry,
+        );
         assert_eq!(cx.session_id, "header-session");
 
         // 2. Meta fallback
         let req = Request::builder().body(()).unwrap();
         let (parts, _) = req.into_parts();
-        let cx = ClientContext::extract(Some(&parts), Some(&rmcp::model::Meta(meta.as_object().unwrap().clone())), &registry);
+        let cx = ClientContext::extract(
+            Some(&parts),
+            Some(&rmcp::model::Meta(meta.as_object().unwrap().clone())),
+            &registry,
+        );
         assert_eq!(cx.session_id, "meta-session");
-        
+
         // 3. MCP transport fallback
-        let req = Request::builder().header("mcp-session-id", "transport-session").body(()).unwrap();
+        let req = Request::builder()
+            .header("mcp-session-id", "transport-session")
+            .body(())
+            .unwrap();
         let (parts, _) = req.into_parts();
         let cx = ClientContext::extract(Some(&parts), None, &registry);
         assert_eq!(cx.session_id, "transport-session");
@@ -127,16 +140,24 @@ mod tests {
 
     #[test]
     fn test_traceparent_extraction() {
-        opentelemetry::global::set_text_map_propagator(opentelemetry_sdk::propagation::TraceContextPropagator::new());
+        opentelemetry::global::set_text_map_propagator(
+            opentelemetry_sdk::propagation::TraceContextPropagator::new(),
+        );
         let registry = SessionRegistry::new();
         let req = Request::builder()
-            .header("traceparent", "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01")
+            .header(
+                "traceparent",
+                "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01",
+            )
             .body(())
             .unwrap();
         let (parts, _) = req.into_parts();
         let cx = ClientContext::extract(Some(&parts), None, &registry);
-        
-        assert!(cx.parent_context.is_some(), "Context should be successfully extracted");
+
+        assert!(
+            cx.parent_context.is_some(),
+            "Context should be successfully extracted"
+        );
         let extracted = cx.parent_context.unwrap();
         assert!(extracted.span().span_context().is_valid());
         assert_eq!(

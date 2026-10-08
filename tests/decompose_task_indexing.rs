@@ -187,7 +187,9 @@ fn stdio_session_sequential(aca_path: &std::path::Path, messages: &[String]) -> 
                     child.kill().ok();
                     child.wait().ok();
                     if err.contains("Model files not found") || err.contains("AOPS_OFFLINE=true") {
-                        eprintln!("SKIP: decompose_task_indexing skipped (no cached ONNX model): {err}");
+                        eprintln!(
+                            "SKIP: decompose_task_indexing skipped (no cached ONNX model): {err}"
+                        );
                         return responses;
                     }
                     panic!(

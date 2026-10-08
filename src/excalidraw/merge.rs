@@ -149,10 +149,7 @@ pub fn find_spiral_placement(
     }
 
     // Fallback: place to the right of the rightmost element
-    let max_x = occupied_boxes
-        .iter()
-        .map(|b| b[2])
-        .fold(center_x, f64::max);
+    let max_x = occupied_boxes.iter().map(|b| b[2]).fold(center_x, f64::max);
     (max_x + margin + 60.0, center_y)
 }
 
@@ -177,7 +174,8 @@ pub fn merge_live_into_canvas(
     let mut canvas_card_map: HashMap<String, CanvasCard> = HashMap::new();
     for card in &parsed_canvas.cards {
         let node_id = card.node_id.clone().or_else(|| {
-            live.get_node(&card.element_id).map(|_| card.element_id.clone())
+            live.get_node(&card.element_id)
+                .map(|_| card.element_id.clone())
         });
         if let Some(ref nid) = node_id {
             canvas_card_map.insert(nid.clone(), card.clone());
@@ -186,12 +184,7 @@ pub fn merge_live_into_canvas(
                 existing_text_map.insert(nid.clone(), bt.clone());
             }
             existing_positions.insert(nid.clone(), (card.x, card.y));
-            occupied_boxes.push([
-                card.x,
-                card.y,
-                card.x + card.width,
-                card.y + card.height,
-            ]);
+            occupied_boxes.push([card.x, card.y, card.x + card.width, card.y + card.height]);
         }
     }
 
@@ -209,7 +202,8 @@ pub fn merge_live_into_canvas(
     let mut target_set: HashSet<String> = target_node_ids.iter().cloned().collect();
     for card in &parsed_canvas.cards {
         let node_id = card.node_id.clone().or_else(|| {
-            live.get_node(&card.element_id).map(|_| card.element_id.clone())
+            live.get_node(&card.element_id)
+                .map(|_| card.element_id.clone())
         });
         if let Some(ref nid) = node_id {
             target_set.insert(nid.clone());
@@ -239,7 +233,8 @@ pub fn merge_live_into_canvas(
             if let Some(ln) = live_node {
                 if !status_unchanged {
                     // Status changed: apply the new status palette color
-                    let color_style = node_color_style(ln.status.as_deref(), ln.node_type.as_deref());
+                    let color_style =
+                        node_color_style(ln.status.as_deref(), ln.node_type.as_deref());
                     existing_card.background_color = color_style.bg_color.to_string();
                     existing_card.stroke_color = color_style.stroke_color.to_string();
                     if let Some(ref mut cd) = existing_card.custom_data {
@@ -322,20 +317,10 @@ pub fn merge_live_into_canvas(
                 .map(|b| b[1] + 100.0)
                 .unwrap_or(200.0);
 
-            let (place_x, place_y) = find_spiral_placement(
-                center_x,
-                center_y,
-                card_w,
-                card_h,
-                &occupied_boxes,
-            );
+            let (place_x, place_y) =
+                find_spiral_placement(center_x, center_y, card_w, card_h, &occupied_boxes);
 
-            occupied_boxes.push([
-                place_x,
-                place_y,
-                place_x + card_w,
-                place_y + card_h,
-            ]);
+            occupied_boxes.push([place_x, place_y, place_x + card_w, place_y + card_h]);
             existing_positions.insert(nid.clone(), (place_x, place_y));
 
             let card_id = nid.clone();
@@ -580,7 +565,10 @@ pub fn sync_diff_to_disk(
         let mut updates: HashMap<String, serde_json::Value> = HashMap::new();
 
         if let Some(ref title) = updated.title {
-            updates.insert("title".to_string(), serde_json::Value::String(title.clone()));
+            updates.insert(
+                "title".to_string(),
+                serde_json::Value::String(title.clone()),
+            );
         }
         if let Some(ref status) = updated.status {
             updates.insert(
@@ -612,10 +600,9 @@ pub fn sync_diff_to_disk(
                     report.updated_nodes.push(updated.node_id.clone());
                 }
                 Err(e) => {
-                    report.warnings.push(format!(
-                        "Failed to update node '{}': {e}",
-                        updated.node_id
-                    ));
+                    report
+                        .warnings
+                        .push(format!("Failed to update node '{}': {e}", updated.node_id));
                 }
             }
         }
@@ -624,8 +611,7 @@ pub fn sync_diff_to_disk(
     // 3. Process Edge Mutations with Cycle Validation
     for edge in &diff.added_edges {
         // Validate cycle before applying
-        if let Err(cycle_path) =
-            validate_no_cycle(gs, &edge.source, &edge.target, &edge.edge_type)
+        if let Err(cycle_path) = validate_no_cycle(gs, &edge.source, &edge.target, &edge.edge_type)
         {
             let cycle_desc = cycle_path.join(" -> ");
             report.rejected_cycles.push(format!(
@@ -695,27 +681,30 @@ pub fn sync_diff_to_disk(
                     pkb_root.join(&source_node.path)
                 };
 
-                let existing_deps: Vec<String> = if let Ok(content) = std::fs::read_to_string(&file_path) {
-                    let matter = gray_matter::Matter::<gray_matter::engine::YAML>::new();
-                    let result = matter.parse(&content);
-                    result
-                        .data
-                        .as_ref()
-                        .and_then(|d| d.deserialize::<serde_json::Value>().ok())
-                        .and_then(|v| v.get("depends_on").cloned())
-                        .and_then(|v| {
-                            if let Some(arr) = v.as_array() {
-                                Some(
-                                    arr.iter()
-                                        .filter_map(|x| x.as_str().map(String::from))
-                                        .collect(),
-                                )
-                            } else { v.as_str().map(|s| vec![s.to_string()]) }
-                        })
-                        .unwrap_or_else(|| source_node.depends_on.clone())
-                } else {
-                    source_node.depends_on.clone()
-                };
+                let existing_deps: Vec<String> =
+                    if let Ok(content) = std::fs::read_to_string(&file_path) {
+                        let matter = gray_matter::Matter::<gray_matter::engine::YAML>::new();
+                        let result = matter.parse(&content);
+                        result
+                            .data
+                            .as_ref()
+                            .and_then(|d| d.deserialize::<serde_json::Value>().ok())
+                            .and_then(|v| v.get("depends_on").cloned())
+                            .and_then(|v| {
+                                if let Some(arr) = v.as_array() {
+                                    Some(
+                                        arr.iter()
+                                            .filter_map(|x| x.as_str().map(String::from))
+                                            .collect(),
+                                    )
+                                } else {
+                                    v.as_str().map(|s| vec![s.to_string()])
+                                }
+                            })
+                            .unwrap_or_else(|| source_node.depends_on.clone())
+                    } else {
+                        source_node.depends_on.clone()
+                    };
 
                 let new_deps: Vec<String> = existing_deps
                     .into_iter()
@@ -795,17 +784,18 @@ mod tests {
         let mut gs = GraphStore::build(&[], pkb_root);
 
         let mut diff = GraphDiff::default();
-        diff.added_nodes.push(crate::excalidraw::diff::AddedNodeMutation {
-            temp_id: "elem-new".to_string(),
-            title: "Newly Created Task".to_string(),
-            node_type: "task".to_string(),
-            status: "ready".to_string(),
-            intent: Some(1),
-            parent: None,
-            tags: vec!["frontend".to_string()],
-            x: 100.0,
-            y: 100.0,
-        });
+        diff.added_nodes
+            .push(crate::excalidraw::diff::AddedNodeMutation {
+                temp_id: "elem-new".to_string(),
+                title: "Newly Created Task".to_string(),
+                node_type: "task".to_string(),
+                status: "ready".to_string(),
+                intent: Some(1),
+                parent: None,
+                tags: vec!["frontend".to_string()],
+                x: 100.0,
+                y: 100.0,
+            });
 
         let report = sync_diff_to_disk(pkb_root, &mut gs, &diff, false).expect("sync to disk");
         assert_eq!(report.created_nodes.len(), 1, "Must report 1 created task");
@@ -833,20 +823,26 @@ mod tests {
         let mut node_a = GraphNode::default();
         node_a.id = "task-a".to_string();
         node_a.path = PathBuf::from("task-a.md");
-        node_a.depends_on = vec!["task-b".to_string(), "task-c".to_string(), "task-d".to_string()];
+        node_a.depends_on = vec![
+            "task-b".to_string(),
+            "task-c".to_string(),
+            "task-d".to_string(),
+        ];
         gs.replace_node(node_a);
 
         let mut diff = GraphDiff::default();
-        diff.removed_edges.push(crate::excalidraw::diff::EdgeMutation {
-            source: "task-a".to_string(),
-            target: "task-b".to_string(),
-            edge_type: EdgeType::DependsOn,
-        });
-        diff.removed_edges.push(crate::excalidraw::diff::EdgeMutation {
-            source: "task-a".to_string(),
-            target: "task-c".to_string(),
-            edge_type: EdgeType::DependsOn,
-        });
+        diff.removed_edges
+            .push(crate::excalidraw::diff::EdgeMutation {
+                source: "task-a".to_string(),
+                target: "task-b".to_string(),
+                edge_type: EdgeType::DependsOn,
+            });
+        diff.removed_edges
+            .push(crate::excalidraw::diff::EdgeMutation {
+                source: "task-a".to_string(),
+                target: "task-c".to_string(),
+                edge_type: EdgeType::DependsOn,
+            });
 
         // 1. sync_edge_removals = false (default) -> frontmatter depends_on must remain untouched
         let report = sync_diff_to_disk(pkb_root, &mut gs, &diff, false).unwrap();
@@ -865,11 +861,13 @@ mod tests {
 
         // 3. Remove filename reference tasks/task-d.md
         let mut diff_d = GraphDiff::default();
-        diff_d.removed_edges.push(crate::excalidraw::diff::EdgeMutation {
-            source: "task-a".to_string(),
-            target: "task-d".to_string(),
-            edge_type: EdgeType::DependsOn,
-        });
+        diff_d
+            .removed_edges
+            .push(crate::excalidraw::diff::EdgeMutation {
+                source: "task-a".to_string(),
+                target: "task-d".to_string(),
+                edge_type: EdgeType::DependsOn,
+            });
         let report_d = sync_diff_to_disk(pkb_root, &mut gs, &diff_d, true).unwrap();
         assert_eq!(report_d.updated_edges, 1);
         let content_d = std::fs::read_to_string(&task_file).unwrap();
@@ -907,7 +905,11 @@ mod tests {
 
         // Status unchanged: custom styling preserved
         let merged = merge_live_into_canvas(&file, &gs, &["task-1".to_string()]);
-        let merged_card = merged.elements.iter().find(|e| e.id == "card-task-1").unwrap();
+        let merged_card = merged
+            .elements
+            .iter()
+            .find(|e| e.id == "card-task-1")
+            .unwrap();
         assert_eq!(merged_card.background_color, "#ff00ff");
         assert_eq!(merged_card.stroke_color, "#00ff00");
         assert_eq!(merged_card.stroke_width, 3.0);
@@ -923,7 +925,11 @@ mod tests {
         gs_updated.replace_node(node_done);
 
         let merged2 = merge_live_into_canvas(&file, &gs_updated, &["task-1".to_string()]);
-        let merged_card2 = merged2.elements.iter().find(|e| e.id == "card-task-1").unwrap();
+        let merged_card2 = merged2
+            .elements
+            .iter()
+            .find(|e| e.id == "card-task-1")
+            .unwrap();
         let done_style = node_color_style(Some("done"), Some("task"));
         assert_eq!(merged_card2.background_color, done_style.bg_color);
         assert_eq!(merged_card2.stroke_color, done_style.stroke_color);

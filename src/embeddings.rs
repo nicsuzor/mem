@@ -363,7 +363,8 @@ fn download_onnx_runtime() -> Result<PathBuf> {
 
                 if let Some(fname) = filename {
                     // Normalize the main library name (strip version suffix)
-                    let is_main_lib = fname.starts_with("libonnxruntime.") || fname == "onnxruntime.dll";
+                    let is_main_lib =
+                        fname.starts_with("libonnxruntime.") || fname == "onnxruntime.dll";
                     let dest_name = if is_main_lib {
                         lib_name.to_string()
                     } else {
@@ -1729,7 +1730,10 @@ After the code.";
 
         // Step 1: Simulate interrupted download (leaves .part file, dest does not exist)
         std::fs::write(&tmp, b"incomplete payload").unwrap();
-        assert!(!dest.exists(), "Interrupted download must not leave final destination file");
+        assert!(
+            !dest.exists(),
+            "Interrupted download must not leave final destination file"
+        );
         assert!(tmp.exists(), "Interrupted download leaves .part file");
 
         // Step 2: Simulate subsequent run logic from download_models()
@@ -1748,8 +1752,14 @@ After the code.";
         std::fs::rename(&tmp, &dest).unwrap();
 
         // 2e. Assert final destination exists with full payload, tmp is gone
-        assert!(dest.exists(), "Destination file must exist after successful rename");
-        assert!(!tmp.exists(), "Temp .part file must no longer exist after rename");
+        assert!(
+            dest.exists(),
+            "Destination file must exist after successful rename"
+        );
+        assert!(
+            !tmp.exists(),
+            "Temp .part file must no longer exist after rename"
+        );
         assert_eq!(std::fs::read(&dest).unwrap(), full_payload);
     }
 
@@ -1796,8 +1806,14 @@ After the code.";
         let config = EmbeddingConfig::from_env();
         std::env::remove_var("AOPS_MODEL_PATH");
 
-        assert_eq!(config.model_path, temp_dir.path().join("model_quantized.onnx"));
-        assert_eq!(config.tokenizer_path, temp_dir.path().join("tokenizer.json"));
+        assert_eq!(
+            config.model_path,
+            temp_dir.path().join("model_quantized.onnx")
+        );
+        assert_eq!(
+            config.tokenizer_path,
+            temp_dir.path().join("tokenizer.json")
+        );
     }
 
     #[test]
@@ -1817,4 +1833,3 @@ After the code.";
         );
     }
 }
-

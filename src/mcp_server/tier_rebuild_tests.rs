@@ -505,14 +505,21 @@ mod tier_rebuild_tests {
             let mut g = server.graph.write();
             g.upsert_node_in_place(node, &server.pkb_root);
             g.reclassify();
-            server.patched_during_rebuild.lock().insert("task-x".to_string());
+            server
+                .patched_during_rebuild
+                .lock()
+                .insert("task-x".to_string());
         }
 
         // 3. Swap phase (identical to rebuild_graph implementation) merges patched nodes:
         {
             let mut g = server.graph.write();
-            let patched_ids: Vec<String> =
-                server.patched_during_rebuild.lock().iter().cloned().collect();
+            let patched_ids: Vec<String> = server
+                .patched_during_rebuild
+                .lock()
+                .iter()
+                .cloned()
+                .collect();
             for id in &patched_ids {
                 if let Some(live_node) = g.nodes_map().get(id).cloned() {
                     new_graph.replace_node(live_node);
@@ -613,7 +620,10 @@ mod tier_rebuild_tests {
         {
             let g = server.graph.read();
             let node = g.get_node("task-race").expect("node must still exist");
-            assert_eq!(node.label, "V2", "Tier-1's own swap must be visible immediately");
+            assert_eq!(
+                node.label, "V2",
+                "Tier-1's own swap must be visible immediately"
+            );
         }
 
         // Wait for Tier-2 (and any coalesced follow-up it queues after
@@ -638,4 +648,3 @@ mod tier_rebuild_tests {
         );
     }
 }
-

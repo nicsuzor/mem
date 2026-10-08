@@ -357,9 +357,10 @@ fn test_create_task_missing_parent_returns_suggested_parents() {
         "suggested_parents must contain at least one candidate; got empty list"
     );
 
-    let has_container = suggestions
-        .iter()
-        .any(|s| s.get("type").and_then(|v| v.as_str()) == Some("epic") || s.get("type").and_then(|v| v.as_str()) == Some("task"));
+    let has_container = suggestions.iter().any(|s| {
+        s.get("type").and_then(|v| v.as_str()) == Some("epic")
+            || s.get("type").and_then(|v| v.as_str()) == Some("task")
+    });
     assert!(
         has_container,
         "suggested_parents must include the seeded epic/task container; got: {:?}",

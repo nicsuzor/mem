@@ -8,7 +8,10 @@ use std::time::Instant;
 fn make_doc(id: &str, title: &str, body: &str) -> PkbDocument {
     let mut fm = serde_json::Map::new();
     fm.insert("id".to_string(), serde_json::Value::String(id.to_string()));
-    fm.insert("title".to_string(), serde_json::Value::String(title.to_string()));
+    fm.insert(
+        "title".to_string(),
+        serde_json::Value::String(title.to_string()),
+    );
 
     PkbDocument {
         path: PathBuf::from(format!("tasks/{id}.md")),
@@ -32,11 +35,31 @@ fn test_benchmark_latency_and_precision() {
     let root = Path::new("/pkb");
 
     let docs = vec![
-        make_doc("task-cbc9ee38", "BGE-M3 embedding model ONNX quantization", "BGE-M3 embedding ONNX quantization details"),
-        make_doc("mem_7cc72ed8", "PKB search lexical BM25 layer", "Reference PR #520 and env var AOPS_MODEL_PATH"),
-        make_doc("aops-1caa3b2f", "reindex startup performance timeout", "Reindex startup timeout fixes"),
-        make_doc("mem-a54c550f", "TUI keyboard shortcut keybinding", "Crossterm keybindings in TUI"),
-        make_doc("mem-7cbb684e", "claim task atomic locking concurrency", "Task claiming with atomic locking"),
+        make_doc(
+            "task-cbc9ee38",
+            "BGE-M3 embedding model ONNX quantization",
+            "BGE-M3 embedding ONNX quantization details",
+        ),
+        make_doc(
+            "mem_7cc72ed8",
+            "PKB search lexical BM25 layer",
+            "Reference PR #520 and env var AOPS_MODEL_PATH",
+        ),
+        make_doc(
+            "aops-1caa3b2f",
+            "reindex startup performance timeout",
+            "Reindex startup timeout fixes",
+        ),
+        make_doc(
+            "mem-a54c550f",
+            "TUI keyboard shortcut keybinding",
+            "Crossterm keybindings in TUI",
+        ),
+        make_doc(
+            "mem-7cbb684e",
+            "claim task atomic locking concurrency",
+            "Task claiming with atomic locking",
+        ),
     ];
 
     for doc in &docs {
@@ -95,14 +118,33 @@ fn test_benchmark_latency_and_precision() {
 
     // 4. Measure Hybrid RRF + Rerank
     let t0 = Instant::now();
-    let res_rerank = evaluate_with_mode(&store, &embedder, &queries, root, 5, EvalMode::HybridReranked);
+    let res_rerank = evaluate_with_mode(
+        &store,
+        &embedder,
+        &queries,
+        root,
+        5,
+        EvalMode::HybridReranked,
+    );
     let dur_rerank = t0.elapsed();
 
     eprintln!("\n=== Benchmark Results ===");
-    eprintln!("Vector-Only MRR: {:.3}, Precision: {:.3}, Duration: {:?}", res_vec.mrr, res_vec.precision, dur_vec);
-    eprintln!("BM25-Only   MRR: {:.3}, Precision: {:.3}, Duration: {:?}", res_bm25.mrr, res_bm25.precision, dur_bm25);
-    eprintln!("Hybrid RRF  MRR: {:.3}, Precision: {:.3}, Duration: {:?}", res_hybrid.mrr, res_hybrid.precision, dur_hybrid);
-    eprintln!("Reranked    MRR: {:.3}, Precision: {:.3}, Duration: {:?}", res_rerank.mrr, res_rerank.precision, dur_rerank);
+    eprintln!(
+        "Vector-Only MRR: {:.3}, Precision: {:.3}, Duration: {:?}",
+        res_vec.mrr, res_vec.precision, dur_vec
+    );
+    eprintln!(
+        "BM25-Only   MRR: {:.3}, Precision: {:.3}, Duration: {:?}",
+        res_bm25.mrr, res_bm25.precision, dur_bm25
+    );
+    eprintln!(
+        "Hybrid RRF  MRR: {:.3}, Precision: {:.3}, Duration: {:?}",
+        res_hybrid.mrr, res_hybrid.precision, dur_hybrid
+    );
+    eprintln!(
+        "Reranked    MRR: {:.3}, Precision: {:.3}, Duration: {:?}",
+        res_rerank.mrr, res_rerank.precision, dur_rerank
+    );
 
     assert_eq!(res_rerank.precision, 1.0);
     assert_eq!(res_rerank.mrr, 1.0);

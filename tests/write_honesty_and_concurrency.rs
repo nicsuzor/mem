@@ -46,7 +46,9 @@ impl TestEnv {
             .filter_map(|p| mem::pkb::parse_file_relative(p, &pkb_root))
             .collect();
         let graph = Arc::new(RwLock::new(GraphStore::build(&docs, &pkb_root)));
-        let store = Arc::new(RwLock::new(VectorStore::load_or_create(&db_path, 3).unwrap()));
+        let store = Arc::new(RwLock::new(
+            VectorStore::load_or_create(&db_path, 3).unwrap(),
+        ));
         let embedder = Arc::new(Embedder::new_dummy());
 
         let server = Arc::new(PkbSearchServer::new(
@@ -73,7 +75,9 @@ impl TestEnv {
             .filter_map(|p| mem::pkb::parse_file_relative(p, &self.pkb_root))
             .collect();
         let graph = Arc::new(RwLock::new(GraphStore::build(&docs, &self.pkb_root)));
-        let store = Arc::new(RwLock::new(VectorStore::load_or_create(&self.db_path, 3).unwrap()));
+        let store = Arc::new(RwLock::new(
+            VectorStore::load_or_create(&self.db_path, 3).unwrap(),
+        ));
         let embedder = Arc::new(Embedder::new_dummy());
 
         self.server = Arc::new(PkbSearchServer::new(
@@ -92,7 +96,7 @@ struct ContingencyTable {
     success_not_on_disk: usize, // VIOLATION
     failure_on_disk: usize,     // VIOLATION
     failure_not_on_disk: usize,
-    timeout_on_disk: usize,     // VIOLATION
+    timeout_on_disk: usize, // VIOLATION
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -173,7 +177,12 @@ fn test_ac2_fault_injection_suite() {
 
         let doc_after = mem::pkb::parse_file_relative(&task_path, &env.pkb_root);
         let on_disk_changed = doc_after.as_ref().and_then(|d| d.status.as_deref()) == Some("done");
-        let in_index = env.server.store_for_test().read().get_entry(&task_id).is_some();
+        let in_index = env
+            .server
+            .store_for_test()
+            .read()
+            .get_entry(&task_id)
+            .is_some();
 
         assert!(in_index, "Replay must recover index state on restart");
 
@@ -219,16 +228,40 @@ fn test_ac2_fault_injection_suite() {
     }
 
     println!("\n=== AC2 Contingency Table (Total Trials: {total_trials}) ===");
-    println!("  Returned Success, On-Disk Changed:     {}", table.success_on_disk);
-    println!("  Returned Success, NOT on Disk:         {} (FAIL if > 0)", table.success_not_on_disk);
-    println!("  Returned Failure, On-Disk Changed:     {} (FAIL if > 0)", table.failure_on_disk);
-    println!("  Returned Failure, NOT on Disk:         {}", table.failure_not_on_disk);
+    println!(
+        "  Returned Success, On-Disk Changed:     {}",
+        table.success_on_disk
+    );
+    println!(
+        "  Returned Success, NOT on Disk:         {} (FAIL if > 0)",
+        table.success_not_on_disk
+    );
+    println!(
+        "  Returned Failure, On-Disk Changed:     {} (FAIL if > 0)",
+        table.failure_on_disk
+    );
+    println!(
+        "  Returned Failure, NOT on Disk:         {}",
+        table.failure_not_on_disk
+    );
     println!("==========================================================\n");
 
-    assert!(total_trials >= 20, "AC2 requires >= 20 fault injection trials");
-    assert_eq!(table.success_not_on_disk, 0, "Zero trials allowed in 'returned success, not on disk'");
-    assert_eq!(table.failure_on_disk, 0, "Zero trials allowed in 'returned failure, but on disk'");
-    assert_eq!(table.timeout_on_disk, 0, "Zero trials allowed in 'timeout, but on disk'");
+    assert!(
+        total_trials >= 20,
+        "AC2 requires >= 20 fault injection trials"
+    );
+    assert_eq!(
+        table.success_not_on_disk, 0,
+        "Zero trials allowed in 'returned success, not on disk'"
+    );
+    assert_eq!(
+        table.failure_on_disk, 0,
+        "Zero trials allowed in 'returned failure, but on disk'"
+    );
+    assert_eq!(
+        table.timeout_on_disk, 0,
+        "Zero trials allowed in 'timeout, but on disk'"
+    );
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -286,12 +319,24 @@ fn test_ac7_concurrent_two_writers_on_same_node() {
     );
 
     // Read back final state on disk
-    let doc_final = mem::pkb::parse_file_relative(&task_path, &env_arc.pkb_root).expect("task parses");
-    let effort = doc_final.frontmatter.as_ref().unwrap()["effort"].as_str().unwrap();
-    assert!(effort == "1d" || effort == "2d", "Final effort must be one of the two written values");
+    let doc_final =
+        mem::pkb::parse_file_relative(&task_path, &env_arc.pkb_root).expect("task parses");
+    let effort = doc_final.frontmatter.as_ref().unwrap()["effort"]
+        .as_str()
+        .unwrap();
+    assert!(
+        effort == "1d" || effort == "2d",
+        "Final effort must be one of the two written values"
+    );
 
     // Verify index state matches
-    let index_entry = env_arc.server.store_for_test().read().get_entry(task_id).cloned().expect("in index");
+    let index_entry = env_arc
+        .server
+        .store_for_test()
+        .read()
+        .get_entry(task_id)
+        .cloned()
+        .expect("in index");
     assert_eq!(index_entry.id, task_id);
 
     // Restart server to verify replay_wal recovers state from disk
@@ -299,7 +344,13 @@ fn test_ac7_concurrent_two_writers_on_same_node() {
     env.restart_server();
 
     // Verify store recovers state from WAL / snapshot replay
-    let replayed_entry = env.server.store_for_test().read().get_entry(task_id).cloned().expect("in index after restart");
+    let replayed_entry = env
+        .server
+        .store_for_test()
+        .read()
+        .get_entry(task_id)
+        .cloned()
+        .expect("in index after restart");
     assert_eq!(replayed_entry.id, task_id);
     assert_eq!(replayed_entry.title, "Concurrent Task");
 }
@@ -484,7 +535,10 @@ fn test_ac2_concurrent_writes_to_same_node_optimistic_concurrency_conflict() {
             "expected_modified": read_modified,
         }),
     );
-    assert!(res1.is_ok(), "Writer 1 write with matching snapshot must succeed");
+    assert!(
+        res1.is_ok(),
+        "Writer 1 write with matching snapshot must succeed"
+    );
 
     // Commit Writer 1's work to git
     let out = Command::new("git")
@@ -511,7 +565,10 @@ fn test_ac2_concurrent_writes_to_same_node_optimistic_concurrency_conflict() {
     );
 
     // AC2 VERIFICATION: Loser receives non-success conflict result naming stale revision
-    assert!(res2.is_err(), "Writer 2 write with stale snapshot must be rejected");
+    assert!(
+        res2.is_err(),
+        "Writer 2 write with stale snapshot must be rejected"
+    );
     let err = res2.unwrap_err();
     let err_data = err.data.expect("stale_write error must have data payload");
     assert_eq!(

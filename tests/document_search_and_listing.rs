@@ -136,7 +136,10 @@ fn test_cli_documents_aliases_docs_and_list() {
 
         assert!(out.status.success());
         let stdout = String::from_utf8_lossy(&out.stdout);
-        assert!(stdout.contains("2 documents found"), "alias {alias} failed: {stdout}");
+        assert!(
+            stdout.contains("2 documents found"),
+            "alias {alias} failed: {stdout}"
+        );
         assert!(stdout.contains("tmpl-review"));
         assert!(stdout.contains("tmpl-daily"));
     }
@@ -164,7 +167,10 @@ fn test_cli_documents_filter_composition() {
         .output()
         .unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("1 documents found"), "tag search got: {stdout}");
+    assert!(
+        stdout.contains("1 documents found"),
+        "tag search got: {stdout}"
+    );
     assert!(stdout.contains("task-1"));
 
     // Filter by pagination (limit=1, offset=1)
@@ -187,8 +193,14 @@ fn test_cli_documents_filter_composition() {
         .output()
         .unwrap();
     let stdout_paged = String::from_utf8_lossy(&out_paged.stdout);
-    assert!(stdout_paged.contains("2 documents found"), "got: {stdout_paged}");
-    assert!(stdout_paged.contains("showing 1, offset 1"), "got: {stdout_paged}");
+    assert!(
+        stdout_paged.contains("2 documents found"),
+        "got: {stdout_paged}"
+    );
+    assert!(
+        stdout_paged.contains("showing 1, offset 1"),
+        "got: {stdout_paged}"
+    );
 }
 
 #[test]
@@ -220,7 +232,15 @@ fn test_cross_surface_parity_cli_and_underlying_store() {
 
     assert_eq!(store_results.len(), 2);
     for r in &store_results {
-        assert!(cli_output.contains(&r.id), "CLI output should contain {}", r.id);
-        assert!(cli_output.contains(&r.title), "CLI output should contain {}", r.title);
+        assert!(
+            cli_output.contains(&r.id),
+            "CLI output should contain {}",
+            r.id
+        );
+        assert!(
+            cli_output.contains(&r.title),
+            "CLI output should contain {}",
+            r.title
+        );
     }
 }

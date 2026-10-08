@@ -13,10 +13,22 @@ fn make_doc(
 ) -> PkbDocument {
     let mut fm = serde_json::Map::new();
     fm.insert("id".to_string(), serde_json::Value::String(id.to_string()));
-    fm.insert("title".to_string(), serde_json::Value::String(title.to_string()));
-    fm.insert("type".to_string(), serde_json::Value::String(doc_type.to_string()));
-    fm.insert("status".to_string(), serde_json::Value::String("active".to_string()));
-    fm.insert("modified".to_string(), serde_json::Value::String(modified.to_string()));
+    fm.insert(
+        "title".to_string(),
+        serde_json::Value::String(title.to_string()),
+    );
+    fm.insert(
+        "type".to_string(),
+        serde_json::Value::String(doc_type.to_string()),
+    );
+    fm.insert(
+        "status".to_string(),
+        serde_json::Value::String("active".to_string()),
+    );
+    fm.insert(
+        "modified".to_string(),
+        serde_json::Value::String(modified.to_string()),
+    );
 
     PkbDocument {
         path: PathBuf::from(path),
@@ -69,21 +81,9 @@ fn test_exact_pr_and_env_var_retrieval() {
         "2026-08-29",
     );
 
-    store.insert_precomputed(
-        &doc1,
-        vec![doc1.body.clone()],
-        vec![vec![0.1, 0.1, 0.1]],
-    );
-    store.insert_precomputed(
-        &doc2,
-        vec![doc2.body.clone()],
-        vec![vec![0.9, 0.9, 0.9]],
-    );
-    store.insert_precomputed(
-        &doc3,
-        vec![doc3.body.clone()],
-        vec![vec![0.2, 0.2, 0.2]],
-    );
+    store.insert_precomputed(&doc1, vec![doc1.body.clone()], vec![vec![0.1, 0.1, 0.1]]);
+    store.insert_precomputed(&doc2, vec![doc2.body.clone()], vec![vec![0.9, 0.9, 0.9]]);
+    store.insert_precomputed(&doc3, vec![doc3.body.clone()], vec![vec![0.2, 0.2, 0.2]]);
 
     // 1. Exact PR search
     let results_pr = store.search_hybrid(
@@ -166,8 +166,16 @@ fn test_hybrid_search_type_filter_and_negation() {
         "2026-08-31",
     );
 
-    store.insert_precomputed(&doc_task, vec![doc_task.body.clone()], vec![vec![1.0, 0.0, 0.0]]);
-    store.insert_precomputed(&doc_note, vec![doc_note.body.clone()], vec![vec![1.0, 0.0, 0.0]]);
+    store.insert_precomputed(
+        &doc_task,
+        vec![doc_task.body.clone()],
+        vec![vec![1.0, 0.0, 0.0]],
+    );
+    store.insert_precomputed(
+        &doc_note,
+        vec![doc_note.body.clone()],
+        vec![vec![1.0, 0.0, 0.0]],
+    );
 
     // Positive filter: task only
     let tasks = store.search_hybrid(
@@ -215,12 +223,30 @@ fn test_hybrid_search_incremental_updates() {
 
     store.insert_precomputed(&doc, vec![doc.body.clone()], vec![vec![1.0, 0.0, 0.0]]);
 
-    let r1 = store.search_hybrid("ALPHA_KEYWORD", &[1.0, 0.0, 0.0], 5, root, None, None, None, None);
+    let r1 = store.search_hybrid(
+        "ALPHA_KEYWORD",
+        &[1.0, 0.0, 0.0],
+        5,
+        root,
+        None,
+        None,
+        None,
+        None,
+    );
     assert_eq!(r1.len(), 1);
     assert_eq!(r1[0].id, "doc_up");
 
     // Remove document
     store.remove("doc_up");
-    let r2 = store.search_hybrid("ALPHA_KEYWORD", &[1.0, 0.0, 0.0], 5, root, None, None, None, None);
+    let r2 = store.search_hybrid(
+        "ALPHA_KEYWORD",
+        &[1.0, 0.0, 0.0],
+        5,
+        root,
+        None,
+        None,
+        None,
+        None,
+    );
     assert!(r2.is_empty());
 }

@@ -33,7 +33,9 @@ This is the goal and description of the test task.
 
     // 3. Open a document containing a reference to [[task-test]]
     let doc_path = pkb_root.join("notes").join("overview.md");
-    let doc_uri: Uri = format!("file://{}", doc_path.to_string_lossy()).parse().unwrap();
+    let doc_uri: Uri = format!("file://{}", doc_path.to_string_lossy())
+        .parse()
+        .unwrap();
     let doc_text = "Check out [[task-test]] for details.\n";
     server.handle_did_open(DidOpenTextDocumentParams {
         text_document: TextDocumentItem {
@@ -47,7 +49,9 @@ This is the goal and description of the test task.
     // 4. Hover over `[[task-test]]` (e.g. character 14 is inside `task-test`)
     let hover_params = HoverParams {
         text_document_position_params: TextDocumentPositionParams {
-            text_document: TextDocumentIdentifier { uri: doc_uri.clone() },
+            text_document: TextDocumentIdentifier {
+                uri: doc_uri.clone(),
+            },
             position: Position {
                 line: 0,
                 character: 14,
@@ -57,11 +61,17 @@ This is the goal and description of the test task.
     };
 
     let hover = server.handle_hover(&hover_params);
-    assert!(hover.is_some(), "Hovering over [[task-test]] should return a hover preview");
+    assert!(
+        hover.is_some(),
+        "Hovering over [[task-test]] should return a hover preview"
+    );
 
     let hover = hover.unwrap();
     let hover_text = match hover.contents {
-        HoverContents::Markup(MarkupContent { kind: MarkupKind::Markdown, value }) => value,
+        HoverContents::Markup(MarkupContent {
+            kind: MarkupKind::Markdown,
+            value,
+        }) => value,
         other => panic!("Expected Markdown markup, got {:?}", other),
     };
 
@@ -93,7 +103,10 @@ This is the goal and description of the test task.
         },
         work_done_progress_params: Default::default(),
     });
-    assert!(hover_outside.is_none(), "Hovering outside a reference should return None");
+    assert!(
+        hover_outside.is_none(),
+        "Hovering outside a reference should return None"
+    );
 }
 
 #[test]
@@ -117,7 +130,9 @@ Full content of the target document that opens in a new editor tab.
     let mut server = LspServer::new(pkb_root.clone());
 
     let doc_path = pkb_root.join("notes").join("ref.md");
-    let doc_uri: Uri = format!("file://{}", doc_path.to_string_lossy()).parse().unwrap();
+    let doc_uri: Uri = format!("file://{}", doc_path.to_string_lossy())
+        .parse()
+        .unwrap();
     let doc_text = "Link to [[task-open-me|Target Title]] here.\n";
     server.handle_did_open(DidOpenTextDocumentParams {
         text_document: TextDocumentItem {
@@ -131,7 +146,9 @@ Full content of the target document that opens in a new editor tab.
     // 1. Definition request at character 12 (inside `task-open-me`)
     let def_params = GotoDefinitionParams {
         text_document_position_params: TextDocumentPositionParams {
-            text_document: TextDocumentIdentifier { uri: doc_uri.clone() },
+            text_document: TextDocumentIdentifier {
+                uri: doc_uri.clone(),
+            },
             position: Position {
                 line: 0,
                 character: 12,
@@ -142,7 +159,10 @@ Full content of the target document that opens in a new editor tab.
     };
 
     let def_resp = server.handle_definition(&def_params);
-    assert!(def_resp.is_some(), "Definition request on [[task-open-me]] must resolve");
+    assert!(
+        def_resp.is_some(),
+        "Definition request on [[task-open-me]] must resolve"
+    );
 
     let location = match def_resp.unwrap() {
         GotoDefinitionResponse::Scalar(loc) => loc,
@@ -157,9 +177,11 @@ Full content of the target document that opens in a new editor tab.
 
     // Verify reading the whole file at that path yields the full content
     let raw_file_path = target_uri_str.strip_prefix("file://").unwrap();
-    let file_content = fs::read_to_string(raw_file_path).expect("File at definition URI must exist");
+    let file_content =
+        fs::read_to_string(raw_file_path).expect("File at definition URI must exist");
     assert!(
-        file_content.contains("Full content of the target document that opens in a new editor tab."),
+        file_content
+            .contains("Full content of the target document that opens in a new editor tab."),
         "Whole referenced file must be readable from target URI"
     );
 
@@ -171,7 +193,12 @@ Full content of the target document that opens in a new editor tab.
     });
     assert_eq!(links.len(), 1, "Should find 1 document link in the file");
     assert!(
-        links[0].target.as_ref().unwrap().as_str().ends_with("task-open-me.md"),
+        links[0]
+            .target
+            .as_ref()
+            .unwrap()
+            .as_str()
+            .ends_with("task-open-me.md"),
         "Document link target must point to task-open-me.md"
     );
 }
@@ -197,7 +224,9 @@ Bare ID content.
     let mut server = LspServer::new(pkb_root.clone());
 
     let doc_path = pkb_root.join("notes").join("bare.md");
-    let doc_uri: Uri = format!("file://{}", doc_path.to_string_lossy()).parse().unwrap();
+    let doc_uri: Uri = format!("file://{}", doc_path.to_string_lossy())
+        .parse()
+        .unwrap();
     // Bare ID mention in prose (e.g. `Fixed in task-bare yesterday.`)
     let doc_text = "Fixed in task-bare yesterday.\n";
     server.handle_did_open(DidOpenTextDocumentParams {
@@ -212,7 +241,9 @@ Bare ID content.
     // Hover over `task-bare` at character 11
     let hover_params = HoverParams {
         text_document_position_params: TextDocumentPositionParams {
-            text_document: TextDocumentIdentifier { uri: doc_uri.clone() },
+            text_document: TextDocumentIdentifier {
+                uri: doc_uri.clone(),
+            },
             position: Position {
                 line: 0,
                 character: 11,
@@ -222,7 +253,10 @@ Bare ID content.
     };
 
     let hover = server.handle_hover(&hover_params);
-    assert!(hover.is_some(), "Hovering over bare ID task-bare should return a preview");
+    assert!(
+        hover.is_some(),
+        "Hovering over bare ID task-bare should return a preview"
+    );
 
     let def_params = GotoDefinitionParams {
         text_document_position_params: TextDocumentPositionParams {
@@ -236,7 +270,10 @@ Bare ID content.
         partial_result_params: Default::default(),
     };
     let def_resp = server.handle_definition(&def_params);
-    assert!(def_resp.is_some(), "Definition request on bare ID task-bare should resolve");
+    assert!(
+        def_resp.is_some(),
+        "Definition request on bare ID task-bare should resolve"
+    );
 }
 
 #[test]
@@ -266,7 +303,9 @@ Testing full JSON-RPC message exchange.
     });
 
     // 1. Initialize
-    let root_uri = format!("file://{}", pkb_root.to_string_lossy()).parse().unwrap();
+    let root_uri = format!("file://{}", pkb_root.to_string_lossy())
+        .parse()
+        .unwrap();
     let init_params = InitializeParams {
         workspace_folders: Some(vec![WorkspaceFolder {
             uri: root_uri,
@@ -276,57 +315,82 @@ Testing full JSON-RPC message exchange.
         ..Default::default()
     };
     let init_id = lsp_server::RequestId::from(1);
-    client_conn.sender.send(lsp_server::Message::Request(lsp_server::Request::new(
-        init_id.clone(),
-        "initialize".to_string(),
-        serde_json::to_value(init_params).unwrap(),
-    ))).unwrap();
+    client_conn
+        .sender
+        .send(lsp_server::Message::Request(lsp_server::Request::new(
+            init_id.clone(),
+            "initialize".to_string(),
+            serde_json::to_value(init_params).unwrap(),
+        )))
+        .unwrap();
 
     let resp = match client_conn.receiver.recv().unwrap() {
         lsp_server::Message::Response(r) => r,
         other => panic!("Expected response, got {:?}", other),
     };
     assert_eq!(resp.id, init_id);
-    let init_result: InitializeResult = serde_json::from_value(resp.response_result.unwrap()).unwrap();
+    let init_result: InitializeResult =
+        serde_json::from_value(resp.response_result.unwrap()).unwrap();
     assert!(init_result.capabilities.hover_provider.is_some());
     assert!(init_result.capabilities.definition_provider.is_some());
 
     // Send initialized notification as required by LSP protocol
-    client_conn.sender.send(lsp_server::Message::Notification(lsp_server::Notification::new(
-        "initialized".to_string(),
-        serde_json::to_value(InitializedParams {}).unwrap(),
-    ))).unwrap();
+    client_conn
+        .sender
+        .send(lsp_server::Message::Notification(
+            lsp_server::Notification::new(
+                "initialized".to_string(),
+                serde_json::to_value(InitializedParams {}).unwrap(),
+            ),
+        ))
+        .unwrap();
 
     // 2. Open document
     let doc_path = pkb_root.join("notes").join("doc.md");
-    let doc_uri: Uri = format!("file://{}", doc_path.to_string_lossy()).parse().unwrap();
+    let doc_uri: Uri = format!("file://{}", doc_path.to_string_lossy())
+        .parse()
+        .unwrap();
     let doc_text = "See [[task-rpc]] here.\n";
-    client_conn.sender.send(lsp_server::Message::Notification(lsp_server::Notification::new(
-        "textDocument/didOpen".to_string(),
-        serde_json::to_value(DidOpenTextDocumentParams {
-            text_document: TextDocumentItem {
-                uri: doc_uri.clone(),
-                language_id: "markdown".to_string(),
-                version: 1,
-                text: doc_text.to_string(),
-            },
-        }).unwrap(),
-    ))).unwrap();
+    client_conn
+        .sender
+        .send(lsp_server::Message::Notification(
+            lsp_server::Notification::new(
+                "textDocument/didOpen".to_string(),
+                serde_json::to_value(DidOpenTextDocumentParams {
+                    text_document: TextDocumentItem {
+                        uri: doc_uri.clone(),
+                        language_id: "markdown".to_string(),
+                        version: 1,
+                        text: doc_text.to_string(),
+                    },
+                })
+                .unwrap(),
+            ),
+        ))
+        .unwrap();
 
     // 3. Hover request
     let hover_id = lsp_server::RequestId::from(2);
     let hover_params = HoverParams {
         text_document_position_params: TextDocumentPositionParams {
-            text_document: TextDocumentIdentifier { uri: doc_uri.clone() },
-            position: Position { line: 0, character: 8 },
+            text_document: TextDocumentIdentifier {
+                uri: doc_uri.clone(),
+            },
+            position: Position {
+                line: 0,
+                character: 8,
+            },
         },
         work_done_progress_params: Default::default(),
     };
-    client_conn.sender.send(lsp_server::Message::Request(lsp_server::Request::new(
-        hover_id.clone(),
-        "textDocument/hover".to_string(),
-        serde_json::to_value(hover_params).unwrap(),
-    ))).unwrap();
+    client_conn
+        .sender
+        .send(lsp_server::Message::Request(lsp_server::Request::new(
+            hover_id.clone(),
+            "textDocument/hover".to_string(),
+            serde_json::to_value(hover_params).unwrap(),
+        )))
+        .unwrap();
 
     let hover_resp = match client_conn.receiver.recv().unwrap() {
         lsp_server::Message::Response(r) => r,
@@ -345,23 +409,30 @@ Testing full JSON-RPC message exchange.
     let def_params = GotoDefinitionParams {
         text_document_position_params: TextDocumentPositionParams {
             text_document: TextDocumentIdentifier { uri: doc_uri },
-            position: Position { line: 0, character: 8 },
+            position: Position {
+                line: 0,
+                character: 8,
+            },
         },
         work_done_progress_params: Default::default(),
         partial_result_params: Default::default(),
     };
-    client_conn.sender.send(lsp_server::Message::Request(lsp_server::Request::new(
-        def_id.clone(),
-        "textDocument/definition".to_string(),
-        serde_json::to_value(def_params).unwrap(),
-    ))).unwrap();
+    client_conn
+        .sender
+        .send(lsp_server::Message::Request(lsp_server::Request::new(
+            def_id.clone(),
+            "textDocument/definition".to_string(),
+            serde_json::to_value(def_params).unwrap(),
+        )))
+        .unwrap();
 
     let def_resp = match client_conn.receiver.recv().unwrap() {
         lsp_server::Message::Response(r) => r,
         other => panic!("Expected definition response, got {:?}", other),
     };
     assert_eq!(def_resp.id, def_id);
-    let def: GotoDefinitionResponse = serde_json::from_value(def_resp.response_result.unwrap()).unwrap();
+    let def: GotoDefinitionResponse =
+        serde_json::from_value(def_resp.response_result.unwrap()).unwrap();
     match def {
         GotoDefinitionResponse::Scalar(loc) => {
             assert!(loc.uri.as_str().ends_with("task-rpc.md"));
@@ -371,11 +442,14 @@ Testing full JSON-RPC message exchange.
 
     // 5. Shutdown
     let shutdown_id = lsp_server::RequestId::from(4);
-    client_conn.sender.send(lsp_server::Message::Request(lsp_server::Request::new(
-        shutdown_id.clone(),
-        "shutdown".to_string(),
-        serde_json::Value::Null,
-    ))).unwrap();
+    client_conn
+        .sender
+        .send(lsp_server::Message::Request(lsp_server::Request::new(
+            shutdown_id.clone(),
+            "shutdown".to_string(),
+            serde_json::Value::Null,
+        )))
+        .unwrap();
 
     let shutdown_resp = match client_conn.receiver.recv().unwrap() {
         lsp_server::Message::Response(r) => r,
@@ -384,14 +458,14 @@ Testing full JSON-RPC message exchange.
     assert_eq!(shutdown_resp.id, shutdown_id);
 
     // Send exit notification
-    client_conn.sender.send(lsp_server::Message::Notification(lsp_server::Notification::new(
-        "exit".to_string(),
-        serde_json::Value::Null,
-    ))).unwrap();
+    client_conn
+        .sender
+        .send(lsp_server::Message::Notification(
+            lsp_server::Notification::new("exit".to_string(), serde_json::Value::Null),
+        ))
+        .unwrap();
 
     // Drop client connection so receiver closes and server thread joins
     drop(client_conn);
     server_handle.join().unwrap();
 }
-
-

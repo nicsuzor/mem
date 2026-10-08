@@ -274,10 +274,9 @@ impl FilterSet {
         }
 
         // Orphan: no parent AND no project
-        if self.orphan == Some(true)
-            && (node.parent.is_some() || node.project.is_some()) {
-                return false;
-            }
+        if self.orphan == Some(true) && (node.parent.is_some() || node.project.is_some()) {
+            return false;
+        }
 
         // Title contains (case-insensitive)
         if let Some(ref needle) = self.title_contains {

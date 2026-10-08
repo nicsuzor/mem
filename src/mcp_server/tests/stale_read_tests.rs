@@ -360,7 +360,8 @@ fn test_read_after_write_synchronous_visibility_for_update_body_and_update_task(
     };
 
     // 2. update_body must be immediately readable from disk and via get_document / get_task
-    let updated_body_text = "Updated body content with section header\n\n## Details\nSynchronous flush confirmed.";
+    let updated_body_text =
+        "Updated body content with section header\n\n## Details\nSynchronous flush confirmed.";
     let update_body_res = server
         .handle_update_body(&json!({
             "id": id,
@@ -498,11 +499,15 @@ fn test_refresh_graph_closes_disk_gap_and_reports_unparseable_files() {
         Some(2)
     );
     assert_eq!(
-        refresh_json.get("parsed_documents").and_then(|v| v.as_u64()),
+        refresh_json
+            .get("parsed_documents")
+            .and_then(|v| v.as_u64()),
         Some(2)
     );
     assert_eq!(
-        refresh_json.get("unparseable_or_skipped_files").and_then(|v| v.as_u64()),
+        refresh_json
+            .get("unparseable_or_skipped_files")
+            .and_then(|v| v.as_u64()),
         Some(0)
     );
 

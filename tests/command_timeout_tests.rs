@@ -32,7 +32,10 @@ fn test_bounded_command_slow_command_cuts_off_on_timeout() {
     assert!(result.is_err(), "sleep 10 must time out");
 
     match result.unwrap_err() {
-        CommandError::Timeout { program, timeout: err_timeout } => {
+        CommandError::Timeout {
+            program,
+            timeout: err_timeout,
+        } => {
             assert_eq!(program, "sleep");
             assert_eq!(err_timeout, timeout);
         }
@@ -59,7 +62,10 @@ fn test_bounded_command_status_slow_command_cuts_off() {
     assert!(result.is_err(), "sleep 10 on status() must time out");
 
     match result.unwrap_err() {
-        CommandError::Timeout { program, timeout: err_timeout } => {
+        CommandError::Timeout {
+            program,
+            timeout: err_timeout,
+        } => {
             assert_eq!(program, "sleep");
             assert_eq!(err_timeout, timeout);
         }
@@ -85,7 +91,10 @@ fn test_run_command_with_timeout_helper_cuts_off() {
 
     assert!(result.is_err(), "run_command_with_timeout must time out");
     match result.unwrap_err() {
-        CommandError::Timeout { program, timeout: err_timeout } => {
+        CommandError::Timeout {
+            program,
+            timeout: err_timeout,
+        } => {
             assert_eq!(program, "sleep");
             assert_eq!(err_timeout, timeout);
         }

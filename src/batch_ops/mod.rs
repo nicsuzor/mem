@@ -3,6 +3,8 @@
 //! Provides [`BatchContext`] for deferred-rebuild batch mutations, and
 //! individual operation modules for update, reparent, archive, and stats.
 
+pub mod consolidation;
+pub mod decay;
 pub mod duplicates;
 pub mod epics;
 pub mod filters;
@@ -11,8 +13,6 @@ pub mod reparent;
 pub mod similarity;
 pub mod stats;
 pub mod update;
-pub mod consolidation;
-pub mod decay;
 
 use crate::document_crud;
 use crate::graph_store::GraphStore;

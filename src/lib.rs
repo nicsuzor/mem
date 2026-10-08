@@ -242,7 +242,6 @@ mod stdout_guard {
     //! (contains this test).
     //! lib.rs is still guarded by `#![deny(clippy::print_stdout)]`.
 
-
     #[test]
     fn no_println_in_library_sources() {
         let src_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");

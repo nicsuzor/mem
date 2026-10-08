@@ -1,5 +1,5 @@
 //! MCP server for PKB semantic search + task graph.
-//! 
+//!
 //! Implements rmcp 0.1.5 ServerHandler trait manually with tool dispatch.
 //! Provides 18 tools for search, documents, tasks, and knowledge graph.
 
@@ -14,13 +14,13 @@ pub mod helpers;
 pub mod schemas;
 
 #[cfg(test)]
-mod tests;
-#[cfg(test)]
-mod tier_rebuild_tests;
+mod claim_task_tests;
 #[cfg(test)]
 mod cross_process_recovery_tests;
 #[cfg(test)]
-mod claim_task_tests;
+mod tests;
+#[cfg(test)]
+mod tier_rebuild_tests;
 
 use crate::embeddings::Embedder;
 use crate::facts::FactsProvider;
@@ -169,7 +169,8 @@ pub(crate) struct RebuildStats {
     pub loaded_nodes: usize,
 }
 
-pub(crate) const DRY_RUN_WARNING: &str = "DRY RUN — no files modified. Pass dry_run=false to execute.\n\n";
+pub(crate) const DRY_RUN_WARNING: &str =
+    "DRY RUN — no files modified. Pass dry_run=false to execute.\n\n";
 
 impl PkbSearchServer {
     pub fn new(
@@ -261,7 +262,10 @@ impl PkbSearchServer {
             .store(ms, std::sync::atomic::Ordering::Relaxed);
     }
 
-    pub fn with_session_registry(mut self, reg: Arc<crate::otel::session_registry::SessionRegistry>) -> Self {
+    pub fn with_session_registry(
+        mut self,
+        reg: Arc<crate::otel::session_registry::SessionRegistry>,
+    ) -> Self {
         self.session_registry = reg;
         self
     }
@@ -1481,7 +1485,11 @@ impl PkbSearchServer {
     // SEARCH & DOCUMENT TOOLS
     // =========================================================================
 
-    pub fn dispatch_tool_sync(&self, name: &str, args: &JsonValue) -> Result<CallToolResult, McpError> {
+    pub fn dispatch_tool_sync(
+        &self,
+        name: &str,
+        args: &JsonValue,
+    ) -> Result<CallToolResult, McpError> {
         match name {
             "search" => self.handle_pkb_search(args),
             "get_document" => self.handle_get_document(args),
@@ -1548,13 +1556,13 @@ impl PkbSearchServer {
     }
 }
 
-
 impl ServerHandler for PkbSearchServer {
     fn initialize(
         &self,
         request: rmcp::model::InitializeRequestParams,
         context: rmcp::service::RequestContext<rmcp::service::RoleServer>,
-    ) -> impl std::future::Future<Output = Result<rmcp::model::InitializeResult, McpError>> + Send + '_ {
+    ) -> impl std::future::Future<Output = Result<rmcp::model::InitializeResult, McpError>> + Send + '_
+    {
         let client_name = request.client_info.name.clone();
         let mcp_session_id = context
             .extensions
@@ -1562,9 +1570,10 @@ impl ServerHandler for PkbSearchServer {
             .and_then(|parts| parts.headers.get("mcp-session-id"))
             .and_then(|v| v.to_str().ok())
             .map(|s| s.to_string());
-            
+
         if let Some(mcp_id) = mcp_session_id {
-            self.session_registry.register_handshake(&mcp_id, Some(client_name));
+            self.session_registry
+                .register_handshake(&mcp_id, Some(client_name));
         }
 
         if context.peer.peer_info().is_none() {
@@ -1591,7 +1600,8 @@ impl ServerHandler for PkbSearchServer {
         );
 
         if let Some(ref mcp_id) = client_context.mcp_session_id {
-            self.session_registry.update_activity(mcp_id, Some(client_context.session_id.clone()));
+            self.session_registry
+                .update_activity(mcp_id, Some(client_context.session_id.clone()));
         }
 
         let this = self.clone();
@@ -1608,9 +1618,10 @@ impl ServerHandler for PkbSearchServer {
             tokio::task::spawn_blocking(move || {
                 let tracer = opentelemetry::global::tracer("mem");
                 use opentelemetry::trace::Tracer;
-                let mut builder = tracer.span_builder(format!("mcp.{}", tool_name_task))
+                let mut builder = tracer
+                    .span_builder(format!("mcp.{}", tool_name_task))
                     .with_kind(opentelemetry::trace::SpanKind::Server);
-                
+
                 let mut attrs = vec![
                     opentelemetry::KeyValue::new("openinference.span.kind", "TOOL"),
                     opentelemetry::KeyValue::new("tool.name", tool_name_task.clone()),
@@ -1618,10 +1629,16 @@ impl ServerHandler for PkbSearchServer {
                 ];
 
                 if let Some(ref tid) = client_context.task_id {
-                    attrs.push(opentelemetry::KeyValue::new("tag.tags", format!("[\"task:{}\"]", tid)));
+                    attrs.push(opentelemetry::KeyValue::new(
+                        "tag.tags",
+                        format!("[\"task:{}\"]", tid),
+                    ));
                 }
                 if let Some(ref mcp_id) = client_context.mcp_session_id {
-                    attrs.push(opentelemetry::KeyValue::new("mcp.session_id", mcp_id.clone()));
+                    attrs.push(opentelemetry::KeyValue::new(
+                        "mcp.session_id",
+                        mcp_id.clone(),
+                    ));
                 }
 
                 let input_str = serde_json::to_string(&args_task).unwrap_or_default();
@@ -1631,7 +1648,10 @@ impl ServerHandler for PkbSearchServer {
                     input_str
                 };
                 attrs.push(opentelemetry::KeyValue::new("input.value", truncated_input));
-                attrs.push(opentelemetry::KeyValue::new("input.mime_type", "application/json"));
+                attrs.push(opentelemetry::KeyValue::new(
+                    "input.mime_type",
+                    "application/json",
+                ));
 
                 builder = builder.with_attributes(attrs);
 
@@ -1656,12 +1676,20 @@ impl ServerHandler for PkbSearchServer {
                 } else {
                     output_str
                 };
-                
+
                 use opentelemetry::trace::Span;
-                span.set_attribute(opentelemetry::KeyValue::new("output.value", truncated_output));
-                span.set_attribute(opentelemetry::KeyValue::new("output.mime_type", "application/json"));
+                span.set_attribute(opentelemetry::KeyValue::new(
+                    "output.value",
+                    truncated_output,
+                ));
+                span.set_attribute(opentelemetry::KeyValue::new(
+                    "output.mime_type",
+                    "application/json",
+                ));
                 if is_error {
-                    span.set_status(opentelemetry::trace::Status::Error { description: std::borrow::Cow::Borrowed("Tool error") });
+                    span.set_status(opentelemetry::trace::Status::Error {
+                        description: std::borrow::Cow::Borrowed("Tool error"),
+                    });
                 } else {
                     span.set_status(opentelemetry::trace::Status::Ok);
                 }
@@ -1752,7 +1780,4 @@ impl ServerHandler for PkbSearchServer {
     }
 }
 
-
-
 impl FactsProvider for PkbSearchServer {}
-

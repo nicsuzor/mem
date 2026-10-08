@@ -106,7 +106,8 @@ fn create_test_pkb() -> (tempfile::TempDir, PathBuf, PathBuf) {
 
     // Seed a sample task so task/graph queries return non-empty data if inspected
     let sample_task = "---\nid: task-test-01\ntitle: Sample Integration Task\ntype: task\nstatus: ready\npriority: 2\n---\n\nSample test body.";
-    std::fs::write(pkb_root.join("tasks").join("task-test-01.md"), sample_task).expect("write sample task");
+    std::fs::write(pkb_root.join("tasks").join("task-test-01.md"), sample_task)
+        .expect("write sample task");
 
     let db_path = pkb_root.join("test_vectors.bin");
     (temp_dir, pkb_root, db_path)
@@ -247,7 +248,9 @@ fn spawn_http_mcp(mut cmd: Command) -> (Child, u16) {
         let mut line = String::new();
         let mut sent = false;
         while let Ok(bytes) = reader.read_line(&mut line) {
-            if bytes == 0 { break; }
+            if bytes == 0 {
+                break;
+            }
             stderr_lines_clone.lock().unwrap().push(line.clone());
             if !sent {
                 if let Some(idx) = line.find("Starting MCP HTTP/SSE server on http://") {
@@ -838,7 +841,8 @@ fn test_http_seeded_search_returns_seeded_doc() {
     // meaningfully without it.
     let pkb_root_str = pkb_root.to_string_lossy().to_string();
     let db_path_str = db_path.to_string_lossy().to_string();
-    let reindex = Command::new(pkb_binary()).env_remove("PKB_MCP_URL")
+    let reindex = Command::new(pkb_binary())
+        .env_remove("PKB_MCP_URL")
         .args([
             "--pkb-root",
             &pkb_root_str,
@@ -923,8 +927,6 @@ fn test_http_seeded_search_returns_seeded_doc() {
             json!({"query": unique_phrase, "limit": 5}),
         )
     })();
-
-
 
     child.kill().ok();
     child.wait().ok();

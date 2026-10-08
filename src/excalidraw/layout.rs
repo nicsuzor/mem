@@ -55,7 +55,7 @@ pub fn extract_ego_subgraph(
     let mut node_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut queue = std::collections::VecDeque::new();
     let max_nodes = 100;
-    
+
     if gs.get_node(focus_id).is_some() {
         node_ids.insert(focus_id.to_string());
         queue.push_back((focus_id.to_string(), 0));
@@ -77,7 +77,7 @@ pub fn extract_ego_subgraph(
             ) {
                 continue;
             }
-            
+
             let neighbor = if edge.source == current {
                 &edge.target
             } else if edge.target == current {
@@ -109,7 +109,6 @@ pub fn extract_ego_subgraph(
 
     (nodes, edges)
 }
-
 
 // ===========================================================================
 // Sugiyama Layout Implementation
@@ -262,7 +261,9 @@ pub fn compute_sugiyama_layout(
 
     // Ensure all input nodes have coordinates
     for nid in &node_ids {
-        positions.entry(nid.clone()).or_insert_with(|| (100.0, 100.0));
+        positions
+            .entry(nid.clone())
+            .or_insert_with(|| (100.0, 100.0));
     }
 
     positions
@@ -473,42 +474,42 @@ pub fn compute_radial_layout(
     if nodes.is_empty() {
         return positions;
     }
-    
+
     // Find the node with the highest degree (central hub)
     let mut degrees = HashMap::new();
     for edge in edges {
         *degrees.entry(edge.source.clone()).or_insert(0) += 1;
         *degrees.entry(edge.target.clone()).or_insert(0) += 1;
     }
-    
-    let center_id = nodes.iter()
+
+    let center_id = nodes
+        .iter()
         .max_by_key(|n| degrees.get(&n.id).unwrap_or(&0))
         .map(|n| n.id.clone())
         .unwrap_or_else(|| nodes[0].id.clone());
-        
+
     let center_x = 0.0;
     let center_y = 0.0;
     positions.insert(center_id.clone(), (center_x, center_y));
-    
+
     // Place all other nodes in a circle
     let other_nodes: Vec<_> = nodes.iter().filter(|n| n.id != center_id).collect();
     if other_nodes.is_empty() {
         return positions;
     }
-    
+
     let count = other_nodes.len() as f64;
     let radius = config.card_width * 1.5 + (count * 20.0); // scale radius by count
-    
+
     for (i, node) in other_nodes.iter().enumerate() {
         let angle = (i as f64 / count) * std::f64::consts::TAU;
         let x = center_x + radius * angle.cos();
         let y = center_y + radius * angle.sin();
         positions.insert(node.id.clone(), (x, y));
     }
-    
+
     positions
 }
-
 
 pub fn generate_excalidraw_scene(
     nodes: &[GraphNode],
@@ -632,20 +633,14 @@ pub fn generate_excalidraw_scene(
 
         let color_style = node_color_style(
             node.status.as_deref(),
-            node.raw_node_type
-                .as_deref()
-                .or(node.node_type.as_deref()),
+            node.raw_node_type.as_deref().or(node.node_type.as_deref()),
         );
         let red_ring = is_red_ring(node.stakeholder.is_some(), node.status.as_deref());
 
         // Card Container Shape
         let mut card_elem = ExcalidrawElement::default();
         card_elem.id = card_id.clone();
-        card_elem.element_type = match node
-            .raw_node_type
-            .as_deref()
-            .or(node.node_type.as_deref())
-        {
+        card_elem.element_type = match node.raw_node_type.as_deref().or(node.node_type.as_deref()) {
             Some("target") | Some("goal") => "diamond".to_string(),
             Some("area") => "ellipse".to_string(),
             _ => "rectangle".to_string(),
@@ -687,10 +682,7 @@ pub fn generate_excalidraw_scene(
         // Formatted Bound Text Element
         let status_raw = node.status.as_deref().unwrap_or("inbox");
         let status_str = status_raw.to_uppercase();
-        let prio_str = node
-            .intent
-            .map(|p| format!("P{}", p))
-            .unwrap_or_default();
+        let prio_str = node.intent.map(|p| format!("P{}", p)).unwrap_or_default();
         let is_in_progress = status_raw.eq_ignore_ascii_case("in_progress")
             || status_raw.eq_ignore_ascii_case("active")
             || status_raw.eq_ignore_ascii_case("doing");
@@ -837,8 +829,7 @@ pub fn generate_excalidraw_scene(
             )
         };
 
-        let (stroke_color, stroke_style, stroke_width) =
-            edge_color_style(edge.edge_type.as_str());
+        let (stroke_color, stroke_style, stroke_width) = edge_color_style(edge.edge_type.as_str());
 
         let arrow_id = format!(
             "arrow-{}-{}-{}",
@@ -926,7 +917,10 @@ mod tests {
         let pos2 = positions.get("task-2").unwrap();
 
         // Prerequisite task-1 should be to the left of dependent task-2
-        assert!(pos1.0 < pos2.0, "Prerequisite should precede dependent in X rank");
+        assert!(
+            pos1.0 < pos2.0,
+            "Prerequisite should precede dependent in X rank"
+        );
     }
 
     #[test]
@@ -995,7 +989,11 @@ mod tests {
         let scene = generate_excalidraw_scene(&nodes, &[], &LayoutConfig::default());
 
         let frames: Vec<_> = scene.elements.iter().filter(|e| e.is_frame()).collect();
-        assert_eq!(frames.len(), 1, "Should generate exactly 1 Frame for epic-auth");
+        assert_eq!(
+            frames.len(),
+            1,
+            "Should generate exactly 1 Frame for epic-auth"
+        );
         let frame = frames[0];
         assert_eq!(frame.id, "frame-epic-auth");
 
@@ -1032,8 +1030,14 @@ mod tests {
         let arrows: Vec<_> = scene.elements.iter().filter(|e| e.is_arrow()).collect();
         assert_eq!(arrows.len(), 1);
         let arrow = arrows[0];
-        assert_eq!(arrow.start_binding.as_ref().unwrap().fixed_point, Some(PORT_IN));
-        assert_eq!(arrow.end_binding.as_ref().unwrap().fixed_point, Some(PORT_OUT));
+        assert_eq!(
+            arrow.start_binding.as_ref().unwrap().fixed_point,
+            Some(PORT_IN)
+        );
+        assert_eq!(
+            arrow.end_binding.as_ref().unwrap().fixed_point,
+            Some(PORT_OUT)
+        );
     }
 
     #[test]

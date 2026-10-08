@@ -399,7 +399,9 @@ mod tests {
 
         let blocker_entry = index.tasks.get("academicops-d067e425").unwrap();
         assert!(
-            blocker_entry.blocks.contains(&"academicops-4a31fae0".to_string()),
+            blocker_entry
+                .blocks
+                .contains(&"academicops-4a31fae0".to_string()),
             "blocker should have downstream task in blocks"
         );
     }

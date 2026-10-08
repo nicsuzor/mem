@@ -20,11 +20,7 @@ impl SessionRegistry {
         Arc::new(Self::default())
     }
 
-    pub fn register_handshake(
-        &self,
-        mcp_session_id: &str,
-        client_name: Option<String>,
-    ) {
+    pub fn register_handshake(&self, mcp_session_id: &str, client_name: Option<String>) {
         let mut sessions = self.sessions.write();
         sessions.insert(
             mcp_session_id.to_string(),
@@ -40,11 +36,7 @@ impl SessionRegistry {
         self.sessions.read().get(mcp_session_id).cloned()
     }
 
-    pub fn update_activity(
-        &self,
-        mcp_session_id: &str,
-        agent_session_id: Option<String>,
-    ) {
+    pub fn update_activity(&self, mcp_session_id: &str, agent_session_id: Option<String>) {
         let mut sessions = self.sessions.write();
         if let Some(session) = sessions.get_mut(mcp_session_id) {
             session.last_seen = Instant::now();
