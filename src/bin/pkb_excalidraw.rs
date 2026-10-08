@@ -294,6 +294,7 @@ pub const COMMAND_REGISTRY: &[CommandInfo] = &[
             CommandOption { flag: "--angle <deg>", default: "0", description: "Rotation angle in degrees" },
             CommandOption { flag: "--roughness <num>", default: "1", description: "Stroke roughness level: 0 (architect), 1 (artist), 2 (cartoonist)" },
             CommandOption { flag: "--fill-style <style>", default: "hachure", description: "Fill pattern: hachure, cross-hatch, solid, zigzag" },
+            CommandOption { flag: "--stroke-style <style>", default: "solid", description: "Stroke line pattern: solid, dashed, dotted" },
             CommandOption { flag: "--preset <preset>", default: "none", description: "Shape preset styling: card, pill, container, note, cloud" },
         ],
         example: "pkb-excalidraw diagram.excalidraw add-node --type rectangle --text \"API Gateway\" --at 200,300 --size 160,60 --role primary",
@@ -303,13 +304,14 @@ pub const COMMAND_REGISTRY: &[CommandInfo] = &[
         aliases: &[],
         category: "Mutation & CRUD",
         synopsis: "pkb-excalidraw FILE update-node --id <id> [OPTIONS]",
-        summary: "Update styling, roughness, angle, fill style, or preset of an existing node",
-        description: "Updates visual and stylistic properties of an existing node shape without changing its geometry or text bindings. Modifies angle, roughness, fill style, or applies a shape preset.",
+        summary: "Update styling, roughness, angle, fill style, stroke style, or preset of an existing node",
+        description: "Updates visual and stylistic properties of an existing node shape without changing its geometry or text bindings. Modifies angle, roughness, fill style, stroke style, or applies a shape preset.",
         options: &[
             CommandOption { flag: "--id <id>", default: "required", description: "Target element ID of the node to update" },
             CommandOption { flag: "--angle <deg>", default: "unchanged", description: "Set rotation angle in degrees" },
             CommandOption { flag: "--roughness <num>", default: "unchanged", description: "Set stroke roughness level (0, 1, 2)" },
             CommandOption { flag: "--fill-style <style>", default: "unchanged", description: "Set fill pattern: hachure, cross-hatch, solid, zigzag" },
+            CommandOption { flag: "--stroke-style <style>", default: "unchanged", description: "Set stroke line pattern: solid, dashed, dotted" },
             CommandOption { flag: "--preset <preset>", default: "unchanged", description: "Apply shape preset styling: card, pill, container, note, cloud" },
         ],
         example: "pkb-excalidraw diagram.excalidraw update-node --id rect1 --roughness 0 --fill-style solid",
@@ -358,6 +360,19 @@ pub const COMMAND_REGISTRY: &[CommandInfo] = &[
             CommandOption { flag: "\"<new_text>\"", default: "required", description: "New text label content" },
         ],
         example: "pkb-excalidraw diagram.excalidraw set-text rect1 \"Worker Node (Replicas: 3)\"",
+    },
+    CommandInfo {
+        name: "set-stroke-style",
+        aliases: &[],
+        category: "Mutation & CRUD",
+        synopsis: "pkb-excalidraw FILE set-stroke-style <id> <style>",
+        summary: "Set the strokeStyle (solid, dashed, dotted) of a single element",
+        description: "Sets the strokeStyle of one element (shape, arrow, line, or text) by ID, leaving every other property and binding untouched. Rejects styles other than solid, dashed, or dotted without writing the file.",
+        options: &[
+            CommandOption { flag: "<id>", default: "required", description: "Target element ID" },
+            CommandOption { flag: "<style>", default: "required", description: "Stroke line pattern: solid, dashed, dotted" },
+        ],
+        example: "pkb-excalidraw diagram.excalidraw set-stroke-style rect1 dashed",
     },
     CommandInfo {
         name: "move-elem",
@@ -1381,14 +1396,41 @@ pub fn atomic_save_ex(file_path: &str, doc: &mut Value, force_obsidian: bool) ->
 // ============================================================================
 
 
+pub const STROKE_STYLES: [&str; 3] = ["solid", "dashed", "dotted"];
+
+pub fn validate_stroke_style(style: &str) -> Result<(), String> {
+    if STROKE_STYLES.contains(&style) {
+        Ok(())
+    } else {
+        Err(format!("invalid stroke style {style:?}; expected one of: {}", STROKE_STYLES.join(", ")))
+    }
+}
+
+pub fn mutate_set_stroke_style(doc: &mut Value, target_id: &str, stroke_style: &str) -> Result<(), String> {
+    validate_stroke_style(stroke_style)?;
+    let elements = doc.get_mut("elements")
+        .and_then(|v| v.as_array_mut())
+        .ok_or("no elements array")?;
+    let elem = elements.iter_mut()
+        .find(|e| e.get("id").and_then(|v| v.as_str()) == Some(target_id)
+            && !e.get("isDeleted").and_then(|v| v.as_bool()).unwrap_or(false))
+        .ok_or_else(|| format!("element {target_id} not found"))?;
+    elem["strokeStyle"] = json!(stroke_style);
+    Ok(())
+}
+
 pub fn mutate_update_node(
     doc: &mut Value,
     target_id: &str,
     angle: Option<f64>,
     roughness: Option<f64>,
     fill_style: Option<&str>,
+    stroke_style: Option<&str>,
     preset: Option<&str>,
 ) -> Result<(), String> {
+    if let Some(ss) = stroke_style {
+        validate_stroke_style(ss)?;
+    }
     let mut style = None;
     if let Some(p) = preset {
         style = Some(mem::excalidraw::schema::node_preset_style(p));
@@ -1428,6 +1470,9 @@ pub fn mutate_update_node(
             if let Some(fs) = fill_style {
                 elem["fillStyle"] = serde_json::json!(fs);
             }
+            if let Some(ss) = stroke_style {
+                elem["strokeStyle"] = serde_json::json!(ss);
+            }
             
             break;
         }
@@ -1454,8 +1499,12 @@ pub fn mutate_add_node(
     angle: Option<f64>,
     roughness: Option<f64>,
     fill_style: Option<&str>,
+    stroke_style: Option<&str>,
     preset: Option<&str>,
 ) -> Result<(String, String), String> {
+    if let Some(ss) = stroke_style {
+        validate_stroke_style(ss)?;
+    }
     let max_idx = max_index_of(doc);
     let minted = mint_indices(&max_idx, 2)?;
     let shape_index = &minted[0];
@@ -1539,7 +1588,7 @@ pub fn mutate_add_node(
         "backgroundColor": bg_color,
         "fillStyle": applied_fill_style,
         "strokeWidth": 2,
-        "strokeStyle": "solid",
+        "strokeStyle": stroke_style.unwrap_or("solid"),
         "roughness": applied_roughness,
         "opacity": 100,
         "groupIds": [],
@@ -4715,8 +4764,9 @@ pub fn cmd_apply(doc: &mut Value, patch_val: &Value) -> Result<(usize, usize, us
                 let angle = item.get("angle").and_then(|v| v.as_f64());
                 let roughness = item.get("roughness").and_then(|v| v.as_f64());
                 let fill_style = item.get("fillStyle").or_else(|| item.get("fill_style")).and_then(|v| v.as_str());
+                let stroke_style = item.get("strokeStyle").or_else(|| item.get("stroke_style")).and_then(|v| v.as_str());
                 let preset = item.get("preset").and_then(|v| v.as_str());
-                mutate_add_node(doc, elem_type, text, at, size, role, color, None, custom_id, angle, roughness, fill_style, preset)?;
+                mutate_add_node(doc, elem_type, text, at, size, role, color, None, custom_id, angle, roughness, fill_style, stroke_style, preset)?;
             }
             created_count += 1;
         }
@@ -4903,7 +4953,7 @@ fn main() {
     let known_modes = [
         "summary", "map", "style", "check", "diff", "struct-diff", "lib", "item",
         "nodes", "edges", "arrows", "inspect", "get", "add-node", "update-node", "add-text",
-        "connect", "set-text", "fit", "move-elem", "delete-elem", "batch",
+        "connect", "set-text", "fit", "set-stroke-style", "move-elem", "delete-elem", "batch",
         "theme", "overlap", "arrows-check",
         "describe", "screenshot", "arrange", "align", "distribute", "group",
         "ungroup", "lock", "unlock", "duplicate", "update", "query", "apply",
@@ -5110,6 +5160,7 @@ fn main() {
             let mut angle: Option<f64> = None;
             let mut roughness: Option<f64> = None;
             let mut fill_style: Option<String> = None;
+            let mut stroke_style: Option<String> = None;
             let mut preset: Option<String> = None;
 
             while !opts.is_empty() {
@@ -5126,6 +5177,9 @@ fn main() {
                     opts = &opts[1..];
                 } else if flag == "--fill-style" && !opts.is_empty() {
                     fill_style = Some(opts[0].clone());
+                    opts = &opts[1..];
+                } else if flag == "--stroke-style" && !opts.is_empty() {
+                    stroke_style = Some(opts[0].clone());
                     opts = &opts[1..];
                 } else if flag == "--preset" && !opts.is_empty() {
                     preset = Some(opts[0].clone());
@@ -5147,6 +5201,7 @@ fn main() {
                 angle,
                 roughness,
                 fill_style.as_deref(),
+                stroke_style.as_deref(),
                 preset.as_deref(),
             ) {
                 eprintln!("error updating node: {e}");
@@ -5171,6 +5226,7 @@ fn main() {
             let mut angle: Option<f64> = None;
             let mut roughness: Option<f64> = None;
             let mut fill_style: Option<String> = None;
+            let mut stroke_style: Option<String> = None;
             let mut preset: Option<String> = None;
 
             while !opts.is_empty() {
@@ -5216,6 +5272,13 @@ fn main() {
                 } else if flag == "--fill-style" && !opts.is_empty() {
                     fill_style = Some(opts[0].clone());
                     opts = &opts[1..];
+                } else if flag == "--stroke-style" {
+                    if opts.is_empty() {
+                        eprintln!("missing value for --stroke-style");
+                        std::process::exit(1);
+                    }
+                    stroke_style = Some(opts[0].clone());
+                    opts = &opts[1..];
                 } else if flag == "--preset" && !opts.is_empty() {
                     preset = Some(opts[0].clone());
                     opts = &opts[1..];
@@ -5235,6 +5298,7 @@ fn main() {
                 angle,
                 roughness,
                 fill_style.as_deref(),
+                stroke_style.as_deref(),
                 preset.as_deref(),
             ) {
                 Ok((sid, tid)) => {
@@ -5368,6 +5432,28 @@ fn main() {
                 }
             }
         }
+        "set-stroke-style" => {
+            if extra_args.len() < 2 {
+                eprintln!("set-stroke-style requires <id> and <style> (solid, dashed, dotted)");
+                process::exit(1);
+            }
+            let target_id = &extra_args[0];
+            let stroke_style = &extra_args[1];
+
+            match mutate_set_stroke_style(&mut doc, target_id, stroke_style) {
+                Ok(_) => {
+                    if let Err(e) = atomic_save_ex(file_path, &mut doc, is_obsidian) {
+                        eprintln!("error saving file: {e}");
+                        process::exit(1);
+                    }
+                    println!("OK: set strokeStyle of {target_id} to {stroke_style}");
+                }
+                Err(e) => {
+                    eprintln!("error setting stroke style: {e}");
+                    process::exit(1);
+                }
+            }
+        }
         "move-elem" => {
             if extra_args.is_empty() {
                 eprintln!("move-elem requires <id> [--to X,Y | --by DX,DY]");
@@ -5474,9 +5560,10 @@ fn main() {
                         let angle = mut_obj.get("angle").and_then(|v| v.as_f64());
                         let roughness = mut_obj.get("roughness").and_then(|v| v.as_f64());
                         let fill_style = mut_obj.get("fill_style").or_else(|| mut_obj.get("fillStyle")).and_then(|v| v.as_str());
+                        let stroke_style = mut_obj.get("stroke_style").or_else(|| mut_obj.get("strokeStyle")).and_then(|v| v.as_str());
                         let preset = mut_obj.get("preset").and_then(|v| v.as_str());
 
-                        if let Err(e) = mutate_update_node(&mut doc, target_id, angle, roughness, fill_style, preset) {
+                        if let Err(e) = mutate_update_node(&mut doc, target_id, angle, roughness, fill_style, stroke_style, preset) {
                             eprintln!("batch mutation #{idx} (update-node) failed: {e}");
                             std::process::exit(1);
                         }
@@ -5505,9 +5592,10 @@ fn main() {
                         let angle = mut_obj.get("angle").and_then(|v| v.as_f64());
                         let roughness = mut_obj.get("roughness").and_then(|v| v.as_f64());
                         let fill_style = mut_obj.get("fill_style").or_else(|| mut_obj.get("fillStyle")).and_then(|v| v.as_str());
+                        let stroke_style = mut_obj.get("stroke_style").or_else(|| mut_obj.get("strokeStyle")).and_then(|v| v.as_str());
                         let preset = mut_obj.get("preset").and_then(|v| v.as_str());
 
-                        if let Err(e) = mutate_add_node(&mut doc, elem_type, text, at, size, role, color, None, custom_id, angle, roughness, fill_style, preset) {
+                        if let Err(e) = mutate_add_node(&mut doc, elem_type, text, at, size, role, color, None, custom_id, angle, roughness, fill_style, stroke_style, preset) {
                             eprintln!("batch mutation #{idx} (add-node) failed: {e}");
                             process::exit(1);
                         }
@@ -6260,7 +6348,7 @@ fn main() {
             let modes = [
                 "summary", "map", "style", "check", "diff", "struct-diff", "lib", "item",
                 "nodes", "edges", "arrows", "inspect", "get", "add-node", "update-node", "add-text",
-                "connect", "set-text", "fit", "move-elem", "delete-elem", "batch",
+                "connect", "set-text", "fit", "set-stroke-style", "move-elem", "delete-elem", "batch",
                 "theme", "overlap", "arrows-check",
                 "describe", "screenshot", "arrange", "align", "distribute", "group",
                 "ungroup", "lock", "unlock", "duplicate", "update", "query", "apply",

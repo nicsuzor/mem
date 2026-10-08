@@ -177,6 +177,9 @@ pub fn batch_merge(
     // Source ids successfully archived — appended to the canonical node's
     // own `supersedes` list below (mem_8035b002: superseded_by is computed).
     let mut merged_ids_for_supersedes: Vec<String> = Vec::new();
+    // Resolved sources, archived only after the cycle check passes so a
+    // rejected merge writes nothing.
+    let mut sources: Vec<&GraphNode> = Vec::new();
 
     for merge_id in merge_ids {
         let node = match graph.resolve(merge_id) {
@@ -229,35 +232,7 @@ pub fn batch_merge(
             continue;
         }
 
-        // Archive merged task. `superseded_by` is never written directly
-        // (mem_8035b002) — it is a computed reverse index of the
-        // canonical's own `supersedes` list, recorded below.
-        let mut updates = HashMap::new();
-        updates.insert(
-            "status".to_string(),
-            serde_json::Value::String("done".to_string()),
-        );
-
-        match ctx.update_task(&node.id, updates) {
-            Ok(()) => {
-                summary.changed += 1;
-                summary.tasks.push(TaskAction {
-                    id: node.id.clone(),
-                    title: node.label.clone(),
-                    action: "merged".to_string(),
-                    detail: Some(format!("archived, superseded by {canonical_id}")),
-                    old_value: None,
-                    new_value: None,
-                });
-                merged_ids_for_supersedes.push(node.id.clone());
-            }
-            Err(e) => {
-                summary.errors.push(TaskError {
-                    id: node.id.clone(),
-                    error: e.to_string(),
-                });
-            }
-        }
+        sources.push(node);
     }
 
     // Remove self-references from deps
@@ -299,6 +274,52 @@ pub fn batch_merge(
             new_value: None,
         });
         return summary;
+    }
+
+    // Archive merged sources as `cancelled`, not `done`: the source's work
+    // was not performed, it was folded into the canonical. Bodies are not
+    // carried across; each source gets a note naming the canonical.
+    // `superseded_by` is never written directly (mem_8035b002) — it is a
+    // computed reverse index of the canonical's `supersedes` list, below.
+    for node in sources {
+        if canonical.supersedes.contains(&node.id) && node.status.as_deref() == Some("cancelled") {
+            // Already merged into this canonical — keep the call idempotent.
+            merged_ids_for_supersedes.push(node.id.clone());
+            continue;
+        }
+        let mut updates = HashMap::new();
+        updates.insert(
+            "status".to_string(),
+            serde_json::Value::String("cancelled".to_string()),
+        );
+        let note = format!(
+            "Merged into [[{canonical_id}]] by batch_merge; status set to cancelled. \
+             This task's work was not performed here — see the canonical."
+        );
+        let result = match ctx.update_task(&node.id, updates) {
+            Ok(()) => ctx.append_to_task(&node.id, &note),
+            Err(e) => Err(e),
+        };
+        match result {
+            Ok(()) => {
+                summary.changed += 1;
+                summary.tasks.push(TaskAction {
+                    id: node.id.clone(),
+                    title: node.label.clone(),
+                    action: "merged".to_string(),
+                    detail: Some(format!("cancelled, superseded by {canonical_id}")),
+                    old_value: None,
+                    new_value: None,
+                });
+                merged_ids_for_supersedes.push(node.id.clone());
+            }
+            Err(e) => {
+                summary.errors.push(TaskError {
+                    id: node.id.clone(),
+                    error: e.to_string(),
+                });
+            }
+        }
     }
 
     // Update canonical with merged data

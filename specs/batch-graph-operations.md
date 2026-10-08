@@ -395,7 +395,7 @@ Dedicated duplicates view → shows clusters → select canonical → merge or a
 
 ### 6. `batch_merge`
 
-Merge duplicate tasks into a canonical task and archive the others.
+Merge duplicate tasks into a canonical task and cancel the others.
 
 **Parameters:**
 
@@ -408,13 +408,16 @@ Merge duplicate tasks into a canonical task and archive the others.
 
 **Behavior:**
 
-- **Body:** Append unique content from merged tasks to canonical's body (as a "Merged from" section)
+- **Body:** Source bodies are not carried across; the caller writes the consolidated body on the canonical. Each source body gets an appended note naming the canonical (`Merged into [[<canonical>]] by batch_merge ...`)
 - **Tags:** Union of all tags
 - **Dependencies:** Union of all `depends_on` and `soft_depends_on`
 - **Priority:** Keep the highest (lowest number) priority
 - **Children:** Reparent any children of merged tasks to canonical
 - **Backlinks:** Any task that had a merged task as `parent` or `depends_on` gets updated to point to canonical
-- **Archive merged tasks** with `status: archived`, `supersedes` pointing to canonical
+- **Cancel merged tasks** with `status: cancelled` — never `done`, since the source's work was not performed
+- **Supersession:** the canonical gains `supersedes: [<source ids>]`; each source's `superseded_by` is computed from that edge, never written
+- **Validation first:** cycle checks run before any write; a rejected merge leaves every file untouched
+- **Idempotent:** a source already `cancelled` and listed in the canonical's `supersedes` is skipped
 - Single graph rebuild at end
 
 **CLI:**
@@ -861,7 +864,7 @@ A dedicated view (`g` from main) showing the health metrics from `graph_stats`, 
 
 - For any valid FilterSet, `resolve()` returns a subset of all tasks
 - For any batch_reparent, all modified tasks have correct `parent` field
-- For any batch_merge, merged tasks have `status: archived` and `supersedes` set
+- For any batch_merge, merged tasks have `status: cancelled` and the canonical's `supersedes` lists them
 
 ---
 
