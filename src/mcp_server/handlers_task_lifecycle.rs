@@ -689,7 +689,7 @@ impl PkbSearchServer {
             self.rebuild_graph();
         }
 
-        tracing::info!(target: "adhoc_grouping", epic_id = epic_id.as_str(), session_id, "M2: created session epic");
+        tracing::debug!(target: "adhoc_grouping", epic_id = epic_id.as_str(), session_id, "M2: created session epic");
         Ok(epic_id)
     }
 
@@ -744,7 +744,7 @@ impl PkbSearchServer {
         let parent_id = if let Some((epic_id, score, ref epic_title)) =
             self.find_topic_epic(summary)
         {
-            tracing::info!(
+            tracing::debug!(
                 target: "adhoc_grouping",
                 routing = "M3",
                 score,
@@ -755,7 +755,7 @@ impl PkbSearchServer {
             epic_id
         } else if let Some(sid) = session_id_opt {
             let epic_id = self.find_or_create_session_epic(sid, summary)?;
-            tracing::info!(
+            tracing::debug!(
                 target: "adhoc_grouping",
                 routing = "M2",
                 session_id = sid,
@@ -764,7 +764,7 @@ impl PkbSearchServer {
             );
             epic_id
         } else {
-            tracing::info!(
+            tracing::debug!(
                 target: "adhoc_grouping",
                 routing = "fallback",
                 "Fallback: no session_id and no confident topic match; parenting to adhoc-sessions root"

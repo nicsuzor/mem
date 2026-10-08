@@ -743,7 +743,7 @@ impl PkbSearchServer {
             .with_annotations(ToolAnnotations::new().read_only(true)),
             Tool::new(
                 "batch_merge",
-                "Merge multiple duplicate tasks or knowledge nodes into a single canonical task. Archives duplicates/sources and redirects dependencies/references. Idempotent. Supersedes merge_node.",
+                "Merge multiple duplicate tasks or knowledge nodes into a single canonical task. Sets each source to status `cancelled` (never `done` — the source's work was not performed) and appends a note naming the canonical; records the merge as `supersedes: [sources]` on the canonical so each source's `superseded_by` computes. Unions tags and depends_on onto the canonical, reparents children and redirects parent/depends_on/soft_depends_on/soft_blocks references. Source bodies are NOT carried across — write the consolidated body on the canonical yourself. A rejected merge (e.g. dependency cycle) writes nothing. Idempotent. Supersedes merge_node.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {

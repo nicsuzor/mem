@@ -342,17 +342,11 @@ impl PkbSearchServer {
         }
     }
 
-    /// Cheap staleness signal for list/filter surfaces.
-    ///
-    /// Validates disk freshness via `ensure_graph_fresh`, guaranteeing
-    /// that reads reflect disk ground truth.
-    pub(crate) fn list_staleness_signal(&self) -> Option<(usize, usize)> {
-        self.ensure_graph_fresh();
+    /// Markdown files on disk vs. file-backed nodes in the in-memory index,
+    /// as `(disk_file_count, indexed_file_count)`. Diagnostic only: reported
+    /// by `status`, never appended to list/search responses.
+    pub(crate) fn index_disk_counts(&self) -> (usize, usize) {
         let disk_count = crate::pkb::scan_directory(&self.pkb_root).len();
-        let last_stats = *self.last_rebuild_stats.read();
-        if disk_count == last_stats.scanned_files {
-            return None;
-        }
         let index_count = self
             .graph
             .read()
@@ -360,11 +354,7 @@ impl PkbSearchServer {
             .values()
             .filter(|n| !n.path.as_os_str().is_empty())
             .count();
-        if disk_count == index_count {
-            None
-        } else {
-            Some((disk_count, index_count))
-        }
+        (disk_count, index_count)
     }
 
     /// Reconstruct an absolute path from a (possibly relative) graph node path.
@@ -856,7 +846,7 @@ impl PkbSearchServer {
                             );
                         }
                         Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                            tracing::info!(
+                            tracing::debug!(
                                 "Vector store lock held by another process — disk save deferred"
                             );
                             tracing::debug!(
@@ -1059,7 +1049,7 @@ impl PkbSearchServer {
             self.deferred_paths.lock().insert(abs);
             self.lock_was_held
                 .store(true, std::sync::atomic::Ordering::Relaxed);
-            tracing::info!(
+            tracing::debug!(
                 "Index locked by another process — deferring in-memory upsert for {}",
                 doc.path.display()
             );
@@ -1285,7 +1275,7 @@ impl PkbSearchServer {
                                 }
                             }
                             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                                tracing::info!(
+                                tracing::debug!(
                                     "Vector store lock held by another process — disk save deferred"
                                 );
                             }
@@ -1345,7 +1335,7 @@ impl PkbSearchServer {
         }
 
         if !self.index_lock_available() {
-            tracing::info!(
+            tracing::debug!(
                 "Index locked by another process — skipping in-memory finalize for batch ({} modified, {} removed)",
                 modified_paths.len(),
                 removed_paths.len()
@@ -1464,7 +1454,7 @@ impl PkbSearchServer {
             self.deferred_paths.lock().insert(abs);
             self.lock_was_held
                 .store(true, std::sync::atomic::Ordering::Relaxed);
-            tracing::info!("Index locked by another process — deferring in-memory remove for {id}");
+            tracing::debug!("Index locked by another process — deferring in-memory remove for {id}");
             return;
         }
         if let Err(e) = crate::vectordb::VectorStore::append_wal_record(
@@ -1593,6 +1583,7 @@ impl ServerHandler for PkbSearchServer {
         if let Some(ref mcp_id) = client_context.mcp_session_id {
             self.session_registry.update_activity(mcp_id, Some(client_context.session_id.clone()));
         }
+        let session_id = client_context.session_id.clone();
 
         let this = self.clone();
         async move {
@@ -1694,6 +1685,28 @@ impl ServerHandler for PkbSearchServer {
             };
 
             crate::telemetry::record_call(&effective_name, response_bytes, latency, is_error);
+
+            // The one INFO line per transaction; per-step detail is DEBUG.
+            if session_id == "unknown" {
+                tracing::info!(
+                    target: "pkb::tool_call",
+                    tool = %effective_name,
+                    status = %if is_error { "error" } else { "ok" },
+                    latency_ms = latency as u64,
+                    response_bytes,
+                    "tool call"
+                );
+            } else {
+                tracing::info!(
+                    target: "pkb::tool_call",
+                    tool = %effective_name,
+                    status = %if is_error { "error" } else { "ok" },
+                    latency_ms = latency as u64,
+                    response_bytes,
+                    session = %session_id,
+                    "tool call"
+                );
+            }
 
             result
         }

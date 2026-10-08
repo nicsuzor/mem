@@ -230,7 +230,7 @@ Theme Commands:
        pkb-excalidraw FILE theme apply <theme.json | default | retro-terminal | aops-default> [--all | --id <id>]
 ```
 
-`FILE` and the mode may be given in either order; with no mode, `summary` is assumed ([L2784-L2801](../bin/pkb_excalidraw.rs#L2784-L2801)). Also accepted but not in the usage text: `update-node --id <id> [--angle] [--roughness] [--fill-style] [--preset]` ([L2972-L3025](../bin/pkb_excalidraw.rs#L2972-L3025)) — it is missing from the `known_modes` list ([L2784-L2789](../bin/pkb_excalidraw.rs#L2784-L2789)), so only the `FILE update-node …` order works; `--angle`, `--roughness`, `--fill-style` and `--preset hero|sticky|zone|badge` on `add-node` ([L3075-L3084](../bin/pkb_excalidraw.rs#L3075-L3084)); and `--curved` / `--stroke-style` on `connect` ([L3163-L3213](../bin/pkb_excalidraw.rs#L3163-L3213)).
+`FILE` and the mode may be given in either order; with no mode, `summary` is assumed ([L2784-L2801](../bin/pkb_excalidraw.rs#L2784-L2801)). Also accepted but not in the usage text: `update-node --id <id> [--angle] [--roughness] [--fill-style] [--stroke-style] [--preset]` ([L2972-L3025](../bin/pkb_excalidraw.rs#L2972-L3025)); `--angle`, `--roughness`, `--fill-style`, `--stroke-style` and `--preset hero|sticky|zone|badge` on `add-node` ([L3075-L3084](../bin/pkb_excalidraw.rs#L3075-L3084)); and `--curved` / `--stroke-style` on `connect` ([L3163-L3213](../bin/pkb_excalidraw.rs#L3163-L3213)).
 
 ### Projections (read-only)
 
@@ -255,19 +255,19 @@ Theme Commands:
 
 ### Mutations
 
-Every mutating command ends in `atomic_save` ([L462-L495](../bin/pkb_excalidraw.rs#L462-L495)): sort elements by fractional `index`, run `check`, refuse to save if it fails, write `.tmp.<pid>.<rand>` beside the file, `rename`. `connect` requires both endpoints to exist and writes both `startBinding`/`endBinding` and the reciprocal `boundElements` entries. `delete-elem` also removes the paired text and unbinds touching arrows (or deletes them with `--cascade-arrows`). New ids are 21 chars; new fractional indices append to the current maximum.
+Every mutating command ends in `atomic_save` ([L462-L495](../bin/pkb_excalidraw.rs#L462-L495)): sort elements by fractional `index`, run `check`, refuse to save if it fails, write `.tmp.<pid>.<rand>` beside the file, `rename`. `connect` requires both endpoints to exist and writes both `startBinding`/`endBinding` and the reciprocal `boundElements` entries. `set-stroke-style <id> <style>` sets one element's `strokeStyle`; `--stroke-style` on `add-node`/`update-node` and `set-stroke-style` accept only `solid`, `dashed`, `dotted` and exit 1 on anything else without writing. `delete-elem` also removes the paired text and unbinds touching arrows (or deletes them with `--cascade-arrows`). New ids are 21 chars; new fractional indices append to the current maximum.
 
 `batch` takes a JSON array (file or `-` for stdin) of `{"action": …}` objects and applies them in one save ([L3304-L3469](../bin/pkb_excalidraw.rs#L3304-L3469)):
 
 | `action` | Fields |
 |----------|--------|
-| `add-node` | `type` (default `rectangle`), `text`, `at: [x,y]`, `size: [w,h]`, `role`, `color`, `id`, `angle`, `roughness`, `fill_style`, `preset` |
+| `add-node` | `type` (default `rectangle`), `text`, `at: [x,y]`, `size: [w,h]`, `role`, `color`, `id`, `angle`, `roughness`, `fill_style`, `stroke_style`, `preset` |
 | `add-text` | `text`, `at`, `font_size`, `color` |
 | `connect` | `from`, `to`, `label`, `color`, `curved`, `stroke_style` |
 | `set-text` / `fit` | `id`, `text` |
 | `move` | `id`, `to` or `by` |
 | `delete` | `id`, `cascade_arrows` |
-| `update-node` | `id`, `angle`, `roughness`, `fill_style`, `preset` |
+| `update-node` | `id`, `angle`, `roughness`, `fill_style`, `stroke_style`, `preset` |
 | `theme-apply` | none (default theme, all elements) |
 
 Action names accept `snake_case` and `kebab-case` aliases (`update_node`, `add_node`, `add_text`, `move-elem`/`move_elem`, `delete-elem`/`delete_elem`, `apply-theme`/`apply_theme`), and camelCase field aliases (`fillStyle`, `fontSize`, `strokeStyle`, `cascadeArrows`) ([L3337-L3456](../bin/pkb_excalidraw.rs#L3337-L3456)). Any failing op aborts the whole batch before anything is written.
@@ -278,4 +278,4 @@ Action names accept `snake_case` and `kebab-case` aliases (`update_node`, `add_n
 
 ### Exit codes
 
-`0` on success and on a clean `check`/`overlap`/`arrows-check`; `1` for usage errors, unreadable or unparseable JSON, a failed pre-save `check`, or any detected collision. Two things do **not** fail: a parseable file with no `elements` (e.g. `{}`) yields a zero-element `summary` and exit 0, and `delete-elem <unknown id>` prints `OK: deleted element <id>` and exits 0 ([L3282-L3303](../bin/pkb_excalidraw.rs#L3282-L3303)) — only `move-elem`, `set-text`/`fit` and `inspect`/`get` exit 1 on an unknown id. Output is plain text except `get`, `item` and `theme export`, which emit JSON.
+`0` on success and on a clean `check`/`overlap`/`arrows-check`; `1` for usage errors, unreadable or unparseable JSON, a failed pre-save `check`, or any detected collision. Two things do **not** fail: a parseable file with no `elements` (e.g. `{}`) yields a zero-element `summary` and exit 0, and `delete-elem <unknown id>` prints `OK: deleted element <id>` and exits 0 ([L3282-L3303](../bin/pkb_excalidraw.rs#L3282-L3303)), whereas commands like `move-elem`, `set-text`/`fit`, `update-node`, `connect`, `set-stroke-style` and `inspect`/`get` exit 1 on an unknown id. Output is plain text except `get`, `item` and `theme export`, which emit JSON.

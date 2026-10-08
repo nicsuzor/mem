@@ -784,6 +784,7 @@ impl PkbSearchServer {
 
     pub(crate) fn handle_status(&self, _args: &JsonValue) -> Result<CallToolResult, McpError> {
         let node_count = self.graph.read().node_count();
+        let (disk_file_count, indexed_file_count) = self.index_disk_counts();
         let vector_count = self.store.read().len();
         let last_reindex = self.last_reindex.read().clone();
         let embed_pending_count = self.embed_pending.lock().len();
@@ -805,6 +806,8 @@ impl PkbSearchServer {
             "build_profile": if cfg!(debug_assertions) { "debug" } else { "release" },
             "index": {
                 "document_count": node_count,
+                "disk_file_count": disk_file_count,
+                "indexed_file_count": indexed_file_count,
                 "vector_count": vector_count,
                 "last_reindex": {
                     "timestamp": last_reindex.timestamp,
@@ -1518,7 +1521,37 @@ mod batch_finalize_tests {
             !dup_disk.contains("superseded_by"),
             "merged-away source must NOT carry a hand-written superseded_by, got:\n{dup_disk}"
         );
-        assert!(dup_disk.contains("status: done"));
+        // aops_pkb_batch_merge_archives_as_done: a merged source's work was not
+        // performed, so it must end `cancelled` (never `done`) and carry a note
+        // naming the canonical.
+        assert!(
+            dup_disk.contains("status: cancelled") && !dup_disk.contains("status: done"),
+            "merged-away source must be cancelled, not done, got:\n{dup_disk}"
+        );
+        assert!(
+            dup_disk.contains("Merged into [[task-canon]]"),
+            "merged-away source body must name the canonical, got:\n{dup_disk}"
+        );
+
+        // superseded_by must compute from the canonical's supersedes edge.
+        let rebuilt = GraphStore::build_from_directory(pkb_root);
+        let dup = rebuilt.get_node("task-dup").expect("task-dup in graph");
+        assert_eq!(dup.superseded_by, vec!["task-canon".to_string()]);
+
+        // Re-running the same merge is idempotent: no second note.
+        {
+            let mut graph = server.graph.write();
+            *graph = GraphStore::build_from_directory(pkb_root);
+        }
+        server
+            .handle_batch_merge(&json!({
+                "canonical": "task-canon",
+                "merge_ids": ["task-dup"],
+                "dry_run": false,
+            }))
+            .unwrap_or_else(|e| panic!("second batch_merge failed: {e:?}"));
+        let dup_disk = std::fs::read_to_string(pkb_root.join("task-dup.md")).unwrap();
+        assert_eq!(dup_disk.matches("Merged into [[task-canon]]").count(), 1);
     }
 }
 

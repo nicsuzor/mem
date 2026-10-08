@@ -1989,7 +1989,7 @@ pub fn git_commit_paths(repo_root: &Path, paths: &[&Path], message: &str) -> Res
             String::from_utf8_lossy(&commit_out.stderr)
         );
     } else {
-        tracing::info!("git commit succeeded: {}", message);
+        tracing::debug!("git commit succeeded: {}", message);
     }
 
     Ok(())
