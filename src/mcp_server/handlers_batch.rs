@@ -784,6 +784,7 @@ impl PkbSearchServer {
 
     pub(crate) fn handle_status(&self, _args: &JsonValue) -> Result<CallToolResult, McpError> {
         let node_count = self.graph.read().node_count();
+        let (disk_file_count, indexed_file_count) = self.index_disk_counts();
         let vector_count = self.store.read().len();
         let last_reindex = self.last_reindex.read().clone();
         let embed_pending_count = self.embed_pending.lock().len();
@@ -805,6 +806,8 @@ impl PkbSearchServer {
             "build_profile": if cfg!(debug_assertions) { "debug" } else { "release" },
             "index": {
                 "document_count": node_count,
+                "disk_file_count": disk_file_count,
+                "indexed_file_count": indexed_file_count,
                 "vector_count": vector_count,
                 "last_reindex": {
                     "timestamp": last_reindex.timestamp,
