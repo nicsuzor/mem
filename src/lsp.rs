@@ -278,6 +278,7 @@ impl LspServer {
         };
 
         let mut links = Vec::new();
+        
         for (line_idx, line) in content.lines().enumerate() {
             // Find wikilinks
             for cap in WIKILINK_RE.captures_iter(line) {

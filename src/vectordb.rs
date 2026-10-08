@@ -567,7 +567,7 @@ impl VectorStore {
 
         let elapsed_write = t_write.elapsed();
 
-        tracing::info!(
+        tracing::debug!(
             "Saved vector store ({} documents, {:.1} MB) in {:.1}ms (serialize: {:.1}ms, io: {:.1}ms)",
             self.documents.len(),
             data.len() as f64 / 1_048_576.0,
