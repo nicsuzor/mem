@@ -1031,13 +1031,12 @@ async fn main() -> Result<()> {
         let mut filter =
             tracing_subscriber::EnvFilter::new(if is_protocol_server { "info" } else { "warn" });
         if matches!(command, Commands::Mcp { .. }) {
-            // Suppress noisy rmcp session close errors (benign during shutdown/cleanup).
-            // Refs task-2ae61ce6.
-            filter = filter.add_directive(
-                "rmcp::transport::streamable_http_server::tower=warn"
-                    .parse()
-                    .unwrap(),
-            );
+            // rmcp logs every session handshake at INFO (create new session,
+            // Service initialized with a full peer_info dump, received
+            // notification, client initialized) and benign session close
+            // errors (task-2ae61ce6). The per-call `pkb::tool_call` summary
+            // is the INFO line per transaction. Refs task_14e0fee6.
+            filter = filter.add_directive("rmcp=warn".parse().unwrap());
         }
         filter
     });

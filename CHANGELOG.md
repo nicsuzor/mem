@@ -5,6 +5,72 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.98](https://github.com/nicsuzor/mem/compare/mem-v0.3.97...mem-v0.3.98) (2026-10-08)
+
+
+### Features
+
+* **excalidraw:** first-class strokeStyle flags and set-stroke-style command ([a93a94d](https://github.com/nicsuzor/mem/commit/a93a94d85c620783327dc1017369bb483c866a52))
+
+
+### Bug Fixes
+
+* **batch_merge:** cancel merged sources with a merge note, not done ([f188db4](https://github.com/nicsuzor/mem/commit/f188db4b991ac08c8cf4f3770823c23d654e7a5c))
+* **clippy:** hoist wikilink regex out of loop in lsp document links ([44082d5](https://github.com/nicsuzor/mem/commit/44082d5df695d3f1e3873691300e4c28c98b0d98))
+* **clippy:** hoist wikilink regex out of loop in lsp.rs ([021ab60](https://github.com/nicsuzor/mem/commit/021ab6074575f8ece0597432a2b073e95c481dfc))
+* **mcp:** drop index/disk disagreement warning from list responses ([f05abac](https://github.com/nicsuzor/mem/commit/f05abac9a48626b64c7545a17043b703c5292e31))
+
+
+### Miscellaneous
+
+* **logging:** one INFO line per tool call; per-request noise to DEBUG ([#676](https://github.com/nicsuzor/mem/issues/676)) ([8bdec50](https://github.com/nicsuzor/mem/commit/8bdec50752a8605e12a4b3982798ce3db53ced57))
+
+## [0.3.97](https://github.com/nicsuzor/mem/compare/mem-v0.3.96...mem-v0.3.97) (2026-10-06)
+
+
+### Features
+
+* **convert_document:** convert a document in place, keeping its ID ([#659](https://github.com/nicsuzor/mem/issues/659)) ([19880af](https://github.com/nicsuzor/mem/commit/19880af205e053f6f5725c82f1df1fbb95701f2e))
+* **excalidraw:** add complete man-page console help with colour and update docs ([e8bb36b](https://github.com/nicsuzor/mem/commit/e8bb36b89542d21b3428da3ba33570bffbfc801e))
+* **excalidraw:** complete man-page console help with colour and docs ([1c0ed8f](https://github.com/nicsuzor/mem/commit/1c0ed8f5c6904a60aab3904634fb3936aa6fb8b8))
+* **export_graph:** emit queue_rank, cost_of_delay, severity_gate per node ([#656](https://github.com/nicsuzor/mem/issues/656)) ([f8aff63](https://github.com/nicsuzor/mem/commit/f8aff63842d4aea377cd7a24d938e7d4030f378d))
+* **lsp:** build VS Code LSP extension that previews and opens PKB references ([fb4e4ee](https://github.com/nicsuzor/mem/commit/fb4e4ee14d6a8a0e2364cd017c6325ccc8b2d10e))
+* **lsp:** build VS Code LSP extension that previews and opens PKB references ([0a65209](https://github.com/nicsuzor/mem/commit/0a65209c753e7763a3064f002aa0187185394967))
+* **mcp:** list, read and write PKB .excalidraw files over MCP ([2c3fef2](https://github.com/nicsuzor/mem/commit/2c3fef20bf2b0ba31320297854b56f289534dacb))
+* **mcp:** list, read and write PKB .excalidraw files over MCP ([b4c4ac6](https://github.com/nicsuzor/mem/commit/b4c4ac6ad851ca89a06c61cf1c220fd219897630))
+* **task:** drop merge_ready from PKB status vocabulary (mem_d6032649) ([dcaee8f](https://github.com/nicsuzor/mem/commit/dcaee8fe893092f610e711b2473ccb89c88651c7))
+* **task:** drop merge_ready from PKB status vocabulary (mem_d6032649) ([ff447b5](https://github.com/nicsuzor/mem/commit/ff447b506c010f4e2a1f38c52cdd395d02f7503a))
+* **types:** collapse epic into task, goal/capability into target, and add contributes_to multiplier ([689b567](https://github.com/nicsuzor/mem/commit/689b5678860726e53478214594ae21612858a44e))
+* **types:** simplify node taxonomy (collapse epic into task, goal/capability into target) and add contributes_to multiplier ([4fd79b3](https://github.com/nicsuzor/mem/commit/4fd79b3411934a02e688ed458f62a3d88f20d364))
+
+
+### Bug Fixes
+
+* **clippy:** resolve single-element loops, unused muts, and collapsible if ([230c168](https://github.com/nicsuzor/mem/commit/230c168c1db78be41021edae5bc73d517752531e))
+* **document_crud:** remove redundant last_modified and resolve stale CAS rejections ([#648](https://github.com/nicsuzor/mem/issues/648)) ([596e3cf](https://github.com/nicsuzor/mem/commit/596e3cff9340b7803a67586892d5baccea737e29))
+* **filters:** parse and compare instants for since and before date filters ([33fb878](https://github.com/nicsuzor/mem/commit/33fb8784eb19cc8226ee8039f204da4220c5877c)), closes [#670](https://github.com/nicsuzor/mem/issues/670)
+* **filters:** parse and compare instants for since and before date filters ([#670](https://github.com/nicsuzor/mem/issues/670)) ([caf12b8](https://github.com/nicsuzor/mem/commit/caf12b81b4cc28162c0b269c9a5641dbbb5a0e12))
+* **flow:** harms edge guarantees and gain/loss separation (defects 1 & 2) ([3e190db](https://github.com/nicsuzor/mem/commit/3e190dbe26ca717b5fcc33897fd82a58b8ddb212))
+* **flow:** loop handling robustness, node-ID independence, and live fixture loading (defect 3) ([abe94d3](https://github.com/nicsuzor/mem/commit/abe94d3b16176f880d7c5b99310d48ce3a4046aa))
+* **mcp:** remove vector index entry on delete and withhold orphaned search hits (task_424948a7) ([b2a4571](https://github.com/nicsuzor/mem/commit/b2a457186a5a2fbf4e1eec0b247c41b009703ad3))
+* **mcp:** remove vector index entry on delete and withhold orphaned search hits (task_424948a7) ([78abb43](https://github.com/nicsuzor/mem/commit/78abb43e14035ba577a20f3c68465d72237ba77f))
+* remove blocked from enum in schemas.rs ([d1bbb8a](https://github.com/nicsuzor/mem/commit/d1bbb8abb59f26eb77d6140eeb373924ca22b35d))
+* remove redundant last_modified and resolve stale CAS rejections ([#648](https://github.com/nicsuzor/mem/issues/648)) ([68dd242](https://github.com/nicsuzor/mem/commit/68dd242fd8023132185296886ec4b3407c63a0e9))
+* **types:** address strategic review feedback for PR [#643](https://github.com/nicsuzor/mem/issues/643) ([537cbab](https://github.com/nicsuzor/mem/commit/537cbabc076994d66be27a267316b8e1ebcd17df))
+
+
+### Documentation
+
+* **readme:** comparison table of every Excalidraw tool across CLI and MCP ([7477c0e](https://github.com/nicsuzor/mem/commit/7477c0e1eb4c3905f8bde29074a537d28ce1989d))
+* **specs:** add pkb-rules.md as the single home for PKB rules ([d56b45b](https://github.com/nicsuzor/mem/commit/d56b45b30156b992759e7c88393cfa3ea3563b9f))
+* **specs:** flow rule — complete measure map, fix defects, document open choices ([7e02ae7](https://github.com/nicsuzor/mem/commit/7e02ae779860dd6629006dc9533920341cd91962))
+* **specs:** flow rule — keep gain and loss apart, complete measure map ([15e43e9](https://github.com/nicsuzor/mem/commit/15e43e93ae8559aec5903eb4112d4248e7d2e8e4))
+* **specs:** flow rule and edge model (draft) ([0432ebd](https://github.com/nicsuzor/mem/commit/0432ebd681d22c24e156f49b86c0fabb9dbe6f18))
+* **specs:** flow rule and edge model (draft) ([43d9192](https://github.com/nicsuzor/mem/commit/43d9192cdd54a7e2a4043fdd3f139640271bba01))
+* **specs:** pkb-rules.md — single home for PKB rules ([ec45139](https://github.com/nicsuzor/mem/commit/ec451392938b972ab20b0fae55647bc583985fda))
+* **taxonomy:** a direct request from the user is the promotion to queued ([d05e68d](https://github.com/nicsuzor/mem/commit/d05e68d10ed691ae24b2c93c51b3a7454aabc3a0))
+* **taxonomy:** a direct request from the user is the promotion to queued ([c8ae6f1](https://github.com/nicsuzor/mem/commit/c8ae6f130b9f1f023fb1f6b29ebd1f20bf4c9470))
+
 ## [0.3.96](https://github.com/nicsuzor/mem/compare/mem-v0.3.95...mem-v0.3.96) (2026-09-22)
 
 

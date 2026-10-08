@@ -430,7 +430,7 @@ MCP Client <--stdio--> pkb (MCP server)
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `ACA_DATA` | `~/brain` | PKB root directory |
-| `RUST_LOG` | `info` | Log level filter |
+| `RUST_LOG` | `info,rmcp=warn` | Log level filter |
 | `AOPS_OFFLINE` | `false` | Disable model/runtime auto-download |
 | `AOPS_DUMMY_EMBEDDER` | `false` | Use zero-vector dummy embedder (for tests/offline) |
 | `AOPS_MODEL_PATH` | (auto) | Override model directory path |
