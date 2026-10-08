@@ -1,0 +1,6010 @@
+{
+ "academic-b738bdc7": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "admin-3e02c20b": {
+  "gain": 1.11,
+  "loss_averted": 0.0
+ },
+ "admin_3fcff4d3": {
+  "gain": 0.1275,
+  "loss_averted": 0.0
+ },
+ "aops_bootstrap_dogfood": {
+  "gain": 0.339089844,
+  "loss_averted": 0.0
+ },
+ "aops_epic_task_lifecycle": {
+  "gain": 0.34803125,
+  "loss_averted": 0.0
+ },
+ "aops_otel_full_text_container_spans": {
+  "gain": 0.339951172,
+  "loss_averted": 0.0
+ },
+ "aops_twin_cost_monitor": {
+  "gain": 0.34671875,
+  "loss_averted": 0.0
+ },
+ "brain-b948a148": {
+  "gain": 0.35,
+  "loss_averted": 0.0
+ },
+ "brain_448bb804": {
+  "gain": 0.95,
+  "loss_averted": 0.0
+ },
+ "brain_7f772690": {
+  "gain": 1.11,
+  "loss_averted": 0.0
+ },
+ "brain_bf2be9d8": {
+  "gain": 1.11,
+  "loss_averted": 0.0
+ },
+ "brain_c57fbad6": {
+  "gain": 0.95,
+  "loss_averted": 0.0
+ },
+ "n_00253e2a6c": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_00385de767": {
+  "gain": 0.2975,
+  "loss_averted": 0.0
+ },
+ "n_008fa01d99": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_014495938e": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_015161ca63": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_017b556c05": {
+  "gain": 0.2975,
+  "loss_averted": 0.0
+ },
+ "n_019468f5ae": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_019f5b138f": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_01dbb713de": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_01eef34771": {
+  "gain": 0.2975,
+  "loss_averted": 0.0
+ },
+ "n_021097eb02": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_02257ff617": {
+  "gain": 0.339089844,
+  "loss_averted": 0.0
+ },
+ "n_024820d286": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_024c2f72ab": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_027473d671": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_0284a1d47e": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_02db8529f0": {
+  "gain": 0.2975,
+  "loss_averted": 0.0
+ },
+ "n_02f87787f9": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_03420f7f5b": {
+  "gain": 0.2975,
+  "loss_averted": 0.0
+ },
+ "n_035bb956f0": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_03817e3bca": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_03bed4cec0": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_03cccf218e": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_03d4223977": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_03ded87651": {
+  "gain": 0.2975,
+  "loss_averted": 0.0
+ },
+ "n_03ebb179cd": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_048d12d436": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_04d32df2ca": {
+  "gain": 0.2975,
+  "loss_averted": 0.0
+ },
+ "n_0529a21dfd": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_057802cf8f": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_05a29672fc": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_05b3363f3c": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_05cc4c0461": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_05d017d157": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_0641bd5620": {
+  "gain": 0.3108875,
+  "loss_averted": 0.0
+ },
+ "n_064515f486": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_064dff8920": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_06c0380d0f": {
+  "gain": 0.318513059,
+  "loss_averted": 0.0
+ },
+ "n_06ce055fad": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_07478f84d6": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_0785e3bf1c": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_07ab12e65e": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_07b5c49c40": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_081230bfcb": {
+  "gain": 0.2975,
+  "loss_averted": 0.0
+ },
+ "n_083aee0a66": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_08a9c5c128": {
+  "gain": 0.9365,
+  "loss_averted": 0.0
+ },
+ "n_08ba80aca2": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_08d361ac7f": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_08e64e5314": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_08f3184c43": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_09049c04ea": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_0912d1f013": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_0947e71176": {
+  "gain": 0.925025,
+  "loss_averted": 0.0
+ },
+ "n_0998af520b": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_09b16df78f": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_09c13d4b14": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_09dcc1abd7": {
+  "gain": 0.95,
+  "loss_averted": 0.0
+ },
+ "n_0a08c5124d": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_0a5167b602": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_0a8b9155ba": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_0aae4bc3ff": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_0ac3e4756f": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_0ad821c55a": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_0adc2f88a8": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_0af22f0c59": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_0afcc55653": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_0b00eed982": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_0b2732f269": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_0bb3729fae": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_0c2ac7101f": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_0c58702d56": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_0c6c8ed1fc": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_0c86428eda": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_0cad059fae": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_0ce47234b4": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_0d18551e0e": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_0d2b195232": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_0d30b4efcd": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_0d4485b116": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_0dd3943b10": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_0dfb49c1be": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_0e09d661df": {
+  "gain": 0.342125,
+  "loss_averted": 0.0
+ },
+ "n_0e15735325": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_0e67b2eaa9": {
+  "gain": 0.2975,
+  "loss_averted": 0.0
+ },
+ "n_0eb4b4647b": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_0ec3ad6839": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_0ec59ab040": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_0f6465a580": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_1032db6df6": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_103cf03b87": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_107753de50": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_10788809f9": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_111d34b397": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_1155cf7203": {
+  "gain": 0.45,
+  "loss_averted": 0.0
+ },
+ "n_11b20d621d": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_11c7a00daf": {
+  "gain": 0.51,
+  "loss_averted": 0.0
+ },
+ "n_12009650e8": {
+  "gain": 0.2975,
+  "loss_averted": 0.0
+ },
+ "n_1201485cb1": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_12410978a7": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_124b3a49dd": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_12bd4fec36": {
+  "gain": 0.2975,
+  "loss_averted": 0.0
+ },
+ "n_12c6fb3e28": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_12da566adb": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_12f3e292a6": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_130c1c9f39": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_133130a17f": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_134a27abae": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_1366d7352c": {
+  "gain": 0.2975,
+  "loss_averted": 0.0
+ },
+ "n_137325d07a": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_13d488f1f8": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_14aa4ba5a9": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_154c294713": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_156580e2fd": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_157853eafa": {
+  "gain": 0.2975,
+  "loss_averted": 0.0
+ },
+ "n_15b7d98d81": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_15d1040a7c": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_15fc5c9649": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_16065dba31": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_16150fecf8": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_166e1f8e21": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_169580f3bf": {
+  "gain": 0.349179688,
+  "loss_averted": 0.0
+ },
+ "n_16d72f826c": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_16e629a983": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_1720423e62": {
+  "gain": 0.2975,
+  "loss_averted": 0.0
+ },
+ "n_17278af8c3": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_1758062179": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_1768541810": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_17a85d40c5": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_17d26036f3": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_17dccc40c9": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_17de501c59": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_17ffd666db": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_1824512d26": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_187b07e884": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_18f595eca8": {
+  "gain": 0.324787407,
+  "loss_averted": 0.0
+ },
+ "n_1911438b52": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_19114dcc71": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_195907bb8c": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_1964f890e1": {
+  "gain": 0.2975,
+  "loss_averted": 0.0
+ },
+ "n_196586933d": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_19a8aa7cb4": {
+  "gain": 0.3,
+  "loss_averted": 0.0
+ },
+ "n_19b5049fe5": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_19db1834d0": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_19dbb33c42": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_19f84a0cc2": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_1a215bfc04": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_1a36f5544a": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_1a4be9ca44": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_1a55c8b121": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_1aa2b1259c": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_1afc1d1020": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_1b4a4340ad": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_1b4b42ff94": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_1b4f47a4d0": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_1b678cda6a": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_1b70282d56": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_1b8b67e413": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_1bd542be11": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_1bdc9b6f38": {
+  "gain": 0.51,
+  "loss_averted": 0.0
+ },
+ "n_1ce26a967e": {
+  "gain": 0.342125,
+  "loss_averted": 0.0
+ },
+ "n_1cf9c23ab0": {
+  "gain": 0.349822812,
+  "loss_averted": 0.0
+ },
+ "n_1d0ba29b89": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_1d365247d8": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_1d657b840b": {
+  "gain": 0.342125,
+  "loss_averted": 0.0
+ },
+ "n_1d8fab92ce": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_1d9a12e5ac": {
+  "gain": 0.5865,
+  "loss_averted": 0.0
+ },
+ "n_1dab0cb534": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_1dd67119a0": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_1e0e93ae90": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_1e1231ec88": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_1e64ec2767": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_1e7f5eb667": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_1e8d03053a": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_1ec80c3844": {
+  "gain": 0.51,
+  "loss_averted": 0.0
+ },
+ "n_1edc4c6e94": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_1fc4338b2b": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_1fd8ca8ac9": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_1ff6f167c3": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_201c6f1f13": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_205d89cf76": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_206914623e": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_208dc8a8ff": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_20e504f6ca": {
+  "gain": 0.2975,
+  "loss_averted": 0.0
+ },
+ "n_20fd54497e": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_212109c525": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_2155137ddf": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_215fd35ff2": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_21f7558159": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_21fbfbd3ac": {
+  "gain": 0.342125,
+  "loss_averted": 0.0
+ },
+ "n_220816bacd": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_2214091d6c": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_224dd706f4": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_225809694d": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_225aeb0a91": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_225fb131c3": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_226c545aac": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_22856671f6": {
+  "gain": 0.51,
+  "loss_averted": 0.0
+ },
+ "n_2296f9ea5e": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_22dde8dcf5": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_23267bf568": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_233c79104c": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_23548493f7": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_2358cfa133": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_2373507a6b": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_23c2ab056e": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_23f8ec8ec8": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_2429567947": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_248d04a27e": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_249309edd0": {
+  "gain": 0.2975,
+  "loss_averted": 0.0
+ },
+ "n_24da78e322": {
+  "gain": 0.2975,
+  "loss_averted": 0.0
+ },
+ "n_250e0f1c18": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_251742ad16": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_253a36d153": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_255a6f7747": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_257bab0f22": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_258fea0cae": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_25af4247c3": {
+  "gain": 0.342125,
+  "loss_averted": 0.0
+ },
+ "n_25bf88cbf6": {
+  "gain": 0.51,
+  "loss_averted": 0.0
+ },
+ "n_2626034ea6": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_265a17a434": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_2662945a46": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_26ac6a004a": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_26b228b214": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_26bb1f1ba7": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_26cb20ea22": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_2701895d49": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_27538faa30": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_275d3a737d": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_27c90439bb": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_2810942fce": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_28159d940d": {
+  "gain": 0.2975,
+  "loss_averted": 0.0
+ },
+ "n_281a9f6fc3": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_2855ec59cd": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_288f654e97": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_289eb07643": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_29255e60b5": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_29309d1341": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_294826be8d": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_296f3f2d9f": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_2990e10c39": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_29ac6acc4b": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_29e0304fba": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_29ee117ef8": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_2a61ee3733": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_2abcfb41e0": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_2b4ee0b9e7": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_2ba86ec98f": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_2bd7124450": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_2bea7b981f": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_2c0137307f": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_2c039e0e6f": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_2c34b83c54": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_2c35253e43": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_2c4a66b56e": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_2c59bbf53b": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_2cbfee4b87": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_2d17032342": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_2d56f263f5": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_2d5bd49d5c": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_2d646ae9c4": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_2d90b51348": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_2dcb93a9c8": {
+  "gain": 0.35,
+  "loss_averted": 0.0
+ },
+ "n_2dd0792e9a": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_2ddb135c69": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_2dfe1d61b8": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_2e30220d66": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_2e30954770": {
+  "gain": 0.342125,
+  "loss_averted": 0.0
+ },
+ "n_2e5916a186": {
+  "gain": 0.342125,
+  "loss_averted": 0.0
+ },
+ "n_2e7baead3d": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_2ea1d87689": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_2ea706a35e": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_2eba129de6": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_2ec30de8b7": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_2edbc8e0d7": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_2eecdc578c": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_2f38174c2c": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_2f8b62a8aa": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_2f8ddb8fa1": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_2f8e420c84": {
+  "gain": 0.342125,
+  "loss_averted": 0.0
+ },
+ "n_2fb9db50e4": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_3032cf3091": {
+  "gain": 0.2975,
+  "loss_averted": 0.0
+ },
+ "n_303dd91bd6": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_304e82b01e": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_307048d9a0": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_3082d09060": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_3095cd3263": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_3097dbfca1": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_311111e671": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_3179abca4d": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_3208a32ebc": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_3234ce7322": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_3234e337ef": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_323f34fcbe": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_325ee7f48e": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_326f13eb61": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_3294429801": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_32a18b6d24": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_32a7aaf44e": {
+  "gain": 0.2975,
+  "loss_averted": 0.0
+ },
+ "n_32c99f8d97": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_3384b87659": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_33c1938380": {
+  "gain": 0.2975,
+  "loss_averted": 0.0
+ },
+ "n_3402ab5a41": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_340e34546d": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_342299031c": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_3430353a71": {
+  "gain": 0.342125,
+  "loss_averted": 0.0
+ },
+ "n_344352a6f7": {
+  "gain": 0.342125,
+  "loss_averted": 0.0
+ },
+ "n_3447166e95": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_3494293b2a": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_34f2099ff4": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_3504a4bd9a": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_352f753682": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_352fffc770": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_35311c2600": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_354662975f": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_3589413369": {
+  "gain": 0.2975,
+  "loss_averted": 0.0
+ },
+ "n_35d521db05": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_35d7ea2a7c": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_35deb7c1a0": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_35ef9c7dba": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_35f41edd8c": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_36cf36958e": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_36d17cb874": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_370266f3e6": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_3743c2d85e": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_378965eb99": {
+  "gain": 0.34671875,
+  "loss_averted": 0.0
+ },
+ "n_37ad214bd8": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_37f39410dc": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_3812da74b0": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_3819a4ee8b": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_3841e55df4": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_3846674451": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_3894a06e11": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_38e4ab911e": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_39023b5c6c": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_390c024c99": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_3945e5e83e": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_3951cdac5b": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_39cc5ad74c": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_39d07303bc": {
+  "gain": 0.318513059,
+  "loss_averted": 0.0
+ },
+ "n_3a7aa45fef": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_3aaadcb816": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_3ad9a8c6d4": {
+  "gain": 0.342125,
+  "loss_averted": 0.0
+ },
+ "n_3b1e9a6db8": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_3b61a61c3b": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_3bc732021a": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_3c1456c9e7": {
+  "gain": 0.2975,
+  "loss_averted": 0.0
+ },
+ "n_3c17e07c71": {
+  "gain": 0.2975,
+  "loss_averted": 0.0
+ },
+ "n_3c86a14145": {
+  "gain": 0.51,
+  "loss_averted": 0.0
+ },
+ "n_3c9d85e32d": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_3cd2c7f19e": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_3cf6980a0b": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_3d005d37c0": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_3d02fa70d8": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_3d29dd4b35": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_3d75f4184a": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_3d7e2ba587": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_3d95d0d707": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_3db0d84a00": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_3dd02f72b8": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_3de116c57e": {
+  "gain": 0.342125,
+  "loss_averted": 0.0
+ },
+ "n_3df51b0f1f": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_3e2f2f99bc": {
+  "gain": 0.86,
+  "loss_averted": 0.0
+ },
+ "n_3e703fa792": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_3e84c18a23": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_3f00cc1837": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_3f00f5ba1d": {
+  "gain": 0.34671875,
+  "loss_averted": 0.0
+ },
+ "n_3f0190adf5": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_3f168ce0be": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_3f5ed8a2b2": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_3f60244f6e": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_3fc059adf1": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_3fe9cc6805": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_4000dcff5a": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_403778d800": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_407191b0fc": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_408b0e8a0d": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_4097e6972a": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_40a5aee449": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_4113ce9c3f": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_412829eb5e": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_4169a2a00d": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_41b15985b0": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_41e275bda7": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_4245313e37": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_424cc3d338": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_4292a698e7": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_42a6a9cb7a": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_42cda41c4c": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_42d8ab0cec": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_42e0ff6b24": {
+  "gain": 0.2975,
+  "loss_averted": 0.0
+ },
+ "n_432a606533": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_43407f1970": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_436fb84a1a": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_43df0b4d43": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_43f71c86fa": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_441c5c31dd": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_448d6a278d": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_44ea6e66f8": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_45583b7b2a": {
+  "gain": 0.349179688,
+  "loss_averted": 0.0
+ },
+ "n_4591340588": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_45a37eb129": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_45dc74f7e1": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_4612c95c89": {
+  "gain": 0.2975,
+  "loss_averted": 0.0
+ },
+ "n_46349af62e": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_464744a14e": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_46f45de758": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_46f490a0b1": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_46fbdb94ce": {
+  "gain": 0.3108875,
+  "loss_averted": 0.0
+ },
+ "n_470a5d0ca6": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_472e5df3f8": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_474c633327": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_47789defd2": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_47c89363b5": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_47caae050b": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_47d1723525": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_47ee4d78fe": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_4805b93140": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_4821a6d600": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_48458899f8": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_487595e645": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_48784083ce": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_488259b95d": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_488377361a": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_48a9fc1069": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_48bafa84d3": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_48c29b9317": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_48eb1545b0": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_48fc73c67b": {
+  "gain": 0.342125,
+  "loss_averted": 0.0
+ },
+ "n_494204b300": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_495f08fe3a": {
+  "gain": 0.1275,
+  "loss_averted": 0.0
+ },
+ "n_4997ddde2e": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_49ec98eefb": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_4a34d76156": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_4a46dc5c76": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_4a89757365": {
+  "gain": 0.15,
+  "loss_averted": 0.0
+ },
+ "n_4aa6ba2671": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_4b3ea8a012": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_4bb0446e0f": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_4c11408152": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_4c12f37311": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_4c1c487974": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_4c2ec0b0dd": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_4c34a78289": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_4cb0107727": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_4cca7a269c": {
+  "gain": 0.342125,
+  "loss_averted": 0.0
+ },
+ "n_4cf0ab06df": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_4d8274dbfd": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_4da132b6b0": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_4da361d116": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_4dfd30633d": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_4e213b5bd0": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_4e2caa356c": {
+  "gain": 0.6,
+  "loss_averted": 0.0
+ },
+ "n_4e37e2043f": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_4e92ffa5fc": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_4ec2bddcfe": {
+  "gain": 0.2975,
+  "loss_averted": 0.0
+ },
+ "n_4ec94376e3": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_4ed877f9d2": {
+  "gain": 1.11,
+  "loss_averted": 0.0
+ },
+ "n_4f49decd39": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_4fbffe1884": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_50319e55d0": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_5037c1bb9a": {
+  "gain": 0.2975,
+  "loss_averted": 0.0
+ },
+ "n_505d496816": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_505f0b2473": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_5087987eb6": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_5101af96c3": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_5128b2323c": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_51436ce7fe": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_51bc60e315": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_51ecffb9a7": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_51f8064da5": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_52179e48b6": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_5217e69de7": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_523f2f0058": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_527752ddfd": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_529b9bf5b0": {
+  "gain": 0.2975,
+  "loss_averted": 0.0
+ },
+ "n_52a5ad4bde": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_52cf6ea332": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_5382d83f5a": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_538921f0e9": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_53e4ae3425": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_53e9107c68": {
+  "gain": 0.5865,
+  "loss_averted": 0.0
+ },
+ "n_53f1348811": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_5428a14ef8": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_542a024b1a": {
+  "gain": 0.342125,
+  "loss_averted": 0.0
+ },
+ "n_544a4f9f8c": {
+  "gain": 0.2975,
+  "loss_averted": 0.0
+ },
+ "n_5477108c25": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_54860f0f6e": {
+  "gain": 0.2975,
+  "loss_averted": 0.0
+ },
+ "n_54a3cd7059": {
+  "gain": 0.336875,
+  "loss_averted": 0.0
+ },
+ "n_54b4e4271a": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_54d605b175": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_54fcb6f3d0": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_5507cefb18": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_55fe25c2b6": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_55ffc05933": {
+  "gain": 0.95,
+  "loss_averted": 0.0
+ },
+ "n_5625a774c5": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_5637fae3e0": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_5647e1dc6c": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_5653179a24": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_5674b371c4": {
+  "gain": 0.2975,
+  "loss_averted": 0.0
+ },
+ "n_56843f36d7": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_56a80582da": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_5705519dbc": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_5765dbb7d1": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_5774d94e1f": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_577e369936": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_5800d9f1cd": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_584e4669f1": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_5872327f9f": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_58739ec2ef": {
+  "gain": 0.2975,
+  "loss_averted": 0.0
+ },
+ "n_5878237b9c": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_58c0797993": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_58d3af88c8": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_58ebe74a72": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_58f871ca0a": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_5922b29cc2": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_592605e2fd": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_5941e3e50c": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_5979894881": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_597f15df4d": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_59830d8aa0": {
+  "gain": 0.5865,
+  "loss_averted": 0.0
+ },
+ "n_59a6cf84e6": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_5a0ac71aba": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_5a299ac8eb": {
+  "gain": 0.342125,
+  "loss_averted": 0.0
+ },
+ "n_5a2eb5c714": {
+  "gain": 0.342125,
+  "loss_averted": 0.0
+ },
+ "n_5a46ccfcb8": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_5a51bc20d8": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_5aa4cebaf3": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_5aa8accd0d": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_5ab5ae7aec": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_5b1fea5007": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_5b219608d5": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_5b5ef88988": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_5c15b8d448": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_5c21c4773d": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_5c58c5b65d": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_5c6ade4a02": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_5c85f94afc": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_5d03161a82": {
+  "gain": 0.342125,
+  "loss_averted": 0.0
+ },
+ "n_5d378b550a": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_5d55c076c9": {
+  "gain": 0.2975,
+  "loss_averted": 0.0
+ },
+ "n_5d75980908": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_5d9e3de339": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_5e45890106": {
+  "gain": 0.2975,
+  "loss_averted": 0.0
+ },
+ "n_5e50b65295": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_5e577f901e": {
+  "gain": 0.339089844,
+  "loss_averted": 0.0
+ },
+ "n_5e63655271": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_5e9fab8515": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_5ebe7bf5fb": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_5ef16b36f4": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_5efecfb37c": {
+  "gain": 0.2975,
+  "loss_averted": 0.0
+ },
+ "n_5f1f19432c": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_5f3b1d3c04": {
+  "gain": 0.1275,
+  "loss_averted": 0.0
+ },
+ "n_5f68aae6ee": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_5f8ad6cace": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_5f926a45d0": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_5fa46398cc": {
+  "gain": 0.2975,
+  "loss_averted": 0.0
+ },
+ "n_5fe08c9ff1": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_5ffaf957f8": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_6073dd6486": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_60b84bfe19": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_60c3b08158": {
+  "gain": 0.2975,
+  "loss_averted": 0.0
+ },
+ "n_60cfdefc2d": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_60d507b79e": {
+  "gain": 0.349179688,
+  "loss_averted": 0.0
+ },
+ "n_60d9404afb": {
+  "gain": 0.2975,
+  "loss_averted": 0.0
+ },
+ "n_60e80164d3": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_6104fd75bc": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_611464ee89": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_612dfb29b5": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_614bc36e81": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_61b3bee22d": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_61b71a35a9": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_61c03e4d63": {
+  "gain": 0.2975,
+  "loss_averted": 0.0
+ },
+ "n_621a1b73ce": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_623a469320": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_623edfdc21": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_6250251558": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_6281d2ab07": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_628e667a96": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_62a2be3980": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_6318eeebff": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_6347a4ae40": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_63757f1d61": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_63aceb0277": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_63d28a298b": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_63f07da123": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_63f48d29b4": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_64406b3230": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_64c68ba36f": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_64ff7a2e83": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_654e456b16": {
+  "gain": 0.86,
+  "loss_averted": 0.0
+ },
+ "n_6559184803": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_65996990b2": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_65d443d39f": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_66111fe062": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_664fe9edd8": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_6676119887": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_66888ff417": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_66b040d5a2": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_66b638c741": {
+  "gain": 0.342125,
+  "loss_averted": 0.0
+ },
+ "n_66c496e4f6": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_66f2868491": {
+  "gain": 0.2975,
+  "loss_averted": 0.0
+ },
+ "n_670c1db2fe": {
+  "gain": 0.34671875,
+  "loss_averted": 0.0
+ },
+ "n_678e081668": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_67fa9260db": {
+  "gain": 0.34803125,
+  "loss_averted": 0.0
+ },
+ "n_683c3e31f6": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_685eaa24aa": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_685f1e22b2": {
+  "gain": 0.2975,
+  "loss_averted": 0.0
+ },
+ "n_68d3b19684": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_68d53fb626": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_69b311f208": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_69be705eec": {
+  "gain": 0.2975,
+  "loss_averted": 0.0
+ },
+ "n_69ddf67541": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_69f82cb5de": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_69fc58ca36": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_6a4a073096": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_6a5db33112": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_6abd0cdd5b": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_6acbfe8fba": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_6b43610e1b": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_6b572e4a5b": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_6ba3e4a34e": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_6ba6011b17": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_6bebb9e70b": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_6bfef19f7a": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_6c1f63312d": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_6c77a2054b": {
+  "gain": 0.1275,
+  "loss_averted": 0.0
+ },
+ "n_6ca2dc4cad": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_6cac01a0ee": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_6cb14363ec": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_6cb1a8eda7": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_6cc494e671": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_6cff6da9da": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_6d1db15d98": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_6d20d10b10": {
+  "gain": 0.15,
+  "loss_averted": 0.0
+ },
+ "n_6d2c78c931": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_6d51eaba65": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_6d8bc5ca4f": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_6dfb6acc66": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_6e06219572": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_6e21664219": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_6e61bfac8c": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_6e8b30ba5f": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_6e8d881428": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_6eea997213": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_6f0786e4cc": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_6f2804fadc": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_6f44998abd": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_6f47f5cc18": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_6f71813744": {
+  "gain": 0.3,
+  "loss_averted": 0.0
+ },
+ "n_6f96eeeec1": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_70573a8d97": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_70a21fd10b": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_71210909da": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_717de0f106": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_7180bdc2b0": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_71a5894e9a": {
+  "gain": 1.11,
+  "loss_averted": 0.0
+ },
+ "n_71aa9e896c": {
+  "gain": 0.2975,
+  "loss_averted": 0.0
+ },
+ "n_71c361f8c1": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_71ddccb755": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_71f9d031a9": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_72245c139f": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_725beee297": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_7279ca75b6": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_72ec2e0188": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_731b590a77": {
+  "gain": 0.2975,
+  "loss_averted": 0.0
+ },
+ "n_7393ba8feb": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_73e15cc8c7": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_741bd25daa": {
+  "gain": 0.51,
+  "loss_averted": 0.0
+ },
+ "n_74b3818e69": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_7503bc032b": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_75089e8644": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_75226d7500": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_756ef76a06": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_757ba3dd5e": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_75e831e51b": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_762756420e": {
+  "gain": 0.86,
+  "loss_averted": 0.0
+ },
+ "n_76336792f6": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_76a17c8927": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_76ffd65159": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_770f24a1ac": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_77350a2d4c": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_777cf52879": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_778e89f349": {
+  "gain": 0.336875,
+  "loss_averted": 0.0
+ },
+ "n_77b2bb5d27": {
+  "gain": 0.318513059,
+  "loss_averted": 0.0
+ },
+ "n_77f39a3117": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_77f891ac01": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_783742dbf3": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_784b3aa7c4": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_786274d020": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_78718a13c9": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_794c7efc8f": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_796791b8cb": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_797d6a7707": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_79c6c9431c": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_79f80e8df0": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_7a4456c993": {
+  "gain": 0.2975,
+  "loss_averted": 0.0
+ },
+ "n_7a6585527d": {
+  "gain": 0.2975,
+  "loss_averted": 0.0
+ },
+ "n_7a65f42b97": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_7aca9ebf57": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_7acc8d572f": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_7bb0644740": {
+  "gain": 0.342125,
+  "loss_averted": 0.0
+ },
+ "n_7bd76851f1": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_7be3f44fca": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_7bfd7709ab": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_7c0d896f82": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_7c35a4b65e": {
+  "gain": 0.95,
+  "loss_averted": 0.0
+ },
+ "n_7c3bef9c28": {
+  "gain": 0.2975,
+  "loss_averted": 0.0
+ },
+ "n_7c50cc0179": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_7c5be8a58f": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_7c6e6fd95c": {
+  "gain": 0.15,
+  "loss_averted": 0.0
+ },
+ "n_7cce29dcea": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_7ce63d190a": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_7d23b67e3e": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_7d30027de3": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_7d30b3cafb": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_7d3ebc9794": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_7d574779c4": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_7d6233ab62": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_7da28af084": {
+  "gain": 0.2975,
+  "loss_averted": 0.0
+ },
+ "n_7db27531c1": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_7de5048bc7": {
+  "gain": 0.1275,
+  "loss_averted": 0.0
+ },
+ "n_7df6547846": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_7e03194f44": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_7e245f5ff2": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_7e6e02d43a": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_7e97a08a77": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_7eadd13ec1": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_7eb5869611": {
+  "gain": 0.45,
+  "loss_averted": 0.0
+ },
+ "n_7ec0c9b82e": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_7ef3b3deee": {
+  "gain": 0.336875,
+  "loss_averted": 0.0
+ },
+ "n_7f0e881d98": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_7f6302da57": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_7f8df31b2b": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_7f9baca472": {
+  "gain": 0.342125,
+  "loss_averted": 0.0
+ },
+ "n_7fc632ef4e": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_8057156a82": {
+  "gain": 0.342125,
+  "loss_averted": 0.0
+ },
+ "n_8094a02d2e": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_80b3241d13": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_80c213fae2": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_80d3b5bd2a": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_80f5d78a7b": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_8122bfb584": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_8179bf688d": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_817e720366": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_8181dbc314": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_81a06c9b37": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_81be3fb16c": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_81ea8978db": {
+  "gain": 0.342125,
+  "loss_averted": 0.0
+ },
+ "n_82162e5484": {
+  "gain": 0.3108875,
+  "loss_averted": 0.0
+ },
+ "n_823cc31646": {
+  "gain": 0.2975,
+  "loss_averted": 0.0
+ },
+ "n_825235404c": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_825960ff86": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_82ae747b80": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_82b6d2c2ea": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_836132e2a8": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_836503da7f": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_83670fcf1d": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_83672ce476": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_837942e7cc": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_83cf0ef07b": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_841be70d8d": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_8472efaae7": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_84816a33c8": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_84e27e470c": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_84e3ed09d1": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_850f6af7eb": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_851cd9cb95": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_852188792a": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_854bb69512": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_8593813d2f": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_85f6668ecf": {
+  "gain": 0.51,
+  "loss_averted": 0.0
+ },
+ "n_86058b9ab0": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_86c5bb8180": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_86db2a3ca3": {
+  "gain": 0.318513059,
+  "loss_averted": 0.0
+ },
+ "n_87005cf779": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_8705cdf16f": {
+  "gain": 0.08925,
+  "loss_averted": 0.0
+ },
+ "n_874382c716": {
+  "gain": 0.3,
+  "loss_averted": 0.0
+ },
+ "n_874470af74": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_87562190fd": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_877a3d8685": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_8864aaa4b0": {
+  "gain": 0.34671875,
+  "loss_averted": 0.0
+ },
+ "n_88b89beb84": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_88bf4ada8c": {
+  "gain": 0.1275,
+  "loss_averted": 0.0
+ },
+ "n_8912b1e910": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_894522652f": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_8993899657": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_89f6635f0b": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_89f8989e24": {
+  "gain": 0.342125,
+  "loss_averted": 0.0
+ },
+ "n_89fad60911": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_8a11ebc27f": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_8a2e3735c6": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_8a4ed5f308": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_8a89e67bf8": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_8a9a69f6f0": {
+  "gain": 0.2975,
+  "loss_averted": 0.0
+ },
+ "n_8a9c30ad0f": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_8aac7a9255": {
+  "gain": 0.2975,
+  "loss_averted": 0.0
+ },
+ "n_8acf542126": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_8b018e29bd": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_8b10bbb92a": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_8b68fa683c": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_8b6f939685": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_8bdb96e528": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_8bff94eacc": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_8c35936898": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_8c447694d6": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_8cd3dcf576": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_8d51fa6545": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_8d7285f712": {
+  "gain": 0.349822812,
+  "loss_averted": 0.0
+ },
+ "n_8d7410e2e6": {
+  "gain": 0.1275,
+  "loss_averted": 0.0
+ },
+ "n_8d77a6a7e9": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_8dde4f62bd": {
+  "gain": 0.2975,
+  "loss_averted": 0.0
+ },
+ "n_8e147a8bc7": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_8ec8cd6c4a": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_8ecbacc72a": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_8f0aad86e8": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_8f67a893d7": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_8fd0b6f1ad": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_8fd8389b86": {
+  "gain": 0.5865,
+  "loss_averted": 0.0
+ },
+ "n_8ff8951284": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_9012731bdd": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_90128dff8a": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_904ca90823": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_905ad1dcfd": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_907ebf451f": {
+  "gain": 0.342125,
+  "loss_averted": 0.0
+ },
+ "n_90995a18f0": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_90b409f3f1": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_90d7a16f62": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_91141dddad": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_9123acfc2e": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_913b96ddbb": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_9157dc9fe6": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_9175163bbc": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_9234c5ddc7": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_924c1e18dc": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_925c4a381a": {
+  "gain": 0.2975,
+  "loss_averted": 0.0
+ },
+ "n_925d5ab7fa": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_92693fff91": {
+  "gain": 0.15,
+  "loss_averted": 0.0
+ },
+ "n_927551c424": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_928723557e": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_92afc057aa": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_92c4531ecd": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_92f8b5e68a": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_9300f00b27": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_930214ad99": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_933cf83d17": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_935a9b4c4b": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_93dedeb63c": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_93e54cea45": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_93ed1f70df": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_940bdafd1b": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_9428e6b5b9": {
+  "gain": 0.2975,
+  "loss_averted": 0.0
+ },
+ "n_94456229d3": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_9451119eaa": {
+  "gain": 0.3,
+  "loss_averted": 0.0
+ },
+ "n_947af9b3b0": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_948411476a": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_9493505133": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_952ec0d42c": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_953cc8ad2c": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_955d180693": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_95669eb9d6": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_95859fca2f": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_95c472f39a": {
+  "gain": 0.318513059,
+  "loss_averted": 0.0
+ },
+ "n_95e72e7992": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_95f160b7b0": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_95f279269f": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_9601713299": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_961a978f43": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_9660a2838b": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_9673252a71": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_96cbbc3685": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_96e47d2750": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_96ec5de712": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_97512e5548": {
+  "gain": 0.5865,
+  "loss_averted": 0.0
+ },
+ "n_978bdc254d": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_97a3b3087b": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_97aeaf83b3": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_97e65bc8c3": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_980bfe844d": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_983bde02e5": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_98494e4c0b": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_986e545aed": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_987b85361b": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_98cd417be4": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_991b479db1": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_996a1b0f65": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_99b86947dc": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_99d24d05c8": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_99d9860174": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_99fc203877": {
+  "gain": 0.2975,
+  "loss_averted": 0.0
+ },
+ "n_9a58137a51": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_9a8604a4f2": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_9ae25d3ff1": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_9aea4dd069": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_9af572f33a": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_9b2b297011": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_9b30618d86": {
+  "gain": 0.2975,
+  "loss_averted": 0.0
+ },
+ "n_9b59574076": {
+  "gain": 0.2975,
+  "loss_averted": 0.0
+ },
+ "n_9b7a08e349": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_9b9f62068f": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_9ba30b67f7": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_9bbb66fd55": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_9befe68f0b": {
+  "gain": 0.1275,
+  "loss_averted": 0.0
+ },
+ "n_9c1305e1f8": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_9c1963e4d8": {
+  "gain": 0.45,
+  "loss_averted": 0.0
+ },
+ "n_9c5d14d6e9": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_9c753cd10b": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_9ca80fe3ce": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_9cbbaa0b48": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_9ccee5f60e": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_9cd3471249": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_9cdcade78b": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_9ced06f169": {
+  "gain": 0.2975,
+  "loss_averted": 0.0
+ },
+ "n_9d39e24f40": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_9d5e2b7217": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_9d6e0c5d9f": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_9d922d4f1c": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_9d9b7727b5": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_9e0d1da5d4": {
+  "gain": 0.342125,
+  "loss_averted": 0.0
+ },
+ "n_9e218d5e9d": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_9e3c3da340": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_9e5f9fe1fe": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_9e9aea3c17": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_9e9edc7f97": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_9f1077fa1a": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_9f18cb4732": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_9f4978d2ef": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_9f55f3e5ca": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_9f5c2c489f": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_9fe6b5fe69": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_9feca160b1": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_a0026bbc83": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_a0487e0687": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_a049add091": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_a060ad32d5": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_a07e3194ec": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_a088903863": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_a08e10b393": {
+  "gain": 0.5865,
+  "loss_averted": 0.0
+ },
+ "n_a0bd4e88e1": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_a0f760506a": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_a1511f79fc": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_a1a41c1150": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_a2bb52c425": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_a30f0eb918": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_a3242fd65b": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_a36725a2e9": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_a36ec1d568": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_a389d5941e": {
+  "gain": 0.1275,
+  "loss_averted": 0.0
+ },
+ "n_a3a34fc43a": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_a3b9d98a89": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_a3d229b0c6": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_a3d900f9b6": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_a3dd8b4004": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_a4577e1501": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_a46c4c02fa": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_a4bf8ef235": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_a4ccc89a74": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_a5939634d1": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_a5b2cfe939": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_a5d4d493d3": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_a5e9319c5d": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_a5f6afaf5f": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_a5feff5832": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_a628a1dd06": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_a68bec5446": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_a6b860ae92": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_a6d8c66293": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_a724ccb9b8": {
+  "gain": 0.2975,
+  "loss_averted": 0.0
+ },
+ "n_a73ed292d3": {
+  "gain": 0.339089844,
+  "loss_averted": 0.0
+ },
+ "n_a757d7b39e": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_a76eb1d01c": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_a78191816a": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_a794eeaf50": {
+  "gain": 0.342125,
+  "loss_averted": 0.0
+ },
+ "n_a7e6e16612": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_a82a3c49b9": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_a86354935a": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_a873250939": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_a87f659316": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_a8875b5db8": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_a8bd75f011": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_a8c34ce54d": {
+  "gain": 0.2975,
+  "loss_averted": 0.0
+ },
+ "n_a8fc438bc5": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_a94de4a11f": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_a9dde53c40": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_aa038c2521": {
+  "gain": 0.344333275,
+  "loss_averted": 0.0
+ },
+ "n_aa231e78c2": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_aa3c3ccb93": {
+  "gain": 0.2975,
+  "loss_averted": 0.0
+ },
+ "n_aa57f410bb": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_aa8070b4c3": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_aac65f37ec": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_aacc45fd98": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_aaf7e7f7f2": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_ab0f306621": {
+  "gain": 0.2975,
+  "loss_averted": 0.0
+ },
+ "n_ab62ef9c6c": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_ab7d815fdc": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_abc31a7391": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_ac22c6759f": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_ac43c81abb": {
+  "gain": 0.34671875,
+  "loss_averted": 0.0
+ },
+ "n_ac6a69a6a9": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_ac9355f210": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_acf868c715": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_acfd0fac6a": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_ad5c156f3c": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_ad62fe2a30": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_adf297b17d": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_ae116d49d7": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_ae1c1a6087": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_aedf22389c": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_aeee5b5593": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_af16d75ca4": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_af7e8e3e7d": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_af86d01827": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_afa7f10c21": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_afb931f223": {
+  "gain": 0.2975,
+  "loss_averted": 0.0
+ },
+ "n_b0520f54af": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_b0bb6945ed": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_b0d0397eff": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_b0d71bd3ac": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_b0dda69cf8": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_b0f0fbfbe3": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_b0fcfcfe2e": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_b11f803ffb": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_b142ad7899": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_b1c33fd489": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_b1f88f3a44": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_b23c1f69cd": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_b2652f94cd": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_b2752c6c08": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_b2974cb373": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_b29a17f551": {
+  "gain": 0.2975,
+  "loss_averted": 0.0
+ },
+ "n_b2a2c274ed": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_b2be272278": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_b2d7a73873": {
+  "gain": 0.15,
+  "loss_averted": 0.0
+ },
+ "n_b2dae838fa": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_b31334730d": {
+  "gain": 0.318513059,
+  "loss_averted": 0.0
+ },
+ "n_b3d82d89e8": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_b492fce96b": {
+  "gain": 0.2975,
+  "loss_averted": 0.0
+ },
+ "n_b49b7d7ec1": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_b4b666b71d": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_b50b84da5c": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_b55b10b0ab": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_b5c39a53eb": {
+  "gain": 0.1275,
+  "loss_averted": 0.0
+ },
+ "n_b5e06b8133": {
+  "gain": 0.5865,
+  "loss_averted": 0.0
+ },
+ "n_b5f2aef063": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_b60940d23e": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_b63fa5d460": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_b6873a5f90": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_b7f3363957": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_b7f622d3af": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_b8507542db": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_b87a98bdb6": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_b89efedf94": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_b8bc770724": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_b8bf6d0337": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_b8f98620c7": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_b9055d4f8c": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_b952d0548a": {
+  "gain": 0.2975,
+  "loss_averted": 0.0
+ },
+ "n_b98e12f1ba": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_b9f1f331f6": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_bad8cb6a4d": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_bada47f713": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_bae700e696": {
+  "gain": 0.2975,
+  "loss_averted": 0.0
+ },
+ "n_baee5d6fbb": {
+  "gain": 0.1275,
+  "loss_averted": 0.0
+ },
+ "n_bb13d8174d": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_bb1679c9e0": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_bb819855d0": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_bb844fcceb": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_bbbed5039a": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_bbdb7c952f": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_bbed4d821a": {
+  "gain": 0.15,
+  "loss_averted": 0.0
+ },
+ "n_bbfb6432dc": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_bc10723ddb": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_bc230581d2": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_bc4f1aff74": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_bc721a64d1": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_bd027dd266": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_bd0a35260f": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_bd15b4c664": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_bd701fb391": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_bd7c62e42e": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_bdee18e4d6": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_be03bbfb9e": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_be3423cac5": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_be4a4cb74b": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_bee3285888": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_bfab8d840f": {
+  "gain": 0.349179688,
+  "loss_averted": 0.0
+ },
+ "n_bfb9cdc4da": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_bfc9cd4e29": {
+  "gain": 0.2975,
+  "loss_averted": 0.0
+ },
+ "n_bfcf531488": {
+  "gain": 0.2975,
+  "loss_averted": 0.0
+ },
+ "n_bfdaeffee6": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_bfe89f25cf": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_c002794a68": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_c00a8c84ab": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_c01068e2aa": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_c03800c679": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_c06671e2ee": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_c091c8a1fd": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_c09c47c873": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_c0a9958ef1": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_c0eb60e3f4": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_c1070cfc99": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_c13e3ae9a0": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_c168169d2e": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_c16a1ac1d4": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_c181309d13": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_c18d13232d": {
+  "gain": 0.9365,
+  "loss_averted": 0.0
+ },
+ "n_c18d99d2cf": {
+  "gain": 0.51,
+  "loss_averted": 0.0
+ },
+ "n_c1cf2ba076": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_c270cc2b4b": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_c2e542fd02": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_c307b296cf": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_c30ce19128": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_c30e4171a2": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_c3b8ceb02f": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_c3d31cc9ec": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_c3e0e5e43d": {
+  "gain": 0.45,
+  "loss_averted": 0.0
+ },
+ "n_c451a972f2": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_c46d1e540c": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_c4c7ea97da": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_c4e863c40b": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_c52256142c": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_c5386bf45f": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_c546c81275": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_c562d95bee": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_c5f4e1d181": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_c6248982c6": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_c6562235db": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_c68129aac6": {
+  "gain": 0.2975,
+  "loss_averted": 0.0
+ },
+ "n_c6ac381406": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_c6e6df5e64": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_c6f0e50035": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_c7ba02e7ad": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_c7c8909124": {
+  "gain": 0.342125,
+  "loss_averted": 0.0
+ },
+ "n_c7d1766c1f": {
+  "gain": 0.51,
+  "loss_averted": 0.0
+ },
+ "n_c838a932e8": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_c859c121b9": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_c89c953c5f": {
+  "gain": 0.2975,
+  "loss_averted": 0.0
+ },
+ "n_c93d925c84": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_c97e907d86": {
+  "gain": 0.6,
+  "loss_averted": 0.0
+ },
+ "n_c9a5d4241a": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_c9ca60c100": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_ca1c64baa9": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_ca54a9b21a": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_cade47e88a": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_cae62bfd29": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_cb2d789274": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_cb352b7f29": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_cb39aa0461": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_cb55d30a28": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_cb78fcf8c2": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_cbc7d4bf25": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_cbcf1e0982": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_cc0eff3121": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_cc13280ad9": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_cc7caee367": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_cc9f1f29de": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_cce457a6f8": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_cd12e7bab1": {
+  "gain": 0.51,
+  "loss_averted": 0.0
+ },
+ "n_cd17f97f71": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_cd24035b67": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_cd3e8814b9": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_cd3fc7397c": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_cd42fc5a8a": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_cd6fb38e21": {
+  "gain": 0.1275,
+  "loss_averted": 0.0
+ },
+ "n_cdaa5ef81c": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_cdbedec0e9": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_ce071d925c": {
+  "gain": 0.2975,
+  "loss_averted": 0.0
+ },
+ "n_ce0aa77619": {
+  "gain": 0.318513059,
+  "loss_averted": 0.0
+ },
+ "n_ce907f069e": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_ce9d51f347": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_cf27440732": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_cf4c3225f1": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_cf7eb9a916": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_cfb59ef208": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_cfcdc58167": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_d02c631026": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_d0669dc79a": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_d085ab05e7": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_d0c8b1c111": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_d10bb867ea": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_d110646367": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_d122333ddf": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_d135356499": {
+  "gain": 0.2975,
+  "loss_averted": 0.0
+ },
+ "n_d13a395abe": {
+  "gain": 0.342125,
+  "loss_averted": 0.0
+ },
+ "n_d1539f8e4d": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_d17073781d": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_d19e3a84ce": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_d1ba043d0b": {
+  "gain": 0.35,
+  "loss_averted": 0.0
+ },
+ "n_d1ca7b754a": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_d217c6a036": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_d22da59661": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_d28e0397c8": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_d290c34140": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_d2a6c44ea2": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_d2b9b8044a": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_d34a28ac6a": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_d356b1a9e5": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_d38ff5fb53": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_d3a1206681": {
+  "gain": 0.15,
+  "loss_averted": 0.0
+ },
+ "n_d3b7cd72bd": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_d419199cc8": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_d41b1968b2": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_d4306fd08d": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_d46a5edde3": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_d47c0ea0b5": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_d4dbe9adec": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_d517a34c6b": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_d51baf2c56": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_d5a2c0e6a1": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_d5cd2c4f87": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_d63a48fcc3": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_d64caf283e": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_d65c983e6f": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_d663317dd7": {
+  "gain": 0.339933449,
+  "loss_averted": 0.0
+ },
+ "n_d685ca98f6": {
+  "gain": 0.342125,
+  "loss_averted": 0.0
+ },
+ "n_d6a9e128db": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_d6ccf2d901": {
+  "gain": 0.2975,
+  "loss_averted": 0.0
+ },
+ "n_d6e25c5444": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_d6e300c159": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_d6fcbb2ab4": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_d7646f6807": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_d7727a471f": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_d797686b25": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_d7cb99258f": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_d7e526a685": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_d7fa690391": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_d7fa9e4d38": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_d81558aa8f": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_d86c7f6de2": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_d88dc19633": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_d8b5045a84": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_d8c8729d76": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_d8fe29234d": {
+  "gain": 0.2975,
+  "loss_averted": 0.0
+ },
+ "n_d90e970bcc": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_d967d58e11": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_d98256c4e2": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_d998a0c121": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_d9b098bdd9": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_da2e7b79e1": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_da4941caa5": {
+  "gain": 0.2975,
+  "loss_averted": 0.0
+ },
+ "n_da61d44a71": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_da6980cf96": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_da6fd1e672": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_dade81ce81": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_db022a07d2": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_db3a073248": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_dc199761b4": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_dc9f238121": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_dca2610345": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_dca5d88d0e": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_dcabc5f96e": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_dccee67612": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_dd0c2c1749": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_dd30588b77": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_dd358e04e1": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_dd3b25d328": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_dd708e4969": {
+  "gain": 0.2975,
+  "loss_averted": 0.0
+ },
+ "n_dd845e605f": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_dd98b4bce9": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_ddd23c6564": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_de69abf44b": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_de70b26899": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_debf8f4d50": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_df12ef6e7a": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_df72abea42": {
+  "gain": 0.34803125,
+  "loss_averted": 0.0
+ },
+ "n_df9fff201e": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_dfcb3e5c48": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_dfe90d6593": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_e008e4f15a": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_e015475d79": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_e03d59e613": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_e07146ff0a": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_e14e8debbf": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_e16085653a": {
+  "gain": 0.45,
+  "loss_averted": 0.0
+ },
+ "n_e16a63c04d": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_e1bbb7d0f9": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_e1c9a0773c": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_e1d57fe3b2": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_e224b9b3ee": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_e232e8cb68": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_e267e850d4": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_e2724d0bad": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_e2a91a6dc0": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_e2a995b91f": {
+  "gain": 0.2975,
+  "loss_averted": 0.0
+ },
+ "n_e2d627a5b7": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_e305718693": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_e3379c3717": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_e341f49a14": {
+  "gain": 0.2975,
+  "loss_averted": 0.0
+ },
+ "n_e34a4ef26e": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_e35856d0e5": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_e3594226d1": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_e37450a651": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_e38c8e353b": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_e3bf87ffb1": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_e3cc3dfb48": {
+  "gain": 0.1275,
+  "loss_averted": 0.0
+ },
+ "n_e3e9627bf1": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_e40e657f79": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_e4afd861d3": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_e4ca502421": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_e4e64dc171": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_e565222831": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_e5ff6c3bb5": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_e61df069ee": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_e6266e9321": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_e660c400cf": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_e6b4aff6a2": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_e737b6460e": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_e75ee302ae": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_e776f99266": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_e79cbd03d3": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_e7cef90190": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_e7d6722751": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_e7e4e8c6cc": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_e7f19db11d": {
+  "gain": 0.349822812,
+  "loss_averted": 0.0
+ },
+ "n_e86774e99c": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_e89dfaa927": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_e8aa6374dd": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_e8b2b376ea": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_e8e2d08553": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_e8ec9c3c0e": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_e958aff6b5": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_e95cce224d": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_e9dab8eb89": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_e9f327eb27": {
+  "gain": 0.86,
+  "loss_averted": 0.0
+ },
+ "n_ea0ba774d6": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_ea0cc9446b": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_ea1cef8fb2": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_ea31c4b8a6": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_ea3f12abcd": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_ea692b346e": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_ea97a59768": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_eaa7f625f2": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_eb2eb8b872": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_eb3664e752": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_eb3819aef1": {
+  "gain": 0.2975,
+  "loss_averted": 0.0
+ },
+ "n_eb87fc2daa": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_eb9767452c": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_eba70ff01b": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_ebe3abbf70": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_ebf650a22d": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_ec394b0d72": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_ec4a5dc37c": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_ec6dff77bd": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_ec9f170201": {
+  "gain": 0.2975,
+  "loss_averted": 0.0
+ },
+ "n_eca778073a": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_ecef5a5257": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_ed2a4f9d96": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_ed670504e4": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_edd06a6f67": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_edde336edb": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_ede901b5e9": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_ee7d52d3dd": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_ee97ff20ad": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_eea016cb78": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_eebda5fa1f": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_ef228ee14f": {
+  "gain": 0.2975,
+  "loss_averted": 0.0
+ },
+ "n_ef2c1101db": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_efbd7a5c87": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_efef1da120": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_efefa70a13": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_f001d2e761": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_f01fafa800": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_f0353c8801": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_f035c6184a": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_f05abfaa67": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_f06413f583": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_f0bebad4ed": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_f0d5b7c621": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_f0dad572eb": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_f10a315124": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_f10d80cc98": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_f147bfc6b0": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_f184374842": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_f1e118a914": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_f1e8581f9e": {
+  "gain": 0.2975,
+  "loss_averted": 0.0
+ },
+ "n_f2046c9fb0": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_f217078742": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_f2413c9dad": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_f24edc5b9d": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_f2956c4e9d": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_f2bee3ca32": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_f312a1b100": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_f39d6c5dd6": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_f3b23190b5": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_f3d78435ac": {
+  "gain": 0.2975,
+  "loss_averted": 0.0
+ },
+ "n_f3f0fe687a": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_f3f28fc2f2": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_f49999e382": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_f4b28aa003": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_f4d08fbce6": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_f4d9683ee2": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_f4eeb4f7c9": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_f4f93785d6": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_f4fc266cc6": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_f5050cda68": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_f51d450977": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_f55fca1a58": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_f617abf9ab": {
+  "gain": 0.2975,
+  "loss_averted": 0.0
+ },
+ "n_f645862297": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_f655293243": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_f65721ac64": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_f6638c9608": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_f66bdbf537": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_f68fb595f1": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_f6c1ea061e": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_f6d1501de3": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_f6d355027d": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_f6fb0aceac": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_f71a4c61f7": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_f740719ae2": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_f752094fbd": {
+  "gain": 0.08925,
+  "loss_averted": 0.0
+ },
+ "n_f7814fab96": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_f78531d337": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_f787983762": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_f78ffd94ab": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_f7e751e3c0": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_f7f8e3d46a": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_f81521a711": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_f8728a14bb": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_f8f456d70a": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_f923cfa0ae": {
+  "gain": 0.51,
+  "loss_averted": 0.0
+ },
+ "n_f941f86a6f": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_f95c17ecbd": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_f9796272db": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_f97dd1511f": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_f9b85d7dfd": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_f9bb8aa65f": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_f9c407e967": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_f9dd32bebe": {
+  "gain": 0.2975,
+  "loss_averted": 0.0
+ },
+ "n_f9e16ecf60": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_fa01b2dd87": {
+  "gain": 0.2975,
+  "loss_averted": 0.0
+ },
+ "n_fa13e21a99": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_fa18724ca3": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_fa2e413e5d": {
+  "gain": 0.327510312,
+  "loss_averted": 0.0
+ },
+ "n_fa47db2a4c": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_fa505441db": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_fa5cf0ec46": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_fa9e331e3a": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_faad3cf2f7": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_faf03cd327": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_fafbb38a15": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_fb010656f9": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_fb1458cb30": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_fb4b59d6e0": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_fba7e349e5": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_fbacf33f0c": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_fbb28d260e": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_fbb55cc340": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_fbb82005b4": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_fc1d5a0707": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_fc60d89224": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_fc6b43dd02": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_fca3a542f8": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_fcb41ddfba": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_fcc7593a4a": {
+  "gain": 0.2975,
+  "loss_averted": 0.0
+ },
+ "n_fd3c96e82a": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_fd4b856cde": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_fd592db45b": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_fdf29c5e96": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_fe24dd74d0": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_fe4901d8af": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_fe6ae7d496": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_fea1988d65": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_feaba48322": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_fecdf26f5a": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_fedc5c2704": {
+  "gain": 0.1275,
+  "loss_averted": 0.0
+ },
+ "n_feeafea565": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_ff10ce7bd5": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_ff196f3ef2": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_ff26ceba82": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_ff80626d56": {
+  "gain": 0.34671875,
+  "loss_averted": 0.0
+ },
+ "n_ffd69247a3": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "n_ffe541ad1a": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "personal_033d02b8": {
+  "gain": 0.95,
+  "loss_averted": 0.0
+ },
+ "personal_344a9ec6": {
+  "gain": 0.925025,
+  "loss_averted": 0.0
+ },
+ "personal_92d5909f": {
+  "gain": 1.11,
+  "loss_averted": 0.0
+ },
+ "proj-76fbc546": {
+  "gain": 0.95,
+  "loss_averted": 0.0
+ },
+ "proj-db6ded3c": {
+  "gain": 0.51,
+  "loss_averted": 0.0
+ },
+ "proj-f8b942d5": {
+  "gain": 1.11,
+  "loss_averted": 0.0
+ },
+ "research-supervision-1b44af33": {
+  "gain": 0.15,
+  "loss_averted": 0.0
+ },
+ "spec_a98d0e11": {
+  "gain": 0.345078125,
+  "loss_averted": 0.0
+ },
+ "targ-7d49f8a0": {
+  "gain": 0.35,
+  "loss_averted": 0.0
+ },
+ "targ_4e2cc92a": {
+  "gain": 0.6,
+  "loss_averted": 0.0
+ },
+ "targ_safety": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "task_7327d7af": {
+  "gain": 0.35,
+  "loss_averted": 0.0
+ },
+ "task_7d6f78ad": {
+  "gain": 0.35,
+  "loss_averted": 0.0
+ },
+ "task_b3f01c80": {
+  "gain": 0.6,
+  "loss_averted": 0.0
+ },
+ "task_d5f610e6": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "task_e79f1a57": {
+  "gain": 1.11,
+  "loss_averted": 0.0
+ },
+ "task_model_ten_tasks_properly": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ },
+ "trustcon_1c23b18d": {
+  "gain": 0.0,
+  "loss_averted": 0.0
+ }
+}
