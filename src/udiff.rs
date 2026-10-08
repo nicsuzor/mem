@@ -103,13 +103,18 @@ impl RelativeIndenter {
             let indent = &line[..len_indent];
             let change = (len_indent as isize) - (prev_indent.len() as isize);
 
+            // make_absolute rebuilds each indent by extending or truncating the
+            // previous one, so any other indent change cannot round-trip (#686).
+            if (change > 0 && !indent.starts_with(prev_indent))
+                || (change < 0 && !prev_indent.starts_with(indent))
+                || (change == 0 && indent != prev_indent)
+            {
+                return Err("Indent is not a prefix-extension of the previous indent".to_string());
+            }
+
             let cur_indent = if change > 0 {
-                // Indents are measured in bytes; a cut inside a multi-byte
-                // whitespace char (e.g. U+3000) cannot round-trip (#686).
-                indent
-                    .get(indent.len() - (change as usize)..)
-                    .ok_or_else(|| "Indent change is not on a char boundary".to_string())?
-                    .to_string()
+                // The prefix check above guarantees this cut is on a char boundary.
+                indent[prev_indent.len()..].to_string()
             } else if change < 0 {
                 std::iter::repeat_n(self.marker, (-change) as usize).collect::<String>()
             } else {
@@ -122,7 +127,15 @@ impl RelativeIndenter {
             prev_indent = indent;
         }
 
-        Ok(output.concat())
+        // Lone-CR line endings merge with the "\n" separator above, and a final
+        // whitespace-only line without a newline leaves an empty segment that
+        // split_keepends drops. Rather than special-case each, refuse any text
+        // whose relative form does not convert back exactly (#686).
+        let relative = output.concat();
+        if self.make_absolute(&relative)? != text {
+            return Err("Text does not round-trip through relative indents".to_string());
+        }
+        Ok(relative)
     }
 
     pub fn make_absolute(&self, text: &str) -> Result<String, String> {
@@ -152,13 +165,9 @@ impl RelativeIndenter {
                 format!("{}{}", prev_indent, dent)
             };
 
-            let out_line = if non_indent.trim_end_matches(['\r', '\n']).is_empty() {
-                non_indent.clone() // don't indent a blank line
-            } else {
-                format!("{}{}", cur_indent, non_indent)
-            };
-
-            output.push(out_line);
+            // A whitespace-only line keeps its own indent, which make_relative
+            // recorded in full; an empty line's indent is already "".
+            output.push(format!("{}{}", cur_indent, non_indent));
             prev_indent = cur_indent;
         }
 
@@ -1012,17 +1021,104 @@ These changes will add the `--check-update` option...
         let ri = RelativeIndenter::new(&[text]);
         assert!(ri.make_relative(text).is_err());
 
-        // Outdent from U+3000 to one space cuts inside the char on the way
-        // back to absolute indents.
+        // Outdent from U+3000 to one space used to cut inside the char on the
+        // way back to absolute indents.
         let text = "\u{3000}a\n b\n";
         let ri = RelativeIndenter::new(&[text]);
-        let rel = ri.make_relative(text).unwrap();
-        assert!(ri.make_absolute(&rel).is_err());
+        assert!(ri.make_relative(text).is_err());
 
         // Multi-byte indents whose changes land on char boundaries round-trip.
         let text = "\u{3000}a\n\u{3000}\u{3000}b\n\u{3000}c\nd\n";
         let ri = RelativeIndenter::new(&[text]);
         let rel = ri.make_relative(text).unwrap();
         assert_eq!(ri.make_absolute(&rel).unwrap(), text);
+
+        // Indents that do not extend or truncate the previous indent used to
+        // come back silently rewritten (e.g. "\u{3000}x\n\u{3000} y\n").
+        for text in [
+            "\u{3000}x\n    y\n",
+            "\u{3000}\u{3000}x\n   y\n",
+            "\tx\n  y\n",
+            "  x\n\ty\n",
+        ] {
+            let ri = RelativeIndenter::new(&[text]);
+            assert!(ri.make_relative(text).is_err(), "{text:?}");
+        }
+
+        // Lone-CR endings and a trailing whitespace-only line without a
+        // newline used to come back altered.
+        for text in [" —\r ", "x\r\ré y\n", "a\r  "] {
+            let ri = RelativeIndenter::new(&[text]);
+            assert!(ri.make_relative(text).is_err(), "{text:?}");
+        }
+
+        // Whitespace-only lines keep their whitespace.
+        let text = "  a\n  \n\n    b\n  \n";
+        let ri = RelativeIndenter::new(&[text]);
+        let rel = ri.make_relative(text).unwrap();
+        assert_eq!(ri.make_absolute(&rel).unwrap(), text);
+    }
+
+    #[test]
+    fn test_relative_indent_strategy_err_is_no_match() {
+        // The original's indents cannot round-trip, so make_relative errs and
+        // the relative-indent strategy must report NoMatch, not edit.
+        let original = "\u{3000}x\n    y\n";
+        assert_eq!(
+            try_strategy("    y\n", "    z\n", original, false, true),
+            Err(SearchReplaceError::NoMatch)
+        );
+    }
+
+    fn relative_round_trip(text: &str) -> Result<String, String> {
+        let ri = RelativeIndenter::new(&[text]);
+        ri.make_absolute(&ri.make_relative(text)?)
+    }
+
+    #[test]
+    fn test_relative_indenter_random_round_trip_never_alters() {
+        use rand::{rngs::StdRng, Rng, SeedableRng};
+
+        // Mixed ASCII and multi-byte indents, blank and whitespace-only lines,
+        // all three line endings, with and without a final newline.
+        const WS: [&str; 4] = [" ", "\t", "\u{3000}", "\u{a0}"];
+        const BODY: [&str; 4] = ["x", "", "é y", "—"];
+        const EOL: [&str; 3] = ["\n", "\r\n", "\r"];
+        let mut rng = StdRng::seed_from_u64(686);
+        let (mut ok, mut err, mut altered) = (0usize, 0usize, Vec::new());
+
+        for _ in 0..200_000 {
+            let mut text = String::new();
+            for _ in 0..rng.random_range(1..=6) {
+                // Draw each line's indent from at most two kinds of whitespace
+                // so that a good share of texts can round-trip.
+                let ws: Vec<&str> = (0..rng.random_range(1..=2))
+                    .map(|_| WS[rng.random_range(0..WS.len())])
+                    .collect();
+                for _ in 0..rng.random_range(0..=4) {
+                    text.push_str(ws[rng.random_range(0..ws.len())]);
+                }
+                text.push_str(BODY[rng.random_range(0..BODY.len())]);
+                text.push_str(EOL[rng.random_range(0..EOL.len())]);
+            }
+            if rng.random_bool(0.2) {
+                text.truncate(text.trim_end_matches(['\r', '\n']).len());
+            }
+
+            match relative_round_trip(&text) {
+                Ok(out) if out == text => ok += 1,
+                Ok(out) => altered.push((text, out)),
+                Err(_) => err += 1,
+            }
+        }
+
+        eprintln!("relative round trip: ok={ok} err={err} altered={}", altered.len());
+        assert!(
+            altered.is_empty(),
+            "{} altered round trips, e.g. {:?}",
+            altered.len(),
+            &altered[..altered.len().min(5)]
+        );
+        assert!(ok > 10_000, "only {ok} texts round-tripped; check is too weak");
     }
 }
