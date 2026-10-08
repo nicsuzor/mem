@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.99](https://github.com/nicsuzor/mem/compare/mem-v0.3.98...mem-v0.3.99) (2026-10-08)
+
+
+### Bug Fixes
+
+* char-boundary-safe string truncation (pkb crash loop, [#686](https://github.com/nicsuzor/mem/issues/686)) ([#687](https://github.com/nicsuzor/mem/issues/687)) ([6342e55](https://github.com/nicsuzor/mem/commit/6342e557b161d2b3f42e64a256268ab03b6c3df6))
+
+
+### Documentation
+
+* **pkb-rules:** trust the write response; drop read-back-after-write ([11aac6a](https://github.com/nicsuzor/mem/commit/11aac6a118e2a639ff4d8de7253e24ee4b00de44))
+* **pkb-rules:** trust the write response; drop read-back-after-write ([071aaa3](https://github.com/nicsuzor/mem/commit/071aaa3a9e0c4168c1228121746a1b9f95cce437))
+* **specs:** migration of the live graph to the flow rule (draft) ([#673](https://github.com/nicsuzor/mem/issues/673)) ([37668d1](https://github.com/nicsuzor/mem/commit/37668d1fd737015e2074ece87b73bb3fcf9b2dcd))
+* **specs:** PKB engine and tools for the flow rule (draft) ([#674](https://github.com/nicsuzor/mem/issues/674)) ([93b5014](https://github.com/nicsuzor/mem/commit/93b5014f11b43e297fdc18f40f9b2eef2d95ee04))
+
 ## [0.3.98](https://github.com/nicsuzor/mem/compare/mem-v0.3.97...mem-v0.3.98) (2026-10-08)
 
 
