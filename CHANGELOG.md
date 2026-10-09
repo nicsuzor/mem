@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.100](https://github.com/nicsuzor/mem/compare/mem-v0.3.99...mem-v0.3.100) (2026-10-09)
+
+
+### Bug Fixes
+
+* **ranking:** share value_lineage down the tree instead of copying it to every leaf ([8cdd96e](https://github.com/nicsuzor/mem/commit/8cdd96ecf72f84eaa64096b6a0efa67702734579))
+
 ## [0.3.99](https://github.com/nicsuzor/mem/compare/mem-v0.3.98...mem-v0.3.99) (2026-10-08)
 
 
