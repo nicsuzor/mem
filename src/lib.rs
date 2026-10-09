@@ -54,6 +54,98 @@ pub fn document_needs_reindex(store: &vectordb::VectorStore, doc: &pkb::PkbDocum
     store.needs_update(&doc.id(), &doc.file_hash)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StalenessReport {
+    pub stale_count: usize,
+    pub files_scanned: usize,
+    pub files_read: usize,
+}
+
+/// Check whether the vector store index is stale, reporting detailed scan counts.
+///
+/// Unchanged documents are skipped by their filesystem stamp (mtime + size),
+/// avoiding file reads, frontmatter parsing, and content hashing.
+/// The filesystem scan and any necessary file reads run without holding the
+/// store lock, preventing lock contention with concurrent writers or search queries.
+pub fn check_index_staleness_with_stats(
+    pkb_root: &std::path::Path,
+    store: &Arc<RwLock<vectordb::VectorStore>>,
+) -> StalenessReport {
+    // 1. Snapshot store state under a brief read lock and release the lock immediately.
+    // The filesystem scan and file parsing never hold the store lock.
+    let (known_docs, cached_stamps) = {
+        let s = store.read();
+        let mut docs_by_path: std::collections::HashMap<
+            std::path::PathBuf,
+            (String, Option<String>),
+        > = std::collections::HashMap::with_capacity(s.len());
+        for entry in s.documents().map(|(_, e)| e) {
+            docs_by_path.insert(
+                entry.path.clone(),
+                (entry.id.clone(), entry.file_hash.clone()),
+            );
+        }
+        let stamps = s.stamps_cloned();
+        (docs_by_path, stamps)
+    };
+
+    let files = pkb::scan_directory(pkb_root);
+    let mut stale_count = 0;
+    let mut files_read = 0;
+    let mut new_stamps = std::collections::HashMap::new();
+
+    for file_path in &files {
+        let Ok(rel_path) = file_path.strip_prefix(pkb_root) else {
+            continue;
+        };
+        let rel_path_buf = rel_path.to_path_buf();
+        let Ok(meta) = file_path.metadata() else {
+            continue;
+        };
+        let Some(current_stamp) = vectordb::FileStamp::from_metadata(&meta) else {
+            continue;
+        };
+
+        // If the document is already in the store and its stamp matches disk, skip reading it.
+        if let Some((_id, _stored_hash)) = known_docs.get(&rel_path_buf) {
+            if cached_stamps.get(&rel_path_buf) == Some(&current_stamp) {
+                continue;
+            }
+        }
+
+        // Stamp differs or is missing, or document is new: read and parse
+        files_read += 1;
+        let Some(doc) = pkb::parse_file_relative(file_path, pkb_root) else {
+            continue;
+        };
+
+        // Staleness predicate is checked without holding the lock across the scan
+        let needs_reindex = {
+            let s = store.read();
+            document_needs_reindex(&s, &doc)
+        };
+
+        if needs_reindex {
+            stale_count += 1;
+        } else {
+            // Document is fresh (content hash matched store): record current stamp
+            new_stamps.insert(rel_path_buf, current_stamp);
+        }
+    }
+
+    if !new_stamps.is_empty() {
+        let s = store.read();
+        s.set_stamps(new_stamps);
+        s.save_stamps();
+    }
+
+    StalenessReport {
+        stale_count,
+        files_scanned: files.len(),
+        files_read,
+    }
+}
+
 /// Check whether the vector store index is stale.
 ///
 /// Returns the number of documents that need re-indexing (new or modified).
@@ -62,13 +154,7 @@ pub fn check_index_staleness(
     pkb_root: &std::path::Path,
     store: &Arc<RwLock<vectordb::VectorStore>>,
 ) -> usize {
-    let files = pkb::scan_directory(pkb_root);
-    let store = store.read();
-    files
-        .iter()
-        .filter_map(|file_path| pkb::parse_file_relative(file_path, pkb_root))
-        .filter(|doc| document_needs_reindex(&store, doc))
-        .count()
+    check_index_staleness_with_stats(pkb_root, store).stale_count
 }
 
 /// Index PKB files into the vector store. Returns (indexed, removed, total).
@@ -229,6 +315,20 @@ pub fn index_pkb(
         tracing::info!("Progress: {indexed}/{total_docs} documents embedded");
     }
 
+    // Record filesystem stamps for all scanned files that are now up to date
+    let mut initial_stamps = std::collections::HashMap::with_capacity(files.len());
+    for file_path in &files {
+        if let Ok(rel_path) = file_path.strip_prefix(pkb_root) {
+            if let Ok(meta) = file_path.metadata() {
+                if let Some(stamp) = vectordb::FileStamp::from_metadata(&meta) {
+                    initial_stamps.insert(rel_path.to_path_buf(), stamp);
+                }
+            }
+        }
+    }
+    store.read().set_stamps(initial_stamps);
+    store.read().save_stamps();
+
     let total = store.read().len();
     tracing::info!("Indexing complete: {indexed} indexed, {removed} removed, {total} total");
 
@@ -241,7 +341,6 @@ mod stdout_guard {
     //! the MCP JSON-RPC transport. Excluded: cli.rs, reproduction.rs, lib.rs
     //! (contains this test).
     //! lib.rs is still guarded by `#![deny(clippy::print_stdout)]`.
-
 
     #[test]
     fn no_println_in_library_sources() {
@@ -439,5 +538,112 @@ mod tests {
             0,
             "after reindex the daily note must no longer be stale (status == indexer)"
         );
+    }
+
+    #[test]
+    fn test_check_index_staleness_skips_unchanged_and_detects_changed() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let pkb_root = dir.path();
+        let db_path = pkb_root.join("test.db");
+        let f1 = pkb_root.join("unchanged.md");
+        let f2 = pkb_root.join("to_change.md");
+
+        std::fs::write(
+            &f1,
+            "---\nid: unchanged\ntitle: Unchanged\n---\n\nInitial unchanged content.",
+        )
+        .unwrap();
+        std::fs::write(
+            &f2,
+            "---\nid: to_change\ntitle: To Change\n---\n\nInitial content to change.",
+        )
+        .unwrap();
+
+        let store = Arc::new(RwLock::new(VectorStore::new(EMBEDDING_DIM)));
+        let embedder = Embedder::new_dummy();
+
+        // Index both files into the store
+        let (indexed, _, _) = index_pkb(pkb_root, &db_path, &store, &embedder, false);
+        assert_eq!(indexed, 2, "both files indexed");
+
+        // Verify initial check sees index as fresh (stale_count == 0)
+        let initial_report = check_index_staleness_with_stats(pkb_root, &store);
+        assert_eq!(initial_report.stale_count, 0, "store is fresh after index");
+
+        // Subsequent check on unchanged files: MUST NOT re-read documents from disk!
+        let report_clean = check_index_staleness_with_stats(pkb_root, &store);
+        assert_eq!(report_clean.stale_count, 0, "no stale files");
+        assert_eq!(
+            report_clean.files_read, 0,
+            "unchanged documents must not be re-read; skipped by stamp"
+        );
+
+        // Mutate only to_change.md
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(
+            &f2,
+            "---\nid: to_change\ntitle: To Change\n---\n\nMutated content.",
+        )
+        .unwrap();
+
+        // Check index staleness:
+        // Changed file MUST be detected as stale.
+        // Unchanged file MUST NOT be re-read.
+        let report_mutated = check_index_staleness_with_stats(pkb_root, &store);
+        assert_eq!(
+            report_mutated.stale_count, 1,
+            "changed document must be detected as stale"
+        );
+        assert_eq!(
+            report_mutated.files_read, 1,
+            "only the changed document must be re-read; unchanged must be skipped"
+        );
+    }
+
+    #[test]
+    fn test_check_index_staleness_never_holds_lock_during_scan() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let pkb_root = dir.path();
+        let db_path = pkb_root.join("test.db");
+
+        for i in 0..10 {
+            let f = pkb_root.join(format!("doc_{i}.md"));
+            std::fs::write(
+                &f,
+                format!("---\nid: doc_{i}\ntitle: Doc {i}\n---\n\nBody {i}"),
+            )
+            .unwrap();
+        }
+
+        let store = Arc::new(RwLock::new(VectorStore::new(EMBEDDING_DIM)));
+        let embedder = Embedder::new_dummy();
+        let (indexed, _, _) = index_pkb(pkb_root, &db_path, &store, &embedder, false);
+        assert_eq!(indexed, 10);
+
+        let store_clone = store.clone();
+        let pkb_root_buf = pkb_root.to_path_buf();
+        let barrier = Arc::new(std::sync::Barrier::new(2));
+        let b1 = barrier.clone();
+
+        let handle = std::thread::spawn(move || {
+            b1.wait();
+            for _ in 0..5 {
+                if let Some(w) = store_clone.try_write() {
+                    w.clear_stamps();
+                    return true;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            let w = store_clone.write();
+            w.clear_stamps();
+            true
+        });
+
+        barrier.wait();
+        let count = check_index_staleness(&pkb_root_buf, &store);
+        assert_eq!(count, 0);
+
+        let acquired = handle.join().unwrap();
+        assert!(acquired);
     }
 }

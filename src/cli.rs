@@ -1045,9 +1045,9 @@ async fn main() -> Result<()> {
 
     use tracing_subscriber::layer::SubscriberExt;
     use tracing_subscriber::util::SubscriberInitExt;
-    
+
     let otel_provider = mem::otel::init_telemetry();
-    
+
     if let Some(provider) = &otel_provider {
         use opentelemetry::trace::TracerProvider;
         let tracer = provider.tracer("mem");
@@ -1240,7 +1240,8 @@ async fn main() -> Result<()> {
                 std::process::exit(1);
             }
 
-            if let Err(e) = mem::date_filter::DateFilter::parse(since.as_deref(), before.as_deref()) {
+            if let Err(e) = mem::date_filter::DateFilter::parse(since.as_deref(), before.as_deref())
+            {
                 eprintln!("Error: {e}");
                 std::process::exit(1);
             }
@@ -3413,7 +3414,7 @@ async fn main() -> Result<()> {
             );
 
             let session_registry = mem::otel::session_registry::SessionRegistry::new();
-            
+
             let prune_registry = session_registry.clone();
             tokio::spawn(async move {
                 loop {
@@ -4151,6 +4152,19 @@ fn index_pkb(
         }
     }
 
+    // Record filesystem stamps for all scanned files that are now up to date
+    let mut initial_stamps = std::collections::HashMap::with_capacity(files.len());
+    for file_path in &files {
+        if let Ok(rel_path) = file_path.strip_prefix(pkb_root) {
+            if let Ok(meta) = file_path.metadata() {
+                if let Some(stamp) = vectordb::FileStamp::from_metadata(&meta) {
+                    initial_stamps.insert(rel_path.to_path_buf(), stamp);
+                }
+            }
+        }
+    }
+    store.read().set_stamps(initial_stamps);
+
     // Final save to guarantee everything is written to disk
     if let Err(e) = store.read().save(db_path) {
         eprintln!("  ✗ final save failed: {e}");
@@ -4409,7 +4423,9 @@ fn days_since_created(created: Option<&str>) -> Option<i64> {
     if created.len() < 10 {
         return None;
     }
-    let created_dt = chrono::NaiveDate::parse_from_str(&created[..created.floor_char_boundary(10)], "%Y-%m-%d").ok()?;
+    let created_dt =
+        chrono::NaiveDate::parse_from_str(&created[..created.floor_char_boundary(10)], "%Y-%m-%d")
+            .ok()?;
     let today = chrono::Utc::now().date_naive();
     Some((today - created_dt).num_days())
 }
@@ -4428,7 +4444,9 @@ fn format_staleness(days: i64) -> String {
 fn format_due(due: &str) -> String {
     let today = chrono::Utc::now().date_naive();
     let len = std::cmp::min(10, due.len());
-    if let Ok(due_date) = chrono::NaiveDate::parse_from_str(&due[..due.floor_char_boundary(len)], "%Y-%m-%d") {
+    if let Ok(due_date) =
+        chrono::NaiveDate::parse_from_str(&due[..due.floor_char_boundary(len)], "%Y-%m-%d")
+    {
         let days_until = (due_date - today).num_days();
         let color = if days_until < 0 {
             colors::RED
