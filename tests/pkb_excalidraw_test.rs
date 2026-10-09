@@ -686,7 +686,7 @@ fn test_lib_and_item_mode() {
     assert_eq!(r["type"], "rectangle");
     assert_eq!(r["x"], 500.0);
     assert_eq!(r["y"], 600.0);
-    assert_eq!(r["index"], "a500");
+    assert_eq!(r["index"], "a6");
     assert_eq!(r["version"], 1);
     assert_eq!(r["isDeleted"], false);
     let r_id = r["id"].as_str().unwrap();
@@ -697,7 +697,7 @@ fn test_lib_and_item_mode() {
     assert_eq!(t["type"], "text");
     assert_eq!(t["x"], 510.0);
     assert_eq!(t["y"], 610.0);
-    assert_eq!(t["index"], "a501");
+    assert_eq!(t["index"], "a7");
     assert_eq!(t["text"], "Server");
     assert_eq!(t["containerId"], r_id); // Remapped containerId!
 
@@ -713,11 +713,16 @@ fn test_lib_and_item_mode() {
     assert_eq!(r_group.len(), 21);
 
     // item command by #1
-    let (code3, stdout3, _) = run_bin(&[path, "item", "#1", "--after", "b0"]);
+    let (code3, stdout3, _) = run_bin(&[path, "item", "#1", "--after", "az"]);
     assert_eq!(code3, 0);
     let parsed3: serde_json::Value = serde_json::from_str(&stdout3).unwrap();
     assert_eq!(parsed3.as_array().unwrap().len(), 1);
-    assert_eq!(parsed3[0]["index"], "b000");
+    assert_eq!(parsed3[0]["index"], "b00");
+
+    // An --after key with no readable integer part is rejected.
+    let (code4, _, stderr4) = run_bin(&[path, "item", "#1", "--after", "b0"]);
+    assert_eq!(code4, 1);
+    assert!(stderr4.contains("cannot mint indices after \"b0\""), "stderr: {stderr4}");
 }
 
 // ============================================================================
@@ -3127,4 +3132,231 @@ fn test_batch_apply_stroke_style_mem_41d61d9c() {
     let (code, _, stderr) = run_bin_stdin(&[path, "apply", "-"], invalid_apply);
     assert_eq!(code, 1);
     assert!(stderr.contains("invalid stroke style"), "stderr={stderr}");
+}
+
+// ============================================================================
+// Arrow endpoint trimming (connect) and fractional index minting
+// ============================================================================
+
+const BINDING_GAP: f64 = 5.0;
+
+fn write_scene(elements: serde_json::Value) -> NamedTempFile {
+    let doc = serde_json::json!({ "type": "excalidraw", "version": 2, "elements": elements });
+    let file = NamedTempFile::new().unwrap();
+    fs::write(file.path(), serde_json::to_string_pretty(&doc).unwrap()).unwrap();
+    file
+}
+
+fn shape(id: &str, kind: &str, x: f64, y: f64, w: f64, h: f64, index: &str) -> serde_json::Value {
+    serde_json::json!({
+        "id": id, "type": kind, "x": x, "y": y, "width": w, "height": h,
+        "angle": 0, "index": index, "isDeleted": false, "boundElements": null
+    })
+}
+
+fn read_elements(path: &str) -> Vec<serde_json::Value> {
+    let doc: serde_json::Value = serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap();
+    doc["elements"].as_array().unwrap().clone()
+}
+
+/// Absolute start and end points of the single arrow in the scene.
+fn arrow_endpoints(path: &str) -> ((f64, f64), (f64, f64), serde_json::Value) {
+    let els = read_elements(path);
+    let arrow = els.iter().find(|e| e["type"] == "arrow").expect("arrow").clone();
+    let x = arrow["x"].as_f64().unwrap();
+    let y = arrow["y"].as_f64().unwrap();
+    let pts = arrow["points"].as_array().unwrap();
+    let p0 = (x + pts[0][0].as_f64().unwrap(), y + pts[0][1].as_f64().unwrap());
+    let last = &pts[pts.len() - 1];
+    let p1 = (x + last[0].as_f64().unwrap(), y + last[1].as_f64().unwrap());
+    (p0, p1, arrow)
+}
+
+fn assert_close(actual: (f64, f64), expected: (f64, f64), what: &str) {
+    assert!(
+        (actual.0 - expected.0).abs() < 1e-6 && (actual.1 - expected.1).abs() < 1e-6,
+        "{what}: expected {expected:?}, got {actual:?}"
+    );
+}
+
+fn assert_binding(arrow: &serde_json::Value, key: &str, id: &str) {
+    assert_eq!(arrow[key]["elementId"], id, "{key}");
+    assert_eq!(arrow[key]["focus"].as_f64(), Some(0.0), "{key}.focus");
+    assert_eq!(arrow[key]["gap"].as_f64(), Some(BINDING_GAP), "{key}.gap");
+}
+
+#[test]
+fn test_connect_trims_endpoints_to_rectangle_boundary() {
+    // Centres at (80,30) and (480,230). The centre line leaves n1 through its
+    // bottom edge (y=60) and enters n2 through its top edge (y=200).
+    let file = write_scene(serde_json::json!([
+        shape("n1", "rectangle", 0.0, 0.0, 160.0, 60.0, "a0"),
+        shape("n2", "rectangle", 400.0, 200.0, 160.0, 60.0, "a1"),
+    ]));
+    let path = file.path().to_str().unwrap();
+    let (code, _, stderr) = run_bin(&[path, "connect", "--from", "n1", "--to", "n2"]);
+    assert_eq!(code, 0, "stderr: {stderr}");
+
+    let (start, end, arrow) = arrow_endpoints(path);
+    assert_close(start, (150.0, 65.0), "start lands gap outside n1's bottom edge");
+    assert_close(end, (410.0, 195.0), "end lands gap outside n2's top edge");
+    assert_close(
+        (arrow["width"].as_f64().unwrap(), arrow["height"].as_f64().unwrap()),
+        (260.0, 130.0),
+        "arrow width/height span the trimmed segment",
+    );
+    assert_binding(&arrow, "startBinding", "n1");
+    assert_binding(&arrow, "endBinding", "n2");
+}
+
+#[test]
+fn test_connect_trims_endpoints_to_ellipse_and_diamond_boundary() {
+    let file = write_scene(serde_json::json!([
+        shape("e1", "ellipse", 0.0, 0.0, 100.0, 60.0, "a0"),
+        shape("d1", "diamond", 300.0, 0.0, 100.0, 60.0, "a1"),
+    ]));
+    let path = file.path().to_str().unwrap();
+
+    // Horizontal: ellipse right vertex (100,30) + gap; diamond left vertex (300,30) - gap.
+    let (code, _, stderr) = run_bin(&[path, "connect", "--from", "e1", "--to", "d1"]);
+    assert_eq!(code, 0, "stderr: {stderr}");
+    let (start, end, arrow) = arrow_endpoints(path);
+    assert_close(start, (105.0, 30.0), "ellipse start");
+    assert_close(end, (295.0, 30.0), "diamond end");
+    assert_binding(&arrow, "startBinding", "e1");
+    assert_binding(&arrow, "endBinding", "d1");
+
+    // Diagonal ellipse -> ellipse connection.
+    let file2 = write_scene(serde_json::json!([
+        shape("e1", "ellipse", 0.0, 0.0, 100.0, 60.0, "a0"),
+        shape("e2", "ellipse", 400.0, 300.0, 100.0, 60.0, "a1"),
+    ]));
+    let path2 = file2.path().to_str().unwrap();
+    let (code, _, stderr) = run_bin(&[path2, "connect", "--from", "e1", "--to", "e2"]);
+    assert_eq!(code, 0, "stderr: {stderr}");
+    let (start, end, _) = arrow_endpoints(path2);
+    // Each endpoint lies on its ellipse grown by the gap, on the centre line.
+    let on_grown_ellipse = |p: (f64, f64), c: (f64, f64)| {
+        let a = 50.0 + BINDING_GAP;
+        let b = 30.0 + BINDING_GAP;
+        ((p.0 - c.0) / a).powi(2) + ((p.1 - c.1) / b).powi(2)
+    };
+    assert!((on_grown_ellipse(start, (50.0, 30.0)) - 1.0).abs() < 1e-9, "start {start:?}");
+    assert!((on_grown_ellipse(end, (450.0, 330.0)) - 1.0).abs() < 1e-9, "end {end:?}");
+    let cross = (start.0 - 50.0) * (330.0 - 30.0) - (start.1 - 30.0) * (450.0 - 50.0);
+    assert!(cross.abs() < 1e-6, "start is on the centre line");
+
+    // Vertical: from the diamond's top vertex (50,300) up to the ellipse's bottom (50,60).
+    let file3 = write_scene(serde_json::json!([
+        shape("e1", "ellipse", 0.0, 0.0, 100.0, 60.0, "a0"),
+        shape("d2", "diamond", 0.0, 300.0, 100.0, 60.0, "a1"),
+    ]));
+    let path3 = file3.path().to_str().unwrap();
+    let (code, _, stderr) = run_bin(&[path3, "connect", "--from", "d2", "--to", "e1"]);
+    assert_eq!(code, 0, "stderr: {stderr}");
+    let (start, end, _) = arrow_endpoints(path3);
+    assert_close(start, (50.0, 295.0), "diamond top vertex - gap");
+    assert_close(end, (50.0, 65.0), "ellipse bottom vertex + gap");
+}
+
+/// Mirror of fractional-indexing's `validateOrderKey` for the base-62 alphabet.
+fn is_valid_order_key(key: &str) -> bool {
+    let b = key.as_bytes();
+    let Some(&head) = b.first() else { return false };
+    let int_len = match head {
+        b'a'..=b'z' => (head - b'a') as usize + 2,
+        b'A'..=b'Z' => (b'Z' - head) as usize + 2,
+        _ => return false,
+    };
+    if b.len() < int_len || key == format!("A{}", "0".repeat(26)) {
+        return false;
+    }
+    if !b.iter().all(|c| c.is_ascii_alphanumeric()) {
+        return false;
+    }
+    b.len() == int_len || *b.last().unwrap() != b'0'
+}
+
+fn assert_indices_valid_and_compact(path: &str, max_len: usize) {
+    let els = read_elements(path);
+    let idx: Vec<String> = els.iter().map(|e| e["index"].as_str().unwrap().to_string()).collect();
+    for k in &idx {
+        assert!(is_valid_order_key(k), "invalid fractional index {k:?} in {idx:?}");
+        assert!(k.len() <= max_len, "index {k:?} longer than {max_len} in {idx:?}");
+    }
+    assert!(idx.windows(2).all(|w| w[0] < w[1]), "indices not strictly increasing: {idx:?}");
+}
+
+#[test]
+fn test_add_node_and_connect_mint_compact_valid_indices() {
+    let file = write_scene(serde_json::json!([]));
+    let path = file.path().to_str().unwrap();
+    for i in 0..20 {
+        let id = format!("n{i}");
+        let at = format!("{},0", i * 200);
+        let (code, _, stderr) =
+            run_bin(&[path, "add-node", "--type", "rectangle", "--text", "Node", "--id", &id, "--at", &at]);
+        assert_eq!(code, 0, "stderr: {stderr}");
+        if i > 0 {
+            let prev = format!("n{}", i - 1);
+            let (code, _, stderr) =
+                run_bin(&[path, "connect", "--from", &prev, "--to", &id, "--label", "next"]);
+            assert_eq!(code, 0, "stderr: {stderr}");
+        }
+    }
+    // 20 nodes x 2 + 19 labelled arrows x 2 = 78 keys: a1..az, b00..b0G.
+    assert_eq!(read_elements(path).len(), 78);
+    assert_indices_valid_and_compact(path, 3);
+    let (code, stdout, _) = run_bin(&[path, "check"]);
+    assert_eq!(code, 0, "check: {stdout}");
+}
+
+#[test]
+fn test_check_reports_invalid_and_non_monotonic_index_keys() {
+    // Keys the old minter produced: trailing-zero fractional parts.
+    let bad_format = write_scene(serde_json::json!([
+        shape("r1", "rectangle", 0.0, 0.0, 10.0, 10.0, "a0"),
+        shape("r2", "rectangle", 20.0, 0.0, 10.0, 10.0, "a000"),
+        shape("r3", "rectangle", 40.0, 0.0, 10.0, 10.0, "a00100"),
+    ]));
+    let (code, stdout, _) = run_bin(&[bad_format.path().to_str().unwrap(), "check"]);
+    assert_eq!(code, 1, "check must fail on malformed keys: {stdout}");
+    assert!(stdout.contains("invalid fractional index"), "stdout: {stdout}");
+    assert!(stdout.contains("a000") && stdout.contains("a00100"), "stdout: {stdout}");
+    assert!(!stdout.contains("r1"), "a0 is valid and must not be reported: {stdout}");
+
+    let bad_head = write_scene(serde_json::json!([
+        shape("r1", "rectangle", 0.0, 0.0, 10.0, 10.0, "0"),
+        shape("r2", "rectangle", 20.0, 0.0, 10.0, 10.0, "b0"),
+    ]));
+    let (code, stdout, _) = run_bin(&[bad_head.path().to_str().unwrap(), "check"]);
+    assert_eq!(code, 1, "stdout: {stdout}");
+    assert!(stdout.contains("invalid fractional index"), "stdout: {stdout}");
+
+    let out_of_order = write_scene(serde_json::json!([
+        shape("r1", "rectangle", 0.0, 0.0, 10.0, 10.0, "a2"),
+        shape("r2", "rectangle", 20.0, 0.0, 10.0, 10.0, "a1"),
+    ]));
+    let (code, stdout, _) = run_bin(&[out_of_order.path().to_str().unwrap(), "check"]);
+    assert_eq!(code, 1, "stdout: {stdout}");
+    assert!(stdout.contains("not sorted by index"), "stdout: {stdout}");
+}
+
+#[test]
+fn test_mutation_repairs_legacy_invalid_index_keys() {
+    let file = write_scene(serde_json::json!([
+        shape("r1", "rectangle", 0.0, 0.0, 100.0, 50.0, "a0"),
+        shape("r2", "rectangle", 200.0, 0.0, 100.0, 50.0, "a000"),
+        shape("r3", "rectangle", 400.0, 0.0, 100.0, 50.0, "a00100"),
+        shape("r4", "rectangle", 600.0, 0.0, 100.0, 50.0, "a0010100"),
+    ]));
+    let path = file.path().to_str().unwrap();
+    let (code, _, stderr) = run_bin(&[path, "add-node", "--text", "New", "--id", "n5", "--at", "800,0"]);
+    assert_eq!(code, 0, "stderr: {stderr}");
+    let ids: Vec<String> =
+        read_elements(path).iter().map(|e| e["id"].as_str().unwrap().to_string()).collect();
+    assert_eq!(&ids[..4], &["r1", "r2", "r3", "r4"], "z-order preserved");
+    assert_indices_valid_and_compact(path, 4);
+    let (code, stdout, _) = run_bin(&[path, "check"]);
+    assert_eq!(code, 0, "check: {stdout}");
 }
