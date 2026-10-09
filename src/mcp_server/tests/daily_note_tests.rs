@@ -56,7 +56,7 @@ fn daily_note_create_and_rewrite_leaves_exactly_one_file() {
         .iter()
         .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
         .collect();
-    assert!(update_text.contains("Updated:"), "Expected update success, got: {update_text}");
+    assert!(update_text.contains("\"ok\":true") || update_text.contains("\"ok\": true"), "Expected update success, got: {update_text}");
 
     // 3. Verify exactly one file exists at daily/YYYYMMDD-daily.md
     assert!(

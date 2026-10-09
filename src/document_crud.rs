@@ -229,19 +229,31 @@ pub fn create_document(root: &Path, fields: DocumentFields) -> Result<PathBuf> {
 
     let type_prefix = type_prefix(&fields.doc_type);
 
+    let is_daily = fields.doc_type == "daily"
+        || fields.dir.as_deref() == Some("daily")
+        || fields.id.as_deref().map(is_daily_id).unwrap_or(false);
+
     let (id, filename) = match fields.id {
         Some(explicit_id) => {
             // Explicit ID: sanitize to prevent path traversal, preserving
             // the caller's separator convention (see sanitize_explicit_id).
             let safe_id = sanitize_explicit_id(&explicit_id);
-            let filename = generate_filename(&safe_id, &fields.title);
+            let filename = if is_daily {
+                format!("{}.md", safe_id)
+            } else {
+                generate_filename(&safe_id, &fields.title)
+            };
             (safe_id, filename)
         }
         None => {
             // Use project as prefix when available, otherwise type-based prefix
             let prefix = type_prefix;
             let id = generate_id(prefix);
-            let filename = generate_filename(&id, &fields.title);
+            let filename = if is_daily {
+                format!("{}.md", id)
+            } else {
+                generate_filename(&id, &fields.title)
+            };
             (id, filename)
         }
     };
@@ -250,7 +262,13 @@ pub fn create_document(root: &Path, fields: DocumentFields) -> Result<PathBuf> {
     let subdir = fields
         .dir
         .map(|d| expand_env_vars(&d))
-        .unwrap_or_else(|| default_subdir_for_type(&fields.doc_type).to_string());
+        .unwrap_or_else(|| {
+            if is_daily {
+                "daily".to_string()
+            } else {
+                default_subdir_for_type(&fields.doc_type).to_string()
+            }
+        });
 
     let dir = root.join(&subdir);
     if !dir.is_dir() {
@@ -279,7 +297,9 @@ pub fn create_document(root: &Path, fields: DocumentFields) -> Result<PathBuf> {
     // Alias and permalink
     let slug = title_to_snake_case(&fields.title);
     fm.push_str("alias:\n");
-    if slug.is_empty() {
+    if is_daily {
+        fm.push_str(&format!("  - \"{}\"\n", id));
+    } else if slug.is_empty() {
         fm.push_str(&format!("  - \"{}\"\n", id));
     } else {
         fm.push_str(&format!("  - \"{}_{}\"\n", id, slug));
@@ -3158,6 +3178,7 @@ pub fn default_subdir_for_type(doc_type: &str) -> &'static str {
         "task" | "epic" | "learn" => "tasks",
         "target" | "goal" | "capability" => "targets",
         "memory" => "memories",
+        "daily" => "daily",
         _ => "notes",
     }
 }
@@ -3246,7 +3267,13 @@ pub fn convert_document(
         .map(String::from)
         .unwrap_or_else(|| default_subdir_for_type(new_type).to_string());
     let target_dir = root.join(&subdir);
-    let new_path = target_dir.join(generate_filename(&sanitize_explicit_id(id), title));
+    let is_daily = new_type == "daily" || is_daily_id(id);
+    let filename = if is_daily {
+        format!("{}.md", sanitize_explicit_id(id))
+    } else {
+        generate_filename(&sanitize_explicit_id(id), title)
+    };
+    let new_path = target_dir.join(filename);
     let moved = new_path != abs_path;
     if moved && new_path.exists() {
         anyhow::bail!("Target file already exists: {}", new_path.display());
@@ -3662,8 +3689,19 @@ pub fn truncate_snake_slug(slug: &str, max_len: usize) -> &str {
     truncated.trim_end_matches('_')
 }
 
+/// Check if an ID matches the daily note naming convention:
+/// either `YYYYMMDD-daily` (e.g. `20261009-daily`) or `YYYY-MM-DD-daily` (e.g. `2026-10-09-daily`).
+pub fn is_daily_id(id: &str) -> bool {
+    static RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let re = RE.get_or_init(|| regex::Regex::new(r"^(\d{8}|\d{4}-\d{2}-\d{2})-daily$").unwrap());
+    re.is_match(id)
+}
+
 /// Helper to generate a unified prefix-based filename.
 pub fn generate_filename(prefix: &str, title: &str) -> String {
+    if is_daily_id(prefix) {
+        return format!("{}.md", prefix);
+    }
     let slug = title_to_snake_case(title);
     let slug = truncate_snake_slug(&slug, MAX_FILENAME_SLUG_LEN);
     if slug.is_empty() {
@@ -7334,5 +7372,12 @@ mod additional_tests {
         assert_eq!(generate_filename("task-123", "Hello World"), "task-123_hello_world.md");
         assert_eq!(generate_filename("task-123", "   "), "task-123.md");
         assert_eq!(generate_filename("task-123", "a b"), "task-123_a_b.md");
+        assert_eq!(generate_filename("20261009-daily", "20261009-daily-Friday"), "20261009-daily.md");
+        assert_eq!(generate_filename("2026-10-09-daily", "Friday 9 October 2026"), "2026-10-09-daily.md");
+    }
+
+    #[test]
+    fn test_default_subdir_for_type_daily() {
+        assert_eq!(default_subdir_for_type("daily"), "daily");
     }
 }
