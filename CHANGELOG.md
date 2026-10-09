@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.101](https://github.com/nicsuzor/mem/compare/mem-v0.3.100...mem-v0.3.101) (2026-10-09)
+
+
+### Bug Fixes
+
+* **excalidraw:** trim connect arrows to shape outlines; mint valid fractional indices ([#691](https://github.com/nicsuzor/mem/issues/691)) ([9f72881](https://github.com/nicsuzor/mem/commit/9f72881802a16ec808529691858f8958c1a4cd25))
+
 ## [0.3.100](https://github.com/nicsuzor/mem/compare/mem-v0.3.99...mem-v0.3.100) (2026-10-09)
 
 
