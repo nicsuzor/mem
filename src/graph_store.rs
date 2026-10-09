@@ -883,9 +883,10 @@ impl GraphStore {
 
     /// Cheap in-place removal. Drops the node from `nodes`; stale edges and
     /// resolution-map entries are left for the background rebuild to fix.
-    pub fn remove_node_in_place(&mut self, id: &str) {
+    pub fn remove_node_in_place(&mut self, id: &str, pkb_root: &Path) {
         self.nodes.remove(id);
         self.resolution_map.retain(|_, target| target != id);
+        self.generation = crate::pkb::scan_generation(pkb_root);
     }
 
     /// Re-run classification (ready / blocked / roots) from the current nodes

@@ -512,7 +512,7 @@ impl PkbSearchServer {
         let _t = std::time::Instant::now();
         {
             let mut g = self.graph.write();
-            g.remove_node_in_place(id);
+            g.remove_node_in_place(id, &self.pkb_root);
             g.reclassify();
             // Same as rebuild_graph_for_pkb_document: insert inside the write
             // lock so the removal is visible to any concurrent Tier-2 swap.
