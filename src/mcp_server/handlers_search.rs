@@ -53,7 +53,7 @@ impl PkbSearchServer {
             data: None,
         })?;
 
-        let store = self.store.read();
+        let store = self.acquire_store_read();
         // When a type filter is present (or done tasks are excluded) fetch
         // more candidates so we still fill the limit after filtering.
         let since = args.get("since").and_then(|v| v.as_str());
@@ -350,7 +350,7 @@ impl PkbSearchServer {
         let before = args.get("before").and_then(|v| v.as_str());
         let doc_type = args.get("type").and_then(|v| v.as_str());
 
-        let store = self.store.read();
+        let store = self.acquire_store_read();
         let fetch_limit = if doc_type.is_some() || actionable_only {
             limit * 10
         } else {
@@ -786,7 +786,7 @@ impl PkbSearchServer {
         let limit = (args.get("limit").and_then(|v| v.as_u64()).unwrap_or(10) as usize).min(MAX_RESULTS);
 
         let graph = self.graph.read();
-        let store = self.store.read();
+        let store = self.acquire_store_read();
 
         let neighbors =
             crate::batch_ops::similarity::find_neighbors(id, &graph, &store, threshold, limit);
@@ -846,7 +846,7 @@ impl PkbSearchServer {
         let type_filter = args.get("type").and_then(|v| v.as_str());
         let limit = (args.get("limit").and_then(|v| v.as_u64()).unwrap_or(50) as usize).min(MAX_RESULTS);
 
-        let store = self.store.read();
+        let store = self.acquire_store_read();
         let all = store.list_documents(None, type_filter, None, &self.pkb_root);
         drop(store);
 
@@ -902,7 +902,7 @@ impl PkbSearchServer {
         let limit = (args.get("limit").and_then(|v| v.as_u64()).unwrap_or(100) as usize).min(MAX_RESULTS);
 
         let graph = self.graph.read();
-        let store = self.store.read();
+        let store = self.acquire_store_read();
         let mut report = crate::batch_ops::duplicates::find_duplicates(
             &graph,
             &store,
