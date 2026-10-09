@@ -20,6 +20,7 @@ mod index_warning_tests;
 mod excalidraw_files_tests;
 mod convert_document_tests;
 mod span_truncation_tests;
+mod daily_note_tests;
 
 
 pub(crate) fn make_doc(
