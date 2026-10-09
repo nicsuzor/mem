@@ -1603,6 +1603,7 @@ dependencies = [
  "dirs",
  "fd-lock",
  "flate2",
+ "futures-util",
  "glob",
  "gray_matter",
  "http",

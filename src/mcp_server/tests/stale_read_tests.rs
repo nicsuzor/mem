@@ -753,3 +753,77 @@ async fn test_refresh_graph_drops_removed_tag_from_list_tasks_under_concurrent_t
          settled: {settled_ids:?}"
     );
 }
+
+#[tokio::test]
+async fn test_delete_followed_by_read_does_no_full_rebuild() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    std::fs::create_dir_all(root.join("tasks")).unwrap();
+    write_test_polecat_yaml(root);
+    // Write an existing document so PKB is never empty
+    std::fs::write(
+        root.join("tasks/existing.md"),
+        "---\nid: existing\ntype: task\ntitle: Existing Task\nstatus: active\n---\nBody\n",
+    )
+    .unwrap();
+
+    let docs = crate::pkb::scan_directory(root)
+        .iter()
+        .filter_map(|p| crate::pkb::parse_file_relative(p, root))
+        .collect::<Vec<_>>();
+    let graph = GraphStore::build(&docs, root);
+    let store = VectorStore::new(3);
+    let embedder = Embedder::new_dummy();
+    let db_path = root.join("db");
+    let server = PkbSearchServer::new(
+        Arc::new(RwLock::new(store)),
+        Arc::new(embedder),
+        root.to_path_buf(),
+        db_path,
+        Arc::new(RwLock::new(graph)),
+    );
+
+    let created = server
+        .handle_create_task(&json!({
+            "title": "Task to delete",
+            "type": "task",
+            "project": "proj-test",
+            "parent": "proj-test",
+            "allow_missing_parent": true,
+        }))
+        .unwrap();
+    let id = task_json(&created)
+        .get("id")
+        .and_then(|v| v.as_str())
+        .unwrap()
+        .to_string();
+
+    // Drain any background Tier-2 rebuild from creation
+    while server.graph_rebuild_pending() {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+
+    // Delete the task via MCP handle_delete_document
+    server.handle_delete_document(&json!({"id": &id})).unwrap();
+
+    let g_gen = server.graph.read().generation();
+    let d_gen = crate::pkb::scan_generation(&server.pkb_root);
+
+    // The in-place deletion MUST update the generation stamp immediately
+    assert_eq!(
+        g_gen,
+        d_gen,
+        "remove_node_in_place must update the generation stamp so cached matches disk"
+    );
+
+    let epoch_before_read = server.full_rebuild_epoch.load(std::sync::atomic::Ordering::SeqCst);
+
+    // Read via handle_list_tasks (triggers ensure_graph_fresh)
+    let _ = server.handle_list_tasks(&json!({})).unwrap();
+
+    let epoch_after_read = server.full_rebuild_epoch.load(std::sync::atomic::Ordering::SeqCst);
+    assert_eq!(
+        epoch_after_read, epoch_before_read,
+        "delete followed by read must not trigger a full graph rebuild"
+    );
+}

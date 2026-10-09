@@ -140,6 +140,7 @@ pkg-url = "https://github.com/nicsuzor/mem/releases/download/v{ version }/mem-v{
 
 [dev-dependencies]
 tempfile = "3"
+futures-util = "0.3"
 
 # Fast incremental debug builds (the default `cargo run` profile)
 [profile.dev]
