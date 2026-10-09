@@ -224,7 +224,7 @@ pub const COMMAND_REGISTRY: &[CommandInfo] = &[
         category: "Validation & Integrity",
         synopsis: "pkb-excalidraw FILE check",
         summary: "Referential integrity and invariant verification across the canvas",
-        description: "Audits the entire canvas against core Excalidraw invariants: detects duplicate element IDs, verifies that array ordering matches fractional index ordering, validates bidirectional container/text bindings, checks that arrow bindings are strictly 2-bound or 0-bound (half-bound arrows are invalid), verifies text synchronization, and checks for zero/negative bounding boxes. Exits 0 on success, 1 on errors.",
+        description: "Audits the entire canvas against core Excalidraw invariants: detects duplicate element IDs, verifies that array ordering matches fractional index ordering and that every index key is a well-formed base-62 fractional index, validates bidirectional container/text bindings, checks that arrow bindings are strictly 2-bound or 0-bound (half-bound arrows are invalid), verifies text synchronization, and checks for zero/negative bounding boxes. Exits 0 on success, 1 on errors.",
         options: &[],
         example: "pkb-excalidraw diagram.excalidraw check",
     },
@@ -337,7 +337,7 @@ pub const COMMAND_REGISTRY: &[CommandInfo] = &[
         category: "Mutation & CRUD",
         synopsis: "pkb-excalidraw FILE connect --from <id1> --to <id2> [OPTIONS]",
         summary: "Create a 2-way bound directed arrow connecting two elements",
-        description: "Connects two canvas elements with a directed arrow. Computes boundary attachment points, generates an arrow element with startBinding and endBinding, registers the arrow in boundElements on both shapes, and optionally creates a centered bound text label.",
+        description: "Connects two canvas elements with a directed arrow. Computes boundary attachment points (the centre line trimmed to each shape's outline plus a 5px binding gap), generates an arrow element with startBinding and endBinding, registers the arrow in boundElements on both shapes, and optionally creates a centered bound text label.",
         options: &[
             CommandOption { flag: "--from <id1>", default: "required", description: "Source element ID" },
             CommandOption { flag: "--to <id2>", default: "required", description: "Destination element ID" },
@@ -994,29 +994,368 @@ pub fn new_id() -> String {
         .collect()
 }
 
+// ============================================================================
+// Fractional Indices
+// ============================================================================
+//
+// Port of `fractional-indexing` 3.2.0 (the version Excalidraw pins) over the
+// base-62 alphabet. A key is an integer part — a head character plus digits,
+// where heads `a`..`z` give lengths 2..27 and `Z`..`A` give 2..27 — followed by
+// an optional fraction that never ends in the zero digit.
+
+fn order_integer_length(head: u8) -> Result<usize, String> {
+    match head {
+        b'a'..=b'z' => Ok((head - b'a') as usize + 2),
+        b'A'..=b'Z' => Ok((b'Z' - head) as usize + 2),
+        _ => Err(format!("invalid order key head: {}", head as char)),
+    }
+}
+
+fn order_integer_part(key: &str) -> Result<&str, String> {
+    let head = *key.as_bytes().first().ok_or("empty order key")?;
+    let len = order_integer_length(head)?;
+    if !key.is_ascii() || len > key.len() {
+        return Err(format!("invalid order key: {key}"));
+    }
+    Ok(&key[..len])
+}
+
+fn smallest_order_integer(digits: &[u8]) -> String {
+    let mut s = String::from("A");
+    s.extend(std::iter::repeat_n(digits[0] as char, 26));
+    s
+}
+
+fn validate_order_key_in(key: &str, digits: &[u8]) -> Result<(), String> {
+    if key == smallest_order_integer(digits) {
+        return Err(format!("invalid order key: {key}"));
+    }
+    let int_part = order_integer_part(key)?;
+    let rest = &key.as_bytes()[1..];
+    if !rest.iter().all(|c| digits.contains(c)) {
+        return Err(format!("invalid order key: {key}"));
+    }
+    if key.len() > int_part.len() && key.as_bytes().last() == Some(&digits[0]) {
+        return Err(format!("invalid order key: {key}"));
+    }
+    Ok(())
+}
+
+/// Validates an Excalidraw fractional index key (base-62).
+pub fn validate_order_key(key: &str) -> Result<(), String> {
+    validate_order_key_in(key, INDEX_ALPHABET)
+}
+
+fn order_digit(digits: &[u8], c: u8) -> Result<usize, String> {
+    digits
+        .iter()
+        .position(|&d| d == c)
+        .ok_or_else(|| format!("invalid order key digit: {}", c as char))
+}
+
+fn order_midpoint(a: &[u8], b: Option<&[u8]>, digits: &[u8]) -> Result<Vec<u8>, String> {
+    let zero = digits[0];
+    if let Some(b) = b {
+        if a >= b {
+            return Err(format!(
+                "{} >= {}",
+                String::from_utf8_lossy(a),
+                String::from_utf8_lossy(b)
+            ));
+        }
+    }
+    if a.last() == Some(&zero) || b.and_then(|b| b.last()) == Some(&zero) {
+        return Err("trailing zero".to_string());
+    }
+    if let Some(b) = b {
+        // Strip the longest common prefix, padding `a` with zeros.
+        let mut n = 0;
+        while n < b.len() && a.get(n).copied().unwrap_or(zero) == b[n] {
+            n += 1;
+        }
+        if n > 0 {
+            let mut out = b[..n].to_vec();
+            let a_rest: &[u8] = if n < a.len() { &a[n..] } else { &[] };
+            out.extend(order_midpoint(a_rest, Some(&b[n..]), digits)?);
+            return Ok(out);
+        }
+    }
+    let digit_a = match a.first() {
+        Some(&c) => order_digit(digits, c)?,
+        None => 0,
+    };
+    let digit_b = match b {
+        Some(b) => order_digit(digits, *b.first().ok_or("empty upper bound")?)?,
+        None => digits.len(),
+    };
+    if digit_b > digit_a + 1 {
+        Ok(vec![digits[(digit_a + digit_b).div_ceil(2)]])
+    } else if let Some(b) = b.filter(|b| b.len() > 1) {
+        Ok(vec![b[0]])
+    } else {
+        let a_rest: &[u8] = if a.is_empty() { &[] } else { &a[1..] };
+        let mut out = vec![digits[digit_a]];
+        out.extend(order_midpoint(a_rest, None, digits)?);
+        Ok(out)
+    }
+}
+
+fn validate_order_integer(int: &str) -> Result<(), String> {
+    let head = *int.as_bytes().first().ok_or("empty integer part")?;
+    if int.len() != order_integer_length(head)? {
+        return Err(format!("invalid integer part of order key: {int}"));
+    }
+    Ok(())
+}
+
+fn increment_order_integer(x: &str, digits: &[u8]) -> Result<Option<String>, String> {
+    validate_order_integer(x)?;
+    let head = x.as_bytes()[0];
+    let mut digs = x.as_bytes()[1..].to_vec();
+    let mut carry = true;
+    for d in digs.iter_mut().rev() {
+        let next = order_digit(digits, *d)? + 1;
+        if next == digits.len() {
+            *d = digits[0];
+        } else {
+            *d = digits[next];
+            carry = false;
+            break;
+        }
+    }
+    if !carry {
+        let mut out = vec![head];
+        out.extend(digs);
+        return Ok(Some(String::from_utf8_lossy(&out).into_owned()));
+    }
+    if head == b'Z' {
+        return Ok(Some(format!("a{}", digits[0] as char)));
+    }
+    if head == b'z' {
+        return Ok(None);
+    }
+    let h = head + 1;
+    if h > b'a' {
+        digs.push(digits[0]);
+    } else {
+        digs.pop();
+    }
+    let mut out = vec![h];
+    out.extend(digs);
+    Ok(Some(String::from_utf8_lossy(&out).into_owned()))
+}
+
+fn decrement_order_integer(x: &str, digits: &[u8]) -> Result<Option<String>, String> {
+    validate_order_integer(x)?;
+    let head = x.as_bytes()[0];
+    let last = *digits.last().unwrap();
+    let mut digs = x.as_bytes()[1..].to_vec();
+    let mut borrow = true;
+    for d in digs.iter_mut().rev() {
+        let pos = order_digit(digits, *d)?;
+        if pos == 0 {
+            *d = last;
+        } else {
+            *d = digits[pos - 1];
+            borrow = false;
+            break;
+        }
+    }
+    if !borrow {
+        let mut out = vec![head];
+        out.extend(digs);
+        return Ok(Some(String::from_utf8_lossy(&out).into_owned()));
+    }
+    if head == b'a' {
+        return Ok(Some(format!("Z{}", last as char)));
+    }
+    if head == b'A' {
+        return Ok(None);
+    }
+    let h = head - 1;
+    if h < b'Z' {
+        digs.push(last);
+    } else {
+        digs.pop();
+    }
+    let mut out = vec![h];
+    out.extend(digs);
+    Ok(Some(String::from_utf8_lossy(&out).into_owned()))
+}
+
+fn generate_key_between_in(a: Option<&str>, b: Option<&str>, digits: &[u8]) -> Result<String, String> {
+    if let Some(a) = a {
+        validate_order_key_in(a, digits)?;
+    }
+    if let Some(b) = b {
+        validate_order_key_in(b, digits)?;
+    }
+    let concat = |int: &str, frac: Vec<u8>| format!("{int}{}", String::from_utf8_lossy(&frac));
+    match (a, b) {
+        (Some(a), Some(b)) if a >= b => Err(format!("{a} >= {b}")),
+        (None, None) => Ok(format!("a{}", digits[0] as char)),
+        (None, Some(b)) => {
+            let ib = order_integer_part(b)?;
+            let fb = &b.as_bytes()[ib.len()..];
+            if ib == smallest_order_integer(digits) {
+                return Ok(concat(ib, order_midpoint(&[], Some(fb), digits)?));
+            }
+            if ib < b {
+                return Ok(ib.to_string());
+            }
+            decrement_order_integer(ib, digits)?.ok_or_else(|| "cannot decrement any more".to_string())
+        }
+        (Some(a), None) => {
+            let ia = order_integer_part(a)?;
+            let fa = &a.as_bytes()[ia.len()..];
+            match increment_order_integer(ia, digits)? {
+                Some(i) => Ok(i),
+                None => Ok(concat(ia, order_midpoint(fa, None, digits)?)),
+            }
+        }
+        (Some(a), Some(b)) => {
+            let ia = order_integer_part(a)?;
+            let fa = &a.as_bytes()[ia.len()..];
+            let ib = order_integer_part(b)?;
+            let fb = &b.as_bytes()[ib.len()..];
+            if ia == ib {
+                return Ok(concat(ia, order_midpoint(fa, Some(fb), digits)?));
+            }
+            let i = increment_order_integer(ia, digits)?
+                .ok_or_else(|| "cannot increment any more".to_string())?;
+            if i.as_str() < b {
+                Ok(i)
+            } else {
+                Ok(concat(ia, order_midpoint(fa, None, digits)?))
+            }
+        }
+    }
+}
+
+fn generate_n_keys_between_in(
+    a: Option<&str>,
+    b: Option<&str>,
+    n: usize,
+    digits: &[u8],
+) -> Result<Vec<String>, String> {
+    match n {
+        0 => return Ok(Vec::new()),
+        1 => return Ok(vec![generate_key_between_in(a, b, digits)?]),
+        _ => {}
+    }
+    if b.is_none() {
+        let mut c = generate_key_between_in(a, b, digits)?;
+        let mut out = Vec::with_capacity(n);
+        for _ in 1..n {
+            let next = generate_key_between_in(Some(&c), b, digits)?;
+            out.push(std::mem::replace(&mut c, next));
+        }
+        out.push(c);
+        return Ok(out);
+    }
+    if a.is_none() {
+        let mut c = generate_key_between_in(a, b, digits)?;
+        let mut out = Vec::with_capacity(n);
+        for _ in 1..n {
+            let next = generate_key_between_in(a, Some(&c), digits)?;
+            out.push(std::mem::replace(&mut c, next));
+        }
+        out.push(c);
+        out.reverse();
+        return Ok(out);
+    }
+    let mid = n / 2;
+    let c = generate_key_between_in(a, b, digits)?;
+    let mut out = generate_n_keys_between_in(a, Some(&c), mid, digits)?;
+    let upper = generate_n_keys_between_in(Some(&c), b, n - mid - 1, digits)?;
+    out.push(c);
+    out.extend(upper);
+    Ok(out)
+}
+
+/// Excalidraw-compatible `generateKeyBetween` over the base-62 alphabet.
+pub fn generate_key_between(a: Option<&str>, b: Option<&str>) -> Result<String, String> {
+    generate_key_between_in(a, b, INDEX_ALPHABET)
+}
+
+/// Excalidraw-compatible `generateNKeysBetween` over the base-62 alphabet.
+pub fn generate_n_keys_between(a: Option<&str>, b: Option<&str>, n: usize) -> Result<Vec<String>, String> {
+    generate_n_keys_between_in(a, b, n, INDEX_ALPHABET)
+}
+
+/// Mints `count` strictly increasing keys after `after` (empty: from the start).
+/// A malformed `after` is stepped past via its integer part, which still sorts
+/// above it; an `after` with no readable integer part is an error.
 pub fn mint_indices(after: &str, count: usize) -> Result<Vec<String>, String> {
-    let alphabet_len = INDEX_ALPHABET.len();
-    if count > alphabet_len * alphabet_len {
-        return Err(format!("cannot mint {count} indices after {after}"));
+    if count == 0 {
+        return Ok(Vec::new());
     }
-    let base = if after.is_empty() { "a0" } else { after };
-    let mut res = Vec::with_capacity(count);
-    for i in 0..count {
-        let c1 = INDEX_ALPHABET[i / alphabet_len] as char;
-        let c2 = INDEX_ALPHABET[i % alphabet_len] as char;
-        res.push(format!("{base}{c1}{c2}"));
-    }
+    let first = if after.is_empty() {
+        generate_key_between(None, None)?
+    } else if validate_order_key(after).is_ok() {
+        generate_key_between(Some(after), None)?
+    } else {
+        let int_part = order_integer_part(after)
+            .map_err(|e| format!("cannot mint indices after {after:?}: {e}"))?;
+        increment_order_integer(int_part, INDEX_ALPHABET)?
+            .ok_or_else(|| format!("cannot mint indices after {after:?}: index space exhausted"))?
+    };
+    let mut res = vec![first];
+    res.extend(generate_n_keys_between(Some(&res[0]), None, count - 1)?);
     Ok(res)
 }
 
+/// Highest index key in the scene, deleted elements included: Excalidraw keeps
+/// them in the same ordering, so new keys must sort above them too.
 pub fn max_index_of(doc: &Value) -> String {
-    let els = live(doc);
-    let idx: Vec<&str> = els
-        .iter()
+    doc.get("elements")
+        .and_then(|v| v.as_array())
+        .into_iter()
+        .flatten()
         .filter_map(|e| e.get("index").and_then(|v| v.as_str()))
         .filter(|s| !s.is_empty())
+        .max()
+        .unwrap_or("a0")
+        .to_string()
+}
+
+/// Re-keys elements whose index is malformed, keeping array order: each run of
+/// malformed keys gets fresh keys between its well-formed neighbours (as
+/// Excalidraw's `syncInvalidIndices` does on load). Returns the number re-keyed.
+pub fn repair_malformed_indices(elements: &mut [Value]) -> Result<usize, String> {
+    let keys: Vec<Option<String>> = elements
+        .iter()
+        .map(|e| e.get("index").and_then(|v| v.as_str()).map(str::to_string))
         .collect();
-    idx.into_iter().max().unwrap_or("a0").to_string()
+    let malformed = |k: &Option<String>| match k {
+        Some(k) if !k.is_empty() => validate_order_key(k).is_err(),
+        _ => false,
+    };
+    fn well_formed(k: &Option<String>) -> Option<&str> {
+        k.as_deref().filter(|k| !k.is_empty() && validate_order_key(k).is_ok())
+    }
+
+    let mut repaired = 0;
+    let mut i = 0;
+    while i < keys.len() {
+        if !malformed(&keys[i]) {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        while i < keys.len() && malformed(&keys[i]) {
+            i += 1;
+        }
+        let lower = keys[..start].iter().rev().find_map(well_formed);
+        let upper = keys[i..].iter().find_map(well_formed);
+        let fresh = generate_n_keys_between(lower, upper, i - start)
+            .map_err(|e| format!("cannot re-key malformed indices: {e}"))?;
+        for (e, k) in elements[start..i].iter_mut().zip(fresh) {
+            e["index"] = Value::String(k);
+        }
+        repaired += i - start;
+    }
+    Ok(repaired)
 }
 
 // ============================================================================
@@ -1032,6 +1371,60 @@ pub fn compute_text_dimensions(text: &str, font_size: f64) -> (f64, f64) {
     let line_height = font_size * 1.25;
     let height = (lines.len() as f64 * line_height).max(line_height);
     (width, height)
+}
+
+/// Excalidraw's `FIXED_BINDING_DISTANCE`: clearance between a bound arrow's
+/// endpoint and the outline of the shape it is bound to.
+pub const ARROW_BINDING_GAP: f64 = 5.0;
+
+/// Distance from the centre of `elem` along the unit direction `(ux, uy)` to its
+/// outline grown by `gap` — the outline Excalidraw intersects when it places a
+/// bound arrow endpoint (`intersectElementWithLineSegment(element, line, gap)`).
+/// Ellipses and diamonds grow each semi-axis by `gap`; anything else is treated
+/// as its rectangle. Honours the element's rotation.
+pub fn center_to_outline(elem: &Value, ux: f64, uy: f64, gap: f64) -> f64 {
+    let num = |k: &str| elem.get(k).and_then(|v| v.as_f64()).unwrap_or(0.0);
+    let a = num("width").abs() / 2.0 + gap;
+    let b = num("height").abs() / 2.0 + gap;
+    let (sin, cos) = (-num("angle")).sin_cos();
+    let lx = (ux * cos - uy * sin).abs();
+    let ly = (ux * sin + uy * cos).abs();
+    match elem.get("type").and_then(|v| v.as_str()) {
+        Some("ellipse") => 1.0 / ((lx / a).powi(2) + (ly / b).powi(2)).sqrt(),
+        Some("diamond") => 1.0 / (lx / a + ly / b),
+        _ => {
+            let tx = if lx > 0.0 { a / lx } else { f64::INFINITY };
+            let ty = if ly > 0.0 { b / ly } else { f64::INFINITY };
+            tx.min(ty)
+        }
+    }
+}
+
+/// Endpoints of a straight arrow from `from` to `to` along the centre line,
+/// each trimmed to its shape's outline plus [`ARROW_BINDING_GAP`]. Returns
+/// `(start, end, gap)`. When the grown outlines meet or overlap there is no
+/// segment between them, so the endpoints fall back to the centres with gap 0,
+/// which is how Excalidraw reads a binding that points straight at its focus.
+pub fn trimmed_arrow_endpoints(from: &Value, to: &Value) -> ((f64, f64), (f64, f64), f64) {
+    let center = |e: &Value| {
+        let num = |k: &str| e.get(k).and_then(|v| v.as_f64()).unwrap_or(0.0);
+        (num("x") + num("width") / 2.0, num("y") + num("height") / 2.0)
+    };
+    let c1 = center(from);
+    let c2 = center(to);
+    let (dx, dy) = (c2.0 - c1.0, c2.1 - c1.1);
+    let dist = dx.hypot(dy);
+    if dist > 0.0 {
+        let (ux, uy) = (dx / dist, dy / dist);
+        let t1 = center_to_outline(from, ux, uy, ARROW_BINDING_GAP);
+        let t2 = center_to_outline(to, -ux, -uy, ARROW_BINDING_GAP);
+        if t1 + t2 < dist {
+            let start = (c1.0 + ux * t1, c1.1 + uy * t1);
+            let end = (c2.0 - ux * t2, c2.1 - uy * t2);
+            return (start, end, ARROW_BINDING_GAP);
+        }
+    }
+    (c1, c2, 0.0)
 }
 
 pub fn ccw(a: (f64, f64), b: (f64, f64), c: (f64, f64)) -> f64 {
@@ -1357,6 +1750,10 @@ pub fn atomic_save_ex(file_path: &str, doc: &mut Value, force_obsidian: bool) ->
             let idx_b = b.get("index").and_then(|v| v.as_str()).unwrap_or("");
             idx_a.cmp(idx_b)
         });
+        let repaired = repair_malformed_indices(arr)?;
+        if repaired > 0 {
+            eprintln!("note: re-keyed {repaired} malformed fractional index key(s)");
+        }
     }
 
     // 2. Validate structural integrity
@@ -1751,22 +2148,9 @@ pub fn mutate_connect(
         .copied()
         .ok_or_else(|| format!("to element {to_id:?} not found"))?;
 
-    let fx = from_elem.get("x").and_then(|v| v.as_f64()).unwrap_or(0.0);
-    let fy = from_elem.get("y").and_then(|v| v.as_f64()).unwrap_or(0.0);
-    let fw = from_elem.get("width").and_then(|v| v.as_f64()).unwrap_or(0.0);
-    let fh = from_elem.get("height").and_then(|v| v.as_f64()).unwrap_or(0.0);
-    let c1_x = fx + fw / 2.0;
-    let c1_y = fy + fh / 2.0;
-
-    let tx = to_elem.get("x").and_then(|v| v.as_f64()).unwrap_or(0.0);
-    let ty = to_elem.get("y").and_then(|v| v.as_f64()).unwrap_or(0.0);
-    let tw = to_elem.get("width").and_then(|v| v.as_f64()).unwrap_or(0.0);
-    let th = to_elem.get("height").and_then(|v| v.as_f64()).unwrap_or(0.0);
-    let c2_x = tx + tw / 2.0;
-    let c2_y = ty + th / 2.0;
-
-    let dx = c2_x - c1_x;
-    let dy = c2_y - c1_y;
+    let ((start_x, start_y), (end_x, end_y), gap) = trimmed_arrow_endpoints(from_elem, to_elem);
+    let dx = end_x - start_x;
+    let dy = end_y - start_y;
 
     let arrow_id = new_id();
     let max_idx = max_index_of(doc);
@@ -1793,8 +2177,8 @@ pub fn mutate_connect(
         let label_index = &minted[1];
         let font_size = 16.0;
         let (ltw, lth) = compute_text_dimensions(label_text, font_size);
-        let lx = c1_x + dx / 2.0 - ltw / 2.0;
-        let ly = c1_y + dy / 2.0 - lth / 2.0;
+        let lx = start_x + dx / 2.0 - ltw / 2.0;
+        let ly = start_y + dy / 2.0 - lth / 2.0;
 
         let seed2: i32 = rng.random_range(1..=i32::MAX);
         let nonce2: i32 = rng.random_range(1..=i32::MAX);
@@ -1842,8 +2226,8 @@ pub fn mutate_connect(
     let arrow_json = json!({
         "id": arrow_id,
         "type": "arrow",
-        "x": c1_x,
-        "y": c1_y,
+        "x": start_x,
+        "y": start_y,
         "width": dx.abs(),
         "height": dy.abs(),
         "angle": 0,
@@ -1874,12 +2258,12 @@ pub fn mutate_connect(
         "startBinding": {
             "elementId": from_id,
             "focus": 0.0,
-            "gap": 1.0
+            "gap": gap
         },
         "endBinding": {
             "elementId": to_id,
             "focus": 0.0,
-            "gap": 1.0
+            "gap": gap
         },
         "startArrowhead": null,
         "endArrowhead": "arrow"
@@ -3214,6 +3598,24 @@ pub fn cmd_check(doc: &Value) -> Result<String, Vec<String>> {
         if !is_sorted {
             fails.push("elements array is not sorted by index — file will not open".to_string());
         }
+    }
+
+    // 3b. Malformed fractional index keys
+    let malformed: Vec<String> = els
+        .iter()
+        .filter_map(|e| {
+            let idx = e.get("index").and_then(|v| v.as_str()).filter(|s| !s.is_empty())?;
+            validate_order_key(idx).err()?;
+            let id = e.get("id").and_then(|v| v.as_str()).unwrap_or("");
+            Some(format!("{id}={idx}"))
+        })
+        .collect();
+    if !malformed.is_empty() {
+        let refs: Vec<&str> = malformed.iter().map(String::as_str).collect();
+        fails.push(format!(
+            "invalid fractional index keys (id=index): {}",
+            format_str_list(&refs)
+        ));
     }
 
     // 4. Duplicate indices
@@ -6461,8 +6863,110 @@ mod tests {
     #[test]
     fn test_mint_indices() {
         let indices = mint_indices("a0", 3).unwrap();
-        assert_eq!(indices, vec!["a000", "a001", "a002"]);
-        assert!(indices.windows(2).all(|w| w[0] < w[1]));
+        assert_eq!(indices, vec!["a1", "a2", "a3"]);
+        assert_eq!(mint_indices("", 2).unwrap(), vec!["a0", "a1"]);
+        assert_eq!(mint_indices("az", 2).unwrap(), vec!["b00", "b01"]);
+        // Malformed keys from the old minter are stepped past via their integer part.
+        assert_eq!(mint_indices("a00100", 2).unwrap(), vec!["a1", "a2"]);
+        assert!(mint_indices("b0", 1).is_err());
+        assert!(mint_indices("0", 1).is_err());
+
+        // Repeated single mints stay compact and valid.
+        let mut max = "a0".to_string();
+        let mut all = Vec::new();
+        for _ in 0..200 {
+            let k = mint_indices(&max, 1).unwrap().remove(0);
+            assert!(validate_order_key(&k).is_ok(), "{k}");
+            assert!(k > max, "{k} > {max}");
+            assert!(k.len() <= 3, "{k}");
+            max = k.clone();
+            all.push(k);
+        }
+    }
+
+    /// Test vectors from fractional-indexing 3.2.0 `src/test.js`.
+    #[test]
+    fn test_generate_key_between_matches_fractional_indexing() {
+        let cases: &[(Option<&str>, Option<&str>, &str)] = &[
+            (None, None, "a0"),
+            (None, Some("a0"), "Zz"),
+            (None, Some("Zz"), "Zy"),
+            (Some("a0"), None, "a1"),
+            (Some("a1"), None, "a2"),
+            (Some("a0"), Some("a1"), "a0V"),
+            (Some("a1"), Some("a2"), "a1V"),
+            (Some("a0V"), Some("a1"), "a0l"),
+            (Some("Zz"), Some("a0"), "ZzV"),
+            (Some("Zz"), Some("a1"), "a0"),
+            (None, Some("Y00"), "Xzzz"),
+            (Some("bzz"), None, "c000"),
+            (Some("a0"), Some("a0V"), "a0G"),
+            (Some("a0"), Some("a0G"), "a08"),
+            (Some("b125"), Some("b129"), "b127"),
+            (Some("a0"), Some("a1V"), "a1"),
+            (Some("Zz"), Some("a01"), "a0"),
+            (None, Some("a0V"), "a0"),
+            (None, Some("b999"), "b99"),
+            (None, Some("A000000000000000000000000001"), "A000000000000000000000000000V"),
+            (Some("zzzzzzzzzzzzzzzzzzzzzzzzzzy"), None, "zzzzzzzzzzzzzzzzzzzzzzzzzzz"),
+            (Some("zzzzzzzzzzzzzzzzzzzzzzzzzzz"), None, "zzzzzzzzzzzzzzzzzzzzzzzzzzzV"),
+        ];
+        for (a, b, exp) in cases {
+            assert_eq!(generate_key_between(*a, *b).as_deref(), Ok(*exp), "between {a:?} {b:?}");
+        }
+        let errors: &[(Option<&str>, Option<&str>, &str)] = &[
+            (None, Some("A00000000000000000000000000"), "invalid order key: A00000000000000000000000000"),
+            (Some("a00"), None, "invalid order key: a00"),
+            (Some("a00"), Some("a1"), "invalid order key: a00"),
+            (Some("0"), Some("1"), "invalid order key head: 0"),
+            (Some("a1"), Some("a0"), "a1 >= a0"),
+        ];
+        for (a, b, exp) in errors {
+            assert_eq!(generate_key_between(*a, *b), Err(exp.to_string()), "between {a:?} {b:?}");
+        }
+
+        let base10 = b"0123456789";
+        let n = |a, b, n| generate_n_keys_between_in(a, b, n, base10).unwrap().join(" ");
+        assert_eq!(n(None, None, 5), "a0 a1 a2 a3 a4");
+        assert_eq!(n(Some("a4"), None, 10), "a5 a6 a7 a8 a9 b00 b01 b02 b03 b04");
+        assert_eq!(n(None, Some("a0"), 5), "Z5 Z6 Z7 Z8 Z9");
+        assert_eq!(
+            n(Some("a0"), Some("a2"), 20),
+            "a01 a02 a03 a035 a04 a05 a06 a07 a08 a09 a1 a11 a12 a13 a14 a15 a16 a17 a18 a19"
+        );
+    }
+
+    #[test]
+    fn test_repair_malformed_indices_keeps_order() {
+        let mut els = vec![
+            json!({ "id": "a", "index": "a0" }),
+            json!({ "id": "b", "index": "a000" }),
+            json!({ "id": "c", "index": "a00100" }),
+            json!({ "id": "d", "index": "a1" }),
+            json!({ "id": "e", "index": "a10" }),
+        ];
+        assert_eq!(repair_malformed_indices(&mut els).unwrap(), 3);
+        let keys: Vec<&str> = els.iter().map(|e| e["index"].as_str().unwrap()).collect();
+        assert_eq!(keys, vec!["a0", "a0G", "a0V", "a1", "a2"]);
+        assert!(keys.iter().all(|k| validate_order_key(k).is_ok()));
+    }
+
+    #[test]
+    fn test_trimmed_arrow_endpoints() {
+        let r1 = json!({ "type": "rectangle", "x": 0.0, "y": 0.0, "width": 100.0, "height": 50.0 });
+        let r2 = json!({ "type": "rectangle", "x": 300.0, "y": 0.0, "width": 100.0, "height": 50.0 });
+        let (s, e, gap) = trimmed_arrow_endpoints(&r1, &r2);
+        assert_eq!((s, e, gap), ((105.0, 25.0), (295.0, 25.0), ARROW_BINDING_GAP));
+
+        // A shape rotated 90 degrees presents its height along the x axis.
+        let rot = json!({ "type": "rectangle", "x": 300.0, "y": 0.0, "width": 100.0, "height": 50.0,
+                          "angle": std::f64::consts::FRAC_PI_2 });
+        let (_, e, _) = trimmed_arrow_endpoints(&r1, &rot);
+        assert!((e.0 - (350.0 - 25.0 - ARROW_BINDING_GAP)).abs() < 1e-9, "{e:?}");
+
+        // Overlapping shapes have no segment between their outlines: centres, gap 0.
+        let near = json!({ "type": "rectangle", "x": 50.0, "y": 0.0, "width": 100.0, "height": 50.0 });
+        assert_eq!(trimmed_arrow_endpoints(&r1, &near), ((50.0, 25.0), (100.0, 25.0), 0.0));
     }
 
     #[test]
