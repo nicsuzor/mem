@@ -4204,33 +4204,23 @@ fn compute_value_lineage(nodes: &mut [GraphNode]) {
             .map(|i| open_actionable[i] && !is_blocked[i] && open_children[i].is_empty())
             .collect();
 
-        // live(x): x is an eligible leaf, or has one beneath it.
-        let mut live: Vec<Option<bool>> = vec![None; nodes.len()];
-        fn is_live(
-            i: usize,
-            depth: usize,
-            eligible: &[bool],
-            open_children: &[Vec<usize>],
-            live: &mut [Option<bool>],
-            on_stack: &mut HashSet<usize>,
-        ) -> bool {
-            if let Some(v) = live[i] {
-                return v;
+        // live(x): x is an eligible leaf, or has one beneath it (§4.11b).
+        // Computed bottom-up from eligible leaves without depth cap.
+        let mut live: Vec<bool> = eligible.clone();
+        let mut open_parents: Vec<Vec<usize>> = vec![Vec::new(); nodes.len()];
+        for (p, children) in open_children.iter().enumerate() {
+            for &c in children {
+                open_parents[c].push(p);
             }
-            if eligible[i] {
-                live[i] = Some(true);
-                return true;
+        }
+        let mut queue: Vec<usize> = (0..nodes.len()).filter(|&i| eligible[i]).collect();
+        while let Some(curr) = queue.pop() {
+            for &p in &open_parents[curr] {
+                if !live[p] {
+                    live[p] = true;
+                    queue.push(p);
+                }
             }
-            if depth >= MAX_CONE_DEPTH || !on_stack.insert(i) {
-                return false; // depth / cycle guard; not memoised
-            }
-            let mut any = false;
-            for &c in &open_children[i] {
-                any |= is_live(c, depth + 1, eligible, open_children, live, on_stack);
-            }
-            on_stack.remove(&i);
-            live[i] = Some(any);
-            any
         }
 
         for (i, v) in lineage.iter_mut().enumerate() {
@@ -4242,9 +4232,9 @@ fn compute_value_lineage(nodes: &mut [GraphNode]) {
                 continue;
             }
             // Tree split (§4.11b): share(h, c) = share(h, p) / |live(p)|.
-            let mut stack: Vec<(usize, f64, usize)> = vec![(h, raw_lineage[h], 0)];
+            let mut stack: Vec<(usize, f64)> = vec![(h, raw_lineage[h])];
             let mut visited: HashSet<usize> = HashSet::new();
-            while let Some((p, share, depth)) = stack.pop() {
+            while let Some((p, share)) = stack.pop() {
                 if !visited.insert(p) {
                     continue; // cycle guard
                 }
@@ -4254,23 +4244,17 @@ fn compute_value_lineage(nodes: &mut [GraphNode]) {
                     }
                     continue;
                 }
-                if depth >= MAX_CONE_DEPTH {
-                    continue;
-                }
-                let mut on_stack = HashSet::new();
                 let live_children: Vec<usize> = open_children[p]
                     .iter()
                     .copied()
-                    .filter(|&c| {
-                        is_live(c, depth + 1, &eligible, &open_children, &mut live, &mut on_stack)
-                    })
+                    .filter(|&c| live[c])
                     .collect();
                 if live_children.is_empty() {
                     continue; // no eligible leaf yet: nobody holds the value
                 }
                 let each = share / live_children.len() as f64;
                 for c in live_children {
-                    stack.push((c, each, depth + 1));
+                    stack.push((c, each));
                 }
             }
         }
@@ -8703,6 +8687,73 @@ mod tests {
             (vl_of(&nodes, "sib-0") - 1000.0).abs() < 1e-6,
             "siblings take the holder's per-level share, got {}",
             vl_of(&nodes, "sib-0")
+        );
+    }
+
+    /// §4.11d (1) Deep tree value conservation: one holder over a chain deeper
+    /// than MAX_CONE_DEPTH (e.g. 23 levels) delivers its full raw value to the leaf.
+    #[test]
+    fn test_value_lineage_deep_chain_conserves_value_past_max_cone_depth() {
+        let chain_len = 23;
+        let mut epic = vl_node("epic", "task", None, &["node-0"]);
+        epic.contributes_to = vec![ct_edge("targ", "Probable")]; // raw 2975
+        let mut nodes = vec![vl_target("targ", 0.35), epic];
+        for i in 0..chain_len {
+            let id = format!("node-{i}");
+            let parent = if i == 0 { "epic".to_string() } else { format!("node-{}", i - 1) };
+            let children: Vec<String> = if i + 1 < chain_len {
+                vec![format!("node-{}", i + 1)]
+            } else {
+                vec![]
+            };
+            let child_refs: Vec<&str> = children.iter().map(String::as_str).collect();
+            nodes.push(vl_node(&id, "task", Some(&parent), &child_refs));
+        }
+        compute_value_lineage(&mut nodes);
+
+        let leaf_id = format!("node-{}", chain_len - 1);
+        let delivered = vl_of(&nodes, &leaf_id);
+        assert!(
+            (delivered - VL_RAW_2975).abs() < 1e-6,
+            "one holder over a 23-deep chain must deliver full raw value {VL_RAW_2975}, got {delivered}"
+        );
+    }
+
+    /// §4.11d (1) Outer priced root over a 25-deep chain must not zero an inner
+    /// priced holder's leaf due to depth-cap truncation or poisoned memoisation.
+    #[test]
+    fn test_value_lineage_outer_priced_root_does_not_zero_inner_priced_holder_leaf() {
+        let chain_len = 25;
+        let mut outer = vl_node("outer", "task", None, &["node-0"]);
+        outer.contributes_to = vec![ct_edge("targ-outer", "Probable")]; // raw 2975
+        let mut nodes = vec![
+            vl_target("targ-outer", 0.35),
+            vl_target("targ-inner", 0.50),
+            outer,
+        ];
+        for i in 0..chain_len {
+            let id = format!("node-{i}");
+            let parent = if i == 0 { "outer".to_string() } else { format!("node-{}", i - 1) };
+            let children: Vec<String> = if i + 1 < chain_len {
+                vec![format!("node-{}", i + 1)]
+            } else {
+                vec![]
+            };
+            let child_refs: Vec<&str> = children.iter().map(String::as_str).collect();
+            let mut n = vl_node(&id, "task", Some(&parent), &child_refs);
+            if i == 15 {
+                // inner priced holder at depth 15
+                n.contributes_to = vec![ct_edge("targ-inner", "Certain")]; // raw 5000 (1.0 * 0.50 * 10000)
+            }
+            nodes.push(n);
+        }
+        compute_value_lineage(&mut nodes);
+
+        let leaf_id = format!("node-{}", chain_len - 1);
+        let delivered = vl_of(&nodes, &leaf_id);
+        assert!(
+            (delivered - 5000.0).abs() < 1e-6,
+            "outer root must not zero inner holder leaf value (expected 5000.0), got {delivered}"
         );
     }
 
