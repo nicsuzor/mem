@@ -130,6 +130,24 @@ class TestDefect3LoopHandling(unittest.TestCase):
         self.assertIn("CLEAN_TASK", w)
         self.assertAlmostEqual(w["CLEAN_TASK"].gain, 1.0, places=6)
 
+    def test_engine_e3_saturated_loop_returns_null_with_named_loop(self):
+        """Engine E3: Nodes feeding a saturated loop return null with the loop named."""
+        g = flow.Graph()
+        g.add("TARGET", worth=1.0)
+        g.add("FEEDER")
+        g.add("L1")
+        g.add("L2")
+        g.link("FEEDER", "L1", 0.5)
+        g.link("L1", "L2", 1.0)
+        g.link("L2", "L1", 1.0)
+        g.link("L1", "TARGET", 0.8)
+
+        w = flow.worth_all(g)
+        self.assertEqual(w["FEEDER"].flow_status, "saturated_loop")
+        self.assertIsNone(w["FEEDER"].gain)
+        self.assertIsNone(w["FEEDER"].loss_averted)
+        self.assertEqual(w["FEEDER"].loop, ["L1", "L2"])
+
 
 class TestDefect6FlowLiveFixture(unittest.TestCase):
     def test_flow_live_reads_committed_fixture(self):

@@ -200,9 +200,11 @@ def baseline(g: Graph) -> dict:
 
 @dataclass
 class Worth:
-    gain: float
-    loss_averted: float
+    gain: float | None
+    loss_averted: float | None
     deltas: dict  # priced target -> delta
+    flow_status: str = "ok"
+    loop: list[str] | None = None
 
 
 def saturated_loops(g: Graph) -> list[list[str]]:
@@ -220,7 +222,7 @@ def worth_all(g: Graph, only: list[str] | None = None) -> dict[str, Worth]:
     - Open harmful nodes do not rescale or zero unrelated work.
     - Gain and loss averted sit side by side and are never netted inside one column.
     - Mutual harm is node-ID independent.
-    - Isolated loop failures do not abort the ranking of independent nodes.
+    - Isolated loop failures do not abort the ranking of independent nodes (engine E3).
     """
     bad_loops = saturated_loops(g)
     bad_nodes = {v for comp in bad_loops for v in comp}
@@ -236,8 +238,9 @@ def worth_all(g: Graph, only: list[str] | None = None) -> dict[str, Worth]:
         if not priced:
             result[u] = Worth(0.0, 0.0, {})
             continue
-        if any(v in bad_nodes for v in cone):
-            result[u] = Worth(0.0, 0.0, {})
+        bad_in_cone = [comp for comp in bad_loops if any(v in comp for v in cone)]
+        if bad_in_cone:
+            result[u] = Worth(None, None, {}, flow_status="saturated_loop", loop=sorted(bad_in_cone[0]))
             continue
         has_ext_harms = any(
             not _helps(g, e) and not (e.src in loop_nodes and e.dst in loop_nodes)
@@ -252,7 +255,8 @@ def worth_all(g: Graph, only: list[str] | None = None) -> dict[str, Worth]:
                 ko = _settle(g, inc, dict(base), cone, knocked=u, active_harms=set(), loop_nodes=loop_nodes)
                 deltas = {t: base[t] - ko[t] for t in priced}
         except NoConvergence:
-            result[u] = Worth(0.0, 0.0, {})
+            unsettled = sorted([v for v in cone if v in loop_nodes])
+            result[u] = Worth(None, None, {}, flow_status="no_convergence", loop=unsettled)
             continue
 
         gain = sum(g.worth[t] * d for t, d in deltas.items() if g.worth[t] > 0 and d > 0)
@@ -381,7 +385,7 @@ VERBAL = {
     "impossible": 0.0, "none": 0.0,
 }  # mirrors numeric_weight(), src/graph.rs:292-318
 
-MIGRATION = {"part_of": 1.0, "needs": 1.0, "supports": 0.3, "default": 0.0}
+MIGRATION = {"part_of": 0.0, "needs": 1.0, "supports": 0.3, "default": 0.0}
 
 
 def stated_weight(ct: dict) -> float | None:

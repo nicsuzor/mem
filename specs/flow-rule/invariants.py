@@ -23,10 +23,13 @@ import sys
 import time
 from datetime import date, timedelta
 
+HERE = os.path.dirname(os.path.abspath(__file__))
+if HERE not in sys.path:
+    sys.path.insert(0, HERE)
+
 import display
 import flow
 
-HERE = os.path.dirname(os.path.abspath(__file__))
 FIXTURE = os.path.join(HERE, "fixtures", "live-2026-10-05.json")
 
 
@@ -57,7 +60,7 @@ def r3(v: float) -> float:
 
 
 def total(w: flow.Worth) -> float:
-    return w.gain + w.loss_averted
+    return (w.gain or 0.0) + (w.loss_averted or 0.0)
 
 
 def diff(a: dict, b: dict, skip=()) -> float:
@@ -65,7 +68,7 @@ def diff(a: dict, b: dict, skip=()) -> float:
     m = 0.0
     for u in a:
         if u in b and u not in skip:
-            m = max(m, abs(a[u].gain - b[u].gain), abs(a[u].loss_averted - b[u].loss_averted))
+            m = max(m, abs((a[u].gain or 0.0) - (b[u].gain or 0.0)), abs((a[u].loss_averted or 0.0) - (b[u].loss_averted or 0.0)))
     return m
 
 
