@@ -6,13 +6,19 @@ Every function here reads the numbers flow.py produced and never writes them.
 from __future__ import annotations
 
 import math
+import os
+import sys
 from datetime import date
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+if HERE not in sys.path:
+    sys.path.insert(0, HERE)
 
 import flow
 
 HORIZON_BUFFER_DAYS = 7  # open question Q9 in flow-rule.md
 DEFAULT_EFFORT_DAYS = 3  # mirrors ranking.md:148
-ACTIONABLE_TYPES = {"task", "epic", "learn", "pr"}  # ranking.md:499, epic collapsed into task
+ACTIONABLE_TYPES = {"task", "learn", "pr"}  # ranking.md:499, parser maps epic→task
 
 
 def effort_days(effort: str | None) -> int:
@@ -53,7 +59,10 @@ def on_cliff(meta: dict, today: date) -> bool:
 
 
 def view(g: flow.Graph, w: dict, meta: dict, today: date, ready_only: bool = True, key: str = "total") -> list[dict]:
-    """One ordered list: cliff lane first, then by the chosen key. Numbers are copied, never altered."""
+    """One ordered list: cliff lane first, then by the plain sum of gain and loss averted (settled Q3, S17).
+
+    Numbers are copied, never altered.
+    """
     rows = []
     for u, r in w.items():
         if u in g.worth:  # targets are what work serves, not work to do
@@ -61,7 +70,9 @@ def view(g: flow.Graph, w: dict, meta: dict, today: date, ready_only: bool = Tru
         if ready_only and not is_ready_leaf(g, u, meta):
             continue
         m = meta.get(u, {})
-        total = r.gain + r.loss_averted
+        gain = r.gain or 0.0
+        loss = r.loss_averted or 0.0
+        total = gain + loss
         rows.append({
             "id": u,
             "gain": r.gain,

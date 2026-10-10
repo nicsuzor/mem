@@ -51,13 +51,9 @@ Traceability tags used throughout:
 1. Worths do not add up across tasks. Two prerequisites of a 1.0 target are each worth 1.0, so "the sum of open work" means nothing and the dashboard must not show it.
 2. Only 7 of your 26 targets are priced. Until the rest are, work for unpriced targets is worth zero, even work that today's ranking pushes up by severity, a stakeholder or a date. Example: `task_d5f610e6` is 9th today and 236th under this rule. A hard-deadline class brings it back to the top as its date nears, through the display rule, without touching its worth (section 7).
 3. Open decisions use one extra small rule, the value of finding out (section 6).
-4. You supply about 154 numbers before deadline classes: 19 target prices, 134 migrated link values to confirm, and one default for parent links (section 8). Agents propose them in batches of fifty.
+4. You supply about 153 numbers before deadline classes: 19 target prices, 134 migrated link values to confirm (section 8). Parent links and default quantum are settled (Q1, Q2). Agents propose them in batches of fifty.
 
-**Decisions waiting on you:** thirty-one questions in section 15, ordered by consequence. Every choice the brief left open is listed; none is decided silently. The first three matter most:
-
-- **Q1.** Do containment (parent) links carry quantum 1.0 or the default? This decides whether every open child of a priced project carries the project's full worth. On today's graph, 246 open items carry worth with parent links at 1.0, and 49 with them at zero.
-- **Q2.** Is the default quantum zero, or "very low" (0.05)? Almost no typed link is unvalued today, so this matters mostly for links added later. If wikilinks were also treated as links at 0.05, 604 items would come off zero instead of 246.
-- **Q3.** What do you rank by, given two figures that are never netted?
+**Decisions waiting on you:** section 15 records settled choices (Q1 part_of quantum 0 and prototype hubs, Q2 default quantum 0, Q3 ordering by plain sum of gain and loss averted, Q4 summing option gain/loss, Q8 decision children relabelled alternative, Q17 targets serving targets adding worth, Q20 baseline harms counterfactual semantics) and lists remaining open questions ordered by consequence. Every choice the brief left open is listed; none is decided silently.
 
 ---
 
@@ -153,13 +149,13 @@ Gains toward positive targets and losses (whether averting negative targets, or 
 **Fixed point.**
 
 - **Helps-only systems.** The map is monotone, and knocking out $u$ can only lower values. A greatest fixed point exists (Tarski 1955). Iteration uses Gauss-Seidel sweeps with damping 1.0, converging rapidly in topological order.
-- **Full-strength loops are rejected.** A loop of open nodes in which the cycle product of edge strengths reaches 1.0 has no stable answer. Any loss collapses the whole loop. The rule rejects such loops (`SaturatedLoop`, `flow.py:179`, S15, A19). An isolated saturated loop or failure in one component does not abort the ranking of independent clean components.
+- **Full-strength loops are rejected.** A loop of open nodes in which the cycle product of edge strengths reaches 1.0 has no stable answer. Any loss collapses the whole loop. The rule rejects such loops (`saturated_loops`, `flow.py:208`, class `SaturatedLoop` at `:89`, S15, A19). An isolated saturated loop or failure in one component does not abort the ranking of independent clean components; nodes feeding a failed loop return `null` with the loop named (engine E3).
 - **Loops containing a harms edge.** The map is not monotone. Iteration uses synchronous (Jacobi) damped steps with damping 0.5 (Krasnosel'skii 1955; Mann 1953; Bauschke & Combettes 2017). Synchronous updates guarantee that mutual harm results are strictly symmetric and independent of node ID ordering.
-- **No fixed point within the iteration cap.** The run fails loudly (`NoConvergence`, `flow.py:155`) for the affected component, while unaffected components remain ranked.
+- **No fixed point within the iteration cap.** The run fails loudly (`NoConvergence`, class at `flow.py:85`, raised at `:158`, `:180`) for the affected component, while unaffected components remain ranked.
 
 The live graph converges for every node (I13). The worst live-shaped harmful loop, a pure negative-feedback loop at quantum 1, also converges (I16).
 
-**Reference implementation.** `worth_all`, `flow.py:175`; the fixed-point iteration, `_settle`, `flow.py:114`.
+**Reference implementation.** `worth_all`, `flow.py:216`; the fixed-point iteration, `_settle`, `flow.py:114`.
 
 **Properties the invariants rely on**, each checked by `invariants.py`:
 
@@ -267,9 +263,9 @@ Worth of `S`, the work that would settle `D`. The options are worth 0.6 (p 0.4) 
 
 | Candidate | Theory | P (protects) | Q (gains and harms) | X (linked to nothing bad) |
 |---|---|---|---|---|
-| One net figure | expected value | 0.160 | 0.300 | 1.000 |
+| One net figure | expected value | 0.400 | 0.300 | 1.000 |
 | Two columns, occurrence form (harm happens unless a protection stops it) | layered defences (Reason 1990); the "Swiss cheese" model (Reason 2000) | (0, 0.400) alone; (0, 0.000) with a second, done, full protection | undefined: the form has no term for causes | (1.000, 0): no link to `H` |
-| **Two columns, avoidance form** | gains and losses kept apart (Kahneman & Tversky 1979); the same rule as a positive target | **(0, 0.160)** | **(0.600, −0.300)** | **(1.000, 0)** |
+| **Two columns, avoidance form** | gains and losses kept apart (Kahneman & Tversky 1979); the same rule as a positive target | **(0.000, 0.400)** | **(0.600, −0.300)** | **(1.000, 0)** |
 
 **Recommendation: two columns, avoidance form.**
 
@@ -309,7 +305,7 @@ Worth of `S`, the work that would settle `D`. The options are worth 0.6 (p 0.4) 
 | `probability` | float `0.0..=1.0`, or a §5.5 word | `1.00` | maths |
 | `effect` | `helps` \| `harms` | `helps` | maths |
 | `justification` | text | none | agents, Nic |
-| `set_by` | `nic` \| `agent-proposed` \| `migrated` | `agent-proposed` | densify routine, linter |
+| `set_by` | `nic` \| `agent-proposed` \| `migrated` | `nic` | densify routine, linter (engine E17) |
 
 **Strength.** Strength is `quantum × probability` (S2; `kb_edge_weight_quantum_vs_confidence`).
 
@@ -323,7 +319,7 @@ Labels name what the link is for. Two of them feed the decision rule. None of th
 |---|---|---|---|
 | `serves` | advances what it points at | default (§5.3) | — |
 | `needs` | the thing pointed at cannot proceed until this is done (hard block) | 1.0 | ready-leaf filter |
-| `part_of` | a component of a larger piece of work | 1.0 (Q1) | grouping, progress |
+| `part_of` | a component of a larger piece of work | 0.0 (Q1 settled) | grouping, progress |
 | `supports` | makes the thing pointed at easier or better | default (§5.3) | — |
 | `alternative` | one option of an open decision | — (decision rule only) | menus; never summed |
 | `settles` | finding this out would settle the decision | 1.0 (decision rule only) | — |
@@ -405,7 +401,7 @@ settle worth(u) += quantum(u → D) · EVPI(D)   for each open u with a settles 
 
 **Mechanics.**
 
-- `E[max]` is computed exactly by sorting options by `w_i` (`flow.py:206`).
+- `E[max]` is computed exactly by sorting options by `w_i` (`expected_best`, `flow.py:271`).
 - Once `D` is done, the term is zero (I10).
 - `alternative` and `settles` edges are not read by the flow, so options are not treated as jointly necessary.
 
@@ -427,8 +423,8 @@ Each rule below reads the maths' output and nothing it writes feeds back (I6). T
 | Ripeness | Proposed: an opportunity stops pulling when it is set `cancelled` or its target repriced; nothing infers it (S6, U19). Who does it is Q13 | state, worth | — |
 | Ready-leaf filter | Hide work that is not an open, actionable leaf with no open `needs`; targets are never listed as work (S4) | labels, state, type | `display.py:35` |
 | Grouping and progress | Show `part_of` trees and the share of children done; never sum worths (§4.1) | `part_of` edges | — |
-| Benefit per effort | Provisional, pending Q3 and Q12: `gain / effort_days` and `loss_averted / effort_days` shown side by side; the finish line stands out because the last step carries full worth (U16, I8). The reference sorts by their sum, which nets the two figures: a task with gain 0.95 and loss −0.95 then sorts with a task linked to nothing (I15). Any combined key is Nic's choice (Q3) | worth, `effort` | `display.py:55` |
-| Ordering | Cliff lane first, then the chosen key (Q3) | — | `display.py:55` |
+| Benefit per effort | `gain / effort_days` and `loss_averted / effort_days` shown side by side; the finish line stands out because the last step carries full worth (U16, I8). Ordered by their plain sum (settled Q3, S17); both figures stay shown separately (S16) | worth, `effort` | `display.py:55` |
+| Ordering | Cliff lane first, then by the plain sum of gain and loss averted (settled Q3, S17) | — | `display.py:55` |
 | Must-not-miss floor | Proposed: the floor is the cliff lane plus a list Nic keeps; obligations with a hard deadline reach it whatever their worth (U5; Q19) | class, list | — |
 | Varied menu | Stuck mode picks across groups and effort, not top-N (U2) | worth, groups, effort | dashboard spec (`epic_adf10cd3`) |
 
@@ -440,7 +436,7 @@ Each rule below reads the maths' output and nothing it writes feeds back (I6). T
 
 | Today | Open-source count | New label | Quantum given | Probability | What is lost |
 |---|---|---|---|---|---|
-| `parent` | 524 | `part_of` | 1.0 (Q1) | 1.00 | the implicit "children together make the parent" stays; an inbox child of a priced epic now carries the epic's worth |
+| `parent` | 524 | `part_of` | 0.0 (Q1 settled) | 1.00 | filing label; grouping/progress read it; carries no worth in the flow; class-level worth comes from prototype nodes used as unpriced hubs (settled Q1, S19, S20) |
 | `depends_on` | 64 | `needs` | 1.0 | 1.00 | nothing |
 | `soft_depends_on` | 51 | `supports` | 0.3, today's soft factor (`ranking.md:335`), `set_by: migrated` | 1.00 | the reading "soft = optional" becomes an explicit, re-elicitable quantum |
 | `contributes_to` | 83 | `serves` | `numeric_weight()` of the stated word (`src/graph.rs:292`), capped at 1.0, `set_by: migrated`; an edge with no stated word gets the default | 1.00 | the old word mixed amount and likelihood; re-elicitation splits it (§5.4) |
@@ -458,20 +454,19 @@ Each rule below reads the maths' output and nothing it writes feeds back (I6). T
 
 These counts include edges from done nodes, which the flow reads as realised.
 
-**Removing the parent edge.** The brief leans towards removing it. This spec does not decide that (Q1). Under this rule, keeping `part_of` as an ordinary edge at quantum 1.0 already gives shared foundations their full reach (U11), because a node can be `part_of` or `serve` several things. Grouping and progress within an epic stay as display reading `part_of` (section 7). The migration spec (`epic_d1679d4b`) decides storage.
+**Parent links and prototype hubs (settled Q1).** `part_of` carries quantum 0.0 in the flow model (S19). It is a filing label: grouping and progress within an epic stay in display reading `part_of` (section 7). Class-level worth comes from prototype nodes used as unpriced hubs (S20): each instance links to its prototype at quantum 1.0; the prototype's own `serves` links to priced targets decide what every instance is worth; the prototype stays unpriced and passes worth through. The migration spec (`epic_d1679d4b`) decides storage.
 
-**What the parent default moves.** `part_of` is 1,093 of the 1,502 flow edges. At quantum 1.0, 246 open nodes carry worth; at quantum 0 (parent links kept for grouping only, or removed), 49 do (`invariants.py`, row 7). The other 197 would carry worth again only through explicitly valued links. This is the main cost of removing the parent edge, alongside the grouping and progress that display must then read from another label.
+**What the parent default moves.** `part_of` is 1,093 of the 1,502 flow edges. At quantum 1.0, 246 open nodes carry worth; at quantum 0 (settled Q1), 49 do (`invariants.py`, row 7). The other 197 carry worth through explicitly valued links or prototype hubs.
 
 **Inputs Nic must supply:**
 
 - 19 unpriced targets;
 - 51 migrated `supports` quanta and 83 migrated `serves` words to confirm;
-- the `part_of` default, decided once (Q1);
 - a deadline class for each open node with a `due` date (§7). Unclassed dates are read as `fake` until classed (Q18), so this is not needed on day one.
 
-That is 154 inputs before deadline classes: about four batches of fifty, the target prices first.
+That is 153 inputs before deadline classes: about three batches of fifty, the target prices first.
 
-**Densify routine.** Agents propose values and Nic approves them in batches of fifty, ordered by how much worth the batch would move. The skills spec (`epic_80ce44ae`) owns this routine. This spec fixes only the contract: each proposal carries `set_by: agent-proposed` and a `justification`, and an unapproved proposal is read at the default quantum.
+**Densify routine.** Agents propose values and Nic approves them in batches of fifty, ordered by how much worth the batch would move. The skills spec (`epic_80ce44ae`) owns this routine. This spec fixes only the contract: densify always writes `set_by: agent-proposed` explicitly and a `justification`; an agent-proposed link reads at 0.0 whatever its label (so an unapproved proposal moves no number; display still reads the label for blocking; C5, E17).
 
 ---
 
@@ -555,8 +550,8 @@ Every measure in `ranking.md` is mapped to one of three outcomes:
 | 4 | A reinforcing loop converges and is worth at least as much | live loop `aops_twin_cost_monitor` → `aops_bootstrap_dogfood` → `aops_otel_full_text_container_spans` → back; a new feeder at 0.5 (**assumed**) | feeder 0.2965 with loop vs 0.2801 opened; otel spans 0.34 vs 0.2975; bootstrap 0.3391 vs 0.3369; twin monitor 0.3467 both | pass |
 | 5 | A blocked task passes worth to its unblockers | `brain_448bb804` (not a ready leaf) | keeps 0.95; each open blocker 0.95, and 0.95 when blocking is its only route (control) | pass |
 | 6 | Changing a display rule changes no number | all | 8 display configurations, 4 distinct orderings; worth table byte-identical; `flow.py` does not import display | pass |
-| 7 | A node linked to nothing priced carries the default | 1,255 of 1,502 open nodes; e.g. `academic-b738bdc7`, `task_d5f610e6` | all 1,255 exactly 0.0; 1 unvalued typed edge, so default 0.05 still gives 246; wikilinks as edges at 0.05 would give 604 (932 nodes on loops); `part_of` at quantum 0 would give 49 (Q1) | pass |
-| 8 | All but one necessary step done: the remaining step carries full worth | `proj-f8b942d5` (4 children done, 1 open) → `admin-3e02c20b` | both 1.11; under necessity every open part carries it, so the finish line shows through worth per day: 11th of 369 ready leaves | pass |
+| 7 | A node linked to nothing priced carries the default | 1,255 of 1,502 open nodes; e.g. `academic-b738bdc7`, `task_d5f610e6` | all 1,255 exactly 0.0; 1 unvalued typed edge, so default 0.05 still gives 246; wikilinks as edges at 0.05 would give 604 (932 nodes on loops); `part_of` at quantum 0 gives 49 (settled Q1) | pass |
+| 8 | All but one necessary step done: the remaining step carries full worth | `proj-f8b942d5` (4 children done, 1 open) → `admin-3e02c20b` | both 1.11; under necessity every open part carries it, so the finish line shows through worth per day: 11th of 319 ready leaves | pass |
 | 9 | An opportunity takes one node and its edges | new target 0.35 served by `admin-3e02c20b` (**assumed**) | measured: 1 node and 1 edge added, 0 existing inputs changed; 2 nodes upstream; largest change elsewhere 0.0; `admin-3e02c20b` 1.11 → 1.46 | pass |
 | 10 | An open decision weights the work that settles it | `brain_bf2be9d8`; options `brain_7f772690` (p 0.4), `proj-f8b942d5` (p 0.3), relabelled from `part_of` and given the decision's own edges; settled by `personal_92d5909f` (**assumed**) | options 1.11 each; EVPI 0.1998 (informed 0.6438 − blind 0.444); prices doubled 0.3996; decided 0.0 | pass |
 | 11 | No date arithmetic in the flow | all | no date token in the rule's code; every due date shifted by 400 days: largest change in any figure 0.0, while the cliff lane changes (16 → 0 dates on it if all were hard) | pass |
@@ -631,7 +626,7 @@ This yields the one-sentence form U18 asks for. Example: "`admin-3e02c20b` serve
 | Edge fields | §5.1 | — |
 | `deadline_class` | on any node with `due` | read by display only |
 
-**Failure.** If no fixed point is reached, the run raises `NoConvergence`, naming the loop. The linter reports it, and nothing is ranked from a partial result.
+**Failure.** If a loop is saturated or no fixed point is reached within the iteration cap, nodes feeding the failed loop return `null` for `gain` and `loss_averted` with `flow_status ≠ ok` (`saturated_loop` or `no_convergence`) naming the loop. The linter reports it (`epic_fc1de9ec`). Unaffected components remain ranked as normal (§3.2, lines 156, 158; engine E3).
 
 ---
 
@@ -699,20 +694,16 @@ Section 9 gives the reason for each.
 
 The questions are ordered by consequence. Brief gap numbers are given where the brief raised the question.
 
-1. **Q1. Parent links (gap 3).** Should `part_of` (parent) links carry quantum 1.0, or the default? At 1.0, every open child of a priced project carries its full worth (today: 6 open children of one priced project each carry 0.95). At the default, project worth reaches only explicitly valued links. A third option is to remove the parent edge entirely (brief, "Leaning").
-2. **Q2. Default quantum (gap 2).** Is it 0, or "very low" (0.05)? Today it changes little for typed links (§5.3). It matters most if wikilinks or new unvalued links are read as edges.
-3. **Q3. Ordering.** With gain and loss averted never netted, what orders the list? Any single key that sums them makes a task with equal gain and harm sort with a task linked to nothing (I15), even though both figures stay visible.
-   - their sum, for ordering only;
-   - loss averted first;
-   - a mode switch;
-   - benefit per effort.
-4. **Q4. Decision options.** For the decision rule, may an option's gain and loss averted be summed to compare options?
-5. **Q17. Targets serving targets.** A priced target that serves another priced target passes on worth, and the two add: a node feeding a 0.5 target that fully serves a 1.0 target shows 1.5. Is that right, or does a target's price already include what it does for other targets? If so, edges between priced targets should carry no worth.
+1. **Q1. Parent links (gap 3). Settled (Nic, 2026-10-05, points 19–20):** `part_of` quantum 0 (filing label; grouping/progress read it) and prototype nodes as unpriced hubs (instance→prototype 1.0, prototype serves priced targets; prototype stays unpriced and passes worth through). There is no tree, and a task may relate to several projects; not every task is necessary to the project it belongs to.
+2. **Q2. Default quantum (gap 2). Settled (Nic, 2026-10-04, point 7):** Default quantum 0. Unvalued links carry a quantum of zero, because many ideas and incoming opportunities are worth nothing. A recurring job densifies the graph fifty tasks at a time.
+3. **Q3. Ordering. Settled (Nic, 2026-10-05, point 17; Ida):** Ordering = plain sum of gain and loss averted (`total = gain + loss_averted`), both figures shown. Good and bad in equal measure cancel out for ordering; both figures stay shown separately (point 16).
+4. **Q4. Decision options. Settled (Nic/Ida):** Yes. For the decision rule, an option's gain and loss averted are summed to compare options (same call as Q3).
+5. **Q17. Targets serving targets. Settled (Nic, 2026-10-05, point 18):** Worth passes between priced targets and adds, with the pricing rule "a target is priced for its worth in itself, never for what it feeds, else left unpriced and passes through". The pricing sitting asks this for every target-to-target link.
 6. **Q5. Hard blocks (gap 4).** Is a hard block its own label (`needs`), or a `serves` link at quantum 1.0 with the ready filter reading something else?
 7. **Q6. Quantum words.** Are the five quantum words and numbers in §5.4 right?
 8. **Q7. Worth anchors (gap 6).** Do the five standing-weight anchors stay, mirrored for losses (§5.6)?
-9. **Q20. Harmful work in the baseline.** Open harmful work is assumed not done in the baseline ($y^0$), so an open hazard does not deflate or zero unrelated work. When evaluating the harmful node itself, its harms activate ($y^{\text{with } u}$). Does Nic confirm this baseline semantics?
-10. **Q8. Decisions modelled as parents.** May migration relabel a decision's children as `alternative`, each inheriting the decision's edges (section 6)?
+9. **Q20. Harmful work in the baseline. Settled:** Confirmed. Baseline counterfactual semantics prevents open harms from deflating or zeroing unrelated work.
+10. **Q8. Decisions modelled as parents. Settled (Ida/Nic):** Yes. Migration relabels a decision's children as `alternative`, each inheriting the decision's edges (section 6).
 11. **Q15. Loop strength cap.** Full-strength loops are rejected (§3.2). Should the linter also cap loop strength lower, say 0.9, given how strongly a near-1 loop amplifies a weak feeder (§4.2)?
 12. **Q16. Real reinforcing loops (gap 9).** Are the two loops on today's graph real reinforcement, or modelling artefacts? Calibration against real loops is low priority (S15).
 13. **Q18. Unclassed dates.** Is a `due` with no deadline class treated as `fake`, as proposed?
@@ -724,7 +715,7 @@ The questions are ordered by consequence. Brief gap numbers are given where the 
 19. **Q13. Ripeness (gap 10).** Who tells the graph an opportunity is no longer ripe?
 20. **Q14. Soft to hard (gap 11).** By what rule does a soft deadline become hard? Here it is a deliberate agent step, specified in the skills spec.
 21. **Q21. Label set.** §5.2 proposes six labels (`serves`, `needs`, `part_of`, `supports`, `alternative`, `settles`). Is this the right canonical set, or should any label be added, renamed, or omitted?
-22. **Q22. Migration values.** §8 defaults unvalued migrated edges: `part_of` → 1.0, `needs` → 1.0, `supports` → 0.3, unvalued `serves` → 0.0. Does Nic confirm these migration defaults?
+22. **Q22. Migration values.** §8 defaults unvalued migrated edges: `part_of` → 0.0 (Q1 settled), `needs` → 1.0, `supports` → 0.3, unvalued `serves` → 0.0 (Q2 settled). Does Nic confirm these migration defaults?
 23. **Q23. Wikilinks excluded from flow.** §8 excludes wikilinks from the flow model (1,876 wikilinks ignored). If treated as weak flow edges at 0.05, 604 nodes carry worth and 932 nodes sit on loops. Should wikilinks remain excluded from the flow model?
 24. **Q24. Retiring the severity ladder.** §9 drops the 0–4 severity scale from ranking maths. Does Nic approve retiring severity from ranking, or should it be retained as a display badge or triage tag?
 25. **Q25. Retiring stakeholder waiting points.** §9 drops the flat/ramped stakeholder bonus. Should stakeholder waiting be handled purely in agent triage and target pricing, or surfaced as a display sort/filter?
