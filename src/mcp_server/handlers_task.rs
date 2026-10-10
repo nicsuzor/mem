@@ -1547,9 +1547,9 @@ impl PkbSearchServer {
         // `tasks`. Shares the same comparator as the CLI `list` default for parity.
         let today = chrono::Utc::now().date_naive();
         let buffer_days = crate::display_rank::DISPLAY_CLIFF_BUFFER_DAYS;
-        if graph.ranking_mode() == crate::polecat_config::RankingMode::Flow {
-            GraphStore::sort_by_display_with_sort(&mut tasks, task_sort, today, buffer_days);
-        } else if task_sort != crate::display_rank::TaskSort::Default {
+        if graph.ranking_mode() == crate::polecat_config::RankingMode::Flow
+            || task_sort != crate::display_rank::TaskSort::Default
+        {
             GraphStore::sort_by_display_with_sort(&mut tasks, task_sort, today, buffer_days);
         } else {
             GraphStore::sort_by_focus(&mut tasks);

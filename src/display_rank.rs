@@ -212,7 +212,7 @@ impl DisplayItem {
         let resolved_class = DeadlineClass::resolve(deadline_class, due.is_some());
         let on_cliff = is_on_cliff(due, resolved_class, effort_days, today, buffer_days);
         let (flow_status, gain, loss_averted, decision_value) = match flow {
-            Some(f) => (f.flow_status.clone(), f.gain, f.loss_averted, f.decision_value),
+            Some(f) => (f.flow_status, f.gain, f.loss_averted, f.decision_value),
             None => (FlowStatus::Ok, None, None, None),
         };
 
