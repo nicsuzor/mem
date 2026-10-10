@@ -37,7 +37,7 @@ Traceability tags:
 **What happens.** The move has four steps, and each one can be undone:
 
 1. **Add, don't replace.** The migration adds the new values (a `worth` on each target, a `quantum` on each link) next to the old fields. It deletes nothing. Today's ranking reads the graph exactly as before. The new ranking runs alongside in shadow.
-2. **You price every target.** One sitting covers 43 targets: 26 typed `target` and 17 old `goal` nodes the engine already reads as targets. 7 carry a price today. An agent prepares the sheet and you pick a word for each.
+2. **Every target is priced.** One sitting covers 43 targets: 26 typed `target` and 17 old `goal` nodes the engine already reads as targets. Agents make educated price guesses for every target (7 carry a price today from `standing_weight` and are copied over; agents suggest values for the rest), and you review and confirm them.
 3. **Switch the ranking over.** This waits until you have compared the two rankings on real data. Switching back is one setting.
 4. **Clean up.** Only after you say so, a second change deletes the old fields. This is the only step that cannot be undone, except from git history.
 
@@ -95,7 +95,7 @@ Four repositories read or write these fields:
 **Target.** A path from today's graph to the new model with five properties:
 
 - **It loses nothing silently.** Every edge kind and field is mapped, with live counts. Each loss is listed (section 7), including the 24 status-less tasks read as done (:205).
-- **It puts Nic's prices first** (S14, U20).
+- **It puts target pricing first** (agents guess, Nic reviews; S14).
 - **It can be undone** at every step but the last, and the last needs Nic's say-so.
 - **It is checked on live data** before anything changes (I13).
 - **The parts release in an order** in which no component reads a field before it exists, or loses one it still needs (section 9).
@@ -107,7 +107,7 @@ Four repositories read or write these fields:
 ```text
                  ┌──────────── reversible ─────────────────────────────────────────────┐
  live graph ──►  snapshot ──► dry run ──► pricing ──► apply (additive) ──► shadow ──► cutover ──► window ──► cleanup
- (brain repo)    export +     report       (Nic)      one commit in       both        one engine  legacy     second commit
+ (brain repo)    export +     report    (Nic reviews) one commit in       both        one engine  legacy     second commit
                  today's      (§8)         worth,     brain, ledger       rankings    setting     fields     deletes legacy
                  order                     deadline   (§5)                computed    flips       kept       fields (MQ7)
                                            classes                        (§9 R1)     (§9 R6)                ── one-way ──
@@ -336,22 +336,22 @@ The `pkb` binary gains one subcommand. Its interface is fixed here; its build be
 
 ## 6. The pricing step
 
-Nic prices every target (S14). Agents never propose a target's price (U20). They prepare the sheet and write what Nic says.
+Agents make educated price guesses for every target and Nic reviews them (S14). They prepare the sheet with suggested prices and write what Nic approves.
 
 **Who is priced.** 43 nodes:
 
 - 26 of `type: target`;
 - 17 of legacy `type: goal`, which the engine reads as targets (`src/graph.rs:1369`).
 
-7 carry `standing_weight` today and are copied over; Nic may change them. The brief counted 26 because it counted `type: target` only. The pricing sheet includes:
+7 carry `standing_weight` today and are copied over; for targets without a `standing_weight`, agents provide suggested price guesses based on severity, consequences, and reach. Nic reviews and confirms all 43 prices. The brief counted 26 because it counted `type: target` only. The pricing sheet includes:
 - **`garage-69a576ed`**: typed `target`, priced 0.15 by Ida (2026-10-09) pending Nic's feel. It sits inside the work tree under a done epic, against `specs/pkb-type-taxonomy.md`, and serves `targ_4e2cc92a`. The sheet asks whether to price it in itself or retype it as an epic and leave it unpriced to pass worth through.
 - **The 17 legacy `type: goal` nodes (MQ2)**: goals carry no stakes under `specs/pkb-type-taxonomy.md`. The sheet asks whether Nic prices each as a target, merges it into an existing target, or retires it.
 
 **The sheet.** One row per target, ordered by **reach**: the number of open nodes that carry worth once it is priced (`dryrun.py` output, section 9). Pricing the top rows first moves the most work. Each row shows:
 
 - id and title;
-- the current `standing_weight`, if any;
-- `severity`, `goal_type` and `consequence`, as prompts only (FR §5.6);
+- the suggested price (copied from current `standing_weight` if present, or an agent's educated price guess);
+- `severity`, `goal_type` and `consequence`, informing the suggestion and review (FR §5.6);
 - its reach;
 - any outgoing links to other targets (the 19 target→target links identified in `dryrun.py` §9).
 
@@ -368,7 +368,7 @@ Under Q1 settled (`part_of` quantum 0.0), reach reflects direct contribution pat
 
 A target with reach 0 is still priced. Its price moves nothing until the densify routine values a link to it (FR §8, skills spec `epic_80ce44ae`). The four committed targets with reach 0 are the clearest case: today severity lifts their work, and after cutover nothing does until a link is valued. The cliff lane still catches hard deadlines (FR §7).
 
-**How Nic answers.** For each row, one of:
+**How Nic reviews.** For each row, Nic approves or adjusts the suggested price to one of:
 
 - a positive anchor word (Critical, High, Substantial, Moderate, Low);
 - a negative anchor word (Catastrophic, Severe, Substantial, Moderate or Minor loss);
