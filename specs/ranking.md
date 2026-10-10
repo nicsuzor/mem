@@ -436,14 +436,14 @@ In addition to `focus_score`, `mem` computes several topological and network mea
 
 Only an **eligible leaf** ever holds a nonzero `value_lineage`. A node `x` is an eligible leaf iff all four hold:
 
-1. Its type is in `ACTIONABLE_TYPES` (`task`, `learn`, `pr`, with `epic` collapsed into `task`; §8).
+1. Its type is in `ACTIONABLE_TYPES` (`task`, `learn`, `pr`, with `epic` collapsed into `task`; §8) or unset (untyped nodes count as actionable).
 2. Its status is not in `COMPLETED_STATUSES`.
 3. It is not effectively blocked (`compute_effectively_blocked`, §4.6).
 4. It has no **open actionable child**, meaning a child that satisfies (1) and (2).
 
 Every other node gets `value_lineage = 0`. That covers containers, blocked or completed leaves, and every non-actionable node (`knowledge`, `note`, `observation`, `target`, `template`, …) wherever it sits in the tree.
 
-- **Why (1):** only actionable nodes are ranked as work (§8.1). A knowledge note filed under a priced task advances nothing, so it must not be the place the price lands.
+- **Why (1):** only actionable nodes are ranked as work (§8.1). Untyped nodes default to actionable work. A knowledge note filed under a priced task advances nothing, so it must not be the place the price lands.
 - **Why (4) is "open actionable child" and not "any child":** a task whose children are all done or cancelled is the remaining actionable work, not a container. Treating it as a container zeroes it and leaves no leaf beneath it to receive the value, so the value disappears. Likewise, a non-actionable child, such as a note, must not turn its parent task into a conduit.
 
 The walk from a container down to its leaves (§4.11b) descends only through open actionable children. If an edge-holder has no eligible leaf beneath it, nobody holds its value until one becomes ready. Nothing is redirected elsewhere.

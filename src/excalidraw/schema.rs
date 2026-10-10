@@ -98,7 +98,7 @@ pub fn compute_card_dimensions(node: &crate::graph::GraphNode) -> (f64, f64) {
         return (CARD_WIDTH_A, CARD_HEIGHT);
     }
 
-    let p = node.effective_intent.or(node.intent).unwrap_or(3);
+    let p = node.effective_intent.or(node.intent).unwrap_or(4);
     let is_container = t == "epic"
         || t == "area"
         || t == "project"
