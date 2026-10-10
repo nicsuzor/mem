@@ -37,8 +37,8 @@ FIXTURE = os.path.join(HERE, "fixtures", "live-2026-10-06.json")
 
 # Proposed migration values: flow-rule.md section 8, unchanged (Q22 there; M-Q3 here).
 SUPPORTS_QUANTUM = 0.3
-# Label defaults the engine applies when an edge states no quantum (flow-rule.md 5.2, 5.3).
-LABEL_DEFAULT = {"part_of": 1.0, "needs": 1.0, "supports": 0.0, "serves": 0.0}
+# Label defaults the engine applies when an edge states no quantum (flow-rule.md 5.2, 5.3; Q1 settled).
+LABEL_DEFAULT = {"part_of": 0.0, "needs": 1.0, "supports": 0.0, "serves": 0.0}
 
 # Keys the migration may add. Nothing else is written (spec section 5.3).
 ADDED_KEYS = {"worth", "quantum", "probability", "set_by"}
@@ -64,9 +64,9 @@ def present(x) -> bool:
 
 
 def state(n: dict) -> str:
-    """Node state as the flow reads it; mirrors flow.from_export."""
+    """Node state as the flow reads it; mirrors flow.from_export with MQ10 settled (retired -> done)."""
     st = n.get("status")
-    return flow.GONE if st == "cancelled" else flow.DONE if st in (None, "done") else flow.OPEN
+    return flow.GONE if st == "cancelled" else flow.DONE if st in (None, "done", "retired") else flow.OPEN
 
 
 def word_quantum(word: str) -> float | None:
@@ -290,6 +290,8 @@ def main(path: str) -> int:
     gone_words = [(n["id"], c.get("stated_weight")) for n, c in cts
                   if c.get("to") not in ids and word_quantum(c.get("stated_weight", "")) is None]
     print(f"contributes_to naming no node, with empty or unrecognised word: {gone_words}")
+    statusless_tasks = sorted(n["id"] for n in nodes if n.get("type") == "task" and n.get("status") is None)
+    print(f"tasks with no status (read as done, get ledger row and lint note): {len(statusless_tasks)} {statusless_tasks}")
 
     # 4. Reversal
     show("4. Reversal")
@@ -320,16 +322,15 @@ def main(path: str) -> int:
     t1 = time.time()
     w = flow.worth_all(g)
     t_flow = time.time() - t1
-    ref = flow.worth_all(flow.from_export({"nodes": nodes}))
+    ref_nodes = [{"status": "done" if n.get("status") == "retired" else n.get("status"),
+                  **{k: v for k, v in n.items() if k != "status"}} for n in nodes]
+    ref = flow.worth_all(flow.from_export({"nodes": ref_nodes}, migration={**flow.MIGRATION, "part_of": 0.0}))
     same = sum(1 for u in w if (w[u].gain, w[u].loss_averted) == (ref[u].gain, ref[u].loss_averted))
     carrying = {u for u, r in w.items() if r.gain or r.loss_averted}
     print(f"open nodes: {len(w)}; carrying worth: {len(carrying)}; priced targets: {len(g.worth)}; "
           f"flow edges: {len(g.flow_edges())}; loops: {len(flow.on_loops(g))} nodes; "
           f"saturated loops: {flow.saturated_loops(g)}; flow time {t_flow:.1f} s")
     print(f"identical to flow-rule's own adapter (flow.from_export on the unmigrated fixture): {same} of {len(w)}")
-    g0 = read_migrated(migrated, {**LABEL_DEFAULT, "part_of": 0.0})
-    w0 = flow.worth_all(g0)
-    print(f"variant part_of at quantum 0 (flow-rule Q1): carrying worth {sum(1 for r in w0.values() if r.gain or r.loss_averted)}")
     lbl = Counter(e.label for e in g.flow_edges())
     print(f"flow edges by label: {dict(lbl)}")
 
