@@ -166,6 +166,31 @@ pub fn wal_compacting_path(db_path: &Path) -> PathBuf {
     db_path.with_extension("wal.compacting")
 }
 
+/// Returns the sidecar stamps file path corresponding to a database path (e.g. `pkb_vectors.stamps`).
+pub fn stamps_path(db_path: &Path) -> PathBuf {
+    db_path.with_extension("stamps")
+}
+
+/// Filesystem stamp for change detection without reading or parsing file content.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FileStamp {
+    pub mtime: std::time::SystemTime,
+    pub size: u64,
+}
+
+impl FileStamp {
+    pub fn from_metadata(meta: &std::fs::Metadata) -> Option<Self> {
+        let mtime = meta.modified().ok()?;
+        let size = meta.len();
+        Some(Self { mtime, size })
+    }
+
+    pub fn from_path(path: &Path) -> Option<Self> {
+        let meta = std::fs::metadata(path).ok()?;
+        Self::from_metadata(&meta)
+    }
+}
+
 /// Outcome of [`VectorStore::prepare_upsert`]. The caller applies this under
 /// a brief write lock via [`VectorStore::apply_prepared`].
 ///
@@ -243,6 +268,12 @@ pub struct VectorStore {
     /// In-memory BM25 lexical index
     #[serde(skip)]
     bm25: Arc<parking_lot::RwLock<crate::bm25::Bm25Index>>,
+    /// In-memory cached file stamps for fast staleness detection
+    #[serde(skip)]
+    stamps: Arc<parking_lot::RwLock<HashMap<PathBuf, FileStamp>>>,
+    /// Database file path on disk (for sidecar persistence)
+    #[serde(skip)]
+    db_path: parking_lot::RwLock<Option<PathBuf>>,
 }
 
 /// Helper to check if a document's doc_type matches an optional type filter string.
@@ -309,6 +340,46 @@ impl VectorStore {
             documents: HashMap::new(),
             dimension,
             bm25: Arc::new(parking_lot::RwLock::new(crate::bm25::Bm25Index::new())),
+            stamps: Arc::new(parking_lot::RwLock::new(HashMap::new())),
+            db_path: parking_lot::RwLock::new(None),
+        }
+    }
+
+    pub fn get_stamp(&self, rel_path: &Path) -> Option<FileStamp> {
+        self.stamps.read().get(rel_path).copied()
+    }
+
+    pub fn set_stamp(&self, rel_path: PathBuf, stamp: FileStamp) {
+        self.stamps.write().insert(rel_path, stamp);
+    }
+
+    pub fn set_stamps(&self, new_stamps: HashMap<PathBuf, FileStamp>) {
+        let mut w = self.stamps.write();
+        w.extend(new_stamps);
+    }
+
+    pub fn stamps_cloned(&self) -> HashMap<PathBuf, FileStamp> {
+        self.stamps.read().clone()
+    }
+
+    pub fn clear_stamps(&self) {
+        self.stamps.write().clear();
+    }
+
+    pub fn set_db_path(&self, path: PathBuf) {
+        *self.db_path.write() = Some(path);
+    }
+
+    pub fn save_stamps(&self) {
+        if let Some(db_path) = self.db_path.read().as_ref() {
+            let stamps_file = stamps_path(db_path);
+            let stamps_map = self.stamps.read();
+            if let Ok(data) = bincode::serialize(&*stamps_map) {
+                let tmp_stamps = db_path.with_extension("stamps.tmp");
+                if std::fs::write(&tmp_stamps, &data).is_ok() {
+                    let _ = std::fs::rename(&tmp_stamps, &stamps_file);
+                }
+            }
         }
     }
 
@@ -378,28 +449,26 @@ impl VectorStore {
                     }
                     let mut record_buf = vec![0u8; len];
                     match file.read_exact(&mut record_buf) {
-                        Ok(()) => {
-                            match bincode::deserialize::<WalRecord>(&record_buf) {
-                                Ok(record) => {
-                                    match record {
-                                        WalRecord::Upsert(entry) => {
-                                            self.documents.insert(entry.id.clone(), *entry);
-                                        }
-                                        WalRecord::MetadataOnly(patch) => {
-                                            self.apply_prepared(PreparedUpsert::MetadataOnly(patch));
-                                        }
-                                        WalRecord::Remove(id) => {
-                                            self.remove(&id);
-                                        }
+                        Ok(()) => match bincode::deserialize::<WalRecord>(&record_buf) {
+                            Ok(record) => {
+                                match record {
+                                    WalRecord::Upsert(entry) => {
+                                        self.documents.insert(entry.id.clone(), *entry);
                                     }
-                                    count += 1;
+                                    WalRecord::MetadataOnly(patch) => {
+                                        self.apply_prepared(PreparedUpsert::MetadataOnly(patch));
+                                    }
+                                    WalRecord::Remove(id) => {
+                                        self.remove(&id);
+                                    }
                                 }
-                                Err(e) => {
-                                    tracing::warn!("WAL record deserialization error at record {count}: {e}. Stopping replay.");
-                                    break;
-                                }
+                                count += 1;
                             }
-                        }
+                            Err(e) => {
+                                tracing::warn!("WAL record deserialization error at record {count}: {e}. Stopping replay.");
+                                break;
+                            }
+                        },
                         Err(_) => {
                             tracing::warn!("Truncated WAL record at {count}. Stopping replay.");
                             break;
@@ -498,13 +567,17 @@ impl VectorStore {
 
                             // Persist the migrated store immediately so subsequent runs do not re-migrate
                             if let Err(e) = new_store.save(path) {
-                                tracing::warn!("Failed to persist migrated vector store to {path:?}: {e}");
+                                tracing::warn!(
+                                    "Failed to persist migrated vector store to {path:?}: {e}"
+                                );
                             }
 
                             new_store
                         }
                     } else {
-                        tracing::warn!("Failed to deserialize vector store entirely: {e}. Creating new.");
+                        tracing::warn!(
+                            "Failed to deserialize vector store entirely: {e}. Creating new."
+                        );
                         Self::new(dimension)
                     }
                 }
@@ -527,6 +600,17 @@ impl VectorStore {
         }
 
         store.sync_bm25_all();
+        store.set_db_path(path.to_path_buf());
+        let stamps_file = stamps_path(path);
+        if stamps_file.exists() {
+            if let Ok(bytes) = std::fs::read(&stamps_file) {
+                if let Ok(loaded_stamps) =
+                    bincode::deserialize::<HashMap<PathBuf, FileStamp>>(&bytes)
+                {
+                    *store.stamps.write() = loaded_stamps;
+                }
+            }
+        }
 
         Ok(store)
     }
@@ -564,6 +648,9 @@ impl VectorStore {
         if wal_compacting.exists() {
             let _ = std::fs::remove_file(&wal_compacting);
         }
+
+        self.set_db_path(path.to_path_buf());
+        self.save_stamps();
 
         let elapsed_write = t_write.elapsed();
 
@@ -772,9 +859,11 @@ impl VectorStore {
             } else {
                 String::new()
             };
-            let snippet = entry.body_chunks.first().cloned().unwrap_or_else(|| {
-                entry.chunk_texts.first().cloned().unwrap_or_default()
-            });
+            let snippet = entry
+                .body_chunks
+                .first()
+                .cloned()
+                .unwrap_or_else(|| entry.chunk_texts.first().cloned().unwrap_or_default());
             let chunk_text = snippet.clone();
             bm25.upsert(
                 &entry.id,
@@ -815,9 +904,10 @@ impl VectorStore {
                     entry.file_hash = Some(patch.file_hash);
 
                     let body_text = entry.chunk_texts.join(" ");
-                    let snippet = entry.body_chunks.first().cloned().unwrap_or_else(|| {
-                        entry.chunk_texts.first().cloned().unwrap_or_default()
-                    });
+                    let snippet =
+                        entry.body_chunks.first().cloned().unwrap_or_else(|| {
+                            entry.chunk_texts.first().cloned().unwrap_or_default()
+                        });
                     self.bm25.write().upsert(
                         &entry.id,
                         entry.path.clone(),
@@ -843,9 +933,11 @@ impl VectorStore {
             }
             PreparedUpsert::Full(entry) => {
                 let body_text = entry.chunk_texts.join(" ");
-                let snippet = entry.body_chunks.first().cloned().unwrap_or_else(|| {
-                    entry.chunk_texts.first().cloned().unwrap_or_default()
-                });
+                let snippet = entry
+                    .body_chunks
+                    .first()
+                    .cloned()
+                    .unwrap_or_else(|| entry.chunk_texts.first().cloned().unwrap_or_default());
                 self.bm25.write().upsert(
                     &entry.id,
                     entry.path.clone(),
@@ -912,9 +1004,10 @@ impl VectorStore {
         };
 
         let body_text = chunks.join(" ");
-        let snippet = body_chunks.first().cloned().unwrap_or_else(|| {
-            chunks.first().cloned().unwrap_or_default()
-        });
+        let snippet = body_chunks
+            .first()
+            .cloned()
+            .unwrap_or_else(|| chunks.first().cloned().unwrap_or_default());
         self.bm25.write().upsert(
             &canonical_id,
             norm_path,
@@ -938,7 +1031,8 @@ impl VectorStore {
     /// Returns true if the document was found and removed.
     pub fn remove(&mut self, id: &str) -> bool {
         self.bm25.write().remove(id);
-        if self.documents.remove(id).is_some() {
+        if let Some(entry) = self.documents.remove(id) {
+            self.stamps.write().remove(&entry.path);
             true
         } else {
             let target_path = Path::new(id);
@@ -951,7 +1045,12 @@ impl VectorStore {
             });
             if let Some(actual_id) = found_id {
                 self.bm25.write().remove(&actual_id);
-                self.documents.remove(&actual_id).is_some()
+                if let Some(entry) = self.documents.remove(&actual_id) {
+                    self.stamps.write().remove(&entry.path);
+                    true
+                } else {
+                    false
+                }
             } else {
                 false
             }
@@ -965,10 +1064,12 @@ impl VectorStore {
     ) -> usize {
         let before = self.documents.len();
         let mut bm25 = self.bm25.write();
-        self.documents.retain(|id, _| {
+        let mut stamps = self.stamps.write();
+        self.documents.retain(|id, entry| {
             let keep = existing_ids.contains(id);
             if !keep {
                 bm25.remove(id);
+                stamps.remove(&entry.path);
             }
             keep
         });
@@ -989,7 +1090,9 @@ impl VectorStore {
         before: Option<&str>,
         type_filter: Option<&str>,
     ) -> Vec<SearchResult> {
-        self.bm25.read().search(query, limit, pkb_root, since, before, type_filter)
+        self.bm25
+            .read()
+            .search(query, limit, pkb_root, since, before, type_filter)
     }
 
     /// Hybrid search: Combines vector similarity and BM25 lexical retrieval via Reciprocal Rank Fusion (RRF).
@@ -1011,8 +1114,16 @@ impl VectorStore {
         let _guard = opentelemetry::trace::mark_span_as_active(span);
 
         let fetch_limit = (limit * 3).max(20);
-        let vector_results = self.search(query_embedding, fetch_limit, pkb_root, since, before, type_filter);
-        let bm25_results = self.search_bm25(query, fetch_limit, pkb_root, since, before, type_filter);
+        let vector_results = self.search(
+            query_embedding,
+            fetch_limit,
+            pkb_root,
+            since,
+            before,
+            type_filter,
+        );
+        let bm25_results =
+            self.search_bm25(query, fetch_limit, pkb_root, since, before, type_filter);
 
         let config = crate::rrf::RrfConfig {
             k: crate::rrf::DEFAULT_RRF_K,
@@ -1601,7 +1712,14 @@ mod tests {
     fn test_search_filter_by_unknown_type_returns_empty() {
         let store = build_test_store();
         let root = Path::new("/pkb");
-        let results = store.search(&[0.5, 0.5, 0.5], 10, root, None, None, Some("nonexistent_type"));
+        let results = store.search(
+            &[0.5, 0.5, 0.5],
+            10,
+            root,
+            None,
+            None,
+            Some("nonexistent_type"),
+        );
         assert!(results.is_empty());
     }
 
@@ -2200,7 +2318,8 @@ mod tests {
 
         // Append incomplete / corrupted bytes at end of file (simulating power failure / SIGKILL mid-write)
         let mut file = std::fs::OpenOptions::new().append(true).open(&wal).unwrap();
-        file.write_all(&[0x10, 0x00, 0x00, 0x00, 0xDE, 0xAD, 0xBE, 0xEF]).unwrap();
+        file.write_all(&[0x10, 0x00, 0x00, 0x00, 0xDE, 0xAD, 0xBE, 0xEF])
+            .unwrap();
         file.flush().unwrap();
         drop(file);
 
@@ -2257,7 +2376,10 @@ mod tests {
 
         // Saving snapshot compacts and removes WAL
         loaded.save(&db_path).unwrap();
-        assert!(!wal_path.exists(), "Snapshot save must remove compacted WAL file");
+        assert!(
+            !wal_path.exists(),
+            "Snapshot save must remove compacted WAL file"
+        );
 
         // Re-load should find fresh snapshot with no WAL
         let reloaded = VectorStore::load_or_create(&db_path, 3).unwrap();
@@ -2357,12 +2479,18 @@ mod tests {
         if wal_compacting_path.exists() {
             std::fs::remove_file(&wal_compacting_path).unwrap();
         }
-        assert!(wal_path.exists(), "Concurrent incoming WAL must NOT be deleted by save");
+        assert!(
+            wal_path.exists(),
+            "Concurrent incoming WAL must NOT be deleted by save"
+        );
 
         // On reload, the fresh incoming WAL must be replayed
         let loaded = VectorStore::load_or_create(&db_path, 3).unwrap();
         assert_eq!(loaded.get_entry("t1").unwrap().title, "T1 Mod2 Incoming");
-        assert_eq!(loaded.get_entry("t1").unwrap().status.as_deref(), Some("done"));
+        assert_eq!(
+            loaded.get_entry("t1").unwrap().status.as_deref(),
+            Some("done")
+        );
     }
 
     #[test]
@@ -2401,7 +2529,8 @@ mod tests {
             confidence: None,
             file_hash: "fh1".to_string(),
         };
-        VectorStore::append_wal_record(&wal_compacting_path, &WalRecord::MetadataOnly(patch1)).unwrap();
+        VectorStore::append_wal_record(&wal_compacting_path, &WalRecord::MetadataOnly(patch1))
+            .unwrap();
 
         // Record 2 in new WAL
         let patch2 = MetadataPatch {
@@ -2422,15 +2551,18 @@ mod tests {
         // Load or create must replay both in sequence
         let loaded = VectorStore::load_or_create(&db_path, 3).unwrap();
         assert_eq!(loaded.get_entry("t1").unwrap().title, "T1 Final");
-        assert_eq!(loaded.get_entry("t1").unwrap().status.as_deref(), Some("done"));
+        assert_eq!(
+            loaded.get_entry("t1").unwrap().status.as_deref(),
+            Some("done")
+        );
     }
 
     #[test]
     fn test_legacy_store_migration_and_dimension_check() {
         use tempfile::tempdir;
         let dir = tempdir().unwrap();
-        let legacy_fixture_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("tests/fixtures/legacy_v1_store.bin");
+        let legacy_fixture_path =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/legacy_v1_store.bin");
 
         // 1. Verify the checked-in fixture exists on disk
         assert!(
@@ -2465,7 +2597,9 @@ mod tests {
         assert_eq!(migrated.dimension, 3);
         assert_eq!(migrated.len(), 2);
 
-        let doc1 = migrated.get_entry("legacy-task-1").expect("legacy-task-1 present");
+        let doc1 = migrated
+            .get_entry("legacy-task-1")
+            .expect("legacy-task-1 present");
         assert_eq!(doc1.title, "Legacy Task 1");
         assert_eq!(doc1.doc_type.as_deref(), Some("task"));
         assert_eq!(doc1.status.as_deref(), Some("active"));
@@ -2474,7 +2608,9 @@ mod tests {
         assert_eq!(doc1.consolidated_at, None);
         assert_eq!(doc1.chunk_embeddings, vec![vec![1.0, 0.0, 0.0]]);
 
-        let doc2 = migrated.get_entry("legacy-note-2").expect("legacy-note-2 present");
+        let doc2 = migrated
+            .get_entry("legacy-note-2")
+            .expect("legacy-note-2 present");
         assert_eq!(doc2.title, "Legacy Note 2");
         assert_eq!(doc2.doc_type.as_deref(), Some("note"));
         assert_eq!(doc2.status, None);
