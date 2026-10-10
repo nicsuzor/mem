@@ -30,12 +30,19 @@ impl PkbSearchServer {
         let node_ids: Vec<String> = graph.nodes().map(|n| n.id.clone()).collect();
         let edges = graph.edges();
 
+        let (downstream_weight, stakeholder_exposure) =
+            if graph.ranking_mode() == crate::polecat_config::RankingMode::Flow {
+                (None, None)
+            } else {
+                (Some(node.downstream_weight), Some(node.stakeholder_exposure))
+            };
+
         let m = crate::metrics::compute_network_metrics(
             id,
             &node_ids,
             edges,
-            node.downstream_weight,
-            node.stakeholder_exposure,
+            downstream_weight,
+            stakeholder_exposure,
         );
 
         match m {
@@ -67,12 +74,19 @@ impl PkbSearchServer {
             let node_ids: Vec<String> = graph.nodes().map(|n| n.id.clone()).collect();
             let edges = graph.edges();
 
+            let (downstream_weight, stakeholder_exposure) =
+                if graph.ranking_mode() == crate::polecat_config::RankingMode::Flow {
+                    (None, None)
+                } else {
+                    (Some(node.downstream_weight), Some(node.stakeholder_exposure))
+                };
+
             let m = crate::metrics::compute_network_metrics(
                 id,
                 &node_ids,
                 edges,
-                node.downstream_weight,
-                node.stakeholder_exposure,
+                downstream_weight,
+                stakeholder_exposure,
             );
 
             return match m {
@@ -99,11 +113,15 @@ impl PkbSearchServer {
                 data: None,
             })?;
 
-        if metric != "pagerank" && metric != "betweenness" && metric != "degree" {
+        let is_valid_metric = matches!(
+            metric,
+            "pagerank" | "betweenness" | "degree" | "gain" | "loss_averted" | "decision_value"
+        );
+        if !is_valid_metric {
             return Err(McpError {
                 code: ErrorCode::INVALID_PARAMS,
                 message: Cow::from(
-                    "Invalid metric: must be 'pagerank', 'betweenness', or 'degree'",
+                    "Invalid metric: must be 'pagerank', 'betweenness', 'degree', 'gain', 'loss_averted', or 'decision_value'",
                 ),
                 data: None,
             });
@@ -156,6 +174,33 @@ impl PkbSearchServer {
                     deg_b.cmp(&deg_a).then_with(|| a.id.cmp(&b.id))
                 });
             }
+            "gain" => {
+                nodes.sort_by(|a, b| {
+                    let ga = a.flow.as_ref().and_then(|f| f.gain).unwrap_or(0.0);
+                    let gb = b.flow.as_ref().and_then(|f| f.gain).unwrap_or(0.0);
+                    gb.partial_cmp(&ga)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                        .then_with(|| a.id.cmp(&b.id))
+                });
+            }
+            "loss_averted" => {
+                nodes.sort_by(|a, b| {
+                    let la = a.flow.as_ref().and_then(|f| f.loss_averted).unwrap_or(0.0);
+                    let lb = b.flow.as_ref().and_then(|f| f.loss_averted).unwrap_or(0.0);
+                    lb.partial_cmp(&la)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                        .then_with(|| a.id.cmp(&b.id))
+                });
+            }
+            "decision_value" => {
+                nodes.sort_by(|a, b| {
+                    let da = a.flow.as_ref().and_then(|f| f.decision_value).unwrap_or(0.0);
+                    let db = b.flow.as_ref().and_then(|f| f.decision_value).unwrap_or(0.0);
+                    db.partial_cmp(&da)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                        .then_with(|| a.id.cmp(&b.id))
+                });
+            }
             _ => unreachable!(),
         }
 
@@ -166,6 +211,9 @@ impl PkbSearchServer {
                     "pagerank" => n.pagerank,
                     "betweenness" => n.betweenness,
                     "degree" => (n.indegree + n.outdegree) as f64,
+                    "gain" => n.flow.as_ref().and_then(|f| f.gain).unwrap_or(0.0),
+                    "loss_averted" => n.flow.as_ref().and_then(|f| f.loss_averted).unwrap_or(0.0),
+                    "decision_value" => n.flow.as_ref().and_then(|f| f.decision_value).unwrap_or(0.0),
                     _ => 0.0,
                 };
                 serde_json::json!({
@@ -637,6 +685,7 @@ impl PkbSearchServer {
 
         let graph = self.graph.read();
         let divergences = graph.detect_weight_divergences(threshold_days);
+        let is_flow_mode = graph.ranking_mode() == crate::polecat_config::RankingMode::Flow;
         drop(graph);
 
         let total = divergences.len();
@@ -652,20 +701,45 @@ impl PkbSearchServer {
             total, threshold_days
         );
 
-        out.push_str("| Source Task | Weight | Target | Inactive | Justification |\n");
-        out.push_str("| :--- | :--- | :--- | :--- | :--- |\n");
+        if is_flow_mode {
+            out.push_str("| Source Task | Label | Quantum | Prob | Strength | Target | Inactive | Justification |\n");
+            out.push_str("| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |\n");
 
-        for div in &divergences {
-            out.push_str(&format!(
-                "| {} (`{}`) | **{}** | {} (`{}`) | {}d | {} |\n",
-                div.source_label,
-                div.source_id,
-                div.stated_weight,
-                div.target_label,
-                div.target_id,
-                div.days_since_interaction,
-                div.justification
-            ));
+            for div in &divergences {
+                let label_str = div.label.as_deref().unwrap_or("serves");
+                let q_str = div.quantum.map(|q| format!("{:.2}", q)).unwrap_or_else(|| "-".to_string());
+                let p_str = div.probability.map(|p| format!("{:.2}", p)).unwrap_or_else(|| "-".to_string());
+                let s_str = div.strength.map(|s| format!("{:.2}", s)).unwrap_or_else(|| div.stated_weight.clone());
+                out.push_str(&format!(
+                    "| {} (`{}`) | {} | {} | {} | **{}** | {} (`{}`) | {}d | {} |\n",
+                    div.source_label,
+                    div.source_id,
+                    label_str,
+                    q_str,
+                    p_str,
+                    s_str,
+                    div.target_label,
+                    div.target_id,
+                    div.days_since_interaction,
+                    div.justification
+                ));
+            }
+        } else {
+            out.push_str("| Source Task | Weight | Target | Inactive | Justification |\n");
+            out.push_str("| :--- | :--- | :--- | :--- | :--- |\n");
+
+            for div in &divergences {
+                out.push_str(&format!(
+                    "| {} (`{}`) | **{}** | {} (`{}`) | {}d | {} |\n",
+                    div.source_label,
+                    div.source_id,
+                    div.stated_weight,
+                    div.target_label,
+                    div.target_id,
+                    div.days_since_interaction,
+                    div.justification
+                ));
+            }
         }
 
         out.push_str("\n\n**Resolution surface:** For each divergence, consider if the contribution weight is still accurate given the lack of recent activity on the source task.");

@@ -761,6 +761,12 @@ pub struct NestedTaskNode {
     pub is_context: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub blocked: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gain: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub loss_averted: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub decision_value: Option<f64>,
     pub children: Vec<NestedTaskNode>,
 }
 
@@ -812,7 +818,14 @@ pub fn format_context_line(node: &GraphNode, child_task_count: usize, plain: boo
 
 pub fn format_task_line(task: &GraphNode, width: usize, plain: bool) -> String {
     let pri = task.intent.unwrap_or(4);
-    let exposure = if task.stakeholder_exposure { "!" } else { " " };
+    let is_flow = task.flow.is_some();
+    let exposure = if is_flow {
+        " "
+    } else if task.stakeholder_exposure {
+        "!"
+    } else {
+        " "
+    };
 
     let left = if plain {
         format!("P{pri}{exposure} {}", task.label)
@@ -828,7 +841,30 @@ pub fn format_task_line(task: &GraphNode, width: usize, plain: bool) -> String {
 
     let mut right_parts: Vec<String> = Vec::new();
 
-    if task.downstream_weight > 0.0 {
+    if is_flow {
+        if let Some(ref flow) = task.flow {
+            if let Some(gain) = flow.gain {
+                if gain > 0.0 {
+                    let g = format!("g:{:.1}", gain);
+                    if plain {
+                        right_parts.push(g);
+                    } else {
+                        right_parts.push(format!("\x1b[2m{g}\x1b[0m"));
+                    }
+                }
+            }
+            if let Some(loss) = flow.loss_averted {
+                if loss > 0.0 {
+                    let l = format!("l:{:.1}", loss);
+                    if plain {
+                        right_parts.push(l);
+                    } else {
+                        right_parts.push(format!("\x1b[2m{l}\x1b[0m"));
+                    }
+                }
+            }
+        }
+    } else if task.downstream_weight > 0.0 {
         let wt = format!("wt:{:.1}", task.downstream_weight);
         if plain {
             right_parts.push(wt);
@@ -910,6 +946,17 @@ pub fn format_task_line(task: &GraphNode, width: usize, plain: bool) -> String {
 }
 
 pub fn sort_siblings(nodes: &mut [&GraphNode], context_ids: &HashSet<String>) {
+    sort_siblings_with_mode(nodes, context_ids, None);
+}
+
+pub fn sort_siblings_with_mode(
+    nodes: &mut [&GraphNode],
+    context_ids: &HashSet<String>,
+    mode: Option<crate::polecat_config::RankingMode>,
+) {
+    let is_flow = mode == Some(crate::polecat_config::RankingMode::Flow);
+    let today = chrono::Utc::now().date_naive();
+    let buffer_days = crate::display_rank::DISPLAY_CLIFF_BUFFER_DAYS;
     nodes.sort_by(|a, b| {
         let a_ctx = context_ids.contains(&a.id);
         let b_ctx = context_ids.contains(&b.id);
@@ -917,7 +964,17 @@ pub fn sort_siblings(nodes: &mut [&GraphNode], context_ids: &HashSet<String>) {
             (true, false) => std::cmp::Ordering::Less,
             (false, true) => std::cmp::Ordering::Greater,
             (true, true) => a.label.cmp(&b.label),
-            (false, false) => GraphStore::focus_cmp(a, b),
+            (false, false) => {
+                if is_flow {
+                    let item_a = crate::display_rank::DisplayTask::from_graph_node(a, a.flow.as_ref());
+                    let item_b = crate::display_rank::DisplayTask::from_graph_node(b, b.flow.as_ref());
+                    let da = item_a.to_display_item(today, buffer_days);
+                    let db = item_b.to_display_item(today, buffer_days);
+                    crate::display_rank::display_cmp(&da, &db)
+                } else {
+                    GraphStore::focus_cmp(a, b)
+                }
+            }
         }
     });
 }
@@ -990,7 +1047,7 @@ pub fn collect_tree_roots<'a>(
         })
         .collect();
 
-    sort_siblings(&mut roots, &context_ids);
+    sort_siblings_with_mode(&mut roots, &context_ids, Some(gs.ranking_mode()));
 
     (roots, visible, context_ids)
 }
@@ -1034,7 +1091,7 @@ fn render_tree_ascii_node(
         .filter(|cid| visible.contains(cid.as_str()))
         .filter_map(|cid| gs.get_node(cid))
         .collect();
-    sort_siblings(&mut children, context_ids);
+    sort_siblings_with_mode(&mut children, context_ids, Some(gs.ranking_mode()));
 
     let child_prefix = if is_last {
         format!("{prefix}    ")
@@ -1106,6 +1163,24 @@ fn build_nested_json_node(
 ) -> NestedTaskNode {
     let tid = node.task_id.as_deref().unwrap_or(&node.id).to_string();
     let is_ctx = context_ids.contains(&node.id);
+    let is_flow = gs.ranking_mode() == crate::polecat_config::RankingMode::Flow;
+    let (gain, loss_averted, decision_value) = if let Some(ref flow) = node.flow {
+        (flow.gain, flow.loss_averted, flow.decision_value)
+    } else {
+        (None, None, None)
+    };
+    let (effective_intent, downstream_weight) = if is_flow {
+        (None, None)
+    } else {
+        (
+            node.effective_intent,
+            if node.downstream_weight > 0.0 {
+                Some(node.downstream_weight)
+            } else {
+                None
+            },
+        )
+    };
 
     if !ancestor_path.insert(node.id.clone()) {
         return NestedTaskNode {
@@ -1114,12 +1189,8 @@ fn build_nested_json_node(
             node_type: node.node_type.clone(),
             status: node.status.clone(),
             intent: node.intent,
-            effective_intent: node.effective_intent,
-            downstream_weight: if node.downstream_weight > 0.0 {
-                Some(node.downstream_weight)
-            } else {
-                None
-            },
+            effective_intent,
+            downstream_weight,
             complexity: node.complexity.clone(),
             due: node.due.clone(),
             assignee: node.assignee.clone(),
@@ -1130,6 +1201,9 @@ fn build_nested_json_node(
             } else {
                 Some(gs.is_blocked(&node.id))
             },
+            gain,
+            loss_averted,
+            decision_value,
             children: Vec::new(),
         };
     }
@@ -1140,7 +1214,7 @@ fn build_nested_json_node(
         .filter(|cid| visible.contains(cid.as_str()))
         .filter_map(|cid| gs.get_node(cid))
         .collect();
-    sort_siblings(&mut children_nodes, context_ids);
+    sort_siblings_with_mode(&mut children_nodes, context_ids, Some(gs.ranking_mode()));
 
     let children = children_nodes
         .into_iter()
@@ -1155,12 +1229,8 @@ fn build_nested_json_node(
         node_type: node.node_type.clone(),
         status: node.status.clone(),
         intent: node.intent,
-        effective_intent: node.effective_intent,
-        downstream_weight: if node.downstream_weight > 0.0 {
-            Some(node.downstream_weight)
-        } else {
-            None
-        },
+        effective_intent,
+        downstream_weight,
         complexity: node.complexity.clone(),
         due: node.due.clone(),
         assignee: node.assignee.clone(),
@@ -1171,6 +1241,9 @@ fn build_nested_json_node(
         } else {
             Some(gs.is_blocked(&node.id))
         },
+        gain,
+        loss_averted,
+        decision_value,
         children,
     }
 }

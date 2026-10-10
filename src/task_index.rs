@@ -46,12 +46,20 @@ pub struct McpIndexEntry {
     pub stakeholder: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub waiting_since: Option<String>,
-    #[serde(default)]
-    pub downstream_weight: f64,
-    #[serde(default)]
-    pub stakeholder_exposure: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub downstream_weight: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stakeholder_exposure: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub focus_score: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub gain: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub loss_averted: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub decision_value: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub display_rank: Option<usize>,
     /// True if the body specifies acceptance criteria — the graduation signal
     /// that lets an `inbox` leaf be surfaced as ready without a manual status edit.
     #[serde(default)]
@@ -75,6 +83,20 @@ pub struct McpIndex {
 /// Relationships (children, blocks, etc.) are already resolved in the graph.
 pub fn build_mcp_index(store: &GraphStore, data_root: &Path) -> McpIndex {
     let mut entries: HashMap<String, McpIndexEntry> = HashMap::new();
+
+    let today = chrono::Utc::now().date_naive();
+    let buffer_days = crate::display_rank::DISPLAY_CLIFF_BUFFER_DAYS;
+    let display_ranks: HashMap<String, usize> = if store.ranking_mode() == crate::polecat_config::RankingMode::Flow {
+        let mut display_ranked: Vec<&crate::graph::GraphNode> = store.nodes().collect();
+        crate::graph_store::GraphStore::sort_by_display(&mut display_ranked, today, buffer_days);
+        display_ranked
+            .iter()
+            .enumerate()
+            .map(|(i, n)| (n.id.clone(), i + 1))
+            .collect()
+    } else {
+        HashMap::new()
+    };
 
     // Build entries from graph nodes
     for node in store.nodes() {
@@ -122,9 +144,41 @@ pub fn build_mcp_index(store: &GraphStore, data_root: &Path) -> McpIndex {
                 consequence: node.consequence.clone(),
                 stakeholder: node.stakeholder.clone(),
                 waiting_since: node.waiting_since.clone(),
-                downstream_weight: node.downstream_weight,
-                stakeholder_exposure: node.stakeholder_exposure,
-                focus_score: node.focus_score,
+                downstream_weight: if store.ranking_mode() == crate::polecat_config::RankingMode::Flow {
+                    None
+                } else {
+                    Some(node.downstream_weight)
+                },
+                stakeholder_exposure: if store.ranking_mode() == crate::polecat_config::RankingMode::Flow {
+                    None
+                } else {
+                    Some(node.stakeholder_exposure)
+                },
+                focus_score: if store.ranking_mode() == crate::polecat_config::RankingMode::Flow {
+                    None
+                } else {
+                    node.focus_score
+                },
+                gain: if store.ranking_mode() == crate::polecat_config::RankingMode::Flow {
+                    node.flow.as_ref().and_then(|f| f.gain)
+                } else {
+                    None
+                },
+                loss_averted: if store.ranking_mode() == crate::polecat_config::RankingMode::Flow {
+                    node.flow.as_ref().and_then(|f| f.loss_averted)
+                } else {
+                    None
+                },
+                decision_value: if store.ranking_mode() == crate::polecat_config::RankingMode::Flow {
+                    node.flow.as_ref().and_then(|f| f.decision_value)
+                } else {
+                    None
+                },
+                display_rank: if store.ranking_mode() == crate::polecat_config::RankingMode::Flow {
+                    display_ranks.get(&node.id).copied()
+                } else {
+                    None
+                },
                 has_acceptance_criteria: node.has_acceptance_criteria,
             },
         );
@@ -276,19 +330,30 @@ pub fn build_mcp_index(store: &GraphStore, data_root: &Path) -> McpIndex {
     }
 
     // Sort ready
-    ready.sort_by(|a, b| {
-        let ea = entries.get(a).unwrap();
-        let eb = entries.get(b).unwrap();
-        ea.intent
-            .cmp(&eb.intent)
-            .then(
-                eb.downstream_weight
-                    .partial_cmp(&ea.downstream_weight)
-                    .unwrap_or(std::cmp::Ordering::Equal),
-            )
-            .then(ea.order.cmp(&eb.order))
-            .then(ea.title.cmp(&eb.title))
-    });
+    if store.ranking_mode() == crate::polecat_config::RankingMode::Flow {
+        let mut ready_nodes: Vec<&crate::graph::GraphNode> =
+            ready.iter().filter_map(|id| store.resolve(id)).collect();
+        crate::graph_store::GraphStore::sort_by_display(&mut ready_nodes, today, buffer_days);
+        ready = ready_nodes
+            .iter()
+            .map(|n| n.task_id.as_deref().unwrap_or(&n.id).to_string())
+            .collect();
+    } else {
+        ready.sort_by(|a, b| {
+            let ea = entries.get(a).unwrap();
+            let eb = entries.get(b).unwrap();
+            ea.intent
+                .cmp(&eb.intent)
+                .then(
+                    eb.downstream_weight
+                        .unwrap_or(0.0)
+                        .partial_cmp(&ea.downstream_weight.unwrap_or(0.0))
+                        .unwrap_or(std::cmp::Ordering::Equal),
+                )
+                .then(ea.order.cmp(&eb.order))
+                .then(ea.title.cmp(&eb.title))
+        });
+    }
 
     McpIndex {
         version: 2,

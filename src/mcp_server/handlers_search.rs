@@ -183,7 +183,18 @@ impl PkbSearchServer {
                 if !node.depends_on.is_empty() {
                     output.push_str(&format!("**Depends on:** {}\n", node.depends_on.join(", ")));
                 }
-                if node.uncertainty > 0.0 || node.criticality > 0.0 || node.scope > 0 {
+                if graph.ranking_mode() == crate::polecat_config::RankingMode::Flow {
+                    if let Some(ref flow) = node.flow {
+                        let g = flow.gain.unwrap_or(0.0);
+                        let l = flow.loss_averted.unwrap_or(0.0);
+                        if g > 0.0 || l > 0.0 {
+                            output.push_str(&format!(
+                                "**Flow:** gain={:.2} loss_averted={:.2}\n",
+                                g, l
+                            ));
+                        }
+                    }
+                } else if node.uncertainty > 0.0 || node.criticality > 0.0 || node.scope > 0 {
                     output.push_str(&format!(
                         "**Metrics:** scope={} uncertainty={:.2} criticality={:.2}\n",
                         node.scope, node.uncertainty, node.criticality

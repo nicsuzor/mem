@@ -114,8 +114,8 @@ impl PkbSearchServer {
                     "properties": {
                         "metric": {
                             "type": "string",
-                            "enum": ["pagerank", "betweenness", "degree"],
-                            "description": "Centrality metric to rank by (pagerank, betweenness, degree). Required unless 'id' is supplied."
+                            "enum": ["pagerank", "betweenness", "degree", "gain", "loss_averted", "decision_value"],
+                            "description": "Centrality or flow metric to rank by (pagerank, betweenness, degree, gain, loss_averted, decision_value). Required unless 'id' is supplied."
                         },
                         "id": {
                             "type": "string",
@@ -377,8 +377,14 @@ impl PkbSearchServer {
                         "assignee": { "type": "string", "description": "Filter by assignee" },
                         "type": { "type": "string", "description": "Filter by document type (e.g. 'task', 'target', 'learn', 'pr')" },
                         "title_contains": { "type": "string", "description": "Filter by title substring (case-insensitive)" },
-                        "complexity": { "type": "string", "description": "Filter by complexity (e.g. 'low', 'medium', 'high')" },
                         "weight_gte": { "type": "integer", "description": "Filter to tasks with downstream weight ≥ N" },
+                        "gain_gte": { "type": "number", "description": "Filter to tasks with flow gain ≥ N" },
+                        "loss_averted_gte": { "type": "number", "description": "Filter to tasks with flow loss averted ≥ N" },
+                        "sort": {
+                            "type": "string",
+                            "enum": ["default", "gain", "loss_averted", "decision_value", "gain_per_effort", "loss_averted_per_effort", "due", "id"],
+                            "description": "Sort order: 'default' (display_cmp under flow ranking), or by 'gain', 'loss_averted', 'decision_value', 'gain_per_effort', 'loss_averted_per_effort', 'due', 'id'."
+                        },
                         "tags": { "type": "array", "items": { "type": "string" }, "description": "Filter by tags. A task matches iff every requested tag is present in its frontmatter `tags` array (AND, case-insensitive)." },
                         "has_superseded_by": { "type": "boolean", "description": "Filter by presence of a computed `superseded_by` reverse index (materialised from another node's `supersedes` edge, never hand-written). When true, returns only tasks some other node names via `supersedes`; when false, returns only tasks nothing supersedes. When this filter is active, returned rows (both markdown and JSON) include the `superseded_by` target id(s) as a list. Default: unset (no filter applied)." },
                         "focus_score_gte": { "type": "integer", "description": "Filter to tasks whose composite focus_score is ≥ N." },
@@ -459,6 +465,7 @@ impl PkbSearchServer {
                         "max_bytes": { "type": "integer", "description": "Optional: truncate the returned body to at most N bytes (UTF-8-safe), appending a truncation marker. Default: unset — full body is returned." },
                         "metadata_only": { "type": "boolean", "description": "Optional: return only frontmatter metadata and signals, omitting the markdown body (default: false)." },
                         "include_signals": { "type": "boolean", "description": "Include individual ranking component signals in response (default: true). Set to false to reduce token payload." },
+                        "include_routes": { "type": "boolean", "description": "Include route explanations and diagnostics in response under flow ranking (default: true). Set to false to reduce token payload." },
                         "fields": {
                             "description": "Optional: return only specific fields to reduce token payload. Comma-separated string or array of field names (e.g. ['id', 'title', 'status', 'parent']).",
                             "anyOf": [
