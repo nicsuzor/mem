@@ -69,6 +69,9 @@ pub struct DocumentFields {
     pub stakeholder: Option<String>,
     pub waiting_since: Option<String>,
     pub contributes_to: Vec<serde_json::Value>,
+    pub links: Vec<serde_json::Value>,
+    pub worth: Option<serde_json::Value>,
+    pub deadline_class: Option<String>,
     /// Override subdirectory placement (e.g. "notes", "projects")
     pub dir: Option<String>,
 }
@@ -101,6 +104,9 @@ pub struct TaskFields {
     pub follow_up_tasks: Vec<String>,
     pub release_summary: Option<String>,
     pub contributes_to: Vec<serde_json::Value>,
+    pub links: Vec<serde_json::Value>,
+    pub worth: Option<serde_json::Value>,
+    pub deadline_class: Option<String>,
     pub classification: Option<String>,
     /// Override subdirectory placement
     pub dir: Option<String>,
@@ -229,6 +235,17 @@ pub fn create_document(root: &Path, fields: DocumentFields) -> Result<PathBuf> {
                 effort
             );
         }
+    }
+    if !fields.links.is_empty() {
+        let links_val = serde_json::Value::Array(fields.links.clone());
+        crate::graph::validate_links_value(&links_val).map_err(|e| anyhow::anyhow!("{e}"))?;
+    }
+    if let Some(ref w) = fields.worth {
+        crate::graph::validate_worth_value(w).map_err(|e| anyhow::anyhow!("{e}"))?;
+    }
+    if let Some(ref dc) = fields.deadline_class {
+        let dc_val = serde_json::Value::String(dc.clone());
+        crate::graph::validate_deadline_class_value(&dc_val).map_err(|e| anyhow::anyhow!("{e}"))?;
     }
 
     let type_prefix = type_prefix(&fields.doc_type);
@@ -400,6 +417,28 @@ pub fn create_document(root: &Path, fields: DocumentFields) -> Result<PathBuf> {
                 }
             }
         }
+    }
+
+    if !fields.links.is_empty() {
+        if let Ok(yaml) = serde_yaml::to_string(&fields.links) {
+            fm.push_str("links:\n");
+            for line in yaml.trim_start_matches("---\n").lines() {
+                if !line.is_empty() {
+                    fm.push_str(&format!("  {}\n", line));
+                }
+            }
+        }
+    }
+
+    if let Some(ref w) = fields.worth {
+        if let Ok(yaml) = serde_yaml::to_string(w) {
+            let s = yaml.trim_start_matches("---\n").trim();
+            fm.push_str(&format!("worth: {}\n", s));
+        }
+    }
+
+    if let Some(ref dc) = fields.deadline_class {
+        fm.push_str(&format!("deadline_class: {}\n", dc));
     }
 
     fm.push_str("---\n\n");
@@ -640,6 +679,17 @@ pub fn create_task(root: &Path, fields: TaskFields) -> Result<PathBuf> {
             );
         }
     }
+    if !fields.links.is_empty() {
+        let links_val = serde_json::Value::Array(fields.links.clone());
+        crate::graph::validate_links_value(&links_val).map_err(|e| anyhow::anyhow!("{e}"))?;
+    }
+    if let Some(ref w) = fields.worth {
+        crate::graph::validate_worth_value(w).map_err(|e| anyhow::anyhow!("{e}"))?;
+    }
+    if let Some(ref dc) = fields.deadline_class {
+        let dc_val = serde_json::Value::String(dc.clone());
+        crate::graph::validate_deadline_class_value(&dc_val).map_err(|e| anyhow::anyhow!("{e}"))?;
+    }
 
     // Validate + canonicalize the project slug against polecat.yaml before it
     // is used anywhere (ID prefix, frontmatter). Builtin slugs (`task`,
@@ -855,6 +905,28 @@ pub fn create_task(root: &Path, fields: TaskFields) -> Result<PathBuf> {
                 }
             }
         }
+    }
+
+    if !fields.links.is_empty() {
+        if let Ok(yaml) = serde_yaml::to_string(&fields.links) {
+            fm.push_str("links:\n");
+            for line in yaml.trim_start_matches("---\n").lines() {
+                if !line.is_empty() {
+                    fm.push_str(&format!("  {}\n", line));
+                }
+            }
+        }
+    }
+
+    if let Some(ref w) = fields.worth {
+        if let Ok(yaml) = serde_yaml::to_string(w) {
+            let s = yaml.trim_start_matches("---\n").trim();
+            fm.push_str(&format!("worth: {}\n", s));
+        }
+    }
+
+    if let Some(ref dc) = fields.deadline_class {
+        fm.push_str(&format!("deadline_class: {}\n", dc));
     }
 
     fm.push_str("---\n\n");
@@ -1603,6 +1675,16 @@ fn first_duplicate_top_level_key(raw: &str) -> Option<String> {
 pub fn update_document(path: &Path, updates: HashMap<String, serde_json::Value>) -> Result<()> {
     if updates.is_empty() {
         return Ok(());
+    }
+
+    if let Some(links_val) = updates.get("links") {
+        crate::graph::validate_links_value(links_val).map_err(|e| anyhow::anyhow!("{e}"))?;
+    }
+    if let Some(worth_val) = updates.get("worth") {
+        crate::graph::validate_worth_value(worth_val).map_err(|e| anyhow::anyhow!("{e}"))?;
+    }
+    if let Some(dc_val) = updates.get("deadline_class") {
+        crate::graph::validate_deadline_class_value(dc_val).map_err(|e| anyhow::anyhow!("{e}"))?;
     }
 
     use gray_matter::engine::YAML;
@@ -7391,6 +7473,9 @@ pub const UPDATE_KNOWN_KEYS: &[&str] = &[
     "_add_depends_on",
     "_remove_depends_on",
     "classification",
+    "links",
+    "worth",
+    "deadline_class",
 ];
 
 /// Reject any key not on [`UPDATE_KNOWN_KEYS`]. Shared by `update_task` and

@@ -664,7 +664,6 @@ impl PkbSearchServer {
             format!("Session {short_sid}: {truncated}")
         };
 
-
         let fields = crate::document_crud::TaskFields {
             title,
             id: Some(epic_id.clone()),
@@ -741,7 +740,6 @@ impl PkbSearchServer {
         } else {
             title_clean.to_string()
         };
-
 
         // Ensure adhoc-sessions root exists
         crate::document_crud::ensure_adhoc_sessions_root(&self.pkb_root).map_err(|e| McpError {
@@ -1611,6 +1609,9 @@ impl PkbSearchServer {
                 follow_up_tasks: vec![],
                 release_summary: None,
                 contributes_to: vec![],
+                links: vec![],
+                worth: None,
+                deadline_class: None,
                 classification: subtask
                     .get("classification")
                     .and_then(|v| v.as_str())
