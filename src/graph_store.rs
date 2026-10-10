@@ -40,6 +40,12 @@ pub struct ExportNode {
     /// ranks by (§8.5). Computed; never written back to frontmatter.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effective_intent: Option<i32>,
+    /// Flow display metadata structure (§7.2, `export_graph`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display: Option<crate::display_rank::TaskDisplay>,
+    /// 1-based position among exported nodes ordered by `display_cmp` (§7.2).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_rank: Option<usize>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -55,6 +61,9 @@ pub struct OutputGraph {
     /// Top focus picks: ready tasks ranked by priority + deadline + staleness + downstream weight.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub focus: Vec<String>,
+    /// Hard-deadline cliff lane tasks (§7.2, `export_graph`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cliff: Vec<String>,
 }
 
 /// `export_graph` JSON document: [`OutputGraph`] with ranked [`ExportNode`]s.
@@ -71,6 +80,9 @@ pub struct ExportGraph {
     /// Top focus picks (`GraphStore::focus_picks`, max 50) within the exported set.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub focus: Vec<String>,
+    /// Hard-deadline cliff lane tasks (§7.2, `export_graph`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cliff: Vec<String>,
 }
 
 pub const DEFAULT_DIVERGENCE_THRESHOLD_DAYS: i64 = 14;
@@ -107,6 +119,14 @@ pub struct WeightDivergence {
     pub numeric_weight: f64,
     pub justification: String,
     pub days_since_interaction: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quantum: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub probability: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub strength: Option<f64>,
 }
 
 // ===========================================================================
@@ -128,6 +148,8 @@ pub struct GraphStore {
     resolution_map: HashMap<String, String>,
     /// Generation stamp recorded at build/patch time for validate-on-read cache invalidation
     generation: crate::pkb::GenerationStamp,
+    pub flow_input: Option<crate::flow::FlowInput>,
+    pub ranking_mode: crate::polecat_config::RankingMode,
 }
 
 /// Document types considered actionable work items in task trees and dashboards.
@@ -596,13 +618,33 @@ impl GraphStore {
         for node in &mut nodes {
             node.reachable = reachable_set.contains(&node.id);
         }
-        tracing::debug!(target: "perf::graph_rebuild", phase = "reachable_set", elapsed_ms = _t.elapsed().as_secs_f64() * 1000.0);
+        // 9d. Compute flow and decision values (pkb-flow-engine §3.1, §5, §5.3)
+        let _t_flow = std::time::Instant::now();
+        let flow_input = build_flow_input(&nodes);
+        let mut flow_outputs = crate::flow::compute_flow(&flow_input);
+        crate::flow::compute_decision_value(&flow_input, &mut flow_outputs);
+        for node in &mut nodes {
+            node.flow = flow_outputs.get(&node.id).cloned();
+        }
+        tracing::debug!(target: "perf::graph_rebuild", phase = "flow_computation", elapsed_ms = _t_flow.elapsed().as_secs_f64() * 1000.0);
 
         // 10. Build node map and classify tasks
         let _t = std::time::Instant::now();
+        let ranking_mode = crate::polecat_config::resolve_ranking_mode(pkb_root);
         let mut node_map: HashMap<String, GraphNode> =
             nodes.into_iter().map(|n| (n.id.clone(), n)).collect();
-        let (ready, blocked, roots) = classify_tasks(&node_map);
+        let (ready, blocked, roots) = if ranking_mode == crate::polecat_config::RankingMode::Flow {
+            let today = chrono::Utc::now().date_naive();
+            let flow_map: HashMap<String, crate::flow::FlowOutput> = flow_outputs.into_iter().collect();
+            crate::display_rank::classify_graph_nodes(
+                &node_map,
+                Some(&flow_map),
+                today,
+                crate::display_rank::DISPLAY_CLIFF_BUFFER_DAYS,
+            )
+        } else {
+            classify_tasks(&node_map)
+        };
         tracing::debug!(target: "perf::graph_rebuild", phase = "classify_tasks", elapsed_ms = _t.elapsed().as_secs_f64() * 1000.0);
 
         // 11. Compute divergence anomalies and set flags on nodes (default 14 days)
@@ -625,6 +667,8 @@ impl GraphStore {
             roots,
             resolution_map,
             generation,
+            flow_input: Some(flow_input),
+            ranking_mode,
         }
     }
 
@@ -706,6 +750,30 @@ impl GraphStore {
                 .cmp(&(b.from.as_deref().unwrap_or(""), b.label.as_str()))
         });
         links
+    }
+
+    /// Active ranking mode configured on the store (§4, C2).
+    pub fn ranking_mode(&self) -> crate::polecat_config::RankingMode {
+        self.ranking_mode
+    }
+
+    /// Flow input graph used to compute flow figures.
+    pub fn flow_input(&self) -> Option<&crate::flow::FlowInput> {
+        self.flow_input.as_ref()
+    }
+
+    /// Compute routes, truncation status, and one-sentence explanation for a node (§7.2, `get_task`).
+    pub fn routes_for_node(
+        &self,
+        id: &str,
+    ) -> Option<(std::collections::BTreeMap<String, crate::flow::TargetRoutes>, bool, String)> {
+        let node = self.get_node(id)?;
+        let flow = node.flow.as_ref()?;
+        let flow_input = self.flow_input.as_ref()?;
+        let routes = crate::flow::compute_routes(flow_input, flow, id);
+        let truncated = routes.values().any(|tr| tr.routes_truncated);
+        let explanation = crate::flow::build_explanation(id, &routes, &flow.stake);
+        Some((routes, truncated, explanation))
     }
 
     /// Collect IDs of all descendants (recursive via children) whose status is open
@@ -978,7 +1046,22 @@ impl GraphStore {
     /// and update self. Cheap O(V+E). Called by Tier-2 swap after merging
     /// patched nodes.
     pub fn reclassify(&mut self) {
-        let (ready, blocked, roots) = classify_tasks(&self.nodes);
+        let (ready, blocked, roots) = if self.ranking_mode == crate::polecat_config::RankingMode::Flow {
+            let today = chrono::Utc::now().date_naive();
+            let flow_map: HashMap<String, crate::flow::FlowOutput> = self
+                .nodes
+                .iter()
+                .filter_map(|(id, n)| n.flow.as_ref().map(|f| (id.clone(), f.clone())))
+                .collect();
+            crate::display_rank::classify_graph_nodes(
+                &self.nodes,
+                Some(&flow_map),
+                today,
+                crate::display_rank::DISPLAY_CLIFF_BUFFER_DAYS,
+            )
+        } else {
+            classify_tasks(&self.nodes)
+        };
         self.ready = ready;
         self.blocked = blocked;
         self.roots = roots;
@@ -1074,6 +1157,139 @@ impl GraphStore {
     /// Sort a slice of node refs in place by the canonical focus-score default order.
     pub fn sort_by_focus(nodes: &mut [&GraphNode]) {
         nodes.sort_by(|a, b| Self::focus_cmp(a, b));
+    }
+
+    /// Sort a slice of node refs in place by canonical flow display order (display_cmp).
+    pub fn sort_by_display(
+        nodes: &mut [&GraphNode],
+        today: chrono::NaiveDate,
+        buffer_days: i64,
+    ) {
+        Self::sort_by_display_with_sort(
+            nodes,
+            crate::display_rank::TaskSort::Default,
+            today,
+            buffer_days,
+        );
+    }
+
+    /// Sort a slice of node refs in place by flow display order with an explicit sort key.
+    pub fn sort_by_display_with_sort(
+        nodes: &mut [&GraphNode],
+        sort: crate::display_rank::TaskSort,
+        today: chrono::NaiveDate,
+        buffer_days: i64,
+    ) {
+        let items: HashMap<String, crate::display_rank::DisplayItem> = nodes
+            .iter()
+            .map(|node| {
+                let dt =
+                    crate::display_rank::DisplayTask::from_graph_node(node, node.flow.as_ref());
+                (node.id.clone(), dt.to_display_item(today, buffer_days))
+            })
+            .collect();
+
+        nodes.sort_by(|a, b| {
+            let item_a = &items[&a.id];
+            let item_b = &items[&b.id];
+            crate::display_rank::display_cmp_by(item_a, item_b, sort)
+        });
+    }
+
+    /// Sort a slice of node refs according to the active engine ranking mode.
+    pub fn sort_by_active_ranking(
+        &self,
+        nodes: &mut [&GraphNode],
+        today: chrono::NaiveDate,
+        buffer_days: i64,
+    ) {
+        if self.ranking_mode == crate::polecat_config::RankingMode::Flow {
+            Self::sort_by_display(nodes, today, buffer_days);
+        } else {
+            Self::sort_by_focus(nodes);
+        }
+    }
+
+    /// Focus picks under the flow engine (§7.3, `pkb focus`):
+    /// the cliff lane, then the head of display_cmp over ready work and human gates.
+    pub fn flow_focus_picks(
+        &self,
+        max: usize,
+        today: chrono::NaiveDate,
+        buffer_days: i64,
+    ) -> (Vec<String>, Vec<String>) {
+        let completed_statuses = crate::graph::COMPLETED_STATUSES;
+        let mut candidate_map: HashMap<String, &GraphNode> = HashMap::new();
+
+        for id in &self.ready {
+            if let Some(node) = self.nodes.get(id) {
+                candidate_map.insert(node.id.clone(), node);
+            }
+        }
+
+        for node in self.nodes.values() {
+            if node.is_human_gate()
+                && !completed_statuses.contains(&node.status.as_deref().unwrap_or(""))
+            {
+                let is_review = node
+                    .status
+                    .as_deref()
+                    .map(|s| s.eq_ignore_ascii_case("review"))
+                    .unwrap_or(false);
+                let is_unblocked = !self.is_blocked(&node.id);
+                if is_review || is_unblocked {
+                    candidate_map.insert(node.id.clone(), node);
+                }
+            }
+        }
+
+        let mut candidates: Vec<&GraphNode> = candidate_map.into_values().collect();
+        Self::sort_by_display(&mut candidates, today, buffer_days);
+
+        let mut cliff_picks = Vec::new();
+        let mut regular_picks = Vec::new();
+
+        for node in candidates {
+            let due_date = node.due.as_deref().and_then(crate::display_rank::parse_due_date);
+            let eff = crate::display_rank::resolve_effort_days(node.effort.as_deref());
+            let resolved_class = crate::display_rank::DeadlineClass::resolve(
+                node.deadline_class.map(|dc| match dc {
+                    crate::graph::DeadlineClass::Fake => crate::display_rank::DeadlineClass::Fake,
+                    crate::graph::DeadlineClass::Soft => crate::display_rank::DeadlineClass::Soft,
+                    crate::graph::DeadlineClass::Hard => crate::display_rank::DeadlineClass::Hard,
+                }),
+                due_date.is_some(),
+            );
+            if crate::display_rank::is_on_cliff(due_date, resolved_class, eff, today, buffer_days) {
+                cliff_picks.push(node.id.clone());
+            } else {
+                regular_picks.push(node.id.clone());
+            }
+        }
+
+        if cliff_picks.len() > max {
+            cliff_picks.truncate(max);
+        }
+        let remaining = max.saturating_sub(cliff_picks.len());
+        if regular_picks.len() > remaining {
+            regular_picks.truncate(remaining);
+        }
+
+        (cliff_picks, regular_picks)
+    }
+
+    /// Focus picks respecting active engine ranking mode.
+    pub fn focus_picks_active(&self, max: usize) -> Vec<String> {
+        if self.ranking_mode == crate::polecat_config::RankingMode::Flow {
+            let today = chrono::Utc::now().date_naive();
+            let (cliff, regular) =
+                self.flow_focus_picks(max, today, crate::display_rank::DISPLAY_CLIFF_BUFFER_DAYS);
+            let mut all = cliff;
+            all.extend(regular);
+            all
+        } else {
+            self.focus_picks(max)
+        }
     }
 
     /// Returns all open actionable tasks (type in [`ACTIONABLE_TYPES`] and not completed/archived).
@@ -1629,46 +1845,92 @@ impl GraphStore {
         components
     }
 
-    /// Detect 'contributes_to' edges with high stated weight but zero interaction
-    /// on the source task in N days.
+    /// Detect edges with high stated weight/strength but zero interaction
+    /// on the source task in N days (pkb-flow-engine §7.2).
     pub fn detect_weight_divergences(&self, threshold_days: i64) -> Vec<WeightDivergence> {
         let now = Utc::now();
         let mut divergences = Vec::new();
         let blocked_ids: HashSet<&str> = self.blocked.iter().map(|s| s.as_str()).collect();
 
-        for node in self.nodes.values() {
-            // False-positive guard: don't flag edges where the task is rationally blocked
-            if blocked_ids.contains(node.id.as_str()) {
-                continue;
+        if self.ranking_mode == crate::polecat_config::RankingMode::Flow {
+            let (flow_edges, _) = self.resolve_flow_edges_with_warnings();
+            for edge in flow_edges {
+                let node = match self.nodes.get(&edge.src) {
+                    Some(n) => n,
+                    None => continue,
+                };
+                if blocked_ids.contains(node.id.as_str()) {
+                    continue;
+                }
+                if graph::is_completed(node.status.as_deref()) {
+                    continue;
+                }
+                let days_since_interaction = days_since_modified(node.modified.as_deref(), now);
+                if days_since_interaction >= threshold_days
+                    && edge.strength() >= DIVERGENCE_WEIGHT_THRESHOLD
+                {
+                    let target_id = edge.dst.clone();
+                    let target_label = self
+                        .nodes
+                        .get(&target_id)
+                        .map(|n| n.label.clone())
+                        .unwrap_or_else(|| target_id.clone());
+
+                    divergences.push(WeightDivergence {
+                        source_id: node.id.clone(),
+                        source_label: node.label.clone(),
+                        target_id,
+                        target_label,
+                        stated_weight: format!("{:.2}", edge.strength()),
+                        numeric_weight: edge.strength(),
+                        justification: edge.justification.clone().unwrap_or_default(),
+                        days_since_interaction,
+                        label: Some(edge.label.as_str().to_string()),
+                        quantum: Some(edge.quantum),
+                        probability: Some(edge.probability),
+                        strength: Some(edge.strength()),
+                    });
+                }
             }
+        } else {
+            for node in self.nodes.values() {
+                // False-positive guard: don't flag edges where the task is rationally blocked
+                if blocked_ids.contains(node.id.as_str()) {
+                    continue;
+                }
 
-            // Also skip completed tasks
-            if graph::is_completed(node.status.as_deref()) {
-                continue;
-            }
+                // Also skip completed tasks
+                if graph::is_completed(node.status.as_deref()) {
+                    continue;
+                }
 
-            let days_since_interaction = days_since_modified(node.modified.as_deref(), now);
+                let days_since_interaction = days_since_modified(node.modified.as_deref(), now);
 
-            if days_since_interaction >= threshold_days {
-                for ct in &node.contributes_to {
-                    if ct.numeric_weight() >= DIVERGENCE_WEIGHT_THRESHOLD {
-                        let target_id = ct.resolved_to.clone().unwrap_or_else(|| ct.to.clone());
-                        let target_label = self
-                            .nodes
-                            .get(&target_id)
-                            .map(|n| n.label.clone())
-                            .unwrap_or_else(|| ct.to.clone());
+                if days_since_interaction >= threshold_days {
+                    for ct in &node.contributes_to {
+                        if ct.numeric_weight() >= DIVERGENCE_WEIGHT_THRESHOLD {
+                            let target_id = ct.resolved_to.clone().unwrap_or_else(|| ct.to.clone());
+                            let target_label = self
+                                .nodes
+                                .get(&target_id)
+                                .map(|n| n.label.clone())
+                                .unwrap_or_else(|| ct.to.clone());
 
-                        divergences.push(WeightDivergence {
-                            source_id: node.id.clone(),
-                            source_label: node.label.clone(),
-                            target_id,
-                            target_label,
-                            stated_weight: ct.stated_weight.clone(),
-                            numeric_weight: ct.numeric_weight(),
-                            justification: ct.justification.clone(),
-                            days_since_interaction,
-                        });
+                            divergences.push(WeightDivergence {
+                                source_id: node.id.clone(),
+                                source_label: node.label.clone(),
+                                target_id,
+                                target_label,
+                                stated_weight: ct.stated_weight.clone(),
+                                numeric_weight: ct.numeric_weight(),
+                                justification: ct.justification.clone(),
+                                days_since_interaction,
+                                label: None,
+                                quantum: None,
+                                probability: None,
+                                strength: None,
+                            });
+                        }
                     }
                 }
             }
@@ -2334,6 +2596,36 @@ impl GraphStore {
             .filter(|id| placed_ids.contains(id.as_str()))
             .collect();
 
+        let today = chrono::Utc::now().date_naive();
+        let buffer_days = crate::display_rank::DISPLAY_CLIFF_BUFFER_DAYS;
+
+        let cliff_list: Vec<String> = nodes
+            .iter()
+            .filter(|n| {
+                let due_date = n.due.as_deref().and_then(crate::display_rank::parse_due_date);
+                let eff = crate::display_rank::resolve_effort_days(n.effort.as_deref());
+                let resolved_class = crate::display_rank::DeadlineClass::resolve(
+                    n.deadline_class.map(|dc| match dc {
+                        crate::graph::DeadlineClass::Fake => crate::display_rank::DeadlineClass::Fake,
+                        crate::graph::DeadlineClass::Soft => crate::display_rank::DeadlineClass::Soft,
+                        crate::graph::DeadlineClass::Hard => crate::display_rank::DeadlineClass::Hard,
+                    }),
+                    due_date.is_some(),
+                );
+                crate::display_rank::is_on_cliff(due_date, resolved_class, eff, today, buffer_days)
+            })
+            .map(|n| n.id.clone())
+            .filter(|id| placed_ids.contains(id.as_str()))
+            .collect();
+
+        let mut display_ranked: Vec<&GraphNode> = nodes.iter().collect();
+        Self::sort_by_display(&mut display_ranked, today, buffer_days);
+        let display_ranks: HashMap<String, usize> = display_ranked
+            .iter()
+            .enumerate()
+            .map(|(i, n)| (n.id.clone(), i + 1))
+            .collect();
+
         let mut ranked: Vec<&GraphNode> =
             nodes.iter().filter(|n| n.focus_tuple.is_some()).collect();
         Self::sort_by_focus(&mut ranked);
@@ -2345,29 +2637,66 @@ impl GraphStore {
         let nodes: Vec<ExportNode> = nodes
             .into_iter()
             .map(|node| {
-                let queue_rank = ranks.get(&node.id).copied();
-                let (severity_gate, cost_of_delay) = match node.focus_tuple.as_ref() {
-                    Some(ft) => (Some(ft.severity_gate), Some(ft.cost_of_delay)),
-                    None => (None, None),
+                let queue_rank = if self.ranking_mode == crate::polecat_config::RankingMode::Flow {
+                    None
+                } else {
+                    ranks.get(&node.id).copied()
+                };
+                let display_rank = display_ranks.get(&node.id).copied();
+                let (severity_gate, cost_of_delay) = if self.ranking_mode == crate::polecat_config::RankingMode::Flow {
+                    (None, None)
+                } else {
+                    match node.focus_tuple.as_ref() {
+                        Some(ft) => (Some(ft.severity_gate), Some(ft.cost_of_delay)),
+                        None => (None, None),
+                    }
                 };
                 let actionable = match node.node_type.as_deref() {
                     Some(t) => ACTIONABLE_TYPES.contains(&t),
                     None => true,
                 };
-                let effective_intent = if actionable {
+                let effective_intent = if self.ranking_mode == crate::polecat_config::RankingMode::Flow {
+                    None
+                } else if actionable {
                     Some(node.effective_intent.unwrap_or(node.intent.unwrap_or(4)))
                 } else {
                     None
                 };
+                let is_ready = ready.contains(&node.id);
+                let is_blocked = blocked.contains(&node.id);
+                let eff = crate::display_rank::resolve_effort_days(node.effort.as_deref());
+                let dc = node.deadline_class.map(|d| match d {
+                    crate::graph::DeadlineClass::Fake => crate::display_rank::DeadlineClass::Fake,
+                    crate::graph::DeadlineClass::Soft => crate::display_rank::DeadlineClass::Soft,
+                    crate::graph::DeadlineClass::Hard => crate::display_rank::DeadlineClass::Hard,
+                });
+                let due_date = node.due.as_deref().and_then(crate::display_rank::parse_due_date);
+                let display = Some(crate::display_rank::TaskDisplay::new(
+                    is_ready,
+                    is_blocked,
+                    due_date,
+                    dc,
+                    eff,
+                    today,
+                    buffer_days,
+                ));
                 ExportNode {
                     node,
                     severity_gate,
                     cost_of_delay,
                     queue_rank,
                     effective_intent,
+                    display,
+                    display_rank,
                 }
             })
             .collect();
+
+        let focus = if self.ranking_mode == crate::polecat_config::RankingMode::Flow {
+            vec![]
+        } else {
+            focus_list
+        };
 
         let graph = ExportGraph {
             nodes,
@@ -2375,7 +2704,8 @@ impl GraphStore {
             ready,
             blocked,
             roots,
-            focus: focus_list,
+            focus,
+            cliff: cliff_list,
         };
         Ok(serde_json::to_string_pretty(&graph)?)
     }
@@ -2435,6 +2765,7 @@ impl GraphStore {
             blocked: self.blocked.clone(),
             roots: self.roots.clone(),
             focus: vec![],
+            cliff: vec![],
         };
         let mut xml = String::from(
             r#"<?xml version="1.0" encoding="UTF-8"?>
@@ -2929,6 +3260,31 @@ where
         .sort_by(|a, b| (&a.0, &a.1.field, &a.1.message).cmp(&(&b.0, &b.1.field, &b.1.message)));
 
     (edges, warnings)
+}
+
+/// Build a `FlowInput` from parsed `GraphNode`s and resolved flow edges (pkb-flow-engine §3.1, R1).
+pub fn build_flow_input(nodes: &[GraphNode]) -> crate::flow::FlowInput {
+    let mut flow_input = crate::flow::FlowInput::new();
+    for node in nodes {
+        let state = crate::flow::status_to_flow_state(node.status.as_deref());
+        flow_input.add_node(node.id.clone(), state, node.worth);
+    }
+    let (resolved_edges, _) = resolve_flow_edges_from_nodes(nodes);
+    for e in resolved_edges {
+        flow_input.add_edge(crate::flow::FlowEdge {
+            src: e.src,
+            dst: e.dst,
+            label: e.label.as_str().to_string(),
+            quantum: e.quantum,
+            probability: e.probability,
+            effect: match e.effect {
+                crate::graph::LinkEffect::Helps => crate::flow::FlowEffect::Helps,
+                crate::graph::LinkEffect::Harms => crate::flow::FlowEffect::Harms,
+            },
+            unvalued: false,
+        });
+    }
+    flow_input
 }
 
 /// Compute inverse relationships on nodes from resolved edges.

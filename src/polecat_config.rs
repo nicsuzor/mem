@@ -41,8 +41,36 @@ use std::path::{Path, PathBuf};
 /// catch-all parent for ad-hoc session tasks.
 pub const BUILTIN_PROJECT_SLUGS: &[&str] = &["task", "adhoc-sessions"];
 
+/// Ranking engine mode: legacy | flow (pkb-flow-engine §4, C2 shadow phase).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RankingMode {
+    #[default]
+    Legacy,
+    Flow,
+}
+
+impl RankingMode {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Legacy => "legacy",
+            Self::Flow => "flow",
+        }
+    }
+
+    pub fn from_str_loose(s: &str) -> Option<Self> {
+        match s.trim().to_lowercase().as_str() {
+            "legacy" => Some(Self::Legacy),
+            "flow" => Some(Self::Flow),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Default, serde::Deserialize)]
 struct RawPolecatYaml {
+    #[serde(default)]
+    ranking: Option<RankingMode>,
     #[serde(default)]
     projects: HashMap<String, RawProjectEntry>,
     #[serde(default)]
@@ -73,6 +101,8 @@ pub struct PolecatRegistry {
     slugs: Vec<String>,
     /// where the registry was loaded from (error messages / logging)
     pub source_path: PathBuf,
+    /// ranking mode configured in polecat.yaml (pkb-flow-engine §4)
+    pub ranking: Option<RankingMode>,
 }
 
 impl PolecatRegistry {
@@ -149,6 +179,7 @@ impl PolecatRegistry {
             lookup,
             slugs,
             source_path: path.to_path_buf(),
+            ranking: raw.ranking,
         })
     }
 
@@ -161,6 +192,35 @@ impl PolecatRegistry {
     pub fn known_slugs(&self) -> &[String] {
         &self.slugs
     }
+}
+
+/// Resolve the effective ranking mode for a given PKB root (pkb-flow-engine §4).
+///
+/// Precedence:
+/// 1. `PKB_RANKING` or `AOPS_RANKING` environment variable (if set and valid).
+/// 2. `ranking: legacy | flow` in polecat.yaml.
+/// 3. Default: `RankingMode::Legacy` (retained during shadow phase R1–R7).
+pub fn resolve_ranking_mode(root: &Path) -> RankingMode {
+    if let Ok(val) = std::env::var("PKB_RANKING").or_else(|_| std::env::var("AOPS_RANKING")) {
+        if let Some(mode) = RankingMode::from_str_loose(&val) {
+            return mode;
+        }
+    }
+    if let Ok(Some(reg)) = PolecatRegistry::load(root) {
+        if let Some(mode) = reg.ranking {
+            return mode;
+        }
+    }
+    if let Some(path) = locate_config(root) {
+        if let Ok(content) = std::fs::read_to_string(&path) {
+            if let Ok(raw) = serde_yaml::from_str::<RawPolecatYaml>(&content) {
+                if let Some(mode) = raw.ranking {
+                    return mode;
+                }
+            }
+        }
+    }
+    RankingMode::Legacy
 }
 
 /// Resolve a caller-supplied project value to its canonical slug, validating

@@ -163,7 +163,7 @@ impl Default for FlowInput {
 }
 
 /// Diagnostic status for flow computation on a node.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FlowStatus {
     Ok,
@@ -176,6 +176,7 @@ pub enum FlowStatus {
 pub struct FlowOutput {
     pub gain: Option<f64>,
     pub loss_averted: Option<f64>,
+    #[serde(default, skip_serializing)]
     pub deltas: BTreeMap<String, f64>,
     pub stake: BTreeMap<String, f64>,
     pub decision_value: Option<f64>,
