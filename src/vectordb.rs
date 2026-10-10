@@ -1005,6 +1005,11 @@ impl VectorStore {
         type_filter: Option<&str>,
         reranker: Option<&crate::rerank::CrossEncoderReranker>,
     ) -> Vec<SearchResult> {
+        let tracer = opentelemetry::global::tracer("mem");
+        use opentelemetry::trace::Tracer;
+        let span = tracer.start("search_hybrid");
+        let _guard = opentelemetry::trace::mark_span_as_active(span);
+
         let fetch_limit = (limit * 3).max(20);
         let vector_results = self.search(query_embedding, fetch_limit, pkb_root, since, before, type_filter);
         let bm25_results = self.search_bm25(query, fetch_limit, pkb_root, since, before, type_filter);

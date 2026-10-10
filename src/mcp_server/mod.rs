@@ -323,12 +323,37 @@ impl PkbSearchServer {
         self.store.clone()
     }
 
+    pub(crate) fn acquire_store_read(&self) -> parking_lot::RwLockReadGuard<'_, VectorStore> {
+        let tracer = opentelemetry::global::tracer("mem");
+        use opentelemetry::trace::Tracer;
+        let mut span = tracer.start("store_lock_acquisition");
+        let guard = self.store.read();
+        use opentelemetry::trace::Span;
+        span.end();
+        guard
+    }
+
+    pub(crate) fn acquire_store_write(&self) -> parking_lot::RwLockWriteGuard<'_, VectorStore> {
+        let tracer = opentelemetry::global::tracer("mem");
+        use opentelemetry::trace::Tracer;
+        let mut span = tracer.start("store_lock_acquisition");
+        let guard = self.store.write();
+        use opentelemetry::trace::Span;
+        span.end();
+        guard
+    }
+
     /// Ensure the in-memory graph index is up-to-date with on-disk state.
     ///
     /// Validates the cached generation stamp against a fast stat-only scan of the
     /// filesystem. If an external write occurred (git-sync sidecar, CLI, direct disk edit),
     /// the graph is automatically rebuilt from disk before the read proceeds.
     pub(crate) fn ensure_graph_fresh(&self) {
+        let tracer = opentelemetry::global::tracer("mem");
+        use opentelemetry::trace::Tracer;
+        let span = tracer.start("ensure_graph_fresh");
+        let _guard = opentelemetry::trace::mark_span_as_active(span);
+
         let current_gen = crate::pkb::scan_generation(&self.pkb_root);
         let cached_gen = self.graph.read().generation();
         if current_gen != cached_gen {
@@ -368,8 +393,13 @@ impl PkbSearchServer {
     /// no store lock held — concurrent writers can proceed during the
     /// rebuild instead of blocking behind it.
     pub(crate) fn rebuild_graph(&self) -> (usize, usize, usize) {
+        let tracer = opentelemetry::global::tracer("mem");
+        use opentelemetry::trace::Tracer;
+        let span = tracer.start("rebuild_graph");
+        let _guard = opentelemetry::trace::mark_span_as_active(span);
+
         let _t_snap = std::time::Instant::now();
-        let snapshot = self.store.read().averaged_embeddings();
+        let snapshot = self.acquire_store_read().averaged_embeddings();
         tracing::debug!(
             target: "perf::graph_rebuild",
             phase = "embedding_snapshot",
@@ -512,7 +542,7 @@ impl PkbSearchServer {
         let _t = std::time::Instant::now();
         {
             let mut g = self.graph.write();
-            g.remove_node_in_place(id);
+            g.remove_node_in_place(id, &self.pkb_root);
             g.reclassify();
             // Same as rebuild_graph_for_pkb_document: insert inside the write
             // lock so the removal is visible to any concurrent Tier-2 swap.
@@ -676,6 +706,10 @@ impl PkbSearchServer {
                 merged.reclassify();
                 reclassified = true;
             }
+            // Preserve the live generation stamp (which may have been updated
+            // by in-place node removals or concurrent mutations during rebuild)
+            // so the swap does not clobber it with the older scan from build start.
+            merged.set_generation(g.generation());
             *g = merged;
             #[cfg(test)]
             {
@@ -943,14 +977,14 @@ impl PkbSearchServer {
 
         if was_held {
             // Adopt the reindex's authoritative on-disk state.
-            let dim = self.store.read().dimension_or_default();
+            let dim = self.acquire_store_read().dimension_or_default();
             match VectorStore::load_or_create(&self.db_path, dim) {
                 Ok(fresh) => {
                     tracing::info!(
                         "Cross-process index lock released — reloaded vector store from disk ({} docs)",
                         fresh.len()
                     );
-                    *self.store.write() = fresh;
+                    *self.acquire_store_write() = fresh;
                 }
                 Err(e) => {
                     tracing::warn!(
@@ -1003,7 +1037,7 @@ impl PkbSearchServer {
                 ) {
                     tracing::error!("maybe_drain_deferred: Failed to append remove to WAL: {e}");
                 }
-                if self.store.write().remove(&id) {
+                if self.acquire_store_write().remove(&id) {
                     applied_removes += 1;
                 }
             }
@@ -1358,7 +1392,7 @@ impl PkbSearchServer {
                 let doc = crate::pkb::parse_file_relative(abs_path, &self.pkb_root)?;
                 let doc_id = doc.id();
 
-                let existing = self.store.read().get_entry(&doc_id).cloned();
+                let existing = self.acquire_store_read().get_entry(&doc_id).cloned();
                 match crate::vectordb::VectorStore::prepare_upsert(
                     &doc,
                     &self.embedder,
@@ -1378,7 +1412,7 @@ impl PkbSearchServer {
 
         // Single brief write lock for the whole batch.
         {
-            let mut store = self.store.write();
+            let mut store = self.acquire_store_write();
             let wal_p = self.wal_path();
             for p in &results {
                 let wal_res = match p {
@@ -1463,7 +1497,7 @@ impl PkbSearchServer {
         ) {
             tracing::error!("try_remove_document: Failed to append remove to WAL: {e}");
         }
-        self.store.write().remove(id);
+        self.acquire_store_write().remove(id);
         self.save_store();
     }
 

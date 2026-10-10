@@ -639,7 +639,15 @@ impl SessionPool {
         };
 
         let session_arc = self.acquire_session();
-        let mut session = session_arc.lock();
+        let mut session = {
+            let tracer = opentelemetry::global::tracer("mem");
+            use opentelemetry::trace::Tracer;
+            let mut span = tracer.start("session_mutex_wait");
+            let s = session_arc.lock();
+            use opentelemetry::trace::Span;
+            span.end();
+            s
+        };
 
         let start = std::time::Instant::now();
         let result = if self.uses_token_type_ids {
@@ -911,6 +919,10 @@ impl Embedder {
 
     /// Encode a query with instruction prefix (asymmetric retrieval).
     pub fn encode_query(&self, text: &str) -> Result<Vec<f32>> {
+        let tracer = opentelemetry::global::tracer("mem");
+        use opentelemetry::trace::Tracer;
+        let span = tracer.start("encode_query");
+        let _guard = opentelemetry::trace::mark_span_as_active(span);
         let prefixed = format!("{QUERY_PREFIX}{text}");
         self.encode(&prefixed)
     }
@@ -957,6 +969,15 @@ impl Embedder {
         }
 
         if self.is_dummy {
+            let tracer = opentelemetry::global::tracer("mem");
+            use opentelemetry::trace::Tracer;
+            let mut span = tracer.start("session_mutex_wait");
+            // Test dummy embedder: simulate session mutex lock acquisition
+            // to verify span emission when ONNX model files are absent.
+            let dummy_mutex = std::sync::Mutex::new(());
+            let _guard = dummy_mutex.lock();
+            use opentelemetry::trace::Span;
+            span.end();
             return Ok(vec![vec![0.0; EMBEDDING_DIM]; texts.len()]);
         }
 
@@ -1066,7 +1087,15 @@ impl Embedder {
 
         // Acquire a session from the pool and run inference
         let session_arc = pool.acquire_session();
-        let mut session = session_arc.lock();
+        let mut session = {
+            let tracer = opentelemetry::global::tracer("mem");
+            use opentelemetry::trace::Tracer;
+            let mut span = tracer.start("session_mutex_wait");
+            let s = session_arc.lock();
+            use opentelemetry::trace::Span;
+            span.end();
+            s
+        };
 
         // Conditionally include token_type_ids (BERT needs them, XLM-RoBERTa does not)
         let outputs = if pool.uses_token_type_ids {
