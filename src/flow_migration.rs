@@ -316,15 +316,31 @@ pub fn patch_file_text(
             if ct_obj.contains_key("quantum") {
                 continue;
             }
-            let Some(to_val) = ct_obj.get("to").and_then(|v| v.as_str()) else {
+            let Some(to_val) = ct_obj
+                .get("to")
+                .or_else(|| ct_obj.get("target"))
+                .and_then(|v| v.as_str())
+            else {
                 continue;
             };
             if !known_ids.contains(to_val) {
                 continue;
             }
 
-            let stated = ct_obj.get("stated_weight").and_then(|v| v.as_str());
-            let mult = ct_obj.get("multiplier").and_then(|v| v.as_f64());
+            let stated_owned = ct_obj
+                .get("stated_weight")
+                .or_else(|| ct_obj.get("weight"))
+                .and_then(|v| {
+                    v.as_str()
+                        .map(String::from)
+                        .or_else(|| v.as_f64().map(|n| n.to_string()))
+                        .or_else(|| v.as_i64().map(|n| n.to_string()))
+                });
+            let stated = stated_owned.as_deref();
+            let mult = ct_obj
+                .get("multiplier")
+                .or_else(|| ct_obj.get("x"))
+                .and_then(|v| v.as_f64());
             let Some(q) = word_quantum(stated, mult) else {
                 continue;
             };
@@ -355,14 +371,34 @@ pub fn patch_file_text(
                             curr_idx += 1;
                         }
                         if curr_idx == i as i64 && !done {
-                            let field_trimmed = line.trim_start();
-                            if field_trimmed.starts_with("to:")
-                                || field_trimmed.starts_with("stated_weight:")
-                            {
+                            let (is_match, item_indent) = {
+                                let field_trimmed = line.trim_start();
+                                let base_indent = &line[..line.len() - field_trimmed.len()];
+                                if let Some(rest) = field_trimmed.strip_prefix("- ") {
+                                    let rest_trimmed = rest.trim_start();
+                                    if rest_trimmed.starts_with("to:")
+                                        || rest_trimmed.starts_with("target:")
+                                        || rest_trimmed.starts_with("stated_weight:")
+                                        || rest_trimmed.starts_with("weight:")
+                                    {
+                                        (true, format!("{base_indent}  "))
+                                    } else {
+                                        (false, String::new())
+                                    }
+                                } else if field_trimmed.starts_with("to:")
+                                    || field_trimmed.starts_with("target:")
+                                    || field_trimmed.starts_with("stated_weight:")
+                                    || field_trimmed.starts_with("weight:")
+                                {
+                                    (true, base_indent.to_string())
+                                } else {
+                                    (false, String::new())
+                                }
+                            };
+                            if is_match {
                                 new_lines.push(line.clone());
-                                let indent = &line[..line.len() - field_trimmed.len()];
                                 let raw_after = format!(
-                                    "{indent}quantum: {q}\n{indent}probability: 1.0\n{indent}set_by: migrated\n"
+                                    "{item_indent}quantum: {q}\n{item_indent}probability: 1.0\n{item_indent}set_by: migrated\n"
                                 );
                                 new_lines.push(raw_after.clone());
                                 let mut after_obj = ct_obj.clone();
@@ -493,6 +529,9 @@ pub fn apply_flow_migration(pkb_root: &Path) -> Result<FlowMigrationLedger> {
     let gs = GraphStore::build_from_directory(pkb_root);
     let mut known_ids = HashSet::new();
     for node in gs.nodes() {
+        if node.task_id.is_none() {
+            continue;
+        }
         known_ids.insert(node.id.clone());
         if let Some(ref stem) = node.path.file_stem().and_then(|s| s.to_str()) {
             known_ids.insert(stem.to_string());
