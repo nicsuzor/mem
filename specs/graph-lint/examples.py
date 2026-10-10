@@ -25,6 +25,9 @@ import flow  # noqa: E402
 FIXTURE = os.path.join(HERE, "..", "flow-rule", "fixtures", "live-2026-10-05.json")
 
 
+STRATEGIC_TARGET_TYPES = {"target", "goal"}
+
+
 def load():
     d = json.load(open(FIXTURE))
     return d, flow.from_export(d), {n["id"]: n for n in d["nodes"]}
@@ -75,7 +78,7 @@ def main() -> int:
         inc[e.dst].append(e)
 
     print("## Targets and worth")
-    targets = sorted(v for v in st if typ[v] == "target")
+    targets = sorted(v for v in st if typ[v] in STRATEGIC_TARGET_TYPES)
     unpriced = [t for t in targets if st[t] == "open" and t not in g.worth]
     print(f"open targets unpriced: {len(unpriced)} of {len(targets)}")
     fed = [(t, len(inc[t]), sum(st[e.src] == "open" for e in inc[t])) for t in unpriced if inc[t]]
@@ -83,7 +86,7 @@ def main() -> int:
     for t, n, o in fed:
         if t == "targ_safety":
             print(f"  {t}: {n} incoming edges, {o} from open work")
-    print(f"worth on a non-target: {sorted(v for v in g.worth if typ[v] != 'target')}")
+    print(f"worth on a non-target: {sorted(v for v in g.worth if typ[v] not in STRATEGIC_TARGET_TYPES)}")
 
     print("\n## Edges")
     uv = [e for e in g.edges if e.unvalued]
