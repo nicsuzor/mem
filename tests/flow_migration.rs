@@ -352,3 +352,114 @@ Preserved exactly.
     assert!(drift.is_empty());
     assert_eq!(reverted, content);
 }
+
+#[test]
+fn test_target_alias_migrated_and_reverted() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+    init_git_repo(root);
+
+    let target_content = r#"---
+id: targ-1
+title: Strategic Target
+type: target
+standing_weight: 0.5
+status: ready
+---
+
+Target body.
+"#;
+    fs::write(root.join("target.md"), target_content).unwrap();
+
+    let task_content = r#"---
+id: task-1
+title: Task with legacy target
+type: task
+status: ready
+contributes_to:
+- stated_weight: expected
+  target: targ-1
+---
+
+Task body.
+"#;
+    fs::write(root.join("task.md"), task_content).unwrap();
+    commit_all(root, "Initial snapshot");
+
+    let ledger = apply_flow_migration(root).expect("apply failed");
+    assert_eq!(ledger.report.changed_nodes, 2);
+    let new_task = fs::read_to_string(root.join("task.md")).unwrap();
+    assert!(
+        new_task.contains("quantum: 0.75"),
+        "Expected quantum: 0.75 in task.md, got:\n{new_task}"
+    );
+    assert!(new_task.contains("set_by: migrated"));
+    assert!(new_task.contains("target: targ-1"));
+
+    let ledger_path = root
+        .join(".agents")
+        .join("migrations")
+        .join(format!("{}.json", ledger.migration));
+    let revert_rep = revert_flow_migration(root, &ledger_path).expect("revert failed");
+    assert_eq!(revert_rep.files_reverted, 2);
+    assert_eq!(fs::read_to_string(root.join("task.md")).unwrap(), task_content);
+}
+
+#[test]
+fn test_export_graph_includes_ghost_destinations() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+
+    let task_content = r#"---
+id: task-1
+title: Task 1
+type: task
+status: ready
+contributes_to:
+- stated_weight: expected
+  to: ghost-target-123
+soft_depends_on:
+- ghost-dep-456
+---
+
+Task body.
+"#;
+    fs::write(root.join("task.md"), task_content).unwrap();
+
+    let gs = mem::graph_store::GraphStore::build_from_directory(root);
+    let json_str = gs.output_json().expect("output_json failed");
+    let json: serde_json::Value = serde_json::from_str(&json_str).unwrap();
+
+    let nodes = json.get("nodes").and_then(|v| v.as_array()).unwrap();
+    let node_ids: HashSet<&str> = nodes
+        .iter()
+        .filter_map(|n| n.get("id").and_then(|v| v.as_str()))
+        .collect();
+
+    assert!(
+        node_ids.contains("ghost-target-123"),
+        "Exported nodes must include ghost-target-123, but got ids: {:?}",
+        node_ids
+    );
+    assert!(
+        node_ids.contains("ghost-dep-456"),
+        "Exported nodes must include ghost-dep-456, but got ids: {:?}",
+        node_ids
+    );
+
+    let edges = json.get("edges").and_then(|v| v.as_array()).unwrap();
+    let edge_targets: HashSet<&str> = edges
+        .iter()
+        .filter_map(|e| e.get("target").and_then(|v| v.as_str()))
+        .collect();
+
+    assert!(
+        edge_targets.contains("ghost-target-123"),
+        "Exported edges must include edge to ghost-target-123"
+    );
+    assert!(
+        edge_targets.contains("ghost-dep-456"),
+        "Exported edges must include edge to ghost-dep-456"
+    );
+}
+
