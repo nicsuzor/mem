@@ -205,7 +205,11 @@ pub fn create_document(root: &Path, fields: DocumentFields) -> Result<PathBuf> {
     // Validation
     if !crate::graph::is_valid_node_type(&fields.doc_type) {
         let valid_types = crate::graph::VALID_NODE_TYPES.join(", ");
-        anyhow::bail!("Invalid node type: {}. Must be one of: {}", fields.doc_type, valid_types);
+        anyhow::bail!(
+            "Invalid node type: {}. Must be one of: {}",
+            fields.doc_type,
+            valid_types
+        );
     }
     if let Some(ref status) = fields.status {
         let is_task = crate::graph::TASK_TYPES.contains(&fields.doc_type.as_str());
@@ -229,37 +233,34 @@ pub fn create_document(root: &Path, fields: DocumentFields) -> Result<PathBuf> {
 
     let type_prefix = type_prefix(&fields.doc_type);
 
-    let is_daily = fields.doc_type == "daily"
-        || fields.id.as_deref().map(is_daily_id).unwrap_or(false);
+    let is_daily =
+        fields.doc_type == "daily" || fields.id.as_deref().map(is_daily_id).unwrap_or(false);
 
     let (id, filename) = match fields.id {
         Some(explicit_id) => {
             // Explicit ID: sanitize to prevent path traversal, preserving
             // the caller's separator convention (see sanitize_explicit_id).
             let safe_id = sanitize_explicit_id(&explicit_id);
-            let filename = generate_filename(&safe_id, &fields.title);
+            let filename = generate_filename(&safe_id, &fields.title)?;
             (safe_id, filename)
         }
         None => {
             // Use project as prefix when available, otherwise type-based prefix
             let prefix = type_prefix;
             let id = generate_id(prefix);
-            let filename = generate_filename(&id, &fields.title);
+            let filename = generate_filename(&id, &fields.title)?;
             (id, filename)
         }
     };
 
     // Determine subdirectory
-    let subdir = fields
-        .dir
-        .map(|d| expand_env_vars(&d))
-        .unwrap_or_else(|| {
-            if is_daily {
-                "daily".to_string()
-            } else {
-                default_subdir_for_type(&fields.doc_type).to_string()
-            }
-        });
+    let subdir = fields.dir.map(|d| expand_env_vars(&d)).unwrap_or_else(|| {
+        if is_daily {
+            "daily".to_string()
+        } else {
+            default_subdir_for_type(&fields.doc_type).to_string()
+        }
+    });
 
     let dir = root.join(&subdir);
     if !dir.is_dir() {
@@ -534,7 +535,10 @@ pub fn ensure_adhoc_sessions_root(root: &Path) -> Result<()> {
         "---\nid: {id}\ntitle: \"Ad-hoc Sessions\"\ntype: task\nproject: adhoc-sessions\ncreated: {now}\nmodified: {now}\nalias:\n  - \"{id}-ad-hoc-sessions\"\n  - \"{id}\"\n  - \"adhoc-sessions\"\npermalink: adhoc-sessions\nstatus: in_progress\n---\n\n# Ad-hoc Sessions\n\nRoot node for tasks created during ad-hoc agent sessions.\n"
     );
     atomic_write_file(&adhoc_path, &content, "ensure_adhoc_sessions_root")?;
-    let _ = git_commit_file(&adhoc_path, "create(project): adhoc-sessions - Ad-hoc sessions root");
+    let _ = git_commit_file(
+        &adhoc_path,
+        "create(project): adhoc-sessions - Ad-hoc sessions root",
+    );
     Ok(())
 }
 
@@ -655,7 +659,7 @@ pub fn create_task(root: &Path, fields: TaskFields) -> Result<PathBuf> {
             // Explicit ID: sanitize to prevent path traversal, preserving
             // the caller's separator convention (see sanitize_explicit_id).
             let safe_id = sanitize_explicit_id(&explicit_id);
-            let filename = generate_filename(&safe_id, &fields.title);
+            let filename = generate_filename(&safe_id, &fields.title)?;
             (safe_id, filename)
         }
         None => {
@@ -669,22 +673,26 @@ pub fn create_task(root: &Path, fields: TaskFields) -> Result<PathBuf> {
             // frontmatter `type:` field, not the ID prefix.
             let prefix = project.as_deref().unwrap_or("task");
             let id = generate_id(prefix);
-            let filename = generate_filename(&id, &fields.title);
+            let filename = generate_filename(&id, &fields.title)?;
             (id, filename)
         }
     };
 
     // Determine subdirectory
-    let subdir = fields.dir.as_ref().map(|d| expand_env_vars(d)).unwrap_or_else(|| {
-        if let Some(ref p) = project {
-            p.clone()
-        } else {
-            match fields.task_type.as_deref().unwrap_or("task") {
-                "goal" => "goals".to_string(),
-                _ => "tasks".to_string(),
+    let subdir = fields
+        .dir
+        .as_ref()
+        .map(|d| expand_env_vars(d))
+        .unwrap_or_else(|| {
+            if let Some(ref p) = project {
+                p.clone()
+            } else {
+                match fields.task_type.as_deref().unwrap_or("task") {
+                    "goal" => "goals".to_string(),
+                    _ => "tasks".to_string(),
+                }
             }
-        }
-    });
+        });
 
     let dir = root.join(&subdir);
     if !dir.is_dir() {
@@ -994,7 +1002,11 @@ pub fn claim_template_instance(root: &Path, fields: TemplateInstanceFields) -> R
     }
 
     let created_at = now.to_rfc3339();
-    let instance_title = format!("{} — {}", fields.template_title, local_now.format("%Y-%m-%d"));
+    let instance_title = format!(
+        "{} — {}",
+        fields.template_title,
+        local_now.format("%Y-%m-%d")
+    );
 
     let mut fm = String::from("---\n");
     fm.push_str(&format!("id: {}\n", instance_id));
@@ -1104,7 +1116,10 @@ pub fn claim_template_instance(root: &Path, fields: TemplateInstanceFields) -> R
     atomic_write_file(&path, &fm, "instantiate_template")
         .with_context(|| format!("Failed to write instance file: {}", path.display()))?;
 
-    let commit_msg = format!("instantiate(template): {} - {}", instance_id, fields.template_title);
+    let commit_msg = format!(
+        "instantiate(template): {} - {}",
+        instance_id, fields.template_title
+    );
     let _ = git_commit_file(&path, &commit_msg);
 
     Ok(path)
@@ -1153,30 +1168,38 @@ pub fn create_memory(root: &Path, fields: MemoryFields) -> Result<PathBuf> {
     let mem_type = fields.memory_type.as_deref().unwrap_or("memory");
     if !crate::graph::is_valid_node_type(mem_type) {
         let valid_types = crate::graph::VALID_NODE_TYPES.join(", ");
-        anyhow::bail!("Invalid memory type: {}. Must be one of: {}", mem_type, valid_types);
+        anyhow::bail!(
+            "Invalid memory type: {}. Must be one of: {}",
+            mem_type,
+            valid_types
+        );
     }
 
     let (id, filename) = match fields.id {
         Some(explicit_id) => {
             let safe_id = sanitize_explicit_id(&explicit_id);
-            let filename = generate_filename(&safe_id, &fields.title);
+            let filename = generate_filename(&safe_id, &fields.title)?;
             (safe_id, filename)
         }
         None => {
             let id = generate_id("mem");
-            let filename = generate_filename(&id, &fields.title);
+            let filename = generate_filename(&id, &fields.title)?;
             (id, filename)
         }
     };
 
     // Determine subdirectory
-    let subdir = fields.dir.as_ref().map(|d| expand_env_vars(d)).unwrap_or_else(|| {
-        if let Some(ref p) = fields.project {
-            p.clone()
-        } else {
-            "memories".to_string()
-        }
-    });
+    let subdir = fields
+        .dir
+        .as_ref()
+        .map(|d| expand_env_vars(d))
+        .unwrap_or_else(|| {
+            if let Some(ref p) = fields.project {
+                p.clone()
+            } else {
+                "memories".to_string()
+            }
+        });
 
     // Create subdirectory if needed
     let dir = root.join(&subdir);
@@ -1874,7 +1897,10 @@ pub(crate) fn atomic_write_file(path: &Path, content: &str, op_name: &str) -> Re
         }
     }
     static TMP_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let target_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("unnamed");
+    let target_name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("unnamed");
     let tmp_path = dir.join(format!(
         ".{}_{}_{}_{}.tmp",
         op_name,
@@ -1892,8 +1918,7 @@ pub(crate) fn atomic_write_file(path: &Path, content: &str, op_name: &str) -> Re
     }
     if let Err(e) = std::fs::rename(&tmp_path, path) {
         let _ = std::fs::remove_file(&tmp_path);
-        return Err(e)
-            .with_context(|| format!("Failed to rename temp file to {}", path.display()));
+        return Err(e).with_context(|| format!("Failed to rename temp file to {}", path.display()));
     }
     if let Ok(dir_file) = std::fs::File::open(dir) {
         let _ = dir_file.sync_all();
@@ -1922,8 +1947,8 @@ fn ensure_git_identity(cmd: &mut crate::cmd::BoundedCommand) {
     let author_name = std::env::var("GIT_AUTHOR_NAME")
         .or_else(|_| std::env::var("GIT_USER"))
         .unwrap_or_else(|_| "pkb".to_string());
-    let author_email = std::env::var("GIT_AUTHOR_EMAIL")
-        .unwrap_or_else(|_| "pkb@academicops.local".to_string());
+    let author_email =
+        std::env::var("GIT_AUTHOR_EMAIL").unwrap_or_else(|_| "pkb@academicops.local".to_string());
     let committer_name = std::env::var("GIT_COMMITTER_NAME")
         .or_else(|_| std::env::var("GIT_USER"))
         .unwrap_or_else(|_| "pkb".to_string());
@@ -2018,7 +2043,10 @@ pub fn git_commit_file(path: &Path, message: &str) -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn format_update_commit_msg(id: &str, updates: &HashMap<String, serde_json::Value>) -> String {
+pub(crate) fn format_update_commit_msg(
+    id: &str,
+    updates: &HashMap<String, serde_json::Value>,
+) -> String {
     let mut parts = Vec::new();
     if let Some(val) = updates.get("status") {
         if let Some(s) = val.as_str() {
@@ -2145,7 +2173,9 @@ pub fn extract_body_content(input: &str) -> &str {
             if first_trimmed.starts_with('#') {
                 let rest = &trimmed_start[first_line.len()..];
                 let rest_trimmed = rest.trim_start_matches([' ', '\t', '\r', '\n']);
-                if let SplitFrontmatter::Present(raw_fm, body) = split_raw_frontmatter_and_body(rest_trimmed) {
+                if let SplitFrontmatter::Present(raw_fm, body) =
+                    split_raw_frontmatter_and_body(rest_trimmed)
+                {
                     if serde_yaml::from_str::<serde_json::Value>(&raw_fm)
                         .map(|v| v.is_object())
                         .unwrap_or(false)
@@ -2176,7 +2206,9 @@ pub fn add_observations(
     use gray_matter::Matter;
 
     if lines.is_empty() {
-        anyhow::bail!("No lines provided: 'lines' array must contain at least one observation line");
+        anyhow::bail!(
+            "No lines provided: 'lines' array must contain at least one observation line"
+        );
     }
 
     let now_utc = chrono::Utc::now().format("%Y-%m-%d %H:%M UTC").to_string();
@@ -2327,18 +2359,38 @@ pub fn add_observations(
                 let sec_slice = &body[h_end..next_h_start];
                 if let Some(last_char_idx) = sec_slice.rfind(|c: char| !c.is_whitespace()) {
                     let insert_pos = h_end + last_char_idx + 1;
-                    format!("{}\n{}{}", &body[..insert_pos], obs_block, &body[insert_pos..])
+                    format!(
+                        "{}\n{}{}",
+                        &body[..insert_pos],
+                        obs_block,
+                        &body[insert_pos..]
+                    )
                 } else {
                     // Empty section
-                    let prefix = if sec_slice.starts_with('\n') { "" } else { "\n" };
-                    format!("{}{}{}\n{}", &body[..h_end], prefix, obs_block, &body[h_end..])
+                    let prefix = if sec_slice.starts_with('\n') {
+                        ""
+                    } else {
+                        "\n"
+                    };
+                    format!(
+                        "{}{}{}\n{}",
+                        &body[..h_end],
+                        prefix,
+                        obs_block,
+                        &body[h_end..]
+                    )
                 }
             } else {
                 // Last section in body
                 let sec_slice = &body[h_end..];
                 if let Some(last_char_idx) = sec_slice.rfind(|c: char| !c.is_whitespace()) {
                     let insert_pos = h_end + last_char_idx + 1;
-                    format!("{}\n{}{}", &body[..insert_pos], obs_block, &body[insert_pos..])
+                    format!(
+                        "{}\n{}{}",
+                        &body[..insert_pos],
+                        obs_block,
+                        &body[insert_pos..]
+                    )
                 } else if body.trim().is_empty() {
                     format!("## {}\n\n{}\n", sec, obs_block)
                 } else {
@@ -2358,7 +2410,12 @@ pub fn add_observations(
         // No section specified — append at end of body
         if let Some(last_char_idx) = body.rfind(|c: char| !c.is_whitespace()) {
             let insert_pos = last_char_idx + 1;
-            format!("{}\n{}{}", &body[..insert_pos], obs_block, &body[insert_pos..])
+            format!(
+                "{}\n{}{}",
+                &body[..insert_pos],
+                obs_block,
+                &body[insert_pos..]
+            )
         } else {
             format!("\n{}\n", obs_block)
         }
@@ -2385,7 +2442,11 @@ pub fn add_observations(
                 .unwrap_or("document")
                 .to_string()
         });
-    let commit_msg = format!("observations({}): add {} observation(s)", doc_id, formatted_obs_lines.len());
+    let commit_msg = format!(
+        "observations({}): add {} observation(s)",
+        doc_id,
+        formatted_obs_lines.len()
+    );
     let _ = git_commit_file(path, &commit_msg);
 
     Ok(AddObservationsResult {
@@ -2529,16 +2590,25 @@ pub fn delete_observations(
         if line_trimmed == sel_trimmed {
             return true;
         }
-        if let Some(stripped_line) = line_trimmed.strip_prefix("- ").or_else(|| line_trimmed.strip_prefix("* ")) {
+        if let Some(stripped_line) = line_trimmed
+            .strip_prefix("- ")
+            .or_else(|| line_trimmed.strip_prefix("* "))
+        {
             if stripped_line.trim() == sel_trimmed {
                 return true;
             }
         }
-        if let Some(stripped_sel) = sel_trimmed.strip_prefix("- ").or_else(|| sel_trimmed.strip_prefix("* ")) {
+        if let Some(stripped_sel) = sel_trimmed
+            .strip_prefix("- ")
+            .or_else(|| sel_trimmed.strip_prefix("* "))
+        {
             if line_trimmed == stripped_sel.trim() {
                 return true;
             }
-            if let Some(stripped_line) = line_trimmed.strip_prefix("- ").or_else(|| line_trimmed.strip_prefix("* ")) {
+            if let Some(stripped_line) = line_trimmed
+                .strip_prefix("- ")
+                .or_else(|| line_trimmed.strip_prefix("* "))
+            {
                 if stripped_line.trim() == stripped_sel.trim() {
                     return true;
                 }
@@ -2597,7 +2667,10 @@ pub fn delete_observations(
                 .unwrap_or("document")
                 .to_string()
         });
-    let commit_msg = format!("observations({}): delete {} observation(s)", doc_id, deleted_count);
+    let commit_msg = format!(
+        "observations({}): delete {} observation(s)",
+        doc_id, deleted_count
+    );
     let _ = git_commit_file(path, &commit_msg);
 
     Ok(DeleteObservationsResult {
@@ -2655,8 +2728,8 @@ pub fn edit_body(
 
     if !preserve_frontmatter {
         let body_chars_before = file_content.len();
-        let diff_res = crate::udiff::apply_diff(&file_content, diff)
-            .map_err(anyhow::Error::from)?;
+        let diff_res =
+            crate::udiff::apply_diff(&file_content, diff).map_err(anyhow::Error::from)?;
         let new_content = diff_res.new_content;
         let body_chars_after = new_content.len();
 
@@ -2737,14 +2810,17 @@ pub fn edit_body(
         }
     }
 
-    let diff_res = crate::udiff::apply_diff(&parsed.content, diff)
-        .map_err(anyhow::Error::from)?;
+    let diff_res = crate::udiff::apply_diff(&parsed.content, diff).map_err(anyhow::Error::from)?;
 
     let trimmed_body = diff_res.new_content.trim_end_matches('\n');
     let body_chars_after = trimmed_body.len();
 
     if dry_run {
-        let current_modified = fm.get("modified").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let current_modified = fm
+            .get("modified")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
         return Ok(EditBodyResult {
             body_chars_before,
             body_chars_after,
@@ -2837,7 +2913,12 @@ pub fn rewrite_body(
         let body_chars_before = file_content.len();
         let new_content = format!("{}\n", trimmed_body);
         let body_chars_after = new_content.len();
-        (new_content, body_chars_before, body_chars_after, String::new())
+        (
+            new_content,
+            body_chars_before,
+            body_chars_after,
+            String::new(),
+        )
     } else {
         let matter = Matter::<YAML>::new();
         let parsed = matter.parse(&file_content);
@@ -2908,7 +2989,12 @@ pub fn rewrite_body(
         let yaml = serde_yaml::to_string(&fm).context("Failed to serialize frontmatter")?;
         let body_chars_after = trimmed_body.len();
         let new_content = format!("---\n{}---\n\n{}\n", yaml, trimmed_body);
-        (new_content, body_chars_before, body_chars_after, new_modified)
+        (
+            new_content,
+            body_chars_before,
+            body_chars_after,
+            new_modified,
+        )
     };
 
     atomic_write_file(path, &new_content, "rewrite_body")?;
@@ -3102,11 +3188,7 @@ pub fn append_to_document(
                 .unwrap_or("document")
                 .to_string()
         });
-    let commit_msg = format!(
-        "append({}): {}",
-        doc_id,
-        section.unwrap_or("body")
-    );
+    let commit_msg = format!("append({}): {}", doc_id, section.unwrap_or("body"));
     let _ = git_commit_file(path, &commit_msg);
 
     Ok(new_modified)
@@ -3213,7 +3295,11 @@ pub fn convert_document(
 
     if !crate::graph::is_valid_node_type(new_type) {
         let valid_types = crate::graph::VALID_NODE_TYPES.join(", ");
-        anyhow::bail!("Invalid node type: {}. Must be one of: {}", new_type, valid_types);
+        anyhow::bail!(
+            "Invalid node type: {}. Must be one of: {}",
+            new_type,
+            valid_types
+        );
     }
     if let Some(d) = dir {
         if d.trim().is_empty() || !is_safe_relative_path(d) {
@@ -3256,7 +3342,7 @@ pub fn convert_document(
         .map(String::from)
         .unwrap_or_else(|| default_subdir_for_type(new_type).to_string());
     let target_dir = root.join(&subdir);
-    let filename = generate_filename(&sanitize_explicit_id(id), title);
+    let filename = generate_filename(&sanitize_explicit_id(id), title)?;
     let new_path = target_dir.join(filename);
     let moved = new_path != abs_path;
     if moved && new_path.exists() {
@@ -3622,11 +3708,11 @@ fn slugify(title: &str) -> String {
         .join("-")
 }
 
-/// Maximum number of characters in the slug portion of a filename.
-///
-/// Keeps generated filenames short enough to be comfortable on any filesystem
-/// and readable in directory listings. IDs are excluded — only the title-derived
-/// slug is capped.
+/// Maximum allowed character length for a PKB filename (including the `.md` extension).
+/// Keeps filenames short and descriptive, preventing run-on titles from ballooning filenames.
+pub const MAX_FILENAME_LEN: usize = 80;
+
+/// Deprecated alias for backwards compatibility.
 pub const MAX_FILENAME_SLUG_LEN: usize = 80;
 
 /// Validate a path is relative and safe from traversal.
@@ -3635,7 +3721,10 @@ pub fn is_safe_relative_path(path: &str) -> bool {
         return false;
     }
     for component in std::path::Path::new(path).components() {
-        if matches!(component, std::path::Component::ParentDir | std::path::Component::RootDir) {
+        if matches!(
+            component,
+            std::path::Component::ParentDir | std::path::Component::RootDir
+        ) {
             return false;
         }
     }
@@ -3681,17 +3770,31 @@ pub fn is_daily_id(id: &str) -> bool {
 }
 
 /// Helper to generate a unified prefix-based filename.
-pub fn generate_filename(prefix: &str, title: &str) -> String {
-    if is_daily_id(prefix) {
-        return format!("{}.md", prefix);
-    }
-    let slug = title_to_snake_case(title);
-    let slug = truncate_snake_slug(&slug, MAX_FILENAME_SLUG_LEN);
-    if slug.is_empty() {
+///
+/// Returns an error if the resulting filename exceeds [`MAX_FILENAME_LEN`] characters.
+pub fn generate_filename(prefix: &str, title: &str) -> Result<String> {
+    let filename = if is_daily_id(prefix) {
         format!("{}.md", prefix)
     } else {
-        format!("{}_{}.md", prefix, slug)
+        let slug = title_to_snake_case(title);
+        if slug.is_empty() {
+            format!("{}.md", prefix)
+        } else {
+            format!("{}_{}.md", prefix, slug)
+        }
+    };
+
+    let len = filename.chars().count();
+    if len > MAX_FILENAME_LEN {
+        anyhow::bail!(
+            "Filename '{}' is too long ({} characters). Limit is {} characters.",
+            filename,
+            len,
+            MAX_FILENAME_LEN
+        );
     }
+
+    Ok(filename)
 }
 
 /// Truncate a slug to `max_len` characters, trimming trailing hyphens.
@@ -3837,7 +3940,8 @@ mod tests {
         fs::write(&path, initial).unwrap();
 
         // First hunk matches Line 1, but second hunk does not match Nonexistent
-        let diff = "```diff\n@@ ... @@\n-Line 1\n+Updated 1\n@@ ... @@\n-Nonexistent\n+Updated 2\n```";
+        let diff =
+            "```diff\n@@ ... @@\n-Line 1\n+Updated 1\n@@ ... @@\n-Nonexistent\n+Updated 2\n```";
         let err = edit_body(&path, diff, true, None, false).unwrap_err();
         assert!(err.to_string().contains("UnifiedDiffNoMatch"));
         assert!(err.to_string().contains("hunk 2 of 2"));
@@ -4058,30 +4162,6 @@ mod tests {
     }
 
     #[test]
-    fn create_task_long_title_produces_short_filename() {
-        let tmp = tempfile::tempdir().unwrap();
-        let root = tmp.path();
-        write_test_polecat_yaml(root, &["aops", "mem"]);
-        fs::create_dir_all(root.join("tasks")).unwrap();
-
-        let long_title = "word ".repeat(30).trim().to_string(); // ~150 chars
-        let fields = TaskFields {
-            title: long_title,
-            parent: Some("parent-001".to_string()),
-            project: Some("aops".to_string()),
-            ..Default::default()
-        };
-        let path = create_task(root, fields).unwrap();
-        let stem = path.file_stem().unwrap().to_string_lossy();
-        // ID (~14) + dash + slug (≤80) = ≤95 chars
-        assert!(
-            stem.len() <= 100,
-            "filename stem must be ≤100 chars for long titles, got {} chars: {stem}",
-            stem.len()
-        );
-    }
-
-    #[test]
     fn create_task_over_limit_filename_rejected_and_writes_nothing() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
@@ -4097,14 +4177,18 @@ mod tests {
             project: Some("aops".to_string()),
             ..Default::default()
         };
-        let err = create_task(root, fields).expect_err("creating a task with an over-limit filename must be rejected");
+        let err = create_task(root, fields)
+            .expect_err("creating a task with an over-limit filename must be rejected");
         let msg = err.to_string();
         assert!(
             msg.contains("80") && msg.contains("characters"),
             "error message must state the limit and length, got: {msg}"
         );
         let count = fs::read_dir(&tasks_dir).unwrap().count();
-        assert_eq!(count, 0, "no files must be written on over-limit filename failure");
+        assert_eq!(
+            count, 0,
+            "no files must be written on over-limit filename failure"
+        );
     }
 
     #[test]
@@ -4121,7 +4205,8 @@ mod tests {
             project: Some("aops".to_string()),
             ..Default::default()
         };
-        let path = create_task(root, fields).expect("creating a task with short filename must succeed");
+        let path =
+            create_task(root, fields).expect("creating a task with short filename must succeed");
         assert!(path.exists());
         let filename = path.file_name().unwrap().to_string_lossy();
         assert!(
@@ -4139,22 +4224,45 @@ mod tests {
         let notes_dir = root.join("notes");
         fs::create_dir_all(&notes_dir).unwrap();
         let old_path = notes_dir.join("note-001.md");
-        fs::write(&old_path, "---\nid: note-001\ntitle: Short note\ntype: note\n---\nBody\n").unwrap();
+        fs::write(
+            &old_path,
+            "---\nid: note-001\ntitle: Short note\ntype: note\n---\nBody\n",
+        )
+        .unwrap();
         let original_content = fs::read_to_string(&old_path).unwrap();
 
         let long_title = "This is an extremely long title for a document that exceeds the tight filename length limit";
-        let err = convert_document(root, &old_path, "note-001", long_title, "task", None, Some("inbox"))
-            .expect_err("converting with an over-limit filename must be rejected");
+        let err = convert_document(
+            root,
+            &old_path,
+            "note-001",
+            long_title,
+            "task",
+            None,
+            Some("inbox"),
+        )
+        .expect_err("converting with an over-limit filename must be rejected");
         let msg = err.to_string();
         assert!(
             msg.contains("80") && msg.contains("characters"),
             "error message must state the limit and length, got: {msg}"
         );
-        assert!(old_path.exists(), "original source file must remain untouched");
-        assert_eq!(fs::read_to_string(&old_path).unwrap(), original_content, "original content must not change");
+        assert!(
+            old_path.exists(),
+            "original source file must remain untouched"
+        );
+        assert_eq!(
+            fs::read_to_string(&old_path).unwrap(),
+            original_content,
+            "original content must not change"
+        );
         let tasks_dir = root.join("tasks");
         if tasks_dir.exists() {
-            assert_eq!(fs::read_dir(&tasks_dir).unwrap().count(), 0, "no target file must be written");
+            assert_eq!(
+                fs::read_dir(&tasks_dir).unwrap().count(),
+                0,
+                "no target file must be written"
+            );
         }
     }
 
@@ -4234,12 +4342,21 @@ mod tests {
         .unwrap();
 
         // 1. rewrite_body with expected_modified matching `last_modified`
-        rewrite_body(&file_path, "New body via last_modified pin.", true, Some(local_last_mod))
-            .expect("CAS pinning to last_modified must be accepted, not rejected as stale (issue #648)");
+        rewrite_body(
+            &file_path,
+            "New body via last_modified pin.",
+            true,
+            Some(local_last_mod),
+        )
+        .expect(
+            "CAS pinning to last_modified must be accepted, not rejected as stale (issue #648)",
+        );
 
         let content_after = fs::read_to_string(&file_path).unwrap();
         assert!(
-            !content_after.lines().any(|l| l.starts_with("last_modified:")),
+            !content_after
+                .lines()
+                .any(|l| l.starts_with("last_modified:")),
             "rewrite_body must strip legacy last_modified: {content_after}"
         );
         assert!(content_after.contains("New body via last_modified pin."));
@@ -4254,12 +4371,15 @@ mod tests {
         )
         .unwrap();
 
-        append_to_document(&file_path2, "Appended text.", None, Some(local_last_mod))
-            .expect("append_to_document CAS pinning to last_modified must be accepted (issue #648)");
+        append_to_document(&file_path2, "Appended text.", None, Some(local_last_mod)).expect(
+            "append_to_document CAS pinning to last_modified must be accepted (issue #648)",
+        );
 
         let content_after2 = fs::read_to_string(&file_path2).unwrap();
         assert!(
-            !content_after2.lines().any(|l| l.starts_with("last_modified:")),
+            !content_after2
+                .lines()
+                .any(|l| l.starts_with("last_modified:")),
             "append_to_document must strip legacy last_modified: {content_after2}"
         );
         assert!(content_after2.contains("Appended text."));
@@ -4528,7 +4648,10 @@ mod tests {
         let expected_local_date = chrono::Local::now().format("%Y%m%d").to_string();
         let expected_local_title_date = chrono::Local::now().format("%Y-%m-%d").to_string();
         assert!(
-            path.file_name().unwrap().to_string_lossy().contains(&expected_local_date),
+            path.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .contains(&expected_local_date),
             "slug must embed the local calendar day {expected_local_date}, got path: {path:?}"
         );
         assert!(
@@ -5070,18 +5193,24 @@ mod tests {
     fn rewrite_body_rejects_empty_or_whitespace_body() {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("doc.md");
-        fs::write(&path, "---\nid: doc\ntitle: Doc\n---\n\nExisting body content.\n").unwrap();
+        fs::write(
+            &path,
+            "---\nid: doc\ntitle: Doc\n---\n\nExisting body content.\n",
+        )
+        .unwrap();
 
         // Empty string
         let err = rewrite_body(&path, "", true, None).expect_err("empty body must be rejected");
         assert!(err.to_string().contains("Refusing to rewrite body"));
 
         // Whitespace only
-        let err = rewrite_body(&path, "   \n\t\n  ", true, None).expect_err("whitespace body must be rejected");
+        let err = rewrite_body(&path, "   \n\t\n  ", true, None)
+            .expect_err("whitespace body must be rejected");
         assert!(err.to_string().contains("Refusing to rewrite body"));
 
         // When preserve_frontmatter=false, empty body must also be rejected
-        let err = rewrite_body(&path, "", false, None).expect_err("empty body with preserve_frontmatter=false must be rejected");
+        let err = rewrite_body(&path, "", false, None)
+            .expect_err("empty body with preserve_frontmatter=false must be rejected");
         assert!(err.to_string().contains("Refusing to rewrite body"));
 
         // Verify disk content untouched
@@ -5097,38 +5226,23 @@ mod tests {
     fn test_extract_body_content_all_shapes() {
         // 1. Raw markdown file with frontmatter
         let raw = "---\nid: test-1\ntitle: Test\n---\n\n## Real Body\n\nContent here.\n";
-        assert_eq!(
-            extract_body_content(raw),
-            "## Real Body\n\nContent here.\n"
-        );
+        assert_eq!(extract_body_content(raw), "## Real Body\n\nContent here.\n");
 
         // 2. get_document output format (## Title\n\n---\n...\n---)
         let get_doc = "## Test Document\n\n---\nid: test-1\ntitle: Test Document\ntype: observation\n---\n\nWRITER-B-MARKER\nline2";
-        assert_eq!(
-            extract_body_content(get_doc),
-            "WRITER-B-MARKER\nline2"
-        );
+        assert_eq!(extract_body_content(get_doc), "WRITER-B-MARKER\nline2");
 
         // 3. Normal prose starting with markdown heading
         let prose_heading = "## Real Section\n\nThis is normal markdown.\n";
-        assert_eq!(
-            extract_body_content(prose_heading),
-            prose_heading
-        );
+        assert_eq!(extract_body_content(prose_heading), prose_heading);
 
         // 4. Plain body
         let plain = "Simple body text without headings or frontmatter.";
-        assert_eq!(
-            extract_body_content(plain),
-            plain
-        );
+        assert_eq!(extract_body_content(plain), plain);
 
         // 5. Body with horizontal rule in middle
         let with_hr = "Section 1\n\n---\n\nSection 2";
-        assert_eq!(
-            extract_body_content(with_hr),
-            with_hr
-        );
+        assert_eq!(extract_body_content(with_hr), with_hr);
     }
 
     #[test]
@@ -5181,15 +5295,24 @@ read_timestamp_utc: 2026-08-31T01:38:00.370857830Z\n";
 
         // 3. Assert the intended body is preserved cleanly
         assert!(
-            content.contains("WRITER-B-FRESH-MARKER\nread_timestamp_utc: 2026-08-31T01:38:00.370857830Z"),
+            content.contains(
+                "WRITER-B-FRESH-MARKER\nread_timestamp_utc: 2026-08-31T01:38:00.370857830Z"
+            ),
             "intended body content must be preserved.\nContent:\n{content}"
         );
 
         // 4. Assert frontmatter has updated modified timestamp
         let matter = gray_matter::Matter::<gray_matter::engine::YAML>::new();
         let parsed = matter.parse(&content);
-        let fm = parsed.data.unwrap().deserialize::<serde_json::Value>().unwrap();
-        assert_eq!(fm.get("title").and_then(|v| v.as_str()), Some("AC4 Scratch Fixture"));
+        let fm = parsed
+            .data
+            .unwrap()
+            .deserialize::<serde_json::Value>()
+            .unwrap();
+        assert_eq!(
+            fm.get("title").and_then(|v| v.as_str()),
+            Some("AC4 Scratch Fixture")
+        );
         assert_ne!(
             fm.get("modified").and_then(|v| v.as_str()),
             Some("2026-08-31T01:37:26.529977728+00:00")
@@ -5255,7 +5378,11 @@ Clean new body without duplicates\n";
             .data
             .as_ref()
             .and_then(|d| d.deserialize::<serde_json::Value>().ok())
-            .and_then(|v| v.get("modified").and_then(|m| m.as_str()).map(str::to_string))
+            .and_then(|v| {
+                v.get("modified")
+                    .and_then(|m| m.as_str())
+                    .map(str::to_string)
+            })
             .expect("document must carry a modified timestamp")
     }
 
@@ -5419,17 +5546,13 @@ Clean new body without duplicates\n";
         append_to_document(&path, "Writer A's addendum.", None, Some(&snapshot)).unwrap();
 
         // Writer B is still holding the pre-writer-A snapshot.
-        let result =
-            append_to_document(&path, "Writer B's addendum.", None, Some(&snapshot));
+        let result = append_to_document(&path, "Writer B's addendum.", None, Some(&snapshot));
 
         assert!(
             result.is_err(),
             "writer B's stale append must be rejected, not silently applied"
         );
-        assert!(result
-            .unwrap_err()
-            .downcast_ref::<StaleWrite>()
-            .is_some());
+        assert!(result.unwrap_err().downcast_ref::<StaleWrite>().is_some());
 
         let on_disk = fs::read_to_string(&path).unwrap();
         assert!(
@@ -5988,10 +6111,7 @@ Clean new body without duplicates\n";
         );
 
         let mut updates_map = serde_json::Map::new();
-        updates_map.insert(
-            "parent".to_string(),
-            serde_json::json!("personal-66647271"),
-        );
+        updates_map.insert("parent".to_string(), serde_json::json!("personal-66647271"));
         let effective = expand_special_update_keys(node, &updates_map).unwrap();
 
         assert!(
@@ -6029,10 +6149,7 @@ Clean new body without duplicates\n";
         let doc = crate::pkb::parse_file(&p).expect("parse fixture");
         let node = GraphNode::from_pkb_document(&doc);
         let mut updates_map = serde_json::Map::new();
-        updates_map.insert(
-            "parent".to_string(),
-            serde_json::json!("personal-66647271"),
-        );
+        updates_map.insert("parent".to_string(), serde_json::json!("personal-66647271"));
         let effective = expand_special_update_keys(&node, &updates_map).unwrap();
         assert!(
             !effective.contains_key("parent"),
@@ -6153,11 +6270,20 @@ Clean new body without duplicates\n";
             "file on disk must remain byte-for-byte identical after refusal"
         );
         assert!(after.contains("id: task-glued1"), "id must survive on disk");
-        assert!(after.contains("title: Glued Title Defect"), "title must survive on disk");
+        assert!(
+            after.contains("title: Glued Title Defect"),
+            "title must survive on disk"
+        );
         assert!(after.contains("type: task"), "type must survive on disk");
-        assert!(after.contains("parent: epic-01dba8f8"), "parent must survive on disk");
+        assert!(
+            after.contains("parent: epic-01dba8f8"),
+            "parent must survive on disk"
+        );
         assert!(after.contains("tags:"), "tags must survive on disk");
-        assert!(after.contains("depends_on:"), "depends_on must survive on disk");
+        assert!(
+            after.contains("depends_on:"),
+            "depends_on must survive on disk"
+        );
     }
 
     /// A file with leading `---` but no closing delimiter at all must fail closed.
@@ -6165,7 +6291,8 @@ Clean new body without duplicates\n";
     fn update_document_refuses_to_clobber_unterminated_frontmatter() {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("task-unclosed.md");
-        let original = "---\nid: task-unclosed1\ntitle: Unclosed\ntype: task\nstatus: ready\nparent: epic-1\n";
+        let original =
+            "---\nid: task-unclosed1\ntitle: Unclosed\ntype: task\nstatus: ready\nparent: epic-1\n";
         std::fs::write(&path, original).unwrap();
 
         let mut updates = HashMap::new();
@@ -6200,7 +6327,10 @@ Clean new body without duplicates\n";
             "update on document without frontmatter must succeed (safe case)"
         );
         let after = std::fs::read_to_string(&path).unwrap();
-        assert!(after.contains("status: in_progress"), "status must be written in frontmatter");
+        assert!(
+            after.contains("status: in_progress"),
+            "status must be written in frontmatter"
+        );
         assert!(after.contains("# Plain Document"), "body must be preserved");
     }
 
@@ -6231,11 +6361,7 @@ Clean new body without duplicates\n";
         );
 
         // delete_observations refusal
-        let del_res = delete_observations(
-            &path,
-            &["Old observation".to_string()],
-            None,
-        );
+        let del_res = delete_observations(&path, &["Old observation".to_string()], None);
         assert!(
             del_res.is_err(),
             "delete_observations must fail closed on glued frontmatter"
@@ -6323,7 +6449,13 @@ Clean new body without duplicates\n";
         )
         .unwrap();
 
-        append_to_document(&file_path, "## New Section\n\nAppended body content.", None, None).unwrap();
+        append_to_document(
+            &file_path,
+            "## New Section\n\nAppended body content.",
+            None,
+            None,
+        )
+        .unwrap();
 
         let readback = std::fs::read_to_string(&file_path).unwrap();
         assert!(
@@ -6449,7 +6581,10 @@ Clean new body without duplicates\n";
 
         // Verify file is untouched
         let content = std::fs::read_to_string(&path).unwrap();
-        assert!(!content.contains("consequence"), "file must not be modified on rejection");
+        assert!(
+            !content.contains("consequence"),
+            "file must not be modified on rejection"
+        );
     }
 
     #[test]
@@ -6470,7 +6605,10 @@ Clean new body without duplicates\n";
         assert!(res.is_ok(), "500 chars should be accepted");
 
         let content = std::fs::read_to_string(&path).unwrap();
-        assert!(content.contains(&valid_str), "consequence should be written");
+        assert!(
+            content.contains(&valid_str),
+            "consequence should be written"
+        );
     }
 
     #[test]
@@ -6485,9 +6623,15 @@ Clean new body without duplicates\n";
 
         let long_str = "t".repeat(501);
         let mut updates = HashMap::new();
-        updates.insert("tags".to_string(), serde_json::json!(["short_tag", long_str]));
+        updates.insert(
+            "tags".to_string(),
+            serde_json::json!(["short_tag", long_str]),
+        );
         let res = update_document(&path, updates);
-        assert!(res.is_err(), "must reject array containing scalar > 500 chars");
+        assert!(
+            res.is_err(),
+            "must reject array containing scalar > 500 chars"
+        );
         let err_msg = res.unwrap_err().to_string();
         assert!(
             err_msg.contains("tags") && err_msg.contains("body"),
@@ -6511,7 +6655,10 @@ Clean new body without duplicates\n";
         updates.insert("consequence".to_string(), serde_json::json!(str_150));
         let res = with_max_frontmatter_scalar_len(100, || update_document(&path, updates));
 
-        assert!(res.is_err(), "must reject when exceeding tuned threshold (100)");
+        assert!(
+            res.is_err(),
+            "must reject when exceeding tuned threshold (100)"
+        );
         let err_msg = res.unwrap_err().to_string();
         assert!(
             err_msg.contains("maximum is 100"),
@@ -6521,12 +6668,16 @@ Clean new body without duplicates\n";
 
     #[test]
     fn test_with_max_frontmatter_scalar_len_scoped_isolation() {
-        assert_eq!(max_frontmatter_scalar_len(), DEFAULT_MAX_FRONTMATTER_SCALAR_LEN);
-        let inside = with_max_frontmatter_scalar_len(42, || {
-            max_frontmatter_scalar_len()
-        });
+        assert_eq!(
+            max_frontmatter_scalar_len(),
+            DEFAULT_MAX_FRONTMATTER_SCALAR_LEN
+        );
+        let inside = with_max_frontmatter_scalar_len(42, max_frontmatter_scalar_len);
         assert_eq!(inside, 42);
-        assert_eq!(max_frontmatter_scalar_len(), DEFAULT_MAX_FRONTMATTER_SCALAR_LEN);
+        assert_eq!(
+            max_frontmatter_scalar_len(),
+            DEFAULT_MAX_FRONTMATTER_SCALAR_LEN
+        );
     }
 
     #[test]
@@ -6545,8 +6696,15 @@ Clean new body without duplicates\n";
 
         let after = std::fs::read_to_string(&path).unwrap();
         assert!(after.contains("status: in_progress"));
-        assert!(after.contains("custom_user_key: 12345"), "custom_user_key must be preserved unmodified: {after}");
-        assert!(after.contains("another_field: preserved string") || after.contains("another_field: \"preserved string\""), "another_field must be preserved: {after}");
+        assert!(
+            after.contains("custom_user_key: 12345"),
+            "custom_user_key must be preserved unmodified: {after}"
+        );
+        assert!(
+            after.contains("another_field: preserved string")
+                || after.contains("another_field: \"preserved string\""),
+            "another_field must be preserved: {after}"
+        );
     }
 
     #[test]
@@ -6565,7 +6723,10 @@ Clean new body without duplicates\n";
             ..Default::default()
         };
         let res = create_task(root, fields);
-        assert!(res.is_err(), "create_task must reject consequence > 500 chars");
+        assert!(
+            res.is_err(),
+            "create_task must reject consequence > 500 chars"
+        );
         let err_msg = res.unwrap_err().to_string();
         assert!(
             err_msg.contains("consequence") && err_msg.contains("body"),
@@ -6577,7 +6738,10 @@ Clean new body without duplicates\n";
     fn test_yaml_escape_double_quoted_escapes_properly() {
         let input = "Line 1\nLine 2\r\n\"Quoted\" \\ Backslash";
         let escaped = yaml_escape_double_quoted(input);
-        assert_eq!(escaped, "Line 1\\nLine 2\\r\\n\\\"Quoted\\\" \\\\ Backslash");
+        assert_eq!(
+            escaped,
+            "Line 1\\nLine 2\\r\\n\\\"Quoted\\\" \\\\ Backslash"
+        );
     }
 
     #[test]
@@ -6635,7 +6799,8 @@ Clean new body without duplicates\n";
     fn test_add_observations_creates_section() {
         let tmp = tempfile::tempdir().unwrap();
         let file_path = tmp.path().join("test_obs_create_sec.md");
-        let initial_content = "---\nid: test-create\ntitle: Test\n---\n\n# Main Title\n\nSome body.\n";
+        let initial_content =
+            "---\nid: test-create\ntitle: Test\n---\n\n# Main Title\n\nSome body.\n";
         std::fs::write(&file_path, initial_content).unwrap();
 
         let res = add_observations(
@@ -6656,7 +6821,8 @@ Clean new body without duplicates\n";
     fn test_add_observations_no_section() {
         let tmp = tempfile::tempdir().unwrap();
         let file_path = tmp.path().join("test_obs_no_sec.md");
-        let initial_content = "---\nid: test-no-sec\ntitle: Test\n---\n\n# Main Title\n\nSome body text.\n";
+        let initial_content =
+            "---\nid: test-no-sec\ntitle: Test\n---\n\n# Main Title\n\nSome body text.\n";
         std::fs::write(&file_path, initial_content).unwrap();
 
         let res = add_observations(
@@ -6714,7 +6880,10 @@ Clean new body without duplicates\n";
 
         assert!(err.downcast_ref::<StaleWrite>().is_some());
         // Verify disk untouched
-        assert_eq!(std::fs::read_to_string(&file_path).unwrap(), initial_content);
+        assert_eq!(
+            std::fs::read_to_string(&file_path).unwrap(),
+            initial_content
+        );
 
         // Matching write success
         let ok = add_observations(
@@ -6736,7 +6905,14 @@ Clean new body without duplicates\n";
         // Empty lines list
         assert!(add_observations(&file_path, &[], None, false, None).is_err());
         // Multiline line
-        assert!(add_observations(&file_path, &["line 1\nline 2".to_string()], None, false, None).is_err());
+        assert!(add_observations(
+            &file_path,
+            &["line 1\nline 2".to_string()],
+            None,
+            false,
+            None
+        )
+        .is_err());
         // Empty line
         assert!(add_observations(&file_path, &["   ".to_string()], None, false, None).is_err());
     }
@@ -6783,7 +6959,10 @@ Clean new body without duplicates\n";
         assert_eq!(not_found.0, "nonexistent obs");
 
         // Verify disk was NOT changed (no partial delete, no silent success)
-        assert_eq!(std::fs::read_to_string(&file_path).unwrap(), initial_content);
+        assert_eq!(
+            std::fs::read_to_string(&file_path).unwrap(),
+            initial_content
+        );
     }
 
     #[test]
@@ -6801,7 +6980,10 @@ Clean new body without duplicates\n";
         .unwrap_err();
 
         assert!(err.downcast_ref::<StaleWrite>().is_some());
-        assert_eq!(std::fs::read_to_string(&file_path).unwrap(), initial_content);
+        assert_eq!(
+            std::fs::read_to_string(&file_path).unwrap(),
+            initial_content
+        );
     }
 
     #[test]
@@ -6825,12 +7007,7 @@ Clean new body without duplicates\n";
         assert!(intermediate.contains("```python\ndef foo():\n    return 42\n```\n\n| Col A | Col B |\n|---|---|\n| 1 | 2 |\n\n## Observations\n\n- obs alpha\n- obs beta\n- obs gamma\n\n## Trailing\n\nEnd text with trailing newlines.\n\n\n"));
 
         // Delete obs beta
-        delete_observations(
-            &file_path,
-            &["obs beta".to_string()],
-            None,
-        )
-        .unwrap();
+        delete_observations(&file_path, &["obs beta".to_string()], None).unwrap();
 
         let final_content = std::fs::read_to_string(&file_path).unwrap();
         assert!(final_content.contains("```python\ndef foo():\n    return 42\n```\n\n| Col A | Col B |\n|---|---|\n| 1 | 2 |\n\n## Observations\n\n- obs alpha\n- obs gamma\n\n## Trailing\n\nEnd text with trailing newlines.\n\n\n"));
@@ -6857,8 +7034,14 @@ Clean new body without duplicates\n";
 
         let on_disk = std::fs::read_to_string(&file_path).unwrap();
         // The closing delimiter MUST occupy its own line
-        assert!(!on_disk.contains("---#"), "Closing delimiter must not be concatenated with '# Title'");
-        assert!(on_disk.contains("---\n# Title"), "Closing delimiter must be followed by newline before '# Title'");
+        assert!(
+            !on_disk.contains("---#"),
+            "Closing delimiter must not be concatenated with '# Title'"
+        );
+        assert!(
+            on_disk.contains("---\n# Title"),
+            "Closing delimiter must be followed by newline before '# Title'"
+        );
 
         // Round-trip through real read path (pkb::parse_file) with frontmatter intact
         let doc = crate::pkb::parse_file(&file_path).expect("parse_file must succeed");
@@ -6887,8 +7070,14 @@ Clean new body without duplicates\n";
 
         let on_disk = std::fs::read_to_string(&file_path).unwrap();
         // The closing delimiter MUST occupy its own line
-        assert!(!on_disk.contains("---#"), "Closing delimiter must not be concatenated with '# Title'");
-        assert!(on_disk.contains("---\n# Title"), "Closing delimiter must be followed by newline before '# Title'");
+        assert!(
+            !on_disk.contains("---#"),
+            "Closing delimiter must not be concatenated with '# Title'"
+        );
+        assert!(
+            on_disk.contains("---\n# Title"),
+            "Closing delimiter must be followed by newline before '# Title'"
+        );
 
         // Round-trip through real read path (pkb::parse_file) with frontmatter intact
         let doc = crate::pkb::parse_file(&file_path).expect("parse_file must succeed");
@@ -6898,7 +7087,6 @@ Clean new body without duplicates\n";
         assert!(doc.frontmatter.is_some());
     }
 }
-
 
 // ── Merge node ────────────────────────────────────────────────────────────
 
@@ -7230,7 +7418,12 @@ pub fn expand_special_update_keys(
     updates_map: &serde_json::Map<String, serde_json::Value>,
 ) -> anyhow::Result<std::collections::HashMap<String, serde_json::Value>> {
     let mut effective = std::collections::HashMap::new();
-    let special_keys = ["_add_tags", "_remove_tags", "_add_depends_on", "_remove_depends_on"];
+    let special_keys = [
+        "_add_tags",
+        "_remove_tags",
+        "_add_depends_on",
+        "_remove_depends_on",
+    ];
 
     for (key, value) in updates_map {
         if special_keys.contains(&key.as_str()) {
@@ -7415,7 +7608,6 @@ pub fn expand_special_update_keys(
     Ok(effective)
 }
 
-
 #[cfg(test)]
 mod additional_tests {
     use super::*;
@@ -7429,10 +7621,26 @@ mod additional_tests {
 
     #[test]
     fn test_generate_filename() {
-        assert_eq!(generate_filename("task-123", "Hello World"), "task-123_hello_world.md");
-        assert_eq!(generate_filename("task-123", "   "), "task-123.md");
-        assert_eq!(generate_filename("task-123", "a b"), "task-123_a_b.md");
-        assert_eq!(generate_filename("20261009-daily", "20261009-daily-Friday"), "20261009-daily.md");
+        assert_eq!(
+            generate_filename("task-123", "Hello World").unwrap(),
+            "task-123_hello_world.md"
+        );
+        assert_eq!(generate_filename("task-123", "   ").unwrap(), "task-123.md");
+        assert_eq!(
+            generate_filename("task-123", "a b").unwrap(),
+            "task-123_a_b.md"
+        );
+        assert_eq!(
+            generate_filename("20261009-daily", "20261009-daily-Friday").unwrap(),
+            "20261009-daily.md"
+        );
+        let long_title = "word ".repeat(25);
+        let err = generate_filename("task-123", &long_title).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("80") && msg.contains("characters"),
+            "error message must state limit and length, got: {msg}"
+        );
     }
 
     #[test]

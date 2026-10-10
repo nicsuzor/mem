@@ -80,7 +80,10 @@ fn converts_capture_to_task_keeping_id_and_reindexing() {
 
     // Disk: same file moved, ID pinned in frontmatter, body intact.
     let new_path = root.join(&new_rel);
-    assert!(!old_path.exists(), "capture must leave notes/mobile-captures/");
+    assert!(
+        !old_path.exists(),
+        "capture must leave notes/mobile-captures/"
+    );
     let fm = frontmatter(&new_path);
     assert_eq!(fm["id"], CAPTURE_STEM);
     assert_eq!(fm["type"], "task");
@@ -90,7 +93,9 @@ fn converts_capture_to_task_keeping_id_and_reindexing() {
         .unwrap()
         .contains("Ask about the enrolment form."));
     assert_eq!(
-        std::fs::read_dir(root.join("notes/mobile-captures")).unwrap().count(),
+        std::fs::read_dir(root.join("notes/mobile-captures"))
+            .unwrap()
+            .count(),
         0,
         "no file may be left behind"
     );
@@ -103,16 +108,25 @@ fn converts_capture_to_task_keeping_id_and_reindexing() {
         assert_eq!(node.node_type.as_deref(), Some("task"));
         assert_eq!(node.path, PathBuf::from(&new_rel));
     }
-    let task = json_of(&server.handle_get_task(&json!({ "id": CAPTURE_STEM })).unwrap());
+    let task = json_of(
+        &server
+            .handle_get_task(&json!({ "id": CAPTURE_STEM }))
+            .unwrap(),
+    );
     assert_eq!(task["status"], "inbox");
 
     // Vector index: one entry for the ID, at the new path.
     let store = server.store.read();
-    let entry = store.get_entry(CAPTURE_STEM).expect("index entry for the ID");
+    let entry = store
+        .get_entry(CAPTURE_STEM)
+        .expect("index entry for the ID");
     assert_eq!(entry.path, PathBuf::from(&new_rel));
     assert_eq!(entry.doc_type.as_deref(), Some("task"));
     assert_eq!(
-        store.documents().filter(|(_, e)| e.id == CAPTURE_STEM).count(),
+        store
+            .documents()
+            .filter(|(_, e)| e.id == CAPTURE_STEM)
+            .count(),
         1
     );
 }
@@ -123,7 +137,8 @@ fn rerun_is_a_noop_and_dir_and_status_are_honoured() {
     let root = tmp.path();
     write_capture(root, "");
     let server = make_server(root);
-    let args = json!({ "id": CAPTURE_STEM, "type": "task", "dir": "proj-alpha", "status": "ready" });
+    let args =
+        json!({ "id": CAPTURE_STEM, "type": "task", "dir": "proj-alpha", "status": "ready" });
 
     let first = json_of(&server.handle_convert_document(&args).unwrap());
     let new_rel = format!("proj-alpha/{CAPTURE_STEM}_ring_the_registrar.md");
@@ -154,17 +169,25 @@ fn rejections_leave_the_file_untouched() {
     let err = server
         .handle_convert_document(&json!({ "id": CAPTURE_STEM, "type": "task" }))
         .unwrap_err();
-    assert!(err.message.contains("not a valid task status"), "{}", err.message);
+    assert!(
+        err.message.contains("not a valid task status"),
+        "{}",
+        err.message
+    );
 
     // Invalid type.
     let err = server
-        .handle_convert_document(&json!({ "id": CAPTURE_STEM, "type": "nonsense", "status": "inbox" }))
+        .handle_convert_document(
+            &json!({ "id": CAPTURE_STEM, "type": "nonsense", "status": "inbox" }),
+        )
         .unwrap_err();
     assert!(err.message.contains("Invalid node type"), "{}", err.message);
 
     // Path traversal in dir.
     let err = server
-        .handle_convert_document(&json!({ "id": CAPTURE_STEM, "type": "task", "status": "inbox", "dir": "../outside" }))
+        .handle_convert_document(
+            &json!({ "id": CAPTURE_STEM, "type": "task", "status": "inbox", "dir": "../outside" }),
+        )
         .unwrap_err();
     assert!(err.message.contains("Invalid dir path"), "{}", err.message);
 
@@ -191,7 +214,11 @@ fn git_records_the_move_as_a_rename() {
             .args(args)
             .output()
             .unwrap();
-        assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        assert!(
+            out.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
         String::from_utf8_lossy(&out.stdout).into_owned()
     };
     git(&["init", "-q"]);
@@ -207,9 +234,16 @@ fn git_records_the_move_as_a_rename() {
         .handle_convert_document(&json!({ "id": CAPTURE_STEM, "type": "task" }))
         .unwrap();
 
-    assert_eq!(git(&["status", "--porcelain", "--", "notes", "tasks"]).trim(), "", "conversion must be fully committed");
+    assert_eq!(
+        git(&["status", "--porcelain", "--", "notes", "tasks"]).trim(),
+        "",
+        "conversion must be fully committed"
+    );
     let last = git(&["show", "--name-status", "-M", "--format=%s", "HEAD"]);
-    assert!(last.starts_with(&format!("convert({CAPTURE_STEM})")), "{last}");
+    assert!(
+        last.starts_with(&format!("convert({CAPTURE_STEM})")),
+        "{last}"
+    );
     assert!(
         last.lines().any(|l| l.starts_with('R')
             && l.contains(&format!("notes/mobile-captures/{CAPTURE_STEM}.md"))
@@ -245,7 +279,10 @@ fn convert_document_over_limit_filename_rejected_and_writes_nothing() {
     assert_eq!(std::fs::read_to_string(&old_path).unwrap(), original);
     let tasks_dir = root.join("tasks");
     if tasks_dir.exists() {
-        assert_eq!(std::fs::read_dir(tasks_dir).unwrap().count(), 0, "no task file must be written");
+        assert_eq!(
+            std::fs::read_dir(tasks_dir).unwrap().count(),
+            0,
+            "no task file must be written"
+        );
     }
 }
-
