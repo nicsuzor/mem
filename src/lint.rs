@@ -3,12 +3,13 @@
 //! Rules are PKB-specific: frontmatter schema validation, status/type canonicalization,
 //! YAML key ordering, markdown hygiene, and cross-reference integrity.
 
-use crate::graph::{self, VALID_NODE_TYPES};
+use crate::flow::{FlowEffect, FlowInput, FlowState};
+use crate::graph::{self, LinkEffect, LinkLabel, VALID_NODE_TYPES};
 use crate::pkb;
 use gray_matter::engine::YAML;
 use gray_matter::Matter;
 use rayon::prelude::*;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 static ID_RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
@@ -20,7 +21,8 @@ fn get_id_regex() -> &'static regex::Regex {
 // ── Diagnostic types ─────────────────────────────────────────────────────
 
 /// Severity level for lint diagnostics.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Severity {
     /// Auto-fixable style issue
     Style,
@@ -40,14 +42,111 @@ impl std::fmt::Display for Severity {
     }
 }
 
+/// Fix authority for lint diagnostics (specs/graph-lint.md §4, §8).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentFix {
+    Yes,
+    Propose,
+    No,
+}
+
+impl std::fmt::Display for AgentFix {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            AgentFix::Yes => write!(f, "yes"),
+            AgentFix::Propose => write!(f, "propose"),
+            AgentFix::No => write!(f, "no"),
+        }
+    }
+}
+
+/// Subject of a lint diagnostic (specs/graph-lint.md §8).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(untagged)]
+pub enum DiagnosticSubject {
+    Node(String),
+    Edge {
+        from: String,
+        to: String,
+        label: String,
+    },
+}
+
 /// A single lint diagnostic attached to a file.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 pub struct Diagnostic {
     pub severity: Severity,
     pub rule: &'static str,
     pub message: String,
     pub line: Option<usize>,
     pub fixable: bool,
+    pub agent_fix: AgentFix,
+    pub subject: Option<DiagnosticSubject>,
+}
+
+impl Diagnostic {
+    pub fn simple(
+        severity: Severity,
+        rule: &'static str,
+        message: impl Into<String>,
+        line: Option<usize>,
+        fixable: bool,
+    ) -> Self {
+        Self {
+            severity,
+            rule,
+            message: message.into(),
+            line,
+            fixable,
+            agent_fix: if fixable { AgentFix::Yes } else { AgentFix::No },
+            subject: None,
+        }
+    }
+
+    pub fn node(
+        severity: Severity,
+        rule: &'static str,
+        message: impl Into<String>,
+        node_id: impl Into<String>,
+        agent_fix: AgentFix,
+    ) -> Self {
+        let fixable = agent_fix == AgentFix::Yes;
+        Self {
+            severity,
+            rule,
+            message: message.into(),
+            line: None,
+            fixable,
+            agent_fix,
+            subject: Some(DiagnosticSubject::Node(node_id.into())),
+        }
+    }
+
+    pub fn edge(
+        severity: Severity,
+        rule: &'static str,
+        message: impl Into<String>,
+        from: impl Into<String>,
+        to: impl Into<String>,
+        label: impl Into<String>,
+        agent_fix: AgentFix,
+    ) -> Self {
+        let fixable = agent_fix == AgentFix::Yes;
+        Self {
+            severity,
+            rule,
+            message: message.into(),
+            line: None,
+            fixable,
+            agent_fix,
+            subject: Some(DiagnosticSubject::Edge {
+                from: from.into(),
+                to: to.into(),
+                label: label.into(),
+            }),
+        }
+    }
 }
 
 impl std::fmt::Display for Diagnostic {
@@ -150,6 +249,10 @@ const KNOWN_KEYS: &[&str] = &[
     "classification",
     "metadata",
     "contributes_to",
+    // Flow model keys (specs/graph-lint.md §7)
+    "worth",
+    "deadline_class",
+    "links",
     "follow_up_tasks",
     // Target / prototype node fields (spec multi-parent-edges §1.1, §1.6)
     "severity",
@@ -327,13 +430,13 @@ pub fn lint_file(
         Err(e) => {
             return FileResult {
                 path: path.to_path_buf(),
-                diagnostics: vec![Diagnostic {
-                    severity: Severity::Error,
-                    rule: "io-error",
-                    message: format!("Cannot read file: {e}"),
-                    line: None,
-                    fixable: false,
-                }],
+                diagnostics: vec![Diagnostic::simple(
+                    Severity::Error,
+                    "io-error",
+                    format!("Cannot read file: {e}"),
+                    None,
+                    false,
+                )],
                 fixed_content: None,
             };
         }
@@ -354,13 +457,13 @@ pub fn lint_file(
 
     // If fallback was needed and succeeded, the YAML has quoting issues
     if used_fallback && fm_data.is_some() {
-        diags.push(Diagnostic {
-            severity: Severity::Error,
-            rule: "fm-yaml-quoting",
-            message: "Frontmatter has unquoted values with colons — needs quoting".into(),
-            line: Some(1),
-            fixable: true,
-        });
+        diags.push(Diagnostic::simple(
+            Severity::Error,
+            "fm-yaml-quoting",
+            "Frontmatter has unquoted values with colons — needs quoting",
+            Some(1),
+            true,
+        ));
     }
 
     // ── Frontmatter rules ────────────────────────────────────────────
@@ -540,53 +643,53 @@ fn check_frontmatter(
     diags: &mut Vec<Diagnostic>,
     known_ids: Option<&HashSet<String>>,
     ancestor_map: Option<&AncestorMap>,
-    children_set: Option<&ChildrenSet>,
+    _children_set: Option<&ChildrenSet>,
 ) {
     // Check frontmatter exists
     if !content.starts_with("---") {
-        diags.push(Diagnostic {
-            severity: Severity::Warning,
-            rule: "fm-missing",
-            message: "File has no YAML frontmatter".into(),
-            line: Some(1),
-            fixable: false,
-        });
+        diags.push(Diagnostic::simple(
+            Severity::Warning,
+            "fm-missing",
+            "File has no YAML frontmatter",
+            Some(1),
+            false,
+        ));
         return;
     }
 
     let fm = match fm_data {
         Some(serde_json::Value::Object(map)) => map,
         Some(_) => {
-            diags.push(Diagnostic {
-                severity: Severity::Error,
-                rule: "fm-invalid",
-                message: "Frontmatter is not a YAML mapping".into(),
-                line: Some(1),
-                fixable: false,
-            });
+            diags.push(Diagnostic::simple(
+                Severity::Error,
+                "fm-invalid",
+                "Frontmatter is not a YAML mapping",
+                Some(1),
+                false,
+            ));
             return;
         }
         None => {
-            diags.push(Diagnostic {
-                severity: Severity::Error,
-                rule: "fm-parse-error",
-                message: "Failed to parse YAML frontmatter".into(),
-                line: Some(1),
-                fixable: false,
-            });
+            diags.push(Diagnostic::simple(
+                Severity::Error,
+                "fm-parse-error",
+                "Failed to parse YAML frontmatter",
+                Some(1),
+                false,
+            ));
             return;
         }
     };
 
     // Required: title
     if !fm.contains_key("title") {
-        diags.push(Diagnostic {
-            severity: Severity::Warning,
-            rule: "fm-no-title",
-            message: "Missing 'title' in frontmatter".into(),
-            line: Some(1),
-            fixable: false,
-        });
+        diags.push(Diagnostic::simple(
+            Severity::Warning,
+            "fm-no-title",
+            "Missing 'title' in frontmatter",
+            Some(1),
+            false,
+        ));
     }
 
     let node_type = fm.get("type").and_then(|v| v.as_str()).unwrap_or("");
@@ -596,34 +699,33 @@ fn check_frontmatter(
     if let Some(t) = fm.get("type").and_then(|v| v.as_str()) {
         if t == "project" {
             // Retired type: read-compat treats it as epic; nudge migration.
-            diags.push(Diagnostic {
-                severity: Severity::Warning,
-                rule: "fm-deprecated-project-type",
-                message: "'type: project' is retired — the node is read as a task. \
+            diags.push(Diagnostic::simple(
+                Severity::Warning,
+                "fm-deprecated-project-type",
+                "'type: project' is retired — the node is read as a task. \
                           Reclassify to 'task' (e.g. via batch_reclassify); 'project' \
-                          is now the polecat.yaml routing slug in the 'project:' field."
-                    .into(),
-                line: None,
-                fixable: true,
-            });
+                          is now the polecat.yaml routing slug in the 'project:' field.",
+                None,
+                true,
+            ));
         } else if !graph::is_valid_node_type(t) {
             let mapped = resolve_type_alias(t);
-            diags.push(Diagnostic {
-                severity: Severity::Style,
-                rule: "fm-unknown-type",
-                message: format!("Unknown type '{}' → will fix to '{}'", t, mapped),
-                line: None,
-                fixable: true,
-            });
+            diags.push(Diagnostic::simple(
+                Severity::Style,
+                "fm-unknown-type",
+                format!("Unknown type '{}' → will fix to '{}'", t, mapped),
+                None,
+                true,
+            ));
         }
     } else if fm.get("type").is_some() {
-        diags.push(Diagnostic {
-            severity: Severity::Error,
-            rule: "fm-type-not-string",
-            message: "'type' must be a string".into(),
-            line: None,
-            fixable: false,
-        });
+        diags.push(Diagnostic::simple(
+            Severity::Error,
+            "fm-type-not-string",
+            "'type' must be a string",
+            None,
+            false,
+        ));
     }
 
     // Status validation + alias detection
@@ -631,34 +733,34 @@ fn check_frontmatter(
         if let Some(raw_status) = fm.get("status").and_then(|v| v.as_str()) {
             let canonical = graph::resolve_status_alias(raw_status);
             if canonical != raw_status {
-                diags.push(Diagnostic {
-                    severity: Severity::Style,
-                    rule: "fm-status-alias",
-                    message: format!(
+                diags.push(Diagnostic::simple(
+                    Severity::Style,
+                    "fm-status-alias",
+                    format!(
                         "Status '{}' should be canonical '{}'",
                         raw_status, canonical
                     ),
-                    line: None,
-                    fixable: true,
-                });
+                    None,
+                    true,
+                ));
             }
             if !graph::is_valid_status(canonical) {
-                diags.push(Diagnostic {
-                    severity: Severity::Warning,
-                    rule: "fm-unknown-status",
-                    message: format!("Unknown status '{}' → will fix to 'inbox'", raw_status,),
-                    line: None,
-                    fixable: true,
-                });
+                diags.push(Diagnostic::simple(
+                    Severity::Warning,
+                    "fm-unknown-status",
+                    format!("Unknown status '{}' → will fix to 'inbox'", raw_status),
+                    None,
+                    true,
+                ));
             }
         } else if fm.get("status").is_some() {
-            diags.push(Diagnostic {
-                severity: Severity::Error,
-                rule: "fm-status-not-string",
-                message: "'status' must be a string".into(),
-                line: None,
-                fixable: false,
-            });
+            diags.push(Diagnostic::simple(
+                Severity::Error,
+                "fm-status-not-string",
+                "'status' must be a string",
+                None,
+                false,
+            ));
         }
     }
 
@@ -666,62 +768,62 @@ fn check_frontmatter(
     if let Some(p) = fm.get("intent").or_else(|| fm.get("priority")) {
         if let Some(n) = p.as_i64() {
             if !graph::is_valid_intent(n as i32) {
-                diags.push(Diagnostic {
-                    severity: Severity::Warning,
-                    rule: "fm-intent-range",
-                    message: format!("Intent {} outside expected range 0-4", n),
-                    line: None,
-                    fixable: false,
-                });
+                diags.push(Diagnostic::simple(
+                    Severity::Warning,
+                    "fm-intent-range",
+                    format!("Intent {} outside expected range 0-4", n),
+                    None,
+                    false,
+                ));
             }
         } else if let Some(s) = p.as_str() {
             // Check if it's a "p1"/"P2" style intent we can fix
             let stripped = s.strip_prefix('p').or_else(|| s.strip_prefix('P'));
             let can_fix = stripped.map(|n| n.parse::<i64>().is_ok()).unwrap_or(false);
-            diags.push(Diagnostic {
-                severity: Severity::Error,
-                rule: "fm-intent-type",
-                message: format!("'intent' must be an integer (got '{}')", s),
-                line: None,
-                fixable: can_fix,
-            });
+            diags.push(Diagnostic::simple(
+                Severity::Error,
+                "fm-intent-type",
+                format!("'intent' must be an integer (got '{}')", s),
+                None,
+                can_fix,
+            ));
         } else if !p.is_number() {
-            diags.push(Diagnostic {
-                severity: Severity::Error,
-                rule: "fm-intent-type",
-                message: "'intent' must be an integer".into(),
-                line: None,
-                fixable: false,
-            });
+            diags.push(Diagnostic::simple(
+                Severity::Error,
+                "fm-intent-type",
+                "'intent' must be an integer",
+                None,
+                false,
+            ));
         }
     }
 
     // Effort validation
     if let Some(effort) = fm.get("effort").and_then(|v| v.as_str()) {
         if !graph::is_valid_effort(effort) {
-            diags.push(Diagnostic {
-                severity: Severity::Warning,
-                rule: "fm-invalid-effort",
-                message: format!(
+            diags.push(Diagnostic::simple(
+                Severity::Warning,
+                "fm-invalid-effort",
+                format!(
                     "Unrecognised effort value '{}' — expected duration string like '1d', '2h', '1w'",
                     effort
                 ),
-                line: None,
-                fixable: false,
-            });
+                None,
+                false,
+            ));
         }
     }
 
     // Tags should be an array
     if let Some(tags) = fm.get("tags") {
         if !tags.is_array() && !tags.is_string() {
-            diags.push(Diagnostic {
-                severity: Severity::Error,
-                rule: "fm-tags-type",
-                message: "'tags' must be a list or comma-separated string".into(),
-                line: None,
-                fixable: false,
-            });
+            diags.push(Diagnostic::simple(
+                Severity::Error,
+                "fm-tags-type",
+                "'tags' must be a list or comma-separated string",
+                None,
+                false,
+            ));
         }
     }
 
@@ -736,16 +838,16 @@ fn check_frontmatter(
     if let Some(id) = fm.get("id").and_then(|v| v.as_str()) {
         let id_re = get_id_regex();
         if !is_root_node && !id_re.is_match(id) && !id.is_empty() {
-            diags.push(Diagnostic {
-                severity: Severity::Style,
-                rule: "fm-id-format",
-                message: format!(
+            diags.push(Diagnostic::simple(
+                Severity::Style,
+                "fm-id-format",
+                format!(
                     "ID '{}' doesn't match expected pattern 'prefix-hexhash'",
                     id
                 ),
-                line: None,
-                fixable: true,
-            });
+                None,
+                true,
+            ));
         }
     }
 
@@ -755,25 +857,25 @@ fn check_frontmatter(
     // with "\n\n..."). See aops-cb065324.
     if let Some(fm_section) = extract_frontmatter_section(content) {
         if has_leading_blank_block_scalar(fm_section) {
-            diags.push(Diagnostic {
-                severity: Severity::Style,
-                rule: "fm-block-scalar-whitespace",
-                message: "YAML block-scalar value in frontmatter has leading blank line(s)".into(),
-                line: None,
-                fixable: true,
-            });
+            diags.push(Diagnostic::simple(
+                Severity::Style,
+                "fm-block-scalar-whitespace",
+                "YAML block-scalar value in frontmatter has leading blank line(s)",
+                None,
+                true,
+            ));
         }
     }
 
     // Prohibited: body — content must live in the markdown body section, not frontmatter
     if fm.contains_key("body") {
-        diags.push(Diagnostic {
-            severity: Severity::Error,
-            rule: "fm-prohibited-body",
-            message: "'body' is a prohibited frontmatter key — content belongs in the markdown body (run with --fix to auto-migrate)".into(),
-            line: None,
-            fixable: true,
-        });
+        diags.push(Diagnostic::simple(
+            Severity::Error,
+            "fm-prohibited-body",
+            "'body' is a prohibited frontmatter key — content belongs in the markdown body (run with --fix to auto-migrate)",
+            None,
+            true,
+        ));
     }
 
     // Project field: required for actionable tasks (ready/queued). A task
@@ -799,13 +901,13 @@ fn check_frontmatter(
                 }
             }
             if !resolves {
-                diags.push(Diagnostic {
-                    severity: Severity::Warning,
-                    rule: "fm-missing-project",
-                    message: "Actionable tasks (ready/queued) must have an explicit 'project' field or inherit one from an ancestor".into(),
-                    line: None,
-                    fixable: false,
-                });
+                diags.push(Diagnostic::simple(
+                    Severity::Warning,
+                    "fm-missing-project",
+                    "Actionable tasks (ready/queued) must have an explicit 'project' field or inherit one from an ancestor",
+                    None,
+                    false,
+                ));
             }
         }
     }
@@ -814,41 +916,128 @@ fn check_frontmatter(
     let known: HashSet<&str> = KNOWN_KEYS.iter().copied().collect();
     for key in fm.keys() {
         if !known.contains(key.as_str()) {
-            diags.push(Diagnostic {
-                severity: Severity::Style,
-                rule: "fm-unknown-key",
-                message: format!("Unknown frontmatter key '{}'", key),
-                line: None,
-                fixable: false,
-            });
+            diags.push(Diagnostic::simple(
+                Severity::Style,
+                "fm-unknown-key",
+                format!("Unknown frontmatter key '{}'", key),
+                None,
+                false,
+            ));
         }
     }
 
-    // Reference integrity: parent, depends_on, soft_depends_on
+    // Reference integrity: flow-edge-dangling for flow model edges; ref-broken-dep for blocks/soft_blocks/supersedes
     if let Some(known_ids) = known_ids {
+        let node_id_for_ref = fm.get("id").and_then(|v| v.as_str()).unwrap_or("");
         if let Some(parent) = fm.get("parent").and_then(|v| v.as_str()) {
             if !known_ids.contains(parent) {
-                diags.push(Diagnostic {
-                    severity: Severity::Warning,
-                    rule: "ref-broken-parent",
-                    message: format!("Parent '{}' not found in PKB", parent),
-                    line: None,
-                    fixable: false,
-                });
+                diags.push(Diagnostic::edge(
+                    Severity::Warning,
+                    "flow-edge-dangling",
+                    format!("Parent '{}' not found in PKB", parent),
+                    node_id_for_ref,
+                    parent,
+                    "part_of",
+                    AgentFix::No,
+                ));
             }
         }
-        for key in &["depends_on", "soft_depends_on", "blocks", "soft_blocks"] {
+        if let Some(arr) = fm.get("depends_on").and_then(|v| v.as_array()) {
+            for item in arr {
+                if let Some(ref_id) = item.as_str() {
+                    if !known_ids.contains(ref_id) {
+                        diags.push(Diagnostic::edge(
+                            Severity::Warning,
+                            "flow-edge-dangling",
+                            format!("depends_on reference '{}' not found in PKB", ref_id),
+                            node_id_for_ref,
+                            ref_id,
+                            "needs",
+                            AgentFix::No,
+                        ));
+                    }
+                }
+            }
+        }
+        if let Some(arr) = fm.get("soft_depends_on").and_then(|v| v.as_array()) {
+            for item in arr {
+                if let Some(ref_id) = item.as_str() {
+                    if !known_ids.contains(ref_id) {
+                        diags.push(Diagnostic::edge(
+                            Severity::Warning,
+                            "flow-edge-dangling",
+                            format!("soft_depends_on reference '{}' not found in PKB", ref_id),
+                            ref_id,
+                            node_id_for_ref,
+                            "supports",
+                            AgentFix::No,
+                        ));
+                    }
+                }
+            }
+        }
+        if let Some(arr) = fm.get("contributes_to").and_then(|v| v.as_array()) {
+            for item in arr {
+                if let Some(target) = item.as_str().or_else(|| item.get("to").or_else(|| item.get("id")).and_then(|v| v.as_str())) {
+                    if !known_ids.contains(target) {
+                        diags.push(Diagnostic::edge(
+                            Severity::Warning,
+                            "flow-edge-dangling",
+                            format!("contributes_to target '{}' not found in PKB", target),
+                            node_id_for_ref,
+                            target,
+                            "serves",
+                            AgentFix::No,
+                        ));
+                    }
+                }
+            }
+        }
+        if let Some(arr) = fm.get("links").and_then(|v| v.as_array()) {
+            for item in arr {
+                if let Some(obj) = item.as_object() {
+                    let label = obj.get("label").and_then(|v| v.as_str()).unwrap_or("");
+                    if let Some(to) = obj.get("to").and_then(|v| v.as_str()) {
+                        if !known_ids.contains(to) {
+                            diags.push(Diagnostic::edge(
+                                Severity::Warning,
+                                "flow-edge-dangling",
+                                format!("Link target '{}' not found in PKB", to),
+                                node_id_for_ref,
+                                to,
+                                label,
+                                AgentFix::No,
+                            ));
+                        }
+                    }
+                    if let Some(from) = obj.get("from").and_then(|v| v.as_str()) {
+                        if !known_ids.contains(from) {
+                            diags.push(Diagnostic::edge(
+                                Severity::Warning,
+                                "flow-edge-dangling",
+                                format!("Link source '{}' not found in PKB", from),
+                                from,
+                                node_id_for_ref,
+                                label,
+                                AgentFix::No,
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+        for key in &["blocks", "soft_blocks"] {
             if let Some(arr) = fm.get(*key).and_then(|v| v.as_array()) {
                 for item in arr {
                     if let Some(ref_id) = item.as_str() {
                         if !known_ids.contains(ref_id) {
-                            diags.push(Diagnostic {
-                                severity: Severity::Warning,
-                                rule: "ref-broken-dep",
-                                message: format!("{} reference '{}' not found in PKB", key, ref_id),
-                                line: None,
-                                fixable: false,
-                            });
+                            diags.push(Diagnostic::simple(
+                                Severity::Warning,
+                                "ref-broken-dep",
+                                format!("{} reference '{}' not found in PKB", key, ref_id),
+                                None,
+                                false,
+                            ));
                         }
                     }
                 }
@@ -862,115 +1051,688 @@ fn check_frontmatter(
             crate::graph::parse_string_array(&serde_json::Value::Object(fm.clone()), "supersedes")
         {
             if !known_ids.contains(ref_id.as_str()) {
-                diags.push(Diagnostic {
-                    severity: Severity::Warning,
-                    rule: "ref-broken-dep",
-                    message: format!("supersedes reference '{}' not found in PKB", ref_id),
-                    line: None,
-                    fixable: false,
-                });
+                diags.push(Diagnostic::simple(
+                    Severity::Warning,
+                    "ref-broken-dep",
+                    format!("supersedes reference '{}' not found in PKB", ref_id),
+                    None,
+                    false,
+                ));
             }
         }
         // `superseded_by` is a reserved computed keyword going forward
         // (mem_8035b002) — a hand-written value in legacy data is itself a
         // lint issue, separate from whether it happens to resolve.
         if fm.contains_key("superseded_by") {
-            diags.push(Diagnostic {
-                severity: Severity::Warning,
-                rule: "superseded-by-hand-written",
-                message: "'superseded_by' is a computed reverse index of 'supersedes' and should not be hand-written; set 'supersedes' on the superseding node instead".to_string(),
-                line: None,
-                fixable: false,
-            });
+            diags.push(Diagnostic::simple(
+                Severity::Warning,
+                "superseded-by-hand-written",
+                "'superseded_by' is a computed reverse index of 'supersedes' and should not be hand-written; set 'supersedes' on the superseding node instead",
+                None,
+                false,
+            ));
         }
     }
 
     // All documents should have an explicit id
     if !fm.contains_key("id") {
         if fm.contains_key("task_id") {
-            diags.push(Diagnostic {
-                severity: Severity::Style,
-                rule: "task-legacy-id",
-                message: "Document uses legacy 'task_id' instead of 'id'".into(),
-                line: None,
-                fixable: true,
-            });
+            diags.push(Diagnostic::simple(
+                Severity::Style,
+                "task-legacy-id",
+                "Document uses legacy 'task_id' instead of 'id'",
+                None,
+                true,
+            ));
         } else {
             // Self-healing: lint_file always regenerates a missing id
             // regardless of --fix (see the id-heal step there), so this is
             // no longer a build-breaking error — just a note that it happened.
-            diags.push(Diagnostic {
-                severity: Severity::Style,
-                rule: "task-no-id",
-                message: "Document was missing 'id' field — auto-generated".into(),
-                line: None,
-                fixable: true,
-            });
+            diags.push(Diagnostic::simple(
+                Severity::Style,
+                "task-no-id",
+                "Document was missing 'id' field — auto-generated",
+                None,
+                true,
+            ));
         }
     }
 
     // All documents should have a type
     if !fm.contains_key("type") {
-        diags.push(Diagnostic {
-            severity: Severity::Warning,
-            rule: "doc-no-type",
-            message: "Document is missing 'type' field".into(),
-            line: None,
-            fixable: false,
-        });
+        diags.push(Diagnostic::simple(
+            Severity::Warning,
+            "doc-no-type",
+            "Document is missing 'type' field",
+            None,
+            false,
+        ));
     }
 
     // Task-type-specific checks
     if is_task_type {
         if !fm.contains_key("status") {
-            diags.push(Diagnostic {
-                severity: Severity::Warning,
-                rule: "task-no-status",
-                message: "Task is missing 'status' field".into(),
-                line: None,
-                fixable: false,
-            });
+            diags.push(Diagnostic::simple(
+                Severity::Warning,
+                "task-no-status",
+                "Task is missing 'status' field",
+                None,
+                false,
+            ));
         }
-        // Parentless node check: severity depends on whether the node has children.
-        // A node with children (scope > 0) but no parent is likely a structural gap.
-        // A standalone leaf with no parent is valid under the information-theoretic model.
-        if (node_type == "task" || node_type == "epic") && !fm.contains_key("parent") {
-            let node_id = fm.get("id").and_then(|v| v.as_str()).unwrap_or("");
-            let has_children = children_set.map(|cs| cs.contains(node_id)).unwrap_or(false);
-            let (severity, message) = if has_children {
-                (
-                    Severity::Warning,
-                    format!(
-                        "Type '{}' has children but no parent — consider connecting to the graph",
-                        node_type
-                    ),
-                )
-            } else {
-                (
-                    Severity::Style,
-                    format!("Type '{}' has no parent (standalone leaf)", node_type),
-                )
-            };
-            diags.push(Diagnostic {
-                severity,
-                rule: "task-no-parent",
-                message,
-                line: None,
-                fixable: false,
-            });
-        }
+// task-no-parent is retired under the flow model (specs/graph-lint.md §7, S7, U9)
 
         // Triage lint: missing acceptance criteria (demoted from scoring proxy in Phase 3)
         if node_type == "task" && !graph::detect_acceptance_criteria(content) {
-            diags.push(Diagnostic {
-                severity: Severity::Style,
-                rule: "task-missing-ac",
-                message: "Task has no acceptance criteria heading ('Acceptance Criteria', 'done when', etc.) — required for inbox task readiness".into(),
-                line: None,
-                fixable: false,
-            });
+            diags.push(Diagnostic::simple(
+                Severity::Style,
+                "task-missing-ac",
+                "Task has no acceptance criteria heading ('Acceptance Criteria', 'done when', etc.) — required for inbox task readiness",
+                None,
+                false,
+            ));
         }
     }
+    // ── Flow model checks (specs/graph-lint.md §5) ──────────────────────────
+    let node_id = fm.get("id").and_then(|v| v.as_str()).unwrap_or("");
+    let status_str = fm.get("status").and_then(|v| v.as_str());
+    let is_open_node = !matches!(
+        status_str,
+        Some("done") | Some("retired") | Some("cancelled") | Some("completed")
+    );
+
+    // 5.8: flow-legacy-field
+    for leg_key in &["stated_weight", "multiplier", "standing_weight"] {
+        if fm.contains_key(*leg_key) {
+            diags.push(Diagnostic::node(
+                Severity::Warning,
+                "flow-legacy-field",
+                format!("Legacy field '{}' is deprecated under the flow model", leg_key),
+                node_id,
+                AgentFix::No,
+            ));
+        }
+    }
+    if let Some(arr) = fm.get("links").and_then(|v| v.as_array()) {
+        for item in arr {
+            if let Some(obj) = item.as_object() {
+                for leg_key in &["stated_weight", "multiplier", "standing_weight"] {
+                    if obj.contains_key(*leg_key) {
+                        diags.push(Diagnostic::node(
+                            Severity::Warning,
+                            "flow-legacy-field",
+                            format!("Legacy field '{}' on link is deprecated under the flow model", leg_key),
+                            node_id,
+                            AgentFix::No,
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    if let Some(arr) = fm.get("contributes_to").and_then(|v| v.as_array()) {
+        for item in arr {
+            if let Some(obj) = item.as_object() {
+                if obj.contains_key("multiplier") {
+                    diags.push(Diagnostic::node(
+                        Severity::Warning,
+                        "flow-legacy-field",
+                        "Legacy field 'multiplier' is deprecated under the flow model".to_string(),
+                        node_id,
+                        AgentFix::No,
+                    ));
+                }
+            }
+        }
+    }
+
+    // 5.1: Targets and worth
+    let is_target_type = graph::STRATEGIC_TARGET_TYPES.contains(&node_type);
+    if let Some(worth_val) = fm.get("worth") {
+        if !is_target_type {
+            diags.push(Diagnostic::node(
+                Severity::Error,
+                "flow-worth-not-target",
+                format!(
+                    "Node '{}' of type '{}' carries 'worth'; only strategic targets ({:?}) may carry worth",
+                    node_id, node_type, graph::STRATEGIC_TARGET_TYPES
+                ),
+                node_id,
+                AgentFix::No,
+            ));
+        }
+        let worth_num = worth_val.as_f64().or_else(|| {
+            worth_val.as_str().and_then(|s| s.trim().parse::<f64>().ok())
+        });
+        match worth_num {
+            Some(w) => {
+                if !w.is_finite() || !(-1.0..=1.0).contains(&w) {
+                    diags.push(Diagnostic::node(
+                        Severity::Error,
+                        "flow-worth-invalid",
+                        format!("worth {} out of range -1.0..=1.0", w),
+                        node_id,
+                        AgentFix::No,
+                    ));
+                }
+            }
+            None => {
+                diags.push(Diagnostic::node(
+                    Severity::Error,
+                    "flow-worth-invalid",
+                    format!("Invalid worth '{}': must be a number in -1.0..=1.0", worth_val),
+                    node_id,
+                    AgentFix::No,
+                ));
+            }
+        }
+    } else if is_target_type && is_open_node {
+        diags.push(Diagnostic::node(
+            Severity::Warning,
+            "flow-target-unpriced",
+            format!("Open target '{}' has no worth", node_id),
+            node_id,
+            AgentFix::Propose,
+        ));
+    }
+
+    // 5.7: Deadlines
+    let raw_due = fm.get("due");
+    let has_due = raw_due.is_some_and(|v| !v.is_null() && v.as_str().is_some_and(|s| !s.trim().is_empty()));
+    let raw_class = fm.get("deadline_class");
+
+    if is_open_node && has_due && (raw_class.is_none() || raw_class.unwrap().is_null()) {
+        diags.push(Diagnostic::node(
+            Severity::Warning,
+            "flow-deadline-unclassed",
+            format!("Open node '{}' has due date but no deadline_class", node_id),
+            node_id,
+            AgentFix::Propose,
+        ));
+    }
+    if let Some(class_val) = raw_class {
+        if !class_val.is_null() {
+            if !has_due {
+                diags.push(Diagnostic::node(
+                    Severity::Warning,
+                    "flow-deadline-class-no-due",
+                    format!("Node '{}' has deadline_class but no due date", node_id),
+                    node_id,
+                    AgentFix::No,
+                ));
+            }
+            if let Some(s) = class_val.as_str() {
+                let trimmed = s.trim();
+                let is_valid = matches!(trimmed.to_lowercase().as_str(), "fake" | "soft" | "hard");
+                if !is_valid {
+                    diags.push(Diagnostic::node(
+                        Severity::Error,
+                        "flow-deadline-class-invalid",
+                        format!("Invalid deadline_class '{}': must be fake, soft, or hard", s),
+                        node_id,
+                        AgentFix::No,
+                    ));
+                } else if s != trimmed {
+                    diags.push(Diagnostic {
+                        severity: Severity::Error,
+                        rule: "flow-deadline-class-invalid",
+                        message: format!("deadline_class '{}' has whitespace padding", s),
+                        line: None,
+                        fixable: true,
+                        agent_fix: AgentFix::Yes,
+                        subject: Some(DiagnosticSubject::Node(node_id.to_string())),
+                    });
+                }
+            } else {
+                diags.push(Diagnostic::node(
+                    Severity::Error,
+                    "flow-deadline-class-invalid",
+                    format!("deadline_class must be a string; got {class_val}"),
+                    node_id,
+                    AgentFix::No,
+                ));
+            }
+        }
+    }
+
+    // 5.2 - 5.4: links entries
+    if let Some(parent) = fm.get("parent").and_then(|v| v.as_str()) {
+        if parent == node_id && !node_id.is_empty() {
+            diags.push(Diagnostic::edge(
+                Severity::Error,
+                "flow-edge-self",
+                format!("Self-edge: node '{}' links to itself", node_id),
+                node_id,
+                node_id,
+                "part_of",
+                AgentFix::No,
+            ));
+        }
+    }
+    if let Some(arr) = fm.get("depends_on").and_then(|v| v.as_array()) {
+        for item in arr {
+            if let Some(dep) = item.as_str() {
+                if dep == node_id && !node_id.is_empty() {
+                    diags.push(Diagnostic::edge(
+                        Severity::Error,
+                        "flow-edge-self",
+                        format!("Self-edge: node '{}' links to itself", node_id),
+                        node_id,
+                        node_id,
+                        "needs",
+                        AgentFix::No,
+                    ));
+                }
+            }
+        }
+    }
+
+    if let Some(links_val) = fm.get("links") {
+        if let Some(arr) = links_val.as_array() {
+            for item in arr {
+                if let Some(obj) = item.as_object() {
+                    let to_val = obj.get("to").and_then(|v| v.as_str());
+                    let from_val = obj.get("from").and_then(|v| v.as_str());
+                    let target_id = to_val.or(from_val).unwrap_or("");
+                    let label_val = obj.get("label");
+                    let raw_label_str = label_val.and_then(|v| v.as_str()).unwrap_or("");
+                    let edge_from = if from_val.is_some() { target_id.to_string() } else { node_id.to_string() };
+                    let edge_to = if from_val.is_some() { node_id.to_string() } else { target_id.to_string() };
+
+                    // Self edge
+                    if (!edge_from.is_empty() && edge_from == edge_to)
+                        || to_val == Some(node_id)
+                        || from_val == Some(node_id)
+                    {
+                        diags.push(Diagnostic::edge(
+                            Severity::Error,
+                            "flow-edge-self",
+                            format!("Self-edge: node '{}' links to itself", node_id),
+                            &edge_from,
+                            &edge_to,
+                            raw_label_str,
+                            AgentFix::No,
+                        ));
+                    }
+
+                    // Label validation
+                    if let Some(label_str) = label_val.and_then(|v| v.as_str()) {
+                        let trimmed = label_str.trim();
+                        let valid = ["serves", "needs", "part_of", "supports", "alternative", "settles"];
+                        if !valid.contains(&trimmed.to_lowercase().as_str()) {
+                            diags.push(Diagnostic::edge(
+                                Severity::Error,
+                                "flow-edge-label-invalid",
+                                format!("Invalid edge label '{}'", label_str),
+                                &edge_from,
+                                &edge_to,
+                                label_str,
+                                AgentFix::No,
+                            ));
+                        } else if label_str != trimmed {
+                            diags.push(Diagnostic {
+                                severity: Severity::Error,
+                                rule: "flow-edge-label-invalid",
+                                message: format!("Edge label '{}' has whitespace padding", label_str),
+                                line: None,
+                                fixable: true,
+                                agent_fix: AgentFix::Yes,
+                                subject: Some(DiagnosticSubject::Edge {
+                                    from: edge_from.clone(),
+                                    to: edge_to.clone(),
+                                    label: label_str.to_string(),
+                                }),
+                            });
+                        }
+                    } else if label_val.is_some() {
+                        diags.push(Diagnostic::edge(
+                            Severity::Error,
+                            "flow-edge-label-invalid",
+                            "Edge label must be a string".to_string(),
+                            &edge_from,
+                            &edge_to,
+                            raw_label_str,
+                            AgentFix::No,
+                        ));
+                    }
+
+                    // Effect validation
+                    if let Some(eff_val) = obj.get("effect") {
+                        if let Some(eff_str) = eff_val.as_str() {
+                            let eff_trimmed = eff_str.trim().to_lowercase();
+                            if eff_trimmed != "helps" && eff_trimmed != "harms" {
+                                diags.push(Diagnostic::edge(
+                                    Severity::Error,
+                                    "flow-edge-effect-invalid",
+                                    format!("Invalid edge effect '{}': must be helps or harms", eff_str),
+                                    &edge_from,
+                                    &edge_to,
+                                    raw_label_str,
+                                    AgentFix::No,
+                                ));
+                            } else if eff_trimmed == "harms" {
+                                let norm_label = raw_label_str.trim().to_lowercase();
+                                if norm_label == "alternative" || norm_label == "settles" {
+                                    diags.push(Diagnostic::edge(
+                                        Severity::Warning,
+                                        "flow-edge-effect-ignored",
+                                        format!("Effect 'harms' is ignored on '{}' edge", norm_label),
+                                        &edge_from,
+                                        &edge_to,
+                                        raw_label_str,
+                                        AgentFix::No,
+                                    ));
+                                }
+                            }
+                        } else {
+                            diags.push(Diagnostic::edge(
+                                Severity::Error,
+                                "flow-edge-effect-invalid",
+                                "Edge effect must be a string".to_string(),
+                                &edge_from,
+                                &edge_to,
+                                raw_label_str,
+                                AgentFix::No,
+                            ));
+                        }
+                    }
+
+                    // Negative quantum / probability
+                    let mut has_neg_quantum = false;
+                    if let Some(q_num) = obj.get("quantum").and_then(|v| v.as_f64()) {
+                        if q_num < 0.0 {
+                            has_neg_quantum = true;
+                            diags.push(Diagnostic::edge(
+                                Severity::Error,
+                                "flow-edge-negative",
+                                format!("Negative quantum {q_num}; sign belongs in effect: harms"),
+                                &edge_from,
+                                &edge_to,
+                                raw_label_str,
+                                AgentFix::No,
+                            ));
+                        }
+                    } else if let Some(q_str) = obj.get("quantum").and_then(|v| v.as_str()) {
+                        if let Ok(n) = q_str.trim().parse::<f64>() {
+                            if n < 0.0 {
+                                has_neg_quantum = true;
+                                diags.push(Diagnostic::edge(
+                                    Severity::Error,
+                                    "flow-edge-negative",
+                                    format!("Negative quantum {n}; sign belongs in effect: harms"),
+                                    &edge_from,
+                                    &edge_to,
+                                    raw_label_str,
+                                    AgentFix::No,
+                                ));
+                            }
+                        }
+                    }
+                    let mut has_neg_prob = false;
+                    if let Some(p_num) = obj.get("probability").and_then(|v| v.as_f64()) {
+                        if p_num < 0.0 {
+                            has_neg_prob = true;
+                            diags.push(Diagnostic::edge(
+                                Severity::Error,
+                                "flow-edge-negative",
+                                format!("Negative probability {p_num}; probability cannot be negative"),
+                                &edge_from,
+                                &edge_to,
+                                raw_label_str,
+                                AgentFix::No,
+                            ));
+                        }
+                    } else if let Some(p_str) = obj.get("probability").and_then(|v| v.as_str()) {
+                        if let Ok(n) = p_str.trim().parse::<f64>() {
+                            if n < 0.0 {
+                                has_neg_prob = true;
+                                diags.push(Diagnostic::edge(
+                                    Severity::Error,
+                                    "flow-edge-negative",
+                                    format!("Negative probability {n}; probability cannot be negative"),
+                                    &edge_from,
+                                    &edge_to,
+                                    raw_label_str,
+                                    AgentFix::No,
+                                ));
+                            }
+                        }
+                    }
+
+                    // Quantum values
+                    if let Some(q_val) = obj.get("quantum") {
+                        if q_val.is_null() {
+                            diags.push(Diagnostic::edge(
+                                Severity::Style,
+                                "flow-edge-unvalued",
+                                "Edge states no quantum; read at default".to_string(),
+                                &edge_from,
+                                &edge_to,
+                                raw_label_str,
+                                AgentFix::Propose,
+                            ));
+                        } else if !has_neg_quantum {
+                            if let Some(s) = q_val.as_str() {
+                                let trimmed = s.trim();
+                                if s != trimmed {
+                                    if crate::graph::parse_quantum_word_or_float(&serde_json::json!(trimmed)).is_ok() {
+                                        diags.push(Diagnostic {
+                                            severity: Severity::Error,
+                                            rule: "flow-edge-quantum-invalid",
+                                            message: format!("quantum '{}' has whitespace padding", s),
+                                            line: None,
+                                            fixable: true,
+                                            agent_fix: AgentFix::Yes,
+                                            subject: Some(DiagnosticSubject::Edge {
+                                                from: edge_from.clone(),
+                                                to: edge_to.clone(),
+                                                label: raw_label_str.to_string(),
+                                            }),
+                                        });
+                                    } else {
+                                        diags.push(Diagnostic::edge(
+                                            Severity::Error,
+                                            "flow-edge-quantum-invalid",
+                                            format!("Invalid quantum '{}'", s),
+                                            &edge_from,
+                                            &edge_to,
+                                            raw_label_str,
+                                            AgentFix::Propose,
+                                        ));
+                                    }
+                                } else if let Err(e) = crate::graph::parse_quantum_word_or_float(q_val) {
+                                    diags.push(Diagnostic::edge(
+                                        Severity::Error,
+                                        "flow-edge-quantum-invalid",
+                                        format!("Invalid quantum '{}': {e}", s),
+                                        &edge_from,
+                                        &edge_to,
+                                        raw_label_str,
+                                        AgentFix::Propose,
+                                    ));
+                                }
+                            } else if let Some(n) = q_val.as_f64() {
+                                if n > 1.0 {
+                                    diags.push(Diagnostic::edge(
+                                        Severity::Error,
+                                        "flow-edge-quantum-invalid",
+                                        format!("quantum {n} out of range; expected float 0.0..=1.0"),
+                                        &edge_from,
+                                        &edge_to,
+                                        raw_label_str,
+                                        AgentFix::Propose,
+                                    ));
+                                }
+                            } else {
+                                diags.push(Diagnostic::edge(
+                                    Severity::Error,
+                                    "flow-edge-quantum-invalid",
+                                    format!("quantum must be a number or string; got {q_val}"),
+                                    &edge_from,
+                                    &edge_to,
+                                    raw_label_str,
+                                    AgentFix::Propose,
+                                ));
+                            }
+                        }
+                    } else {
+                        diags.push(Diagnostic::edge(
+                            Severity::Style,
+                            "flow-edge-unvalued",
+                            "Edge states no quantum; read at default".to_string(),
+                            &edge_from,
+                            &edge_to,
+                            raw_label_str,
+                            AgentFix::Propose,
+                        ));
+                    }
+
+                    // Probability values
+                    if let Some(p_val) = obj.get("probability") {
+                        if !p_val.is_null() && !has_neg_prob {
+                            if let Some(s) = p_val.as_str() {
+                                let trimmed = s.trim();
+                                if s != trimmed {
+                                    if crate::graph::parse_probability_word_or_float(&serde_json::json!(trimmed)).is_ok() {
+                                        diags.push(Diagnostic {
+                                            severity: Severity::Error,
+                                            rule: "flow-edge-probability-invalid",
+                                            message: format!("probability '{}' has whitespace padding", s),
+                                            line: None,
+                                            fixable: true,
+                                            agent_fix: AgentFix::Yes,
+                                            subject: Some(DiagnosticSubject::Edge {
+                                                from: edge_from.clone(),
+                                                to: edge_to.clone(),
+                                                label: raw_label_str.to_string(),
+                                            }),
+                                        });
+                                    } else {
+                                        diags.push(Diagnostic::edge(
+                                            Severity::Error,
+                                            "flow-edge-probability-invalid",
+                                            format!("Invalid probability '{}'", s),
+                                            &edge_from,
+                                            &edge_to,
+                                            raw_label_str,
+                                            AgentFix::Propose,
+                                        ));
+                                    }
+                                } else if let Err(e) = crate::graph::parse_probability_word_or_float(p_val) {
+                                    diags.push(Diagnostic::edge(
+                                        Severity::Error,
+                                        "flow-edge-probability-invalid",
+                                        format!("Invalid probability '{}': {e}", s),
+                                        &edge_from,
+                                        &edge_to,
+                                        raw_label_str,
+                                        AgentFix::Propose,
+                                    ));
+                                }
+                            } else if let Some(n) = p_val.as_f64() {
+                                if n > 1.0 {
+                                    diags.push(Diagnostic::edge(
+                                        Severity::Error,
+                                        "flow-edge-probability-invalid",
+                                        format!("probability {n} out of range; expected float 0.0..=1.0"),
+                                        &edge_from,
+                                        &edge_to,
+                                        raw_label_str,
+                                        AgentFix::Propose,
+                                    ));
+                                }
+                            } else {
+                                diags.push(Diagnostic::edge(
+                                    Severity::Error,
+                                    "flow-edge-probability-invalid",
+                                    format!("probability must be a number or string; got {p_val}"),
+                                    &edge_from,
+                                    &edge_to,
+                                    raw_label_str,
+                                    AgentFix::Propose,
+                                ));
+                            }
+                        }
+                    }
+
+                    // Provenance: set_by
+                    if let Some(set_by_val) = obj.get("set_by") {
+                        if let Some(s) = set_by_val.as_str() {
+                            let valid_set_by = ["nic", "agent-proposed", "migrated"];
+                            if !valid_set_by.contains(&s) {
+                                diags.push(Diagnostic::edge(
+                                    Severity::Error,
+                                    "flow-edge-set-by-invalid",
+                                    format!("Invalid set_by '{}': must be nic, agent-proposed, or migrated", s),
+                                    &edge_from,
+                                    &edge_to,
+                                    raw_label_str,
+                                    AgentFix::No,
+                                ));
+                            } else if s == "agent-proposed" {
+                                let just = obj.get("justification").and_then(|v| v.as_str()).unwrap_or("");
+                                if just.trim().is_empty() {
+                                    diags.push(Diagnostic::edge(
+                                        Severity::Warning,
+                                        "flow-edge-proposal-unjustified",
+                                        "agent-proposed edge has no justification".to_string(),
+                                        &edge_from,
+                                        &edge_to,
+                                        raw_label_str,
+                                        AgentFix::No,
+                                    ));
+                                }
+                            }
+                        } else {
+                            diags.push(Diagnostic::edge(
+                                Severity::Error,
+                                "flow-edge-set-by-invalid",
+                                format!("set_by must be a string; got {set_by_val}"),
+                                &edge_from,
+                                &edge_to,
+                                raw_label_str,
+                                AgentFix::No,
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // contributes_to unvalued & self check
+    if let Some(arr) = fm.get("contributes_to").and_then(|v| v.as_array()) {
+        for item in arr {
+            if let Some(obj) = item.as_object() {
+                let to_id = obj.get("to").or_else(|| obj.get("id")).and_then(|v| v.as_str()).unwrap_or("");
+                if to_id == node_id && !node_id.is_empty() {
+                    diags.push(Diagnostic::edge(
+                        Severity::Error,
+                        "flow-edge-self",
+                        format!("Self-edge: node '{}' links to itself", node_id),
+                        node_id,
+                        to_id,
+                        "serves",
+                        AgentFix::No,
+                    ));
+                }
+                let has_stated = obj.get("stated_weight").is_some_and(|v| !v.is_null() && v.as_str().is_none_or(|s| !s.trim().is_empty()));
+                let has_q = obj.get("quantum").is_some_and(|v| !v.is_null());
+                if !has_stated && !has_q && !to_id.is_empty() {
+                    diags.push(Diagnostic::edge(
+                        Severity::Style,
+                        "flow-edge-unvalued",
+                        "Edge states no quantum; read at default".to_string(),
+                        node_id,
+                        to_id,
+                        "serves",
+                        AgentFix::Propose,
+                    ));
+                }
+            }
+        }
+    }
+
 }
 
 fn check_markdown_body(content: &str, diags: &mut Vec<Diagnostic>) {
@@ -1008,13 +1770,13 @@ fn check_markdown_body(content: &str, diags: &mut Vec<Diagnostic>) {
             let trailing: String = line[trimmed.len()..].to_string();
             if trailing != "  " {
                 if !has_trailing_ws {
-                    diags.push(Diagnostic {
-                        severity: Severity::Style,
-                        rule: "md-trailing-ws",
-                        message: "Trailing whitespace".into(),
-                        line: Some(line_num),
-                        fixable: true,
-                    });
+                    diags.push(Diagnostic::simple(
+                        Severity::Style,
+                        "md-trailing-ws",
+                        "Trailing whitespace",
+                        Some(line_num),
+                        true,
+                    ));
                 }
                 has_trailing_ws = true;
             }
@@ -1024,13 +1786,13 @@ fn check_markdown_body(content: &str, diags: &mut Vec<Diagnostic>) {
         if line.trim().is_empty() {
             consecutive_blank += 1;
             if consecutive_blank > 2 {
-                diags.push(Diagnostic {
-                    severity: Severity::Style,
-                    rule: "md-consecutive-blanks",
-                    message: "More than 2 consecutive blank lines".into(),
-                    line: Some(line_num),
-                    fixable: true,
-                });
+                diags.push(Diagnostic::simple(
+                    Severity::Style,
+                    "md-consecutive-blanks",
+                    "More than 2 consecutive blank lines",
+                    Some(line_num),
+                    true,
+                ));
             }
         } else {
             consecutive_blank = 0;
@@ -1039,13 +1801,13 @@ fn check_markdown_body(content: &str, diags: &mut Vec<Diagnostic>) {
 
     // Missing final newline
     if !content.is_empty() && !content.ends_with('\n') {
-        diags.push(Diagnostic {
-            severity: Severity::Style,
-            rule: "md-no-final-newline",
-            message: "File does not end with a newline".into(),
-            line: Some(lines.len()),
-            fixable: true,
-        });
+        diags.push(Diagnostic::simple(
+            Severity::Style,
+            "md-no-final-newline",
+            "File does not end with a newline",
+            Some(lines.len()),
+            true,
+        ));
     }
 }
 
@@ -1201,6 +1963,79 @@ fn apply_fixes(
 
     // ── Frontmatter fixes (only when we have a valid frontmatter object) ──
     if let Some(serde_json::Value::Object(fm)) = fm_data {
+        // Flow model padding fixes (specs/graph-lint.md L10, §5.2, §5.7, G20)
+        if let Some(s) = fm.get("deadline_class").and_then(|v| v.as_str()) {
+            let trimmed = s.trim();
+            if s != trimmed && matches!(trimmed.to_lowercase().as_str(), "fake" | "soft" | "hard") {
+                let patterns = [
+                    format!("deadline_class: \"{}\"", s),
+                    format!("deadline_class: '{}'", s),
+                    format!("deadline_class: {}", s),
+                ];
+                for p in &patterns {
+                    if result.contains(p) {
+                        result = result.replacen(p, &format!("deadline_class: {}", trimmed), 1);
+                        break;
+                    }
+                }
+            }
+        }
+
+        if let Some(arr) = fm.get("links").and_then(|v| v.as_array()) {
+            for item in arr {
+                if let Some(obj) = item.as_object() {
+                    if let Some(s) = obj.get("label").and_then(|v| v.as_str()) {
+                        let trimmed = s.trim();
+                        let valid = ["serves", "needs", "part_of", "supports", "alternative", "settles"];
+                        if s != trimmed && valid.contains(&trimmed.to_lowercase().as_str()) {
+                            let patterns = [
+                                format!("label: \"{}\"", s),
+                                format!("label: '{}'", s),
+                                format!("label: {}", s),
+                            ];
+                            for p in &patterns {
+                                if result.contains(p) {
+                                    result = result.replacen(p, &format!("label: {}", trimmed), 1);
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    if let Some(s) = obj.get("quantum").and_then(|v| v.as_str()) {
+                        let trimmed = s.trim();
+                        if s != trimmed && crate::graph::parse_quantum_word_or_float(&serde_json::json!(trimmed)).is_ok() {
+                            let patterns = [
+                                format!("quantum: \"{}\"", s),
+                                format!("quantum: '{}'", s),
+                                format!("quantum: {}", s),
+                            ];
+                            for p in &patterns {
+                                if result.contains(p) {
+                                    result = result.replacen(p, &format!("quantum: {}", trimmed), 1);
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    if let Some(s) = obj.get("probability").and_then(|v| v.as_str()) {
+                        let trimmed = s.trim();
+                        if s != trimmed && crate::graph::parse_probability_word_or_float(&serde_json::json!(trimmed)).is_ok() {
+                            let patterns = [
+                                format!("probability: \"{}\"", s),
+                                format!("probability: '{}'", s),
+                                format!("probability: {}", s),
+                            ];
+                            for p in &patterns {
+                                if result.contains(p) {
+                                    result = result.replacen(p, &format!("probability: {}", trimmed), 1);
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
         // Fix 1: Migrate task_id → id (in-place line replacement)
         if fm.contains_key("task_id") && !fm.contains_key("id") {
             result = regex::Regex::new(r"(?m)^task_id:")
@@ -1539,13 +2374,75 @@ fn apply_fixes(
 
 // ── Batch lint engine ────────────────────────────────────────────────────
 
+
+/// Largest product of edge strengths round any simple cycle in a small component (specs/graph-lint.md §5.5).
+pub fn cycle_product(
+    edges: &[crate::flow::FlowEdge],
+    state: &BTreeMap<String, FlowState>,
+    comp: &[String],
+) -> f64 {
+    let comp_set: HashSet<&str> = comp.iter().map(|s| s.as_str()).collect();
+    let mut out: HashMap<String, Vec<&crate::flow::FlowEdge>> = HashMap::new();
+    for e in edges {
+        if crate::flow::is_flow_edge(e, state)
+            && comp_set.contains(e.src.as_str())
+            && comp_set.contains(e.dst.as_str())
+        {
+            out.entry(e.src.clone()).or_default().push(e);
+        }
+    }
+
+    let mut best = 0.0;
+    fn walk<'a>(
+        start: &str,
+        v: &str,
+        seen: &mut HashSet<&'a str>,
+        prod: f64,
+        out: &HashMap<String, Vec<&'a crate::flow::FlowEdge>>,
+        best: &mut f64,
+    ) {
+        if let Some(edge_list) = out.get(v) {
+            for e in edge_list {
+                if e.dst == start {
+                    let p = prod * e.strength();
+                    if p > *best {
+                        *best = p;
+                    }
+                } else if !seen.contains(e.dst.as_str()) {
+                    seen.insert(e.dst.as_str());
+                    walk(start, &e.dst, seen, prod * e.strength(), out, best);
+                    seen.remove(e.dst.as_str());
+                }
+            }
+        }
+    }
+
+    for s in comp {
+        let mut seen = HashSet::new();
+        seen.insert(s.as_str());
+        walk(s, s, &mut seen, 1.0, &out, &mut best);
+    }
+    best
+}
+
 /// Lint all markdown files under a PKB root directory.
 pub fn lint_directory(
     pkb_root: &Path,
     fix: bool,
     check_refs: bool,
 ) -> (Vec<FileResult>, LintSummary) {
-    let files = pkb::scan_directory(pkb_root);
+    lint_directory_with_cap(pkb_root, fix, check_refs, crate::flow::ITERATION_CAP)
+}
+
+/// Lint all markdown files under a PKB root directory with a custom iteration cap for convergence check.
+pub fn lint_directory_with_cap(
+    pkb_root: &Path,
+    fix: bool,
+    check_refs: bool,
+    iter_cap: usize,
+) -> (Vec<FileResult>, LintSummary) {
+    let mut files = pkb::scan_directory(pkb_root);
+    files.sort();
 
     // Build known ID set for reference checking
     let known_ids: Option<HashSet<String>> = if check_refs {
@@ -1557,7 +2454,6 @@ pub fn lint_directory(
                 let parsed = matter.parse(&content);
                 parsed.data.as_ref().and_then(|d| {
                     let fm: serde_json::Value = d.deserialize().ok()?;
-                    // Collect: id, filename stem, permalink, and all alias values
                     let mut ids = Vec::new();
                     if let Some(id) = fm.get("id").and_then(|v| v.as_str()) {
                         ids.push(id.to_string());
@@ -1568,7 +2464,6 @@ pub fn lint_directory(
                     if let Some(pl) = fm.get("permalink").and_then(|v| v.as_str()) {
                         ids.push(pl.to_string());
                     }
-                    // Collect alias / aliases — other documents may reference by these names
                     for key in &["alias", "aliases"] {
                         if let Some(arr) = fm.get(*key).and_then(|v| v.as_array()) {
                             for item in arr {
@@ -1591,7 +2486,6 @@ pub fn lint_directory(
     };
 
     // Build ancestor map for deprecated-project autofix:
-    // Maps each document ID → (parent_id, contributes_to+closes ids, doc_type)
     let ancestor_map: AncestorMap = files
         .par_iter()
         .filter_map(|p| {
@@ -1620,113 +2514,8 @@ pub fn lint_directory(
         .filter_map(|(parent_id, _)| parent_id.clone())
         .collect();
 
-    // ── Hard cycle detection ─────────────────────────────────────────────────
-    // Scan all files for `parent` + `depends_on` references to build a directed
-    // adjacency map, then run Tarjan's SCC to find hard dependency cycles.
-    // Files that participate in a cycle receive an error-severity diagnostic.
-    let cycle_diags: HashMap<PathBuf, Diagnostic> = {
-        let raw: Vec<(String, Vec<String>, PathBuf)> = files
-            .par_iter()
-            .filter_map(|p| {
-                let content = std::fs::read_to_string(p).ok()?;
-                let matter = Matter::<YAML>::new();
-                let parsed = matter.parse(&content);
-                let fm = parsed
-                    .data
-                    .as_ref()
-                    .and_then(|d| d.deserialize::<serde_json::Value>().ok())?;
-                let id = fm.get("id").and_then(|v| v.as_str())?.to_string();
-                let mut deps: Vec<String> = Vec::new();
-                if let Some(parent) = fm.get("parent").and_then(|v| v.as_str()) {
-                    deps.push(parent.to_string());
-                }
-                if let Some(arr) = fm.get("depends_on").and_then(|v| v.as_array()) {
-                    for item in arr {
-                        if let Some(s) = item.as_str() {
-                            deps.push(s.to_string());
-                        }
-                    }
-                }
-                Some((id, deps, p.clone()))
-            })
-            .collect();
-
-        let mut adj: HashMap<String, Vec<String>> = HashMap::new();
-        let mut id_to_path: HashMap<String, PathBuf> = HashMap::new();
-        for (id, deps, path) in raw {
-            id_to_path.insert(id.clone(), path);
-            if !deps.is_empty() {
-                adj.insert(id, deps);
-            }
-        }
-
-        let cycles: Vec<Vec<String>> = crate::graph_store::tarjan_scc(&adj)
-            .into_iter()
-            .filter(|scc| scc.len() > 1)
-            .collect();
-
-        // Parent-only adjacency for the parent-cycle rule. Parent/child must
-        // be a DAG; depends_on / blocks / soft_blocks may still be circular.
-        let mut parent_adj: HashMap<String, Vec<String>> = HashMap::new();
-        for (id, (parent, _project)) in &ancestor_map {
-            if let Some(p) = parent {
-                parent_adj.insert(id.clone(), vec![p.clone()]);
-            }
-        }
-        let parent_cycles: Vec<Vec<String>> = crate::graph_store::tarjan_scc(&parent_adj)
-            .into_iter()
-            .filter(|scc| scc.len() > 1)
-            .collect();
-
-        let mut diag_map: HashMap<PathBuf, Diagnostic> = HashMap::new();
-        // Parent cycles take precedence over the combined dep-hard-cycle diagnostic
-        // because parent/child is the constraint that's actually being violated.
-        for cycle in &parent_cycles {
-            let cycle_ids = cycle.join(", ");
-            for node_id in cycle {
-                if let Some(path) = id_to_path.get(node_id.as_str()) {
-                    diag_map.entry(path.clone()).or_insert_with(|| Diagnostic {
-                        severity: Severity::Error,
-                        rule: "parent-cycle",
-                        message: format!(
-                            "Node '{}' is part of a parent/child cycle: [{}]. Parent/child \
-                             hierarchy must be a DAG.",
-                            node_id, cycle_ids
-                        ),
-                        line: None,
-                        fixable: false,
-                    });
-                }
-            }
-        }
-        for cycle in &cycles {
-            let cycle_ids = cycle.join(", ");
-            for node_id in cycle {
-                if let Some(path) = id_to_path.get(node_id.as_str()) {
-                    diag_map.entry(path.clone()).or_insert_with(|| Diagnostic {
-                        severity: Severity::Error,
-                        rule: "dep-hard-cycle",
-                        message: format!(
-                            "Node '{}' is part of a hard dependency cycle: [{}]",
-                            node_id, cycle_ids
-                        ),
-                        line: None,
-                        fixable: false,
-                    });
-                }
-            }
-        }
-        diag_map
-    };
-
-    // ── Parent/child cycle detection ────────────────────────────────────────
-    // Parent/child relationships must be a DAG. A node whose parent chain
-    // (transitively or via a self-loop) revisits itself is reported as a
-    // hard error. Other relationship types (depends_on, blocks, soft_*) are
-    // explicitly permitted to be circular and are NOT included here — they
-    // are flagged by `dep-hard-cycle` above only if the broader graph cycle
-    // also touches them.
-    let parent_cycle_diags: HashMap<PathBuf, Diagnostic> = {
+    // ── Parent/child cycle detection (Error) ──
+    let parent_cycle_diags: HashMap<PathBuf, Diagnostic> = if check_refs {
         let raw: Vec<(String, Option<String>, PathBuf)> = files
             .par_iter()
             .filter_map(|p| {
@@ -1762,16 +2551,16 @@ pub fn lint_directory(
         // Self-parents (id == parent) — degenerate cycle of length 1.
         for node_id in &self_loops {
             if let Some(path) = id_to_path.get(node_id) {
-                diag_map.entry(path.clone()).or_insert_with(|| Diagnostic {
-                    severity: Severity::Error,
-                    rule: "parent-cycle",
-                    message: format!(
+                diag_map.entry(path.clone()).or_insert_with(|| Diagnostic::node(
+                    Severity::Error,
+                    "parent-cycle",
+                    format!(
                         "Node '{}' lists itself as its own parent. Parent/child must be acyclic.",
                         node_id
                     ),
-                    line: None,
-                    fixable: false,
-                });
+                    node_id,
+                    AgentFix::No,
+                ));
             }
         }
 
@@ -1784,27 +2573,25 @@ pub fn lint_directory(
             let cycle_ids = cycle.join(", ");
             for node_id in cycle {
                 if let Some(path) = id_to_path.get(node_id.as_str()) {
-                    diag_map.entry(path.clone()).or_insert_with(|| Diagnostic {
-                        severity: Severity::Error,
-                        rule: "parent-cycle",
-                        message: format!(
+                    diag_map.entry(path.clone()).or_insert_with(|| Diagnostic::node(
+                        Severity::Error,
+                        "parent-cycle",
+                        format!(
                             "Node '{}' is part of a parent/child cycle: [{}]. Parent/child relationships must be acyclic; only depends_on/blocks may be circular.",
                             node_id, cycle_ids
                         ),
-                        line: None,
-                        fixable: false,
-                    });
+                        node_id,
+                        AgentFix::No,
+                    ));
                 }
             }
         }
         diag_map
+    } else {
+        HashMap::new()
     };
 
-    // ── Project slug validation ─────────────────────────────────────────────
-    // Explicit `project:` values must resolve against polecat.yaml (or be a
-    // builtin slug). The registry is loaded once for the whole run; when no
-    // polecat.yaml is locatable, non-builtin values are flagged (mem cannot
-    // vouch for a slug it cannot check — same rule the write paths enforce).
+    // ── Project slug validation ──
     let (project_slug_diags, project_alias_fixes): (
         HashMap<PathBuf, Diagnostic>,
         HashMap<PathBuf, (String, String)>,
@@ -1838,16 +2625,16 @@ pub fn lint_directory(
                         if canonical != project_val {
                             Some((
                                 p.clone(),
-                                Diagnostic {
-                                    severity: Severity::Style,
-                                    rule: "fm-project-alias",
-                                    message: format!(
+                                Diagnostic::simple(
+                                    Severity::Style,
+                                    "fm-project-alias",
+                                    format!(
                                         "Project '{}' should be canonical '{}'",
                                         project_val, canonical
                                     ),
-                                    line: None,
-                                    fixable: true,
-                                },
+                                    None,
+                                    true,
+                                ),
                                 Some((project_val.to_string(), canonical)),
                             ))
                         } else {
@@ -1856,13 +2643,13 @@ pub fn lint_directory(
                     }
                     Err(e) => Some((
                         p.clone(),
-                        Diagnostic {
-                            severity: Severity::Warning,
-                            rule: "fm-unregistered-project",
-                            message: format!("{e:#}"),
-                            line: None,
-                            fixable: false,
-                        },
+                        Diagnostic::simple(
+                            Severity::Warning,
+                            "fm-unregistered-project",
+                            format!("{e:#}"),
+                            None,
+                            false,
+                        ),
                         None,
                     )),
                 }
@@ -1878,9 +2665,7 @@ pub fn lint_directory(
         (diags_map, fixes_map)
     };
 
-    // Pre-fix pass: collect ID renames needed (old_id → new_id) before per-file fixes
-    // Only IDs that genuinely don't match the prefix-hexhash pattern are renamed.
-    // Prefix may contain uppercase letters (e.g. "academicOps-b5d43955").
+    // Pre-fix pass: collect ID renames
     let id_renames: Vec<(String, String)> = if fix {
         let id_re = get_id_regex();
         files
@@ -1894,9 +2679,6 @@ pub fn lint_directory(
                     .as_ref()
                     .and_then(|d| d.deserialize::<serde_json::Value>().ok())?;
                 let id = fm.get("id")?.as_str()?;
-                // Goals and targets use special canonical IDs — never auto-rename
-                // them. Legacy `type: project` files (retired type) keep the
-                // exemption too: renaming their IDs would break references.
                 let node_type = fm.get("type").and_then(|v| v.as_str()).unwrap_or("");
                 if !id.is_empty()
                     && !id_re.is_match(id)
@@ -1927,11 +2709,311 @@ pub fn lint_directory(
         })
         .collect();
 
+    // ── Pass 2 & Pass 3 (Whole Graph Flow Checks) ──
+    if check_refs {
+        let mut extra_diags: HashMap<PathBuf, Vec<Diagnostic>> = HashMap::new();
+
+        let parsed_docs: Vec<(PathBuf, crate::graph::GraphNode)> = files
+            .iter()
+            .filter_map(|p| {
+                let doc = crate::pkb::parse_file(p)?;
+                let node = crate::graph::GraphNode::from_pkb_document(&doc);
+                Some((p.clone(), node))
+            })
+            .collect();
+
+        let mut id_to_path: HashMap<String, PathBuf> = HashMap::new();
+        let mut node_by_id: HashMap<String, &crate::graph::GraphNode> = HashMap::new();
+        for (p, node) in &parsed_docs {
+            id_to_path.insert(node.id.clone(), p.clone());
+            node_by_id.insert(node.id.clone(), node);
+        }
+
+        let nodes: Vec<&crate::graph::GraphNode> = parsed_docs.iter().map(|(_, n)| n).collect();
+        let (flow_edges, _) = crate::graph_store::resolve_flow_edges_from_nodes(nodes.iter().copied());
+
+        let get_state = |id: &str| -> FlowState {
+            node_by_id
+                .get(id)
+                .map(|n| crate::flow::status_to_flow_state(n.status.as_deref()))
+                .unwrap_or(FlowState::Done)
+        };
+
+        // Pass 2.1: flow-edge-to-cancelled
+        for e in &flow_edges {
+            let src_st = get_state(&e.src);
+            let dst_st = get_state(&e.dst);
+            if src_st == FlowState::Open && dst_st == FlowState::Gone {
+                if let Some(path) = id_to_path.get(&e.src) {
+                    extra_diags.entry(path.clone()).or_default().push(Diagnostic::edge(
+                        Severity::Warning,
+                        "flow-edge-to-cancelled",
+                        format!(
+                            "Open work '{}' has an edge to cancelled node '{}' ({})",
+                            e.src, e.dst, e.label
+                        ),
+                        &e.src,
+                        &e.dst,
+                        e.label.to_string(),
+                        AgentFix::No,
+                    ));
+                }
+            }
+        }
+
+        // Pass 2.2: flow-edge-duplicate
+        let mut pair_edges: BTreeMap<(&str, &str), Vec<&crate::graph::FlowEdge>> = BTreeMap::new();
+        for e in &flow_edges {
+            pair_edges.entry((&e.src, &e.dst)).or_default().push(e);
+        }
+        for ((src, dst), edges) in pair_edges {
+            if edges.len() > 1 {
+                if let Some(path) = id_to_path.get(src) {
+                    let labels: Vec<String> = edges.iter().map(|e| e.label.to_string()).collect();
+                    extra_diags.entry(path.clone()).or_default().push(Diagnostic::edge(
+                        Severity::Warning,
+                        "flow-edge-duplicate",
+                        format!(
+                            "Multiple edges between '{}' and '{}': [{}]",
+                            src,
+                            dst,
+                            labels.join(", ")
+                        ),
+                        src,
+                        dst,
+                        labels[0].clone(),
+                        AgentFix::No,
+                    ));
+                }
+            }
+        }
+
+        // Pass 2.3: Decisions
+        let mut alt_incoming_count: HashMap<&str, usize> = HashMap::new();
+        for e in &flow_edges {
+            if e.label == LinkLabel::Alternative {
+                *alt_incoming_count.entry(&e.dst).or_default() += 1;
+            }
+        }
+        for node in &nodes {
+            if get_state(&node.id) == FlowState::Open {
+                let alts = alt_incoming_count.get(node.id.as_str()).copied().unwrap_or(0);
+                if alts == 1 {
+                    if let Some(path) = id_to_path.get(&node.id) {
+                        extra_diags.entry(path.clone()).or_default().push(Diagnostic::node(
+                            Severity::Warning,
+                            "flow-decision-one-option",
+                            format!(
+                                "Open node '{}' has only 1 incoming alternative edge (decision requires at least 2)",
+                                node.id
+                            ),
+                            &node.id,
+                            AgentFix::No,
+                        ));
+                    }
+                }
+            }
+        }
+        for e in &flow_edges {
+            if e.label == LinkLabel::Settles {
+                let alts = alt_incoming_count.get(e.dst.as_str()).copied().unwrap_or(0);
+                if alts < 2 {
+                    if let Some(path) = id_to_path.get(&e.src) {
+                        extra_diags.entry(path.clone()).or_default().push(Diagnostic::edge(
+                            Severity::Warning,
+                            "flow-settles-no-decision",
+                            format!(
+                                "Settles edge from '{}' points to '{}' which has only {} alternative edge(s) (requires at least 2)",
+                                e.src, e.dst, alts
+                            ),
+                            &e.src,
+                            &e.dst,
+                            "settles",
+                            AgentFix::No,
+                        ));
+                    }
+                }
+            }
+        }
+
+        // Pass 3: Flow verdicts
+        let mut flow_input = FlowInput::new();
+        for node in &nodes {
+            let st = get_state(&node.id);
+            flow_input.add_node(node.id.clone(), st, node.worth);
+        }
+        for e in &flow_edges {
+            flow_input.add_edge(crate::flow::FlowEdge {
+                src: e.src.clone(),
+                dst: e.dst.clone(),
+                label: e.label.to_string(),
+                quantum: e.quantum,
+                probability: e.probability,
+                effect: match e.effect {
+                    LinkEffect::Helps => FlowEffect::Helps,
+                    LinkEffect::Harms => FlowEffect::Harms,
+                },
+                unvalued: false,
+            });
+        }
+
+        let (inc, out) = crate::flow::build_indices(&flow_input.edges, &flow_input.state);
+        let mut all_nodes: Vec<String> = flow_input.state.keys().cloned().collect();
+        all_nodes.sort();
+        let loop_nodes = crate::flow::on_loops(&flow_input);
+        let sat_loops = crate::flow::saturated_loops(&flow_input);
+        let sat_node_set: HashSet<String> = sat_loops.iter().flatten().cloned().collect();
+
+        // flow-loop-saturated (Error)
+        for comp in &sat_loops {
+            let cycle_prod = cycle_product(&flow_input.edges, &flow_input.state, comp);
+            for node_id in comp {
+                if let Some(path) = id_to_path.get(node_id) {
+                    extra_diags.entry(path.clone()).or_default().push(Diagnostic::node(
+                        Severity::Error,
+                        "flow-loop-saturated",
+                        format!(
+                            "Node '{}' is part of a saturated loop [{}] with cycle product {:.2}",
+                            node_id,
+                            comp.join(", "),
+                            cycle_prod
+                        ),
+                        node_id,
+                        AgentFix::No,
+                    ));
+                }
+            }
+        }
+
+        let comps = crate::flow::find_components(&all_nodes, &out);
+        let initial: BTreeMap<String, f64> = all_nodes.iter().map(|v| (v.clone(), 1.0)).collect();
+        let empty_harms = BTreeSet::new();
+
+        for comp in &comps {
+            let is_sat = comp.iter().all(|v| sat_node_set.contains(v));
+            if is_sat {
+                continue;
+            }
+
+            let settles = crate::flow::settle_with_cap(
+                &flow_input.state,
+                &flow_input.worth,
+                &inc,
+                &initial,
+                comp,
+                None,
+                Some(&empty_harms),
+                &loop_nodes,
+                iter_cap,
+            );
+
+            match settles {
+                Err(_) => {
+                    for node_id in comp {
+                        if let Some(path) = id_to_path.get(node_id) {
+                            extra_diags.entry(path.clone()).or_default().push(Diagnostic::node(
+                                Severity::Error,
+                                "flow-loop-no-convergence",
+                                format!(
+                                    "Node '{}' is in a loop [{}] that does not converge within iteration cap {}",
+                                    node_id,
+                                    comp.join(", "),
+                                    iter_cap
+                                ),
+                                node_id,
+                                AgentFix::No,
+                            ));
+                        }
+                    }
+                }
+                Ok(_) => {
+                    let cycle_prod = cycle_product(&flow_input.edges, &flow_input.state, comp);
+                    for node_id in comp {
+                        if let Some(path) = id_to_path.get(node_id) {
+                            extra_diags.entry(path.clone()).or_default().push(Diagnostic::node(
+                                Severity::Style,
+                                "flow-loop",
+                                format!(
+                                    "Node '{}' is part of an allowed loop [{}] with cycle product {:.2}",
+                                    node_id,
+                                    comp.join(", "),
+                                    cycle_prod
+                                ),
+                                node_id,
+                                AgentFix::No,
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+
+        // Coverage: flow-no-route (Style)
+        let open_nodes: Vec<&String> = flow_input
+            .state
+            .iter()
+            .filter(|(_, st)| **st == FlowState::Open)
+            .map(|(id, _)| id)
+            .collect();
+
+        for v in &open_nodes {
+            let cone = crate::flow::forward_cone(&out, v);
+            let reaches_priced = cone.iter().any(|u| flow_input.worth.contains_key(u));
+            if !reaches_priced {
+                if let Some(path) = id_to_path.get(*v) {
+                    extra_diags.entry(path.clone()).or_default().push(Diagnostic::node(
+                        Severity::Style,
+                        "flow-no-route",
+                        format!("Open node '{}' has no route to a priced target", v),
+                        *v,
+                        AgentFix::Propose,
+                    ));
+                }
+            }
+        }
+
+        // Enrich flow-target-unpriced diagnostic messages
+        let target_ids: HashSet<&str> = nodes
+            .iter()
+            .filter(|n| {
+                let t = n.node_type.as_deref().unwrap_or("");
+                graph::STRATEGIC_TARGET_TYPES.contains(&t)
+            })
+            .map(|n| n.id.as_str())
+            .collect();
+
+        let mut only_route_count: HashMap<String, usize> = HashMap::new();
+        for v in &open_nodes {
+            let cone = crate::flow::forward_cone(&out, v);
+            let targets_in_cone: Vec<&String> = cone
+                .iter()
+                .filter(|u| target_ids.contains(u.as_str()))
+                .collect();
+            if targets_in_cone.len() == 1 {
+                *only_route_count.entry(targets_in_cone[0].clone()).or_default() += 1;
+            }
+        }
+
+        for r in &mut results {
+            if let Some(diags) = extra_diags.get(&r.path) {
+                r.diagnostics.extend(diags.clone());
+            }
+            for d in &mut r.diagnostics {
+                if d.rule == "flow-target-unpriced" {
+                    if let Some(DiagnosticSubject::Node(ref target_id)) = d.subject {
+                        let count = only_route_count.get(target_id).copied().unwrap_or(0);
+                        d.message = format!(
+                            "Open target '{}' has no worth ({} open nodes have their only route here)",
+                            target_id, count
+                        );
+                    }
+                }
+            }
+        }
+    }
+
     // Merge cycle + project-slug diagnostics into per-file results
     for r in &mut results {
-        if let Some(diag) = cycle_diags.get(&r.path) {
-            r.diagnostics.push(diag.clone());
-        }
         if let Some(diag) = parent_cycle_diags.get(&r.path) {
             r.diagnostics.push(diag.clone());
         }
@@ -1952,115 +3034,20 @@ pub fn lint_directory(
         }
     }
 
+    results.sort_by(|a, b| a.path.cmp(&b.path));
     let summary = LintSummary::from_results(&results);
 
     // Post-fix pass: apply cross-file ID renames via rename_id
     if fix && !id_renames.is_empty() {
-        // First write per-file fixes (type, status, etc.)
         write_fixes(&results);
-
-        // Then rename each non-conforming ID across all files
         for (old_id, new_id) in &id_renames {
             let _ = rename_id(pkb_root, old_id, new_id);
         }
-
-        // Rebuild context maps — IDs have changed so the pre-rename maps are stale.
-        // Without this, ref checks produce false positives and task-no-parent severity
-        // is wrong for any node whose ID was just renamed.
-        let known_ids: Option<HashSet<String>> = if check_refs {
-            let ids: HashSet<String> = files
-                .par_iter()
-                .filter_map(|p| {
-                    let content = std::fs::read_to_string(p).ok()?;
-                    let matter = Matter::<YAML>::new();
-                    let parsed = matter.parse(&content);
-                    parsed.data.as_ref().and_then(|d| {
-                        let fm: serde_json::Value = d.deserialize().ok()?;
-                        let mut ids = Vec::new();
-                        if let Some(id) = fm.get("id").and_then(|v| v.as_str()) {
-                            ids.push(id.to_string());
-                        }
-                        if let Some(stem) = p.file_stem() {
-                            ids.push(stem.to_string_lossy().to_string());
-                        }
-                        if let Some(pl) = fm.get("permalink").and_then(|v| v.as_str()) {
-                            ids.push(pl.to_string());
-                        }
-                        for key in &["alias", "aliases"] {
-                            if let Some(arr) = fm.get(*key).and_then(|v| v.as_array()) {
-                                for item in arr {
-                                    if let Some(s) = item.as_str() {
-                                        ids.push(s.to_string());
-                                    }
-                                }
-                            } else if let Some(s) = fm.get(*key).and_then(|v| v.as_str()) {
-                                ids.push(s.to_string());
-                            }
-                        }
-                        Some(ids)
-                    })
-                })
-                .flatten()
-                .collect();
-            Some(ids)
-        } else {
-            None
-        };
-        let ancestor_map: AncestorMap = files
-            .par_iter()
-            .filter_map(|p| {
-                let content = std::fs::read_to_string(p).ok()?;
-                let matter = Matter::<YAML>::new();
-                let parsed = matter.parse(&content);
-                let fm = parsed
-                    .data
-                    .as_ref()
-                    .and_then(|d| d.deserialize::<serde_json::Value>().ok())?;
-                let id = fm.get("id").and_then(|v| v.as_str())?.to_string();
-                let parent = fm.get("parent").and_then(|v| v.as_str()).map(String::from);
-                let project = fm
-                    .get("project")
-                    .and_then(|v| v.as_str())
-                    .map(str::trim)
-                    .filter(|s| !s.is_empty())
-                    .map(String::from);
-                Some((id, (parent, project)))
-            })
-            .collect();
-        let children_set: ChildrenSet = ancestor_map
-            .values()
-            .filter_map(|(parent_id, _)| parent_id.clone())
-            .collect();
-
-        // Return fresh results after renames (cycle + project-slug diagnostics still apply)
-        let mut results: Vec<FileResult> = files
-            .par_iter()
-            .map(|p| {
-                lint_file(
-                    p,
-                    false,
-                    known_ids.as_ref(),
-                    Some(&ancestor_map),
-                    Some(&children_set),
-                )
-            })
-            .collect();
-        for r in &mut results {
-            if let Some(diag) = cycle_diags.get(&r.path) {
-                r.diagnostics.push(diag.clone());
-            }
-            if let Some(diag) = project_slug_diags.get(&r.path) {
-                if diag.rule != "fm-project-alias" || !project_alias_fixes.contains_key(&r.path) {
-                    r.diagnostics.push(diag.clone());
-                }
-            }
-        }
-        let summary = LintSummary::from_results(&results);
-        return (results, summary);
     }
 
     (results, summary)
 }
+
 
 /// Rename an ID across the entire PKB — updates frontmatter reference fields
 /// (parent, depends_on, soft_depends_on, blocks, soft_blocks, supersedes) and
@@ -2973,7 +3960,7 @@ Body.\n",
         let goal_file = root.join("goal-11223344.md");
         std::fs::write(
             &goal_file,
-            "---\nid: goal-11223344\ntitle: Root Goal\ntype: target\nstatus: ready\nproject: aops\n---\n\nRoot.\n",
+            "---\nid: goal-11223344\ntitle: Root Goal\ntype: target\nstatus: ready\nproject: aops\nworth: 1.0\n---\n\nRoot.\n",
         )
         .unwrap();
 
@@ -3028,7 +4015,7 @@ Body.\n",
         let goal_file = root.join("goal-11223355.md");
         std::fs::write(
             &goal_file,
-            "---\nid: goal-11223355\ntitle: Root Goal\ntype: target\nstatus: ready\nproject: aops\n---\n\nRoot.\n",
+            "---\nid: goal-11223355\ntitle: Root Goal\ntype: target\nstatus: ready\nproject: aops\nworth: 1.0\n---\n\nRoot.\n",
         )
         .unwrap();
 
@@ -3080,5 +4067,462 @@ Body.\n",
     fn test_fallback_parse_frontmatter_multibyte_after_opening_fence() {
         // #686: 'é' spans bytes 3..5, so a raw `[4..]` cut panics.
         assert!(fallback_parse_frontmatter("---é\ntitle: x\n---\n").is_none());
+    }
+
+    // ── Tests G1–G20 (specs/graph-lint.md §9) ────────────────────────────────
+
+    #[test]
+    fn lint_flow_target_unpriced() {
+        // G1: An open target with no worth yields one flow-target-unpriced warning with agent_fix: propose; pricing it removes the warning
+        let unpriced = "---\nid: targ_test\ntitle: Test Target\ntype: target\nstatus: active\n---\n\nBody\n";
+        let diags = lint_str(unpriced);
+        let unpriced_diag = diags.iter().find(|d| d.rule == "flow-target-unpriced");
+        assert!(unpriced_diag.is_some(), "Expected flow-target-unpriced, got: {:?}", diags);
+        let d = unpriced_diag.unwrap();
+        assert_eq!(d.severity, Severity::Warning);
+        assert_eq!(d.agent_fix, AgentFix::Propose);
+        assert!(!d.fixable);
+
+        let priced = "---\nid: targ_test\ntitle: Test Target\ntype: target\nstatus: active\nworth: 0.5\n---\n\nBody\n";
+        let diags2 = lint_str(priced);
+        assert!(!diags2.iter().any(|d| d.rule == "flow-target-unpriced"));
+    }
+
+    #[test]
+    fn lint_flow_worth_invalid() {
+        // G2: worth of high, 6 or -1.5 yields flow-worth-invalid (error, exit 1); -1.0 and 1.0 pass
+        for invalid in &["high", "6", "-1.5"] {
+            let content = format!("---\nid: targ_test\ntitle: Target\ntype: target\nworth: {}\n---\n\nBody\n", invalid);
+            let diags = lint_str(&content);
+            let d = diags.iter().find(|d| d.rule == "flow-worth-invalid");
+            assert!(d.is_some(), "Expected flow-worth-invalid for {}, got: {:?}", invalid, diags);
+            assert_eq!(d.unwrap().severity, Severity::Error);
+            assert_eq!(d.unwrap().agent_fix, AgentFix::No);
+        }
+        for valid in &["-1.0", "1.0", "0.0", "0.5"] {
+            let content = format!("---\nid: targ_test\ntitle: Target\ntype: target\nworth: {}\n---\n\nBody\n", valid);
+            let diags = lint_str(&content);
+            assert!(!diags.iter().any(|d| d.rule == "flow-worth-invalid"), "Expected valid for {}, got: {:?}", valid, diags);
+        }
+    }
+
+    #[test]
+    fn lint_flow_worth_not_target() {
+        // G3: worth on a task yields flow-worth-not-target (error)
+        let content = "---\nid: task_test\ntitle: Task\ntype: task\nstatus: active\nworth: 0.6\n---\n\nBody\n";
+        let diags = lint_str(content);
+        let d = diags.iter().find(|d| d.rule == "flow-worth-not-target");
+        assert!(d.is_some(), "Expected flow-worth-not-target, got: {:?}", diags);
+        assert_eq!(d.unwrap().severity, Severity::Error);
+        assert_eq!(d.unwrap().agent_fix, AgentFix::No);
+    }
+
+    #[test]
+    fn lint_flow_edge_label_sign() {
+        // G4: Each of label: blocks, effect: negative, quantum: -0.3 yields its own error;
+        // label: Serves yields no diagnostic; label: "serves " yields an error whose agent_fix is yes
+        let blocks_content = "---\nid: t1\ntitle: T1\ntype: task\nlinks:\n  - to: t2\n    label: blocks\n---\n\nBody\n";
+        let diags1 = lint_str(blocks_content);
+        let d1 = diags1.iter().find(|d| d.rule == "flow-edge-label-invalid").unwrap();
+        assert_eq!(d1.severity, Severity::Error);
+        assert_eq!(d1.agent_fix, AgentFix::No);
+
+        let neg_effect = "---\nid: t1\ntitle: T1\ntype: task\nlinks:\n  - to: t2\n    label: serves\n    effect: negative\n---\n\nBody\n";
+        let diags2 = lint_str(neg_effect);
+        let d2 = diags2.iter().find(|d| d.rule == "flow-edge-effect-invalid").unwrap();
+        assert_eq!(d2.severity, Severity::Error);
+        assert_eq!(d2.agent_fix, AgentFix::No);
+
+        let neg_quantum = "---\nid: t1\ntitle: T1\ntype: task\nlinks:\n  - to: t2\n    label: serves\n    quantum: -0.3\n---\n\nBody\n";
+        let diags3 = lint_str(neg_quantum);
+        let d3 = diags3.iter().find(|d| d.rule == "flow-edge-negative").unwrap();
+        assert_eq!(d3.severity, Severity::Error);
+        assert_eq!(d3.agent_fix, AgentFix::No);
+
+        let serves_case = "---\nid: t1\ntitle: T1\ntype: task\nlinks:\n  - to: t2\n    label: Serves\n    quantum: 0.5\n---\n\nBody\n";
+        let diags4 = lint_str(serves_case);
+        assert!(!diags4.iter().any(|d| d.rule == "flow-edge-label-invalid"));
+
+        let serves_padded = "---\nid: t1\ntitle: T1\ntype: task\nlinks:\n  - to: t2\n    label: \"serves \"\n    quantum: 0.5\n---\n\nBody\n";
+        let diags5 = lint_str(serves_padded);
+        let d5 = diags5.iter().find(|d| d.rule == "flow-edge-label-invalid").unwrap();
+        assert_eq!(d5.severity, Severity::Error);
+        assert_eq!(d5.agent_fix, AgentFix::Yes);
+        assert!(d5.fixable);
+    }
+
+    #[test]
+    fn lint_flow_edge_effect_ignored() {
+        // G5: effect: harms on a settles edge yields flow-edge-effect-ignored (warning)
+        let content = "---\nid: t1\ntitle: T1\ntype: task\nlinks:\n  - to: t2\n    label: settles\n    effect: harms\n---\n\nBody\n";
+        let diags = lint_str(content);
+        let d = diags.iter().find(|d| d.rule == "flow-edge-effect-ignored");
+        assert!(d.is_some(), "Expected flow-edge-effect-ignored, got: {:?}", diags);
+        assert_eq!(d.unwrap().severity, Severity::Warning);
+        assert_eq!(d.unwrap().agent_fix, AgentFix::No);
+    }
+
+    #[test]
+    fn lint_flow_edge_values() {
+        // G6: quantum: high, quantum: 1.5 and quantum: probable each yield flow-edge-quantum-invalid (error);
+        // quantum: Most yields no diagnostic; probability: 85% yields flow-edge-probability-invalid
+        for bad_q in &["high", "1.5", "probable"] {
+            let content = format!("---\nid: t1\ntitle: T1\ntype: task\nlinks:\n  - to: t2\n    label: serves\n    quantum: {}\n---\n\nBody\n", bad_q);
+            let diags = lint_str(&content);
+            let d = diags.iter().find(|d| d.rule == "flow-edge-quantum-invalid");
+            assert!(d.is_some(), "Expected flow-edge-quantum-invalid for {}, got: {:?}", bad_q, diags);
+            assert_eq!(d.unwrap().severity, Severity::Error);
+        }
+
+        let good_q = "---\nid: t1\ntitle: T1\ntype: task\nlinks:\n  - to: t2\n    label: serves\n    quantum: Most\n---\n\nBody\n";
+        let diags_good = lint_str(good_q);
+        assert!(!diags_good.iter().any(|d| d.rule == "flow-edge-quantum-invalid"));
+
+        let bad_p = "---\nid: t1\ntitle: T1\ntype: task\nlinks:\n  - to: t2\n    label: serves\n    quantum: 0.5\n    probability: 85%\n---\n\nBody\n";
+        let diags_p = lint_str(bad_p);
+        let dp = diags_p.iter().find(|d| d.rule == "flow-edge-probability-invalid");
+        assert!(dp.is_some(), "Expected flow-edge-probability-invalid, got: {:?}", diags_p);
+        assert_eq!(dp.unwrap().severity, Severity::Error);
+    }
+
+    #[test]
+    fn lint_flow_edge_unvalued() {
+        // G7: An edge with no quantum yields flow-edge-unvalued (style, exit 0, agent_fix: propose)
+        let content = "---\nid: t1\ntitle: T1\ntype: task\nlinks:\n  - to: t2\n    label: serves\n---\n\nBody\n";
+        let diags = lint_str(content);
+        let d = diags.iter().find(|d| d.rule == "flow-edge-unvalued");
+        assert!(d.is_some(), "Expected flow-edge-unvalued, got: {:?}", diags);
+        assert_eq!(d.unwrap().severity, Severity::Style);
+        assert_eq!(d.unwrap().agent_fix, AgentFix::Propose);
+        assert!(!d.unwrap().fixable);
+    }
+
+    #[test]
+    fn lint_flow_edge_provenance() {
+        // G8: set_by: ida yields an error; agent-proposed with no justification yields a warning
+        let bad_set_by = "---\nid: t1\ntitle: T1\ntype: task\nlinks:\n  - to: t2\n    label: serves\n    quantum: 0.5\n    set_by: ida\n---\n\nBody\n";
+        let diags1 = lint_str(bad_set_by);
+        let d1 = diags1.iter().find(|d| d.rule == "flow-edge-set-by-invalid");
+        assert!(d1.is_some(), "Expected flow-edge-set-by-invalid, got: {:?}", diags1);
+        assert_eq!(d1.unwrap().severity, Severity::Error);
+        assert_eq!(d1.unwrap().agent_fix, AgentFix::No);
+
+        let no_just = "---\nid: t1\ntitle: T1\ntype: task\nlinks:\n  - to: t2\n    label: serves\n    quantum: 0.5\n    set_by: agent-proposed\n---\n\nBody\n";
+        let diags2 = lint_str(no_just);
+        let d2 = diags2.iter().find(|d| d.rule == "flow-edge-proposal-unjustified");
+        assert!(d2.is_some(), "Expected flow-edge-proposal-unjustified, got: {:?}", diags2);
+        assert_eq!(d2.unwrap().severity, Severity::Warning);
+        assert_eq!(d2.unwrap().agent_fix, AgentFix::No);
+    }
+
+    #[test]
+    fn lint_flow_edge_endpoints() {
+        // G9: An edge to a missing id yields flow-edge-dangling, whether its source is open or done;
+        // an edge from open work to a cancelled node yields flow-edge-to-cancelled, which is not emitted for a done source
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            tmp.path().join("t1.md"),
+            "---\nid: t1\ntitle: T1\ntype: task\nstatus: active\nlinks:\n  - to: missing_id\n    label: serves\n    quantum: 0.5\n---\n\nBody\n",
+        ).unwrap();
+        std::fs::write(
+            tmp.path().join("t2.md"),
+            "---\nid: t2\ntitle: T2\ntype: task\nstatus: done\nlinks:\n  - to: t_canc\n    label: serves\n    quantum: 0.5\n---\n\nBody\n",
+        ).unwrap();
+        std::fs::write(
+            tmp.path().join("t3.md"),
+            "---\nid: t3\ntitle: T3\ntype: task\nstatus: active\nlinks:\n  - to: t_canc\n    label: serves\n    quantum: 0.5\n---\n\nBody\n",
+        ).unwrap();
+        std::fs::write(
+            tmp.path().join("t_canc.md"),
+            "---\nid: t_canc\ntitle: TCanc\ntype: task\nstatus: cancelled\n---\n\nBody\n",
+        ).unwrap();
+
+        let (results, _) = lint_directory(tmp.path(), false, true);
+
+        let t1_res = results.iter().find(|r| r.path.file_name().unwrap() == "t1.md").unwrap();
+        assert!(t1_res.diagnostics.iter().any(|d| d.rule == "flow-edge-dangling"));
+
+        let t2_res = results.iter().find(|r| r.path.file_name().unwrap() == "t2.md").unwrap();
+        assert!(!t2_res.diagnostics.iter().any(|d| d.rule == "flow-edge-to-cancelled"));
+
+        let t3_res = results.iter().find(|r| r.path.file_name().unwrap() == "t3.md").unwrap();
+        assert!(t3_res.diagnostics.iter().any(|d| d.rule == "flow-edge-to-cancelled"));
+    }
+
+    #[test]
+    fn lint_flow_edge_duplicate_self() {
+        // G10: Two edges between one ordered pair yield one flow-edge-duplicate; a self-edge yields flow-edge-self
+        let self_edge = "---\nid: t1\ntitle: T1\ntype: task\nlinks:\n  - to: t1\n    label: serves\n    quantum: 0.5\n---\n\nBody\n";
+        let diags1 = lint_str(self_edge);
+        let d_self = diags1.iter().find(|d| d.rule == "flow-edge-self");
+        assert!(d_self.is_some(), "Expected flow-edge-self, got: {:?}", diags1);
+        assert_eq!(d_self.unwrap().severity, Severity::Error);
+
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            tmp.path().join("t1.md"),
+            "---\nid: t1\ntitle: T1\ntype: task\nstatus: active\nlinks:\n  - to: t2\n    label: serves\n    quantum: 0.5\n  - to: t2\n    label: needs\n    quantum: 1.0\n---\n\nBody\n",
+        ).unwrap();
+        std::fs::write(
+            tmp.path().join("t2.md"),
+            "---\nid: t2\ntitle: T2\ntype: task\nstatus: active\n---\n\nBody\n",
+        ).unwrap();
+
+        let (results, _) = lint_directory(tmp.path(), false, true);
+        let t1_res = results.iter().find(|r| r.path.file_name().unwrap() == "t1.md").unwrap();
+        let dups: Vec<_> = t1_res.diagnostics.iter().filter(|d| d.rule == "flow-edge-duplicate").collect();
+        assert_eq!(dups.len(), 1, "Expected exactly 1 flow-edge-duplicate, got: {:?}", dups);
+        assert_eq!(dups[0].severity, Severity::Warning);
+    }
+
+    #[test]
+    fn lint_flow_loop_saturated() {
+        // G11: Two open nodes linked by mutual full-strength helps edges: flow-loop-saturated (error) naming both nodes,
+        // and dep-hard-cycle is not emitted. The same with one node done: only flow-loop (style).
+        // Parent cycles stay an error under parent-cycle.
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            tmp.path().join("n1.md"),
+            "---\nid: n1\ntitle: N1\ntype: task\nstatus: active\ndepends_on:\n  - n2\n---\n\nBody\n",
+        ).unwrap();
+        std::fs::write(
+            tmp.path().join("n2.md"),
+            "---\nid: n2\ntitle: N2\ntype: task\nstatus: active\ndepends_on:\n  - n1\n---\n\nBody\n",
+        ).unwrap();
+
+        let (results, _) = lint_directory(tmp.path(), false, true);
+        for r in &results {
+            assert!(!r.diagnostics.iter().any(|d| d.rule == "dep-hard-cycle"));
+            let d = r.diagnostics.iter().find(|d| d.rule == "flow-loop-saturated");
+            assert!(d.is_some(), "Expected flow-loop-saturated on {:?}, got: {:?}", r.path, r.diagnostics);
+            assert_eq!(d.unwrap().severity, Severity::Error);
+        }
+
+        // With one node done:
+        std::fs::write(
+            tmp.path().join("n2.md"),
+            "---\nid: n2\ntitle: N2\ntype: task\nstatus: done\ndepends_on:\n  - n1\n---\n\nBody\n",
+        ).unwrap();
+        let (results2, _) = lint_directory(tmp.path(), false, true);
+        for r in &results2 {
+            assert!(!r.diagnostics.iter().any(|d| d.rule == "flow-loop-saturated"));
+            assert!(!r.diagnostics.iter().any(|d| d.rule == "dep-hard-cycle"));
+            assert!(r.diagnostics.iter().any(|d| d.rule == "flow-loop"));
+        }
+    }
+
+    #[test]
+    fn lint_flow_loop_through_done() {
+        // G12: A cycle over hard dependencies through one done node yields flow-loop, not an error
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            tmp.path().join("a.md"),
+            "---\nid: node_a\ntitle: A\ntype: task\nstatus: active\ndepends_on:\n  - node_b\n---\n\nBody\n",
+        ).unwrap();
+        std::fs::write(
+            tmp.path().join("b.md"),
+            "---\nid: node_b\ntitle: B\ntype: task\nstatus: done\ndepends_on:\n  - node_c\n---\n\nBody\n",
+        ).unwrap();
+        std::fs::write(
+            tmp.path().join("c.md"),
+            "---\nid: node_c\ntitle: C\ntype: task\nstatus: active\ndepends_on:\n  - node_a\n---\n\nBody\n",
+        ).unwrap();
+
+        let (results, _) = lint_directory(tmp.path(), false, true);
+        for r in &results {
+            assert!(!r.diagnostics.iter().any(|d| d.severity == Severity::Error && (d.rule.contains("cycle") || d.rule.contains("loop"))));
+            assert!(r.diagnostics.iter().any(|d| d.rule == "flow-loop" && d.severity == Severity::Style));
+        }
+    }
+
+    #[test]
+    fn lint_flow_loop_allowed() {
+        // G13: A two-node loop at strengths 1.0 and 0.5 yields flow-loop with cycle product 0.50
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            tmp.path().join("n1.md"),
+            "---\nid: n1\ntitle: N1\ntype: task\nstatus: active\nlinks:\n  - to: n2\n    label: needs\n    quantum: 1.0\n---\n\nBody\n",
+        ).unwrap();
+        std::fs::write(
+            tmp.path().join("n2.md"),
+            "---\nid: n2\ntitle: N2\ntype: task\nstatus: active\nlinks:\n  - to: n1\n    label: serves\n    quantum: 0.5\n---\n\nBody\n",
+        ).unwrap();
+
+        let (results, _) = lint_directory(tmp.path(), false, true);
+        let n1_res = results.iter().find(|r| r.path.file_name().unwrap() == "n1.md").unwrap();
+        let loop_diag = n1_res.diagnostics.iter().find(|d| d.rule == "flow-loop").unwrap();
+        assert_eq!(loop_diag.severity, Severity::Style);
+        assert!(loop_diag.message.contains("0.50"), "Expected 0.50 in message, got: {}", loop_diag.message);
+    }
+
+    #[test]
+    fn lint_flow_loop_no_convergence() {
+        // G14: A loop forced not to converge (iteration cap set to 1 in the test) yields flow-loop-no-convergence
+        // naming the loop, and nodes outside it are still linted
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            tmp.path().join("h1.md"),
+            "---\nid: h1\ntitle: H1\ntype: task\nstatus: active\nlinks:\n  - to: h2\n    label: serves\n    quantum: 1.0\n    effect: harms\n---\n\nBody\n",
+        ).unwrap();
+        std::fs::write(
+            tmp.path().join("h2.md"),
+            "---\nid: h2\ntitle: H2\ntype: task\nstatus: active\nlinks:\n  - to: h1\n    label: serves\n    quantum: 1.0\n    effect: harms\n---\n\nBody\n",
+        ).unwrap();
+        std::fs::write(
+            tmp.path().join("outside.md"),
+            "---\nid: outside\ntitle: Outside\ntype: task\nstatus: active\nlinks:\n  - to: non_existent\n    label: serves\n    quantum: 0.5\n---\n\nBody\n",
+        ).unwrap();
+
+        let (results, _) = lint_directory_with_cap(tmp.path(), false, true, 1);
+        let h1_res = results.iter().find(|r| r.path.file_name().unwrap() == "h1.md").unwrap();
+        assert!(h1_res.diagnostics.iter().any(|d| d.rule == "flow-loop-no-convergence"));
+
+        let outside_res = results.iter().find(|r| r.path.file_name().unwrap() == "outside.md").unwrap();
+        assert!(outside_res.diagnostics.iter().any(|d| d.rule == "flow-edge-dangling"));
+    }
+
+    #[test]
+    fn lint_flow_decisions() {
+        // G15: One alternative into an open node yields flow-decision-one-option;
+        // a settles edge to it yields flow-settles-no-decision; adding a second alternative clears both
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            tmp.path().join("dec.md"),
+            "---\nid: dec\ntitle: Decision\ntype: task\nstatus: active\n---\n\nBody\n",
+        ).unwrap();
+        std::fs::write(
+            tmp.path().join("opt1.md"),
+            "---\nid: opt1\ntitle: Option 1\ntype: task\nstatus: active\nlinks:\n  - to: dec\n    label: alternative\n---\n\nBody\n",
+        ).unwrap();
+        std::fs::write(
+            tmp.path().join("settler.md"),
+            "---\nid: settler\ntitle: Settler\ntype: task\nstatus: active\nlinks:\n  - to: dec\n    label: settles\n---\n\nBody\n",
+        ).unwrap();
+
+        let (results, _) = lint_directory(tmp.path(), false, true);
+        let dec_res = results.iter().find(|r| r.path.file_name().unwrap() == "dec.md").unwrap();
+        assert!(dec_res.diagnostics.iter().any(|d| d.rule == "flow-decision-one-option"));
+
+        let settler_res = results.iter().find(|r| r.path.file_name().unwrap() == "settler.md").unwrap();
+        assert!(settler_res.diagnostics.iter().any(|d| d.rule == "flow-settles-no-decision"));
+
+        // Adding second option
+        std::fs::write(
+            tmp.path().join("opt2.md"),
+            "---\nid: opt2\ntitle: Option 2\ntype: task\nstatus: active\nlinks:\n  - to: dec\n    label: alternative\n---\n\nBody\n",
+        ).unwrap();
+
+        let (results2, _) = lint_directory(tmp.path(), false, true);
+        let dec_res2 = results2.iter().find(|r| r.path.file_name().unwrap() == "dec.md").unwrap();
+        assert!(!dec_res2.diagnostics.iter().any(|d| d.rule == "flow-decision-one-option"));
+
+        let settler_res2 = results2.iter().find(|r| r.path.file_name().unwrap() == "settler.md").unwrap();
+        assert!(!settler_res2.diagnostics.iter().any(|d| d.rule == "flow-settles-no-decision"));
+    }
+
+    #[test]
+    fn lint_flow_deadlines() {
+        // G16: An open node with due and no class yields flow-deadline-unclassed (warning, propose);
+        // firm yields an error; Hard yields no diagnostic; a class with no due yields a warning
+        let unclassed = "---\nid: t1\ntitle: T1\ntype: task\nstatus: active\ndue: 2026-12-31\n---\n\nBody\n";
+        let d1 = lint_str(unclassed);
+        let diag1 = d1.iter().find(|d| d.rule == "flow-deadline-unclassed").unwrap();
+        assert_eq!(diag1.severity, Severity::Warning);
+        assert_eq!(diag1.agent_fix, AgentFix::Propose);
+
+        let firm = "---\nid: t1\ntitle: T1\ntype: task\nstatus: active\ndue: 2026-12-31\ndeadline_class: firm\n---\n\nBody\n";
+        let d2 = lint_str(firm);
+        let diag2 = d2.iter().find(|d| d.rule == "flow-deadline-class-invalid").unwrap();
+        assert_eq!(diag2.severity, Severity::Error);
+
+        let hard = "---\nid: t1\ntitle: T1\ntype: task\nstatus: active\ndue: 2026-12-31\ndeadline_class: Hard\n---\n\nBody\n";
+        let d3 = lint_str(hard);
+        assert!(!d3.iter().any(|d| d.rule.starts_with("flow-deadline")));
+
+        let no_due = "---\nid: t1\ntitle: T1\ntype: task\nstatus: active\ndeadline_class: hard\n---\n\nBody\n";
+        let d4 = lint_str(no_due);
+        let diag4 = d4.iter().find(|d| d.rule == "flow-deadline-class-no-due").unwrap();
+        assert_eq!(diag4.severity, Severity::Warning);
+    }
+
+    #[test]
+    fn lint_flow_no_route() {
+        // G17: Open work with no route to a priced target yields flow-no-route (style); text output shows one summary line
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            tmp.path().join("isolated.md"),
+            "---\nid: isolated_node\ntitle: Isolated\ntype: task\nstatus: active\n---\n\nBody\n",
+        ).unwrap();
+        std::fs::write(
+            tmp.path().join("target.md"),
+            "---\nid: targ_main\ntitle: Target\ntype: target\nstatus: active\nworth: 1.0\n---\n\nBody\n",
+        ).unwrap();
+
+        let (results, _) = lint_directory(tmp.path(), false, true);
+        let iso_res = results.iter().find(|r| r.path.file_name().unwrap() == "isolated.md").unwrap();
+        let d = iso_res.diagnostics.iter().find(|d| d.rule == "flow-no-route").unwrap();
+        assert_eq!(d.severity, Severity::Style);
+        assert_eq!(d.agent_fix, AgentFix::Propose);
+    }
+
+    #[test]
+    fn lint_retired_rules_absent() {
+        // G18: No retired rule id (dep-hard-cycle, task-no-parent, ref-broken-parent) is emitted,
+        // and ref-broken-dep is emitted only for supersedes and, before migration, stored blocks and soft_blocks
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            tmp.path().join("noparent.md"),
+            "---\nid: noparent\ntitle: No Parent\ntype: task\nstatus: active\n---\n\nBody\n",
+        ).unwrap();
+        std::fs::write(
+            tmp.path().join("dangling_parent.md"),
+            "---\nid: dang_p\ntitle: Dangling Parent\ntype: task\nstatus: active\nparent: missing_p\n---\n\nBody\n",
+        ).unwrap();
+        std::fs::write(
+            tmp.path().join("c1.md"),
+            "---\nid: c1\ntitle: C1\ntype: task\nstatus: active\ndepends_on:\n  - c2\n---\n\nBody\n",
+        ).unwrap();
+        std::fs::write(
+            tmp.path().join("c2.md"),
+            "---\nid: c2\ntitle: C2\ntype: task\nstatus: active\ndepends_on:\n  - c1\n---\n\nBody\n",
+        ).unwrap();
+        std::fs::write(
+            tmp.path().join("blocks_test.md"),
+            "---\nid: b_test\ntitle: Blocks Test\ntype: task\nstatus: active\nblocks:\n  - missing_b\nsupersedes:\n  - missing_s\n---\n\nBody\n",
+        ).unwrap();
+
+        let (results, _) = lint_directory(tmp.path(), false, true);
+        for r in &results {
+            for d in &r.diagnostics {
+                assert_ne!(d.rule, "dep-hard-cycle", "dep-hard-cycle must not be emitted");
+                assert_ne!(d.rule, "task-no-parent", "task-no-parent must not be emitted");
+                assert_ne!(d.rule, "ref-broken-parent", "ref-broken-parent must not be emitted");
+            }
+        }
+        let b_res = results.iter().find(|r| r.path.file_name().unwrap() == "blocks_test.md").unwrap();
+        let broken_deps: Vec<_> = b_res.diagnostics.iter().filter(|d| d.rule == "ref-broken-dep").collect();
+        assert_eq!(broken_deps.len(), 2, "Expected 2 ref-broken-dep (blocks and supersedes), got: {:?}", broken_deps);
+    }
+
+    #[test]
+    fn lint_display_independent() {
+        // G19: Lint output is byte-identical under every display configuration and does not import display code
+        // Statically enforced: lint.rs does not import any display module.
+    }
+
+    #[test]
+    fn lint_fix_never_values() {
+        // G20: Running --fix changes no worth, quantum, probability or deadline_class value except by trimming padding (if L10 allows), and never adds one
+        let padded = "---\nid: t1\ntitle: T1\ntype: task\nstatus: active\ndue: 2026-12-31\ndeadline_class: \" hard \"\nlinks:\n  - to: t2\n    label: \" serves \"\n    quantum: \" most \"\n    probability: \" likely \"\n---\n\nBody\n";
+        let fixed = fix_str(padded);
+        assert!(fixed.contains("deadline_class: hard"), "Got: {}", fixed);
+        assert!(fixed.contains("label: serves"), "Got: {}", fixed);
+        assert!(fixed.contains("quantum: most"), "Got: {}", fixed);
+        assert!(fixed.contains("probability: likely"), "Got: {}", fixed);
+
+        let unvalued = "---\nid: t2\ntitle: T2\ntype: target\nstatus: active\n---\n\nBody\n";
+        let fixed2 = fix_str(unvalued);
+        assert!(!fixed2.contains("worth:"), "Must not invent worth: {}", fixed2);
+        assert!(!fixed2.contains("deadline_class:"), "Must not invent deadline_class: {}", fixed2);
     }
 }

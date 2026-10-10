@@ -2967,6 +2967,8 @@ async fn main() -> Result<()> {
                                     "message": d.message,
                                     "line": d.line,
                                     "fixable": d.fixable,
+                                    "agent_fix": d.agent_fix.to_string(),
+                                    "subject": d.subject,
                                 }))
                                 .collect::<Vec<_>>(),
                         })
@@ -2975,11 +2977,29 @@ async fn main() -> Result<()> {
                 println!("{}", serde_json::to_string_pretty(&json_results)?);
             } else {
                 // Human-readable text output
+                let mut no_route_nodes = Vec::new();
                 for r in &results {
                     let diags: Vec<&lint::Diagnostic> = r
                         .diagnostics
                         .iter()
                         .filter(|d| !errors_only || d.severity == lint::Severity::Error)
+                        .filter(|d| {
+                            if d.rule == "flow-no-route" {
+                                if let Some(lint::DiagnosticSubject::Node(ref id)) = d.subject {
+                                    no_route_nodes.push(id.clone());
+                                } else {
+                                    no_route_nodes.push(
+                                        r.path
+                                            .file_stem()
+                                            .map(|s| s.to_string_lossy().to_string())
+                                            .unwrap_or_default(),
+                                    );
+                                }
+                                false
+                            } else {
+                                true
+                            }
+                        })
                         .collect();
                     if diags.is_empty() {
                         continue;
@@ -3006,6 +3026,21 @@ async fn main() -> Result<()> {
                             );
                         }
                     }
+                    println!();
+                }
+
+                if !no_route_nodes.is_empty() {
+                    let count = no_route_nodes.len();
+                    let first_ten = no_route_nodes
+                        .iter()
+                        .take(10)
+                        .cloned()
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    println!(
+                        "\x1b[36mstyle\x1b[0m flow-no-route: {} open nodes with no route to a priced target (first 10: {})",
+                        count, first_ten
+                    );
                     println!();
                 }
 
