@@ -2554,6 +2554,8 @@ impl GraphStore {
             None => (self.nodes.values().cloned().collect(), self.edges.clone()),
         };
 
+        // Only include nodes with explicit task_id (real tasks, not bare notes)
+        nodes.retain(|n| n.task_id.is_some());
 
         if !include_done {
             nodes.retain(|n| {

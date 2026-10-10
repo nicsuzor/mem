@@ -529,6 +529,9 @@ pub fn apply_flow_migration(pkb_root: &Path) -> Result<FlowMigrationLedger> {
     let gs = GraphStore::build_from_directory(pkb_root);
     let mut known_ids = HashSet::new();
     for node in gs.nodes() {
+        if node.task_id.is_none() {
+            continue;
+        }
         known_ids.insert(node.id.clone());
         if let Some(ref stem) = node.path.file_stem().and_then(|s| s.to_str()) {
             known_ids.insert(stem.to_string());

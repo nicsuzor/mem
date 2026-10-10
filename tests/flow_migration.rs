@@ -406,7 +406,7 @@ Task body.
 }
 
 #[test]
-fn test_export_graph_includes_ghost_destinations() {
+fn test_export_graph_excludes_ghost_destinations() {
     let dir = tempdir().unwrap();
     let root = dir.path();
 
@@ -437,13 +437,13 @@ Task body.
         .collect();
 
     assert!(
-        node_ids.contains("ghost-target-123"),
-        "Exported nodes must include ghost-target-123, but got ids: {:?}",
+        !node_ids.contains("ghost-target-123"),
+        "Exported nodes must NOT include ghost-target-123, but got ids: {:?}",
         node_ids
     );
     assert!(
-        node_ids.contains("ghost-dep-456"),
-        "Exported nodes must include ghost-dep-456, but got ids: {:?}",
+        !node_ids.contains("ghost-dep-456"),
+        "Exported nodes must NOT include ghost-dep-456, but got ids: {:?}",
         node_ids
     );
 
@@ -454,12 +454,78 @@ Task body.
         .collect();
 
     assert!(
-        edge_targets.contains("ghost-target-123"),
-        "Exported edges must include edge to ghost-target-123"
+        !edge_targets.contains("ghost-target-123"),
+        "Exported edges must NOT include edge to ghost-target-123"
     );
     assert!(
-        edge_targets.contains("ghost-dep-456"),
-        "Exported edges must include edge to ghost-dep-456"
+        !edge_targets.contains("ghost-dep-456"),
+        "Exported edges must NOT include edge to ghost-dep-456"
     );
+}
+
+#[test]
+fn test_ghost_destinations_not_migrated() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+    init_git_repo(root);
+
+    let target_content = r#"---
+id: targ-1
+title: Real Target
+type: target
+standing_weight: 0.5
+status: ready
+---
+
+Target body.
+"#;
+    fs::write(root.join("target.md"), target_content).unwrap();
+
+    let task_content = r#"---
+id: task-1
+title: Task with ghost and real references
+type: task
+status: ready
+contributes_to:
+- stated_weight: expected
+  to: ghost-target-123
+- stated_weight: expected
+  to: targ-1
+soft_depends_on:
+- ghost-dep-456
+- targ-1
+---
+
+Task body.
+"#;
+    fs::write(root.join("task.md"), task_content).unwrap();
+    commit_all(root, "Initial snapshot");
+
+    let ledger = apply_flow_migration(root).expect("apply failed");
+    let new_task = fs::read_to_string(root.join("task.md")).unwrap();
+
+    // targ-1 is real, so its edges must be migrated
+    assert!(
+        new_task.contains("to: targ-1") && new_task.contains("quantum: 0.75"),
+        "Real target targ-1 contributes_to must be migrated:\n{new_task}"
+    );
+    assert!(
+        new_task.contains("to: targ-1") && new_task.contains("quantum: 0.3"),
+        "Real target targ-1 soft_depends_on must be migrated:\n{new_task}"
+    );
+
+    // ghost destinations must NOT be migrated per specs/flow-migration.md:153 and M13
+    assert!(
+        !new_task.contains("to: ghost-target-123\n  quantum:")
+            && !new_task.contains("to: ghost-target-123\n  probability:"),
+        "Ghost contributes_to must not be migrated:\n{new_task}"
+    );
+    assert!(
+        new_task.contains("- ghost-dep-456\n"),
+        "Ghost soft_depends_on must remain bare string:\n{new_task}"
+    );
+
+    // Only 3 rows on 2 nodes (worth on target, contributes_to to targ-1, soft_depends_on to targ-1)
+    assert_eq!(ledger.report.total_rows, 3);
 }
 
