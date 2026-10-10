@@ -537,7 +537,7 @@ impl SessionPool {
 
         // BGE-M3 (XLM-RoBERTa): pad_id=1, pad_token="<pad>"
         tokenizer.with_padding(Some(tokenizers::PaddingParams {
-            strategy: tokenizers::PaddingStrategy::Fixed(config.max_length),
+            strategy: tokenizers::PaddingStrategy::BatchLongest,
             pad_id: 1,
             pad_token: "<pad>".to_string(),
             ..Default::default()
@@ -585,7 +585,6 @@ impl SessionPool {
         ];
 
         let batch_size = probe_texts.len();
-        let max_length = 64; // Short sequences for the probe
 
         let encodings = match self.tokenizer.encode_batch(probe_texts.to_vec(), true) {
             Ok(enc) => enc,
@@ -594,6 +593,13 @@ impl SessionPool {
                 return false;
             }
         };
+
+        let max_length = encodings
+            .iter()
+            .map(|enc| enc.get_ids().len().min(64))
+            .max()
+            .unwrap_or(64)
+            .max(1);
 
         let total_len = batch_size * max_length;
         let mut input_ids_data = vec![0i64; total_len];
@@ -1840,6 +1846,146 @@ After the code.";
             "Expected models_dir to end with 'aops/models/bge-m3', got {:?}",
             models_dir
         );
+    }
+
+    #[test]
+    fn test_short_input_not_padded_to_512() {
+        let config = EmbeddingConfig::from_env();
+        if !config.model_path.exists() || !config.tokenizer_path.exists() {
+            eprintln!("Skipping: model files not present on disk");
+            return;
+        }
+        let embedder = Embedder::new().expect("failed to create embedder");
+        let pool = embedder.ensure_pool().expect("ensure_pool failed");
+
+        let short_input = "keyboard EMR interference";
+        let encodings = pool
+            .tokenizer
+            .encode_batch(vec![short_input], true)
+            .expect("tokenization failed");
+
+        let token_count = encodings[0].get_ids().len();
+        eprintln!("Token count for {:?}: {}", short_input, token_count);
+
+        assert!(
+            token_count < 512,
+            "Short input was padded to {token_count} tokens; expected dynamic padding < 512 tokens"
+        );
+        assert!(
+            matches!(
+                pool.tokenizer.get_padding().map(|p| &p.strategy),
+                Some(tokenizers::PaddingStrategy::BatchLongest)
+            ),
+            "Tokenizer padding strategy should be BatchLongest"
+        );
+    }
+
+    #[test]
+    fn test_embeddings_match_prefix_vectors_within_tolerance() {
+        let config = EmbeddingConfig::from_env();
+        if !config.model_path.exists() || !config.tokenizer_path.exists() {
+            eprintln!("Skipping: model files not present on disk");
+            return;
+        }
+
+        let embedder = Embedder::new().expect("failed to create embedder");
+        let pool = embedder.ensure_pool().expect("ensure_pool failed");
+
+        let text = "keyboard EMR interference";
+
+        // Dynamic padding vector (post-fix behavior)
+        let dynamic_vec = embedder.encode_query(text).expect("dynamic encode failed");
+
+        // Compute pre-fix vector using Fixed(512) padding strategy
+        let mut fixed_tokenizer =
+            tokenizers::Tokenizer::from_file(&config.tokenizer_path).expect("load tokenizer");
+        fixed_tokenizer.with_padding(Some(tokenizers::PaddingParams {
+            strategy: tokenizers::PaddingStrategy::Fixed(config.max_length),
+            pad_id: 1,
+            pad_token: "<pad>".to_string(),
+            ..Default::default()
+        }));
+        fixed_tokenizer
+            .with_truncation(Some(tokenizers::TruncationParams {
+                max_length: config.max_length,
+                ..Default::default()
+            }))
+            .expect("truncation");
+
+        let prefixed = format!("{QUERY_PREFIX}{text}");
+        let encodings = fixed_tokenizer
+            .encode_batch(vec![prefixed.as_str()], true)
+            .expect("fixed tokenization failed");
+
+        assert_eq!(encodings[0].get_ids().len(), 512, "Fixed padding must produce 512 tokens");
+
+        let mut input_ids = vec![0i64; 512];
+        let mut attention = vec![0i64; 512];
+        for (i, &token) in encodings[0].get_ids().iter().enumerate() {
+            input_ids[i] = token as i64;
+        }
+        for (i, &mask) in encodings[0].get_attention_mask().iter().enumerate() {
+            attention[i] = mask as i64;
+        }
+
+        use ort::value::TensorRef;
+        let shape = [1, 512];
+        let input_ids_val = TensorRef::from_array_view((shape, input_ids.as_slice())).unwrap();
+        let attention_val = TensorRef::from_array_view((shape, attention.as_slice())).unwrap();
+
+        let session_arc = pool.acquire_session();
+        let mut session = session_arc.lock();
+        let outputs = session
+            .run(ort::inputs![input_ids_val, attention_val])
+            .expect("session run");
+        let (_, sent_data) = outputs["sentence_embedding"]
+            .try_extract_tensor::<f32>()
+            .expect("extract tensor");
+
+        let mut fixed_vec = vec![0.0f32; EMBEDDING_DIM];
+        fixed_vec.copy_from_slice(&sent_data[..EMBEDDING_DIM]);
+        crate::distance::normalize_inplace(&mut fixed_vec);
+
+        let sim = crate::distance::cosine_similarity(&dynamic_vec, &fixed_vec);
+        let max_diff = dynamic_vec
+            .iter()
+            .zip(fixed_vec.iter())
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0f32, f32::max);
+
+        eprintln!("Cosine similarity between dynamic and fixed(512) vectors: {sim:.8}");
+        eprintln!("Max absolute difference: {max_diff:.8}");
+
+        assert!(
+            sim > 0.9999,
+            "Cosine similarity between dynamic and fixed padding must be > 0.9999, got {sim:.8}"
+        );
+        assert!(
+            max_diff < 1e-3,
+            "Max absolute difference between dynamic and fixed padding must be < 1e-3, got {max_diff:.8}"
+        );
+    }
+
+    #[test]
+    #[ignore]
+    fn measure_single_query_latency() {
+        let embedder = Embedder::new().expect("failed to create embedder");
+        let query = "keyboard EMR interference";
+
+        // Warmup
+        let _ = embedder.encode_query(query).expect("warmup failed");
+
+        let iters = 10;
+        let mut total_duration = std::time::Duration::ZERO;
+
+        for _ in 0..iters {
+            let start = std::time::Instant::now();
+            let _ = embedder.encode_query(query).expect("encode failed");
+            total_duration += start.elapsed();
+        }
+
+        let avg_ms = total_duration.as_secs_f64() * 1000.0 / (iters as f64);
+        eprintln!("POST_FIX_AVG_LATENCY_MS: {avg_ms:.2} ms");
     }
 }
 
