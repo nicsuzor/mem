@@ -4082,6 +4082,83 @@ mod tests {
     }
 
     #[test]
+    fn create_task_over_limit_filename_rejected_and_writes_nothing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        write_test_polecat_yaml(root, &["aops", "mem"]);
+        let tasks_dir = root.join("tasks");
+        fs::create_dir_all(&tasks_dir).unwrap();
+
+        // Title that produces an over-limit filename (> 80 chars)
+        let long_title = "This is a very long task title that exceeds the tight filename length limit for tasks in the PKB";
+        let fields = TaskFields {
+            title: long_title.to_string(),
+            parent: Some("parent-001".to_string()),
+            project: Some("aops".to_string()),
+            ..Default::default()
+        };
+        let err = create_task(root, fields).expect_err("creating a task with an over-limit filename must be rejected");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("80") && msg.contains("characters"),
+            "error message must state the limit and length, got: {msg}"
+        );
+        let count = fs::read_dir(&tasks_dir).unwrap().count();
+        assert_eq!(count, 0, "no files must be written on over-limit filename failure");
+    }
+
+    #[test]
+    fn create_task_short_filename_succeeds() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        write_test_polecat_yaml(root, &["aops", "mem"]);
+        let tasks_dir = root.join("tasks");
+        fs::create_dir_all(&tasks_dir).unwrap();
+
+        let fields = TaskFields {
+            title: "Short descriptive title".to_string(),
+            parent: Some("parent-001".to_string()),
+            project: Some("aops".to_string()),
+            ..Default::default()
+        };
+        let path = create_task(root, fields).expect("creating a task with short filename must succeed");
+        assert!(path.exists());
+        let filename = path.file_name().unwrap().to_string_lossy();
+        assert!(
+            filename.chars().count() <= 80,
+            "filename must be <= 80 chars, got {}: {filename}",
+            filename.chars().count()
+        );
+    }
+
+    #[test]
+    fn convert_document_over_limit_filename_rejected_and_writes_nothing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        write_test_polecat_yaml(root, &["aops", "mem"]);
+        let notes_dir = root.join("notes");
+        fs::create_dir_all(&notes_dir).unwrap();
+        let old_path = notes_dir.join("note-001.md");
+        fs::write(&old_path, "---\nid: note-001\ntitle: Short note\ntype: note\n---\nBody\n").unwrap();
+        let original_content = fs::read_to_string(&old_path).unwrap();
+
+        let long_title = "This is an extremely long title for a document that exceeds the tight filename length limit";
+        let err = convert_document(root, &old_path, "note-001", long_title, "task", None, Some("inbox"))
+            .expect_err("converting with an over-limit filename must be rejected");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("80") && msg.contains("characters"),
+            "error message must state the limit and length, got: {msg}"
+        );
+        assert!(old_path.exists(), "original source file must remain untouched");
+        assert_eq!(fs::read_to_string(&old_path).unwrap(), original_content, "original content must not change");
+        let tasks_dir = root.join("tasks");
+        if tasks_dir.exists() {
+            assert_eq!(fs::read_dir(&tasks_dir).unwrap().count(), 0, "no target file must be written");
+        }
+    }
+
+    #[test]
     fn create_task_does_not_write_last_modified() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
