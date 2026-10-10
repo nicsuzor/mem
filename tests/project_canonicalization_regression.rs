@@ -271,7 +271,7 @@ fn test_regression_reproduce_split_from_hand_written_variant_and_lint_fix() {
 
     fs::write(
         root.join("goals/goal-root.md"),
-        "---\nid: goal-root\ntitle: Root Goal\ntype: target\nstatus: ready\nproject: aops\n---\n\nRoot.\n",
+        "---\nid: goal-root\ntitle: Root Goal\ntype: target\nstatus: ready\nproject: aops\nworth: 1.0\n---\n\nRoot.\n",
     )
     .unwrap();
 

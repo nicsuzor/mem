@@ -285,6 +285,15 @@ impl LinkLabel {
             LinkLabel::Settles => "settles",
         }
     }
+}
+
+impl std::fmt::Display for LinkLabel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
+}
+
+impl LinkLabel {
 
     #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Option<LinkLabel> {

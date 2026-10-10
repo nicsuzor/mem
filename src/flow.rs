@@ -238,7 +238,7 @@ pub fn is_flow_edge(edge: &FlowEdge, state: &BTreeMap<String, FlowState>) -> boo
     edge.strength() > 0.0
 }
 
-fn build_indices<'a>(
+pub(crate) fn build_indices<'a>(
     edges: &'a [FlowEdge],
     state: &BTreeMap<String, FlowState>,
 ) -> (
@@ -401,6 +401,30 @@ fn settle(
     active_harms: Option<&BTreeSet<String>>,
     loop_nodes: &BTreeSet<String>,
 ) -> Result<BTreeMap<String, f64>, NoConvergence> {
+    settle_with_cap(
+        state,
+        worth,
+        inc,
+        x,
+        nodes,
+        knocked,
+        active_harms,
+        loop_nodes,
+        ITERATION_CAP,
+    )
+}
+
+pub(crate) fn settle_with_cap(
+    state: &BTreeMap<String, FlowState>,
+    worth: &BTreeMap<String, f64>,
+    inc: &BTreeMap<String, Vec<&FlowEdge>>,
+    x: &BTreeMap<String, f64>,
+    nodes: &[String],
+    knocked: Option<&str>,
+    active_harms: Option<&BTreeSet<String>>,
+    loop_nodes: &BTreeSet<String>,
+    iter_cap: usize,
+) -> Result<BTreeMap<String, f64>, NoConvergence> {
     let harms_inside = nodes.iter().any(|v| {
         inc.get(v).is_some_and(|edges| {
             edges.iter().any(|e| !edge_helps(e, worth))
@@ -411,7 +435,7 @@ fn settle(
         // Parallel (Jacobi) iteration with damping 0.5: node-ID independent on mutual harm
         let damping = HARMS_DAMPING;
         let mut y = x.clone();
-        for _ in 0..ITERATION_CAP {
+        for _ in 0..iter_cap {
             let mut change: f64 = 0.0;
             let mut new_y: BTreeMap<String, f64> = BTreeMap::new();
             for v in nodes {
@@ -461,7 +485,7 @@ fn settle(
     } else {
         // Gauss-Seidel iteration: monotone systems (Tarski 1955), fast convergence
         let mut y = x.clone();
-        for _ in 0..ITERATION_CAP {
+        for _ in 0..iter_cap {
             let mut change: f64 = 0.0;
             for v in nodes {
                 let new_val = if Some(v.as_str()) == knocked {
@@ -495,13 +519,21 @@ fn settle(
 
 /// Baseline counterfactual fixed point: open nodes assumed done, only done/internal harms fire.
 pub fn baseline(input: &FlowInput) -> Result<BTreeMap<String, f64>, NoConvergence> {
+    baseline_with_cap(input, ITERATION_CAP)
+}
+
+/// Baseline counterfactual fixed point with custom iteration cap.
+pub fn baseline_with_cap(
+    input: &FlowInput,
+    iter_cap: usize,
+) -> Result<BTreeMap<String, f64>, NoConvergence> {
     let (inc, _) = build_indices(&input.edges, &input.state);
     let mut all_nodes: Vec<String> = input.state.keys().cloned().collect();
     all_nodes.sort();
     let loop_nodes = on_loops(input);
     let initial: BTreeMap<String, f64> = all_nodes.iter().map(|v| (v.clone(), 1.0)).collect();
     let empty_harms = BTreeSet::new();
-    settle(
+    settle_with_cap(
         &input.state,
         &input.worth,
         &inc,
@@ -510,6 +542,7 @@ pub fn baseline(input: &FlowInput) -> Result<BTreeMap<String, f64>, NoConvergenc
         None,
         Some(&empty_harms),
         &loop_nodes,
+        iter_cap,
     )
 }
 
