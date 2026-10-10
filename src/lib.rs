@@ -18,6 +18,7 @@ pub mod eval;
 pub mod excalidraw;
 pub mod facts;
 pub mod flow;
+pub mod flow_migration;
 pub mod graph;
 pub mod graph_display;
 pub mod graph_store;
