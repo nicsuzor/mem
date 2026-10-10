@@ -4,7 +4,8 @@
 //! Build from `PkbDocument`s via [`GraphStore::build`], then query with
 //! the various accessor methods.
 
-use crate::graph::{self, deduplicate_vec, Edge, EdgeType, GraphNode};
+use crate::graph::{self, deduplicate_vec, Edge, EdgeType, GraphNode, ParseWarning};
+pub use crate::graph::{FlowEdge, ResolvedLink};
 use crate::metrics;
 use crate::pkb::PkbDocument;
 use anyhow::Result;
@@ -425,6 +426,14 @@ impl GraphStore {
             for follow in &n.follow_up_tasks {
                 referenced_ids.insert(follow.clone());
             }
+            for link in &n.links {
+                if let Some(ref to) = link.to {
+                    referenced_ids.insert(to.clone());
+                }
+                if let Some(ref from) = link.from {
+                    referenced_ids.insert(from.clone());
+                }
+            }
         }
 
         let mut sorted_referenced_ids: Vec<String> = referenced_ids.into_iter().collect();
@@ -438,9 +447,15 @@ impl GraphStore {
                 ghost.id = ref_id.clone();
                 ghost.label = ref_id.clone();
                 // Guess node type from ID prefix
-                if ref_id.starts_with("epic-") || ref_id.starts_with("task-") || ref_id.starts_with("project-") {
+                if ref_id.starts_with("epic-")
+                    || ref_id.starts_with("task-")
+                    || ref_id.starts_with("project-")
+                {
                     ghost.node_type = Some("task".to_string());
-                } else if ref_id.starts_with("goal-") || ref_id.starts_with("target-") || ref_id.starts_with("capability-") {
+                } else if ref_id.starts_with("goal-")
+                    || ref_id.starts_with("target-")
+                    || ref_id.starts_with("capability-")
+                {
                     ghost.node_type = Some("target".to_string());
                 } else if ref_id.starts_with("pr-") {
                     ghost.node_type = Some("pr".to_string());
@@ -481,6 +496,14 @@ impl GraphStore {
         let _t = std::time::Instant::now();
         compute_inverses(&mut nodes, &edges, &id_map, &path_to_id);
         tracing::debug!(target: "perf::graph_rebuild", phase = "inverses", elapsed_ms = _t.elapsed().as_secs_f64() * 1000.0);
+
+        // Attach duplicate disagreement warnings (pkb-flow-engine §3.1 R4, E4)
+        let (_, duplicate_warnings) = resolve_flow_edges_from_nodes(&nodes);
+        for (target_node_id, warning) in duplicate_warnings {
+            if let Some(node) = nodes.iter_mut().find(|n| n.id == target_node_id) {
+                node.parse_warnings.push(warning);
+            }
+        }
 
         // 5. Compute degree metrics (indegree/outdegree)
         let _t = std::time::Instant::now();
@@ -621,6 +644,68 @@ impl GraphStore {
 
     pub fn get_node(&self, id: &str) -> Option<&GraphNode> {
         self.nodes.get(id)
+    }
+
+    /// Resolve flow edges and duplicate warnings across all nodes in the store (pkb-flow-engine §3.1, R4).
+    pub fn resolve_flow_edges_with_warnings(&self) -> (Vec<FlowEdge>, Vec<(String, ParseWarning)>) {
+        resolve_flow_edges_from_nodes(self.nodes.values())
+    }
+
+    /// Resolve all flow edges across the store.
+    pub fn resolve_flow_edges(&self) -> Vec<FlowEdge> {
+        self.resolve_flow_edges_with_warnings().0
+    }
+
+    /// Outgoing flow links from a given node (pkb-flow-engine §7.2).
+    pub fn links_out(&self, node_id: &str) -> Vec<ResolvedLink> {
+        let mut links = Vec::new();
+        for edge in self.resolve_flow_edges() {
+            if edge.src == node_id {
+                let strength = edge.strength();
+                links.push(ResolvedLink {
+                    to: Some(edge.dst),
+                    from: None,
+                    label: edge.label,
+                    quantum: edge.quantum,
+                    probability: edge.probability,
+                    effect: edge.effect,
+                    justification: edge.justification,
+                    set_by: edge.set_by,
+                    strength,
+                });
+            }
+        }
+        links.sort_by(|a, b| {
+            (a.to.as_deref().unwrap_or(""), a.label.as_str())
+                .cmp(&(b.to.as_deref().unwrap_or(""), b.label.as_str()))
+        });
+        links
+    }
+
+    /// Incoming flow links into a given node (pkb-flow-engine §7.2).
+    pub fn links_in(&self, node_id: &str) -> Vec<ResolvedLink> {
+        let mut links = Vec::new();
+        for edge in self.resolve_flow_edges() {
+            if edge.dst == node_id {
+                let strength = edge.strength();
+                links.push(ResolvedLink {
+                    to: None,
+                    from: Some(edge.src),
+                    label: edge.label,
+                    quantum: edge.quantum,
+                    probability: edge.probability,
+                    effect: edge.effect,
+                    justification: edge.justification,
+                    set_by: edge.set_by,
+                    strength,
+                });
+            }
+        }
+        links.sort_by(|a, b| {
+            (a.from.as_deref().unwrap_or(""), a.label.as_str())
+                .cmp(&(b.from.as_deref().unwrap_or(""), b.label.as_str()))
+        });
+        links
     }
 
     /// Collect IDs of all descendants (recursive via children) whose status is open
@@ -1963,8 +2048,8 @@ impl GraphStore {
                             let decay_days = (days_overdue - COURTESY_GRACE_DAYS)
                                 .min(COURTESY_DECAY_WINDOW_DAYS);
                             let decay_frac = decay_days as f64 / COURTESY_DECAY_WINDOW_DAYS as f64;
-                            deadline_pressure_multiplier = 1.0
-                                + (deadline_pressure_multiplier - 1.0) * (1.0 - decay_frac);
+                            deadline_pressure_multiplier =
+                                1.0 + (deadline_pressure_multiplier - 1.0) * (1.0 - decay_frac);
                         }
                     }
                 }
@@ -2708,6 +2793,144 @@ fn build_node_edges(
     edges
 }
 
+/// Helper to resolve flow edges from a collection of nodes, detecting duplicates and disagreement (pkb-flow-engine §3.1 R4, E4).
+pub fn resolve_flow_edges_from_nodes<'a, I>(
+    nodes: I,
+) -> (Vec<FlowEdge>, Vec<(String, ParseWarning)>)
+where
+    I: IntoIterator<Item = &'a GraphNode>,
+{
+    struct Decl<'a> {
+        is_source: bool,
+        link: &'a crate::graph::Link,
+    }
+
+    let mut decls_by_edge: HashMap<(String, String, crate::graph::LinkLabel), Vec<Decl<'a>>> =
+        HashMap::new();
+
+    for node in nodes {
+        for link in &node.links {
+            if let Some(ref target) = link.to {
+                decls_by_edge
+                    .entry((node.id.clone(), target.clone(), link.label))
+                    .or_default()
+                    .push(Decl {
+                        is_source: true,
+                        link,
+                    });
+            } else if let Some(ref source) = link.from {
+                decls_by_edge
+                    .entry((source.clone(), node.id.clone(), link.label))
+                    .or_default()
+                    .push(Decl {
+                        is_source: false,
+                        link,
+                    });
+            }
+        }
+    }
+
+    let mut edges = Vec::with_capacity(decls_by_edge.len());
+    let mut warnings = Vec::new();
+
+    for ((src, dst, label), decls) in decls_by_edge {
+        if decls.len() == 1 {
+            let d = &decls[0];
+            edges.push(FlowEdge {
+                src,
+                dst,
+                label,
+                quantum: d.link.quantum,
+                probability: d.link.probability,
+                effect: d.link.effect,
+                justification: d.link.justification.clone(),
+                set_by: d.link.set_by,
+            });
+        } else {
+            let src_decl = decls.iter().find(|d| d.is_source);
+            let dst_decl = decls.iter().find(|d| !d.is_source);
+
+            match (src_decl, dst_decl) {
+                (Some(s), Some(d)) => {
+                    let agree = (s.link.quantum - d.link.quantum).abs() < 1e-9
+                        && (s.link.probability - d.link.probability).abs() < 1e-9
+                        && s.link.effect == d.link.effect
+                        && s.link.justification == d.link.justification
+                        && s.link.set_by == d.link.set_by;
+
+                    if agree {
+                        edges.push(FlowEdge {
+                            src,
+                            dst,
+                            label,
+                            quantum: s.link.quantum,
+                            probability: s.link.probability,
+                            effect: s.link.effect,
+                            justification: s.link.justification.clone(),
+                            set_by: s.link.set_by,
+                        });
+                    } else {
+                        // Disagreement: from-node (src) wins; warning emitted for dst-node (dst)
+                        edges.push(FlowEdge {
+                            src: src.clone(),
+                            dst: dst.clone(),
+                            label,
+                            quantum: s.link.quantum,
+                            probability: s.link.probability,
+                            effect: s.link.effect,
+                            justification: s.link.justification.clone(),
+                            set_by: s.link.set_by,
+                        });
+                        warnings.push((
+                            dst.clone(),
+                            ParseWarning {
+                                field: "links".to_string(),
+                                message: format!(
+                                    "duplicate link declaration disagreement between {} and {} for label {:?}; entry on from-node {} wins",
+                                    src, dst, label, src
+                                ),
+                            },
+                        ));
+                    }
+                }
+                (Some(s), None) => {
+                    edges.push(FlowEdge {
+                        src,
+                        dst,
+                        label,
+                        quantum: s.link.quantum,
+                        probability: s.link.probability,
+                        effect: s.link.effect,
+                        justification: s.link.justification.clone(),
+                        set_by: s.link.set_by,
+                    });
+                }
+                (None, Some(d)) => {
+                    edges.push(FlowEdge {
+                        src,
+                        dst,
+                        label,
+                        quantum: d.link.quantum,
+                        probability: d.link.probability,
+                        effect: d.link.effect,
+                        justification: d.link.justification.clone(),
+                        set_by: d.link.set_by,
+                    });
+                }
+                (None, None) => unreachable!(),
+            }
+        }
+    }
+
+    edges.sort_by(|a, b| {
+        (&a.src, &a.dst, a.label.as_str()).cmp(&(&b.src, &b.dst, b.label.as_str()))
+    });
+    warnings
+        .sort_by(|a, b| (&a.0, &a.1.field, &a.1.message).cmp(&(&b.0, &b.1.field, &b.1.message)));
+
+    (edges, warnings)
+}
+
 /// Compute inverse relationships on nodes from resolved edges.
 ///
 /// For each DependsOn edge (source depends on target):
@@ -2755,6 +2978,18 @@ fn compute_inverses(
         for c in node.closes.iter_mut() {
             if let Some(target_id) = graph::resolve_ref(c, id_map, path_to_id) {
                 *c = target_id;
+            }
+        }
+        for link in node.links.iter_mut() {
+            if let Some(ref mut to_id) = link.to {
+                if let Some(target_id) = graph::resolve_ref(to_id, id_map, path_to_id) {
+                    *to_id = target_id;
+                }
+            }
+            if let Some(ref mut from_id) = link.from {
+                if let Some(target_id) = graph::resolve_ref(from_id, id_map, path_to_id) {
+                    *from_id = target_id;
+                }
             }
         }
     }
@@ -5529,8 +5764,24 @@ mod tests {
         };
 
         let docs = vec![
-            make_with_intent("tasks/epic-hi.md", "Epic Hi", "epic-hi", 0, "active", None, &[]),
-            make_with_intent("tasks/epic-lo.md", "Epic Lo", "epic-lo", 3, "active", None, &[]),
+            make_with_intent(
+                "tasks/epic-hi.md",
+                "Epic Hi",
+                "epic-hi",
+                0,
+                "active",
+                None,
+                &[],
+            ),
+            make_with_intent(
+                "tasks/epic-lo.md",
+                "Epic Lo",
+                "epic-lo",
+                3,
+                "active",
+                None,
+                &[],
+            ),
             make_with_intent(
                 "tasks/ready-of-hi.md",
                 "Ready Of Hi",
@@ -6713,10 +6964,26 @@ mod tests {
         // age_staleness stays 0 despite intent >= 2 not applying -- intent is 1 here,
         // which is < 2, so age_staleness is gated off entirely regardless).
         assert_eq!(nodes[0].focus_score.unwrap(), 8780, "scenario 1: ratio=1/7");
-        assert_eq!(nodes[1].focus_score.unwrap(), 15000, "scenario 2: ratio=1.0");
-        assert_eq!(nodes[2].focus_score.unwrap(), 13660, "scenario 3: ratio=0.75");
-        assert_eq!(nodes[3].focus_score.unwrap(), 17247, "scenario 4: ratio=1.5");
-        assert_eq!(nodes[4].focus_score.unwrap(), 12746, "scenario 5: ratio=0.6, default effort");
+        assert_eq!(
+            nodes[1].focus_score.unwrap(),
+            15000,
+            "scenario 2: ratio=1.0"
+        );
+        assert_eq!(
+            nodes[2].focus_score.unwrap(),
+            13660,
+            "scenario 3: ratio=0.75"
+        );
+        assert_eq!(
+            nodes[3].focus_score.unwrap(),
+            17247,
+            "scenario 4: ratio=1.5"
+        );
+        assert_eq!(
+            nodes[4].focus_score.unwrap(),
+            12746,
+            "scenario 5: ratio=0.6, default effort"
+        );
         assert_eq!(
             nodes[5].focus_score.unwrap(),
             BASELINE_INTENT_PRESSURE,
@@ -6838,9 +7105,18 @@ mod tests {
             nodes[2].focus_score.unwrap(),
         );
 
-        assert_eq!(sa, 43730, "value_lineage(3000) + stakeholder base(2000), boosted by the 13d-overdue multiplier");
-        assert_eq!(sb, 10600, "no due date: full per-day stakeholder ramp, no multiplier");
-        assert_eq!(sc, 26238, "value_lineage(3000) alone, boosted by the same 13d-overdue multiplier");
+        assert_eq!(
+            sa, 43730,
+            "value_lineage(3000) + stakeholder base(2000), boosted by the 13d-overdue multiplier"
+        );
+        assert_eq!(
+            sb, 10600,
+            "no due date: full per-day stakeholder ramp, no multiplier"
+        );
+        assert_eq!(
+            sc, 26238,
+            "value_lineage(3000) alone, boosted by the same 13d-overdue multiplier"
+        );
 
         // Core AC: adding a stakeholder to a due-bearing node adds only the
         // boosted +2000 base (round(2000 * multiplier)), not an independent
@@ -7828,7 +8104,11 @@ mod tests {
             .find(|n| n.id == "target-sev4-overdue")
             .unwrap()
             .urgency;
-        let contributor_urgency = nodes.iter().find(|n| n.id == "contributor").unwrap().urgency;
+        let contributor_urgency = nodes
+            .iter()
+            .find(|n| n.id == "contributor")
+            .unwrap()
+            .urgency;
 
         assert_eq!(
             target_urgency, 10000.0,
@@ -8093,6 +8373,8 @@ mod tests {
             brier_history: Vec::new(),
             last_interacted: None,
             anomaly_flag: false,
+            quantum: None,
+            set_by: None,
         }
     }
 
@@ -8532,7 +8814,9 @@ mod tests {
     fn test_value_lineage_bounded_ties_one_holder_cannot_plateau() {
         let mut nodes = vl_flat_epic(117);
         compute_value_lineage(&mut nodes);
-        let leaves: Vec<f64> = (0..117).map(|i| vl_of(&nodes, &format!("leaf-{i}"))).collect();
+        let leaves: Vec<f64> = (0..117)
+            .map(|i| vl_of(&nodes, &format!("leaf-{i}")))
+            .collect();
         for t in [1000.0, 100.0, 26.0, 25.0, 1.0] {
             let at_or_above = leaves.iter().filter(|&&v| v >= t).count();
             let bound = (VL_RAW_2975 / t).floor() as usize;
@@ -8556,8 +8840,11 @@ mod tests {
         compute_value_lineage(&mut before);
 
         let mut after = vl_flat_epic(2);
-        after.iter_mut().find(|n| n.id == "leaf-0").unwrap().children =
-            vec!["k1".to_string(), "k2".to_string(), "k3".to_string()];
+        after
+            .iter_mut()
+            .find(|n| n.id == "leaf-0")
+            .unwrap()
+            .children = vec!["k1".to_string(), "k2".to_string(), "k3".to_string()];
         for k in ["k1", "k2", "k3"] {
             after.push(vl_node(k, "task", Some("leaf-0"), &[]));
         }
@@ -8588,7 +8875,10 @@ mod tests {
         nodes.iter_mut().find(|n| n.id == "leaf-3").unwrap().status = Some("done".to_string());
         compute_value_lineage(&mut nodes);
         let after_one = vl_of(&nodes, "leaf-0");
-        assert!(after_one >= before, "finishing must never lower a sibling's share");
+        assert!(
+            after_one >= before,
+            "finishing must never lower a sibling's share"
+        );
         assert!(
             after_one > before + 1e-6,
             "finishing leaf-3 must concentrate its share on the open leaves: \
@@ -8615,7 +8905,14 @@ mod tests {
             "epic",
             "task",
             None,
-            &["note-leaf", "all-done", "has-note", "blocked", "done", "container"],
+            &[
+                "note-leaf",
+                "all-done",
+                "has-note",
+                "blocked",
+                "done",
+                "container",
+            ],
         );
         epic.contributes_to = vec![ct_edge("targ", "Probable")];
         let mut blocked = vl_node("blocked", "task", Some("epic"), &[]);
@@ -8639,8 +8936,20 @@ mod tests {
         ];
         compute_value_lineage(&mut nodes);
 
-        for id in ["epic", "container", "note-leaf", "a-note", "blocked", "done", "done-child"] {
-            assert_eq!(vl_of(&nodes, id), 0.0, "{id} is not an eligible leaf and must hold 0");
+        for id in [
+            "epic",
+            "container",
+            "note-leaf",
+            "a-note",
+            "blocked",
+            "done",
+            "done-child",
+        ] {
+            assert_eq!(
+                vl_of(&nodes, id),
+                0.0,
+                "{id} is not an eligible leaf and must hold 0"
+            );
         }
         // Live children of `epic`: all-done, has-note, container -> a third each.
         let third = VL_RAW_2975 / 3.0;
@@ -8664,7 +8973,12 @@ mod tests {
         child_ids.push("direct");
         let mut epic = vl_node("epic", "task", None, &child_ids);
         epic.contributes_to = vec![ct_edge("targ-big", "Certain")]; // raw 10000, 1000 per child
-        let mut direct = vl_node("direct", "task", Some("epic"), &["direct-done", "direct-note"]);
+        let mut direct = vl_node(
+            "direct",
+            "task",
+            Some("epic"),
+            &["direct-done", "direct-note"],
+        );
         direct.contributes_to = vec![ct_edge("targ", "Probable")]; // raw 2975
         let mut direct_done = vl_node("direct-done", "task", Some("direct"), &[]);
         direct_done.status = Some("done".to_string());
@@ -8676,7 +8990,11 @@ mod tests {
             direct_done,
             vl_node("direct-note", "note", Some("direct"), &[]),
         ];
-        nodes.extend(siblings.iter().map(|id| vl_node(id, "task", Some("epic"), &[])));
+        nodes.extend(
+            siblings
+                .iter()
+                .map(|id| vl_node(id, "task", Some("epic"), &[])),
+        );
         compute_value_lineage(&mut nodes);
 
         let v = vl_of(&nodes, "direct");
@@ -8701,7 +9019,11 @@ mod tests {
         let mut nodes = vec![vl_target("targ", 0.35), epic];
         for i in 0..chain_len {
             let id = format!("node-{i}");
-            let parent = if i == 0 { "epic".to_string() } else { format!("node-{}", i - 1) };
+            let parent = if i == 0 {
+                "epic".to_string()
+            } else {
+                format!("node-{}", i - 1)
+            };
             let children: Vec<String> = if i + 1 < chain_len {
                 vec![format!("node-{}", i + 1)]
             } else {
@@ -8734,7 +9056,11 @@ mod tests {
         ];
         for i in 0..chain_len {
             let id = format!("node-{i}");
-            let parent = if i == 0 { "outer".to_string() } else { format!("node-{}", i - 1) };
+            let parent = if i == 0 {
+                "outer".to_string()
+            } else {
+                format!("node-{}", i - 1)
+            };
             let children: Vec<String> = if i + 1 < chain_len {
                 vec![format!("node-{}", i + 1)]
             } else {
@@ -10293,6 +10619,8 @@ mod tests {
             brier_history: Vec::new(),
             last_interacted: None,
             anomaly_flag: false,
+            quantum: None,
+            set_by: None,
         }];
         let mut nodes = vec![target.clone(), contributor];
 
@@ -11364,11 +11692,23 @@ mod tests {
         let mut nodes = vec![n_overdue, n_imminent, n_urgent, n_approaching, n_none];
         GraphStore::compute_focus_scores(&mut nodes);
 
-        assert_eq!(nodes[0].focus_score.unwrap(), 27361, "3d overdue, effort 1d");
-        assert_eq!(nodes[1].focus_score.unwrap(), 19142, "due tomorrow, effort 2d");
+        assert_eq!(
+            nodes[0].focus_score.unwrap(),
+            27361,
+            "3d overdue, effort 1d"
+        );
+        assert_eq!(
+            nodes[1].focus_score.unwrap(),
+            19142,
+            "due tomorrow, effort 2d"
+        );
         assert_eq!(nodes[2].focus_score.unwrap(), 13660, "due in 4d, effort 3d");
         assert_eq!(nodes[3].focus_score.unwrap(), 7236, "due in 20d, effort 1d");
-        assert_eq!(nodes[4].focus_score.unwrap(), 5000, "no due date: neutral multiplier");
+        assert_eq!(
+            nodes[4].focus_score.unwrap(),
+            5000,
+            "no due date: neutral multiplier"
+        );
 
         // Verify pairwise ordering: Overdue > Imminent > Urgent > Approaching > None
         for i in 0..4 {
@@ -11424,7 +11764,10 @@ mod tests {
         let mut nodes = vec![inert_overdue_node_with_value("t-grace", 10, 4000.0)];
         GraphStore::compute_focus_scores(&mut nodes);
         let tuple = nodes[0].focus_tuple.as_ref().unwrap();
-        assert_eq!(tuple.cost_of_delay, 33933, "unchanged, undecayed multiplier inside grace");
+        assert_eq!(
+            tuple.cost_of_delay, 33933,
+            "unchanged, undecayed multiplier inside grace"
+        );
     }
 
     #[test]
@@ -11486,7 +11829,10 @@ mod tests {
         let decayed_tuple = nodes[0].focus_tuple.as_ref().unwrap().clone();
         let undated_tuple = nodes[1].focus_tuple.as_ref().unwrap().clone();
 
-        assert_eq!(decayed_tuple.cost_of_delay, 4000, "fully decayed multiplier is exactly neutral (1.0)");
+        assert_eq!(
+            decayed_tuple.cost_of_delay, 4000,
+            "fully decayed multiplier is exactly neutral (1.0)"
+        );
         assert_eq!(decayed_tuple.cost_of_delay, undated_tuple.cost_of_delay);
     }
 
@@ -11502,7 +11848,10 @@ mod tests {
         let mut nodes = vec![n];
         GraphStore::compute_focus_scores(&mut nodes);
         let tuple = nodes[0].focus_tuple.as_ref().unwrap();
-        assert_eq!(tuple.cost_of_delay, 77756, "downstream_weight escapes decay");
+        assert_eq!(
+            tuple.cost_of_delay, 77756,
+            "downstream_weight escapes decay"
+        );
     }
 
     #[test]
@@ -11534,7 +11883,10 @@ mod tests {
         let mut nodes = vec![n];
         GraphStore::compute_focus_scores(&mut nodes);
         let tuple = nodes[0].focus_tuple.as_ref().unwrap();
-        assert_eq!(tuple.cost_of_delay, 78756, "propagated urgency escapes decay");
+        assert_eq!(
+            tuple.cost_of_delay, 78756,
+            "propagated urgency escapes decay"
+        );
     }
 
     #[test]
@@ -11572,7 +11924,10 @@ mod tests {
         GraphStore::compute_focus_scores(&mut nodes);
         let tuple = nodes[0].focus_tuple.as_ref().unwrap();
         // Still decays: severity/consequence are not part of the gate.
-        assert_eq!(tuple.cost_of_delay, 32765, "severity/consequence must not block decay");
+        assert_eq!(
+            tuple.cost_of_delay, 32765,
+            "severity/consequence must not block decay"
+        );
     }
 
     /// Property (`specs/pkb-rules.md` §6.8, "four
@@ -11716,27 +12071,54 @@ mod tests {
         GraphStore::compute_focus_scores(&mut nodes);
         let cost = |i: usize| nodes[i].focus_tuple.as_ref().unwrap().cost_of_delay;
         let (p0, email_low, book_cod, email_target, kathy, copper_cod, cv) = (
-            cost(0), cost(1), cost(2), cost(3), cost(4), cost(5), cost(6),
+            cost(0),
+            cost(1),
+            cost(2),
+            cost(3),
+            cost(4),
+            cost(5),
+            cost(6),
         );
 
         assert_eq!(p0, 10000, "undated P0");
         assert_eq!(email_low, 0, "low-value overdue email: no value to amplify");
         assert_eq!(book_cod, 6000, "book: value_lineage alone, no due date");
         assert_eq!(email_target, 3181, "overdue email tied to a 0.05 target");
-        assert_eq!(kathy, 23909, "Kathy Bowrey: boosted stakeholder base, 26d overdue");
-        assert_eq!(copper_cod, 11807, "copper: stakeholder + value_lineage, boosted by 18-days-out multiplier");
+        assert_eq!(
+            kathy, 23909,
+            "Kathy Bowrey: boosted stakeholder base, 26d overdue"
+        );
+        assert_eq!(
+            copper_cod, 11807,
+            "copper: stakeholder + value_lineage, boosted by 18-days-out multiplier"
+        );
         assert_eq!(cv, 5000, "undated P1 CV");
 
         // Target 1: undated P0 ranks above the low-value overdue email.
-        assert!(p0 > email_low, "target 1: undated P0 must outrank the low-value overdue email");
+        assert!(
+            p0 > email_low,
+            "target 1: undated P0 must outrank the low-value overdue email"
+        );
         // Target 2: the book ranks above the overdue email tied to the low-priced target.
-        assert!(book_cod > email_target, "target 2: book must outrank the low-target overdue email");
+        assert!(
+            book_cod > email_target,
+            "target 2: book must outrank the low-target overdue email"
+        );
         // Target 3: Kathy Bowrey ranks above both.
-        assert!(kathy > p0, "target 3: Kathy Bowrey must outrank the undated P0");
-        assert!(kathy > book_cod, "target 3: Kathy Bowrey must outrank the book");
+        assert!(
+            kathy > p0,
+            "target 3: Kathy Bowrey must outrank the undated P0"
+        );
+        assert!(
+            kathy > book_cod,
+            "target 3: Kathy Bowrey must outrank the book"
+        );
         // Target 4: copper ranks above the undated P1 CV -- because its pressure
         // times value earns it, not because deadlines are ranked above value.
-        assert!(copper_cod > cv, "target 4: copper's pressure x value must earn its rank above the undated P1 CV");
+        assert!(
+            copper_cod > cv,
+            "target 4: copper's pressure x value must earn its rank above the undated P1 CV"
+        );
     }
 
     #[test]

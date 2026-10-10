@@ -117,7 +117,9 @@ impl FocusTuple {
             "severity_gate"
         } else if self.cost_of_delay != other.cost_of_delay {
             "cost_of_delay"
-        } else if self.tie_breakers.downstream_weight_x10 != other.tie_breakers.downstream_weight_x10 {
+        } else if self.tie_breakers.downstream_weight_x10
+            != other.tie_breakers.downstream_weight_x10
+        {
             "tie_breakers.downstream_weight"
         } else if self.tie_breakers.unlock_breadth_x10 != other.tie_breakers.unlock_breadth_x10 {
             "tie_breakers.unlock_breadth"
@@ -153,11 +155,28 @@ impl Ord for FocusTuple {
         self.severity_gate
             .cmp(&other.severity_gate)
             .then_with(|| self.cost_of_delay.cmp(&other.cost_of_delay))
-            .then_with(|| self.tie_breakers.downstream_weight_x10.cmp(&other.tie_breakers.downstream_weight_x10))
-            .then_with(|| self.tie_breakers.unlock_breadth_x10.cmp(&other.tie_breakers.unlock_breadth_x10))
-            .then_with(|| self.tie_breakers.age_staleness.cmp(&other.tie_breakers.age_staleness))
+            .then_with(|| {
+                self.tie_breakers
+                    .downstream_weight_x10
+                    .cmp(&other.tie_breakers.downstream_weight_x10)
+            })
+            .then_with(|| {
+                self.tie_breakers
+                    .unlock_breadth_x10
+                    .cmp(&other.tie_breakers.unlock_breadth_x10)
+            })
+            .then_with(|| {
+                self.tie_breakers
+                    .age_staleness
+                    .cmp(&other.tie_breakers.age_staleness)
+            })
             // Inverted for higher-is-better tuple Ord
-            .then_with(|| other.tie_breakers.effective_intent.cmp(&self.tie_breakers.effective_intent))
+            .then_with(|| {
+                other
+                    .tie_breakers
+                    .effective_intent
+                    .cmp(&self.tie_breakers.effective_intent)
+            })
             .then_with(|| other.tie_breakers.order.cmp(&self.tie_breakers.order))
             .then_with(|| other.tie_breakers.id.cmp(&self.tie_breakers.id))
     }
@@ -230,6 +249,486 @@ where
     deserializer.deserialize_any(WeightVisitor)
 }
 
+// ===========================================================================
+// Flow Engine Schema (§3: R4–R10, R25, R26)
+// ===========================================================================
+
+pub const DEFAULT_QUANTUM: f64 = 0.0;
+pub const PART_OF_QUANTUM: f64 = 0.0;
+pub const NEEDS_QUANTUM: f64 = 1.0;
+pub const SETTLES_QUANTUM: f64 = 1.0;
+pub const ALTERNATIVE_QUANTUM: f64 = 0.0;
+pub const SUPPORTS_QUANTUM: f64 = 0.0;
+pub const SERVES_QUANTUM: f64 = 0.0;
+pub const MIGRATED_SUPPORTS_QUANTUM: f64 = 0.3;
+
+/// Edge labels for flow rule links (flow-rule §5.2, pkb-flow-engine §3.1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LinkLabel {
+    Serves,
+    Needs,
+    PartOf,
+    Supports,
+    Alternative,
+    Settles,
+}
+
+impl LinkLabel {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            LinkLabel::Serves => "serves",
+            LinkLabel::Needs => "needs",
+            LinkLabel::PartOf => "part_of",
+            LinkLabel::Supports => "supports",
+            LinkLabel::Alternative => "alternative",
+            LinkLabel::Settles => "settles",
+        }
+    }
+
+    #[allow(clippy::should_implement_trait)]
+    pub fn from_str(s: &str) -> Option<LinkLabel> {
+        match s.trim().to_lowercase().as_str() {
+            "serves" => Some(LinkLabel::Serves),
+            "needs" => Some(LinkLabel::Needs),
+            "part_of" | "part-of" => Some(LinkLabel::PartOf),
+            "supports" => Some(LinkLabel::Supports),
+            "alternative" => Some(LinkLabel::Alternative),
+            "settles" => Some(LinkLabel::Settles),
+            _ => None,
+        }
+    }
+
+    pub fn default_quantum(&self) -> f64 {
+        match self {
+            LinkLabel::Serves => DEFAULT_QUANTUM,
+            LinkLabel::Needs => NEEDS_QUANTUM,
+            LinkLabel::PartOf => PART_OF_QUANTUM,
+            LinkLabel::Supports => SUPPORTS_QUANTUM,
+            LinkLabel::Alternative => ALTERNATIVE_QUANTUM,
+            LinkLabel::Settles => SETTLES_QUANTUM,
+        }
+    }
+}
+
+/// Link effect: helps or harms (flow-rule §5.1, §4.4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum LinkEffect {
+    #[default]
+    Helps,
+    Harms,
+}
+
+impl LinkEffect {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            LinkEffect::Helps => "helps",
+            LinkEffect::Harms => "harms",
+        }
+    }
+
+    #[allow(clippy::should_implement_trait)]
+    pub fn from_str(s: &str) -> Option<LinkEffect> {
+        match s.trim().to_lowercase().as_str() {
+            "helps" => Some(LinkEffect::Helps),
+            "harms" => Some(LinkEffect::Harms),
+            _ => None,
+        }
+    }
+}
+
+/// Provenance of a link: nic | agent-proposed | migrated (R26, E17).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum LinkSetBy {
+    #[default]
+    Nic,
+    AgentProposed,
+    Migrated,
+}
+
+impl LinkSetBy {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            LinkSetBy::Nic => "nic",
+            LinkSetBy::AgentProposed => "agent-proposed",
+            LinkSetBy::Migrated => "migrated",
+        }
+    }
+
+    #[allow(clippy::should_implement_trait)]
+    pub fn from_str(s: &str) -> Option<LinkSetBy> {
+        match s.trim().to_lowercase().as_str() {
+            "nic" => Some(LinkSetBy::Nic),
+            "agent-proposed" | "agent_proposed" => Some(LinkSetBy::AgentProposed),
+            "migrated" => Some(LinkSetBy::Migrated),
+            _ => None,
+        }
+    }
+}
+
+/// Deadline classification for dated nodes: fake | soft | hard (R10, U15).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DeadlineClass {
+    Fake,
+    Soft,
+    Hard,
+}
+
+impl DeadlineClass {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            DeadlineClass::Fake => "fake",
+            DeadlineClass::Soft => "soft",
+            DeadlineClass::Hard => "hard",
+        }
+    }
+
+    #[allow(clippy::should_implement_trait)]
+    pub fn from_str(s: &str) -> Option<DeadlineClass> {
+        match s.trim().to_lowercase().as_str() {
+            "fake" => Some(DeadlineClass::Fake),
+            "soft" => Some(DeadlineClass::Soft),
+            "hard" => Some(DeadlineClass::Hard),
+            _ => None,
+        }
+    }
+}
+
+/// Flow state mapped from task status: open | done | gone (R1, C8).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FlowState {
+    Open,
+    Done,
+    Gone,
+}
+
+pub fn status_to_flow_state(status: Option<&str>) -> FlowState {
+    match status.map(|s| s.trim().to_lowercase()) {
+        Some(s) if s == "cancelled" => FlowState::Gone,
+        Some(s) if s == "done" || s == "retired" => FlowState::Done,
+        None => FlowState::Done,
+        Some(s) if s.is_empty() => FlowState::Done,
+        Some(_) => FlowState::Open,
+    }
+}
+
+/// A stored flow link on a node (pkb-flow-engine §3.1, R4).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Link {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub to: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub from: Option<String>,
+    pub label: LinkLabel,
+    pub quantum: f64,
+    pub probability: f64,
+    pub effect: LinkEffect,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub justification: Option<String>,
+    pub set_by: LinkSetBy,
+}
+
+impl Link {
+    pub fn strength(&self) -> f64 {
+        self.quantum * self.probability
+    }
+
+    pub fn target(&self) -> &str {
+        self.to.as_deref().or(self.from.as_deref()).unwrap_or("")
+    }
+
+    pub fn is_to(&self) -> bool {
+        self.to.is_some()
+    }
+}
+
+/// A directed edge in the flow graph, running from the work to what it serves (flow-rule §5.1).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FlowEdge {
+    /// Source node ID (the work / from node)
+    pub src: String,
+    /// Destination node ID (what it serves / to node)
+    pub dst: String,
+    /// Link label
+    pub label: LinkLabel,
+    /// Quantum in 0.0..=1.0
+    pub quantum: f64,
+    /// Probability in 0.0..=1.0
+    pub probability: f64,
+    /// Effect: helps or harms
+    pub effect: LinkEffect,
+    /// Free-text justification
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub justification: Option<String>,
+    /// Provenance
+    pub set_by: LinkSetBy,
+}
+
+impl FlowEdge {
+    pub fn strength(&self) -> f64 {
+        self.quantum * self.probability
+    }
+}
+
+/// A resolved link view for tool output (links_out / links_in, §7.2).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ResolvedLink {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub to: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub from: Option<String>,
+    pub label: LinkLabel,
+    pub quantum: f64,
+    pub probability: f64,
+    pub effect: LinkEffect,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub justification: Option<String>,
+    pub set_by: LinkSetBy,
+    pub strength: f64,
+}
+
+/// Parse quantum: either a float in 0.0..=1.0 or an anchor word (§5.4).
+pub fn parse_quantum_word_or_float(val: &serde_json::Value) -> Result<Option<f64>, String> {
+    if val.is_null() {
+        return Ok(None);
+    }
+    if let Some(n) = val.as_f64() {
+        if n.is_finite() && (0.0..=1.0).contains(&n) {
+            return Ok(Some(n));
+        } else {
+            return Err(format!(
+                "quantum {n} out of range; expected float 0.0..=1.0"
+            ));
+        }
+    }
+    if let Some(s) = val.as_str() {
+        let trimmed = s.trim().to_lowercase();
+        if trimmed.is_empty() {
+            return Ok(None);
+        }
+        match trimmed.as_str() {
+            "all" => Ok(Some(1.00)),
+            "most" => Ok(Some(0.60)),
+            "a good part" => Ok(Some(0.30)),
+            "some" => Ok(Some(0.10)),
+            "a little" => Ok(Some(0.03)),
+            "none" => Ok(Some(0.00)),
+            other => {
+                if let Ok(n) = other.parse::<f64>() {
+                    if n.is_finite() && (0.0..=1.0).contains(&n) {
+                        Ok(Some(n))
+                    } else {
+                        Err(format!(
+                            "quantum {n} out of range; expected float 0.0..=1.0"
+                        ))
+                    }
+                } else {
+                    Err(format!("unrecognized quantum word \"{s}\""))
+                }
+            }
+        }
+    } else {
+        Err(format!("quantum must be a number or string; got {val}"))
+    }
+}
+
+/// Parse probability: either a float in 0.0..=1.0 or an anchor word (§5.5).
+pub fn parse_probability_word_or_float(val: &serde_json::Value) -> Result<Option<f64>, String> {
+    if val.is_null() {
+        return Ok(None);
+    }
+    if let Some(n) = val.as_f64() {
+        if n.is_finite() && (0.0..=1.0).contains(&n) {
+            return Ok(Some(n));
+        } else {
+            return Err(format!(
+                "probability {n} out of range; expected float 0.0..=1.0"
+            ));
+        }
+    }
+    if let Some(s) = val.as_str() {
+        let trimmed = s.trim().to_lowercase();
+        if trimmed.is_empty() {
+            return Ok(None);
+        }
+        match trimmed.as_str() {
+            "certain" | "almost certain" => Ok(Some(1.00)),
+            "very probable" | "probable" | "highly likely" => Ok(Some(0.85)),
+            "expected" | "likely" => Ok(Some(0.75)),
+            "fifty-fifty" | "even chance" => Ok(Some(0.50)),
+            "uncertain" | "possible" | "perhaps" | "maybe" => Ok(Some(0.25)),
+            "improbable" | "unlikely" | "very unlikely" | "almost impossible" => Ok(Some(0.15)),
+            "impossible" | "none" => Ok(Some(0.00)),
+            other => {
+                if let Ok(n) = other.parse::<f64>() {
+                    if n.is_finite() && (0.0..=1.0).contains(&n) {
+                        Ok(Some(n))
+                    } else {
+                        Err(format!(
+                            "probability {n} out of range; expected float 0.0..=1.0"
+                        ))
+                    }
+                } else {
+                    Err(format!("unrecognized probability word \"{s}\""))
+                }
+            }
+        }
+    } else {
+        Err(format!("probability must be a number or string; got {val}"))
+    }
+}
+
+/// Parse target worth: either a float in -1.0..=1.0 or an anchor word (§5.6, R9).
+pub fn parse_worth(val: &serde_json::Value) -> Result<Option<f64>, String> {
+    if val.is_null() {
+        return Ok(None);
+    }
+    if let Some(n) = val.as_f64() {
+        if n.is_finite() && (-1.0..=1.0).contains(&n) {
+            return Ok(Some(n));
+        } else {
+            return Err(format!(
+                "worth {n} out of range; expected float in -1.0..=1.0"
+            ));
+        }
+    }
+    if let Some(s) = val.as_str() {
+        let trimmed = s.trim().to_lowercase();
+        if trimmed.is_empty() {
+            return Ok(None);
+        }
+        match trimmed.as_str() {
+            "critical" => Ok(Some(1.00)),
+            "high" => Ok(Some(0.60)),
+            "substantial" => Ok(Some(0.35)),
+            "moderate" => Ok(Some(0.15)),
+            "low" => Ok(Some(0.05)),
+            "catastrophic loss" => Ok(Some(-1.00)),
+            "severe loss" => Ok(Some(-0.60)),
+            "substantial loss" => Ok(Some(-0.35)),
+            "moderate loss" => Ok(Some(-0.15)),
+            "minor loss" => Ok(Some(-0.05)),
+            other => {
+                if let Ok(n) = other.parse::<f64>() {
+                    if n.is_finite() && (-1.0..=1.0).contains(&n) {
+                        Ok(Some(n))
+                    } else {
+                        Err(format!(
+                            "worth {n} out of range; expected float in -1.0..=1.0"
+                        ))
+                    }
+                } else {
+                    Err(format!("unrecognized worth anchor word \"{s}\""))
+                }
+            }
+        }
+    } else {
+        Err(format!("worth must be a number or string; got {val}"))
+    }
+}
+
+/// Write-time validation for `links` entries (A31).
+pub fn validate_links_value(val: &serde_json::Value) -> Result<(), String> {
+    if val.is_null() {
+        return Ok(());
+    }
+    let arr = val
+        .as_array()
+        .ok_or_else(|| format!("links must be an array; got {val}"))?;
+    for (i, entry) in arr.iter().enumerate() {
+        let obj = entry
+            .as_object()
+            .ok_or_else(|| format!("links[{i}] must be an object; got {entry}"))?;
+        let has_to = obj
+            .get("to")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .is_some();
+        let has_from = obj
+            .get("from")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .is_some();
+        if has_to && has_from {
+            return Err(format!("links[{i}] cannot have both 'to' and 'from'"));
+        }
+        if !has_to && !has_from {
+            return Err(format!(
+                "links[{i}] must have exactly one of 'to' or 'from'"
+            ));
+        }
+        if let Some(lbl_val) = obj.get("label") {
+            let s = lbl_val
+                .as_str()
+                .ok_or_else(|| format!("links[{i}].label must be a string"))?;
+            if LinkLabel::from_str(s).is_none() {
+                return Err(format!("links[{i}].label \"{s}\" not in {{serves, needs, part_of, supports, alternative, settles}}"));
+            }
+        }
+        if let Some(q_val) = obj.get("quantum") {
+            if let Err(e) = parse_quantum_word_or_float(q_val) {
+                return Err(format!("links[{i}].quantum: {e}"));
+            }
+        }
+        if let Some(p_val) = obj.get("probability") {
+            if let Err(e) = parse_probability_word_or_float(p_val) {
+                return Err(format!("links[{i}].probability: {e}"));
+            }
+        }
+        if let Some(eff_val) = obj.get("effect") {
+            let s = eff_val
+                .as_str()
+                .ok_or_else(|| format!("links[{i}].effect must be a string"))?;
+            if LinkEffect::from_str(s).is_none() {
+                return Err(format!("links[{i}].effect \"{s}\" not in {{helps, harms}}"));
+            }
+        }
+        if let Some(sb_val) = obj.get("set_by") {
+            let s = sb_val
+                .as_str()
+                .ok_or_else(|| format!("links[{i}].set_by must be a string"))?;
+            if LinkSetBy::from_str(s).is_none() {
+                return Err(format!(
+                    "links[{i}].set_by \"{s}\" not in {{nic, agent-proposed, migrated}}"
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Write-time validation for `worth` (A31).
+pub fn validate_worth_value(val: &serde_json::Value) -> Result<(), String> {
+    if val.is_null() {
+        return Ok(());
+    }
+    parse_worth(val).map(|_| ())
+}
+
+/// Write-time validation for `deadline_class` (A31).
+pub fn validate_deadline_class_value(val: &serde_json::Value) -> Result<(), String> {
+    if val.is_null() {
+        return Ok(());
+    }
+    if let Some(s) = val.as_str() {
+        if DeadlineClass::from_str(s).is_some() {
+            Ok(())
+        } else {
+            Err(format!(
+                "deadline_class \"{s}\" not in {{fake, soft, hard}}"
+            ))
+        }
+    } else {
+        Err(format!("deadline_class must be a string; got {val}"))
+    }
+}
+
 /// A contribution relationship from one node to another (strategic priority).
 ///
 /// Implements the Birnbaum importance model where weights are Renooij-Witteman
@@ -248,7 +747,11 @@ pub struct ContributesTo {
     /// rejected at parse time (`GraphNode::from_pkb_document` pushes a
     /// `ParseWarning`, field `contributes_to.stated_weight`) rather than
     /// silently defaulting to 0.3 — see `ContributesTo::is_recognized_weight`.
-    #[serde(alias = "weight", default, deserialize_with = "deserialize_stated_weight")]
+    #[serde(
+        alias = "weight",
+        default,
+        deserialize_with = "deserialize_stated_weight"
+    )]
     pub stated_weight: String,
     /// Single-sentence justification for the weight. Optional in parsing
     /// (present in well-formed entries; not validated at write time).
@@ -275,6 +778,12 @@ pub struct ContributesTo {
     /// Stated-Revealed Divergence signal.
     #[serde(default, skip_serializing_if = "is_false")]
     pub anomaly_flag: bool,
+    /// Optional quantum for flow rule migration (§3.1, §3.2).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quantum: Option<f64>,
+    /// Flow provenance: nic | agent-proposed | migrated (§3.1, §3.2).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub set_by: Option<String>,
 }
 
 impl ContributesTo {
@@ -290,6 +799,9 @@ impl ContributesTo {
     /// - Improbable: 0.15
     /// - Impossible: 0.00
     pub fn numeric_weight(&self) -> f64 {
+        if let Some(q) = self.quantum {
+            return q.min(1.0);
+        }
         let base_weight = match self.stated_weight.to_lowercase().as_str() {
             "certain" | "almost certain" => 1.00,
             "very probable" | "probable" | "highly likely" => 0.85,
@@ -613,6 +1125,15 @@ pub struct GraphNode {
     /// Resolved at edge-creation time per §2.5.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub edge_template: Option<EdgeTemplate>,
+    /// Consolidated flow links (spec pkb-flow-engine §3.1).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub links: Vec<Link>,
+    /// Target worth in [-1.0, 1.0] (spec pkb-flow-engine §3.2).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worth: Option<f64>,
+    /// Deadline class for dated nodes: fake | soft | hard (spec pkb-flow-engine §3.3).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deadline_class: Option<DeadlineClass>,
     /// Structured parse warnings collected during frontmatter validation.
     /// Surfaced by the linter and `/maintain`; non-fatal at parse time.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -707,8 +1228,8 @@ pub fn create_id_verbatim(prefix: &str) -> String {
 pub fn resolve_status_alias(status: &str) -> &str {
     match status {
         // Passthrough — canonical values
-        "inbox" | "ready" | "queued" | "in_progress" | "review" | "done"
-        | "paused" | "someday" | "cancelled" | "partial" => status,
+        "inbox" | "ready" | "queued" | "in_progress" | "review" | "done" | "paused" | "someday"
+        | "cancelled" | "partial" => status,
 
         // Legacy "active" = in-flight / claimed work (per Nic 2026-06-27). The old
         // taxonomy collapsed ready/queued/in_progress into one "active" label, but
@@ -1057,14 +1578,27 @@ pub const VALID_NODE_TYPES: &[&str] = &[
 
 /// Parse a string array from a JSON frontmatter value.
 ///
-/// Supports both array of strings and a single string value (comma-separated).
+/// Supports array of strings, array of map entries (extracting "to", "id", or "target"),
+/// a single map entry, and a single string value (comma-separated).
 pub fn parse_string_array(fm: &serde_json::Value, key: &str) -> Vec<String> {
     match fm.get(key) {
         Some(v) if v.is_array() => v
             .as_array()
             .unwrap()
             .iter()
-            .filter_map(|item| item.as_str().map(String::from))
+            .filter_map(|item| {
+                if let Some(s) = item.as_str() {
+                    Some(s.to_string())
+                } else if let Some(obj) = item.as_object() {
+                    obj.get("to")
+                        .or_else(|| obj.get("id"))
+                        .or_else(|| obj.get("target"))
+                        .and_then(|t| t.as_str())
+                        .map(String::from)
+                } else {
+                    None
+                }
+            })
             .collect(),
         Some(v) if v.is_string() => v
             .as_str()
@@ -1073,6 +1607,13 @@ pub fn parse_string_array(fm: &serde_json::Value, key: &str) -> Vec<String> {
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty())
             .collect(),
+        Some(v) if v.is_object() => v
+            .get("to")
+            .or_else(|| v.get("id"))
+            .or_else(|| v.get("target"))
+            .and_then(|t| t.as_str())
+            .map(|s| vec![s.to_string()])
+            .unwrap_or_default(),
         _ => Vec::new(),
     }
 }
@@ -1177,13 +1718,12 @@ pub fn parse_confidence(val: &serde_json::Value) -> Option<f64> {
     match val {
         serde_json::Value::Number(n) => n.as_f64().map(|f| f.clamp(0.0, 1.0)),
         serde_json::Value::String(s) => parse_verbal_confidence(s),
-        serde_json::Value::Object(map) => {
-            map.get("value")
-                .or_else(|| map.get("stated_confidence"))
-                .or_else(|| map.get("score"))
-                .or_else(|| map.get("confidence"))
-                .and_then(parse_confidence)
-        }
+        serde_json::Value::Object(map) => map
+            .get("value")
+            .or_else(|| map.get("stated_confidence"))
+            .or_else(|| map.get("score"))
+            .or_else(|| map.get("confidence"))
+            .and_then(parse_confidence),
         _ => None,
     }
 }
@@ -1374,7 +1914,8 @@ impl GraphNode {
                 if task_id.is_some() {
                     parse_warnings.push(ParseWarning {
                         field: "type".to_string(),
-                        message: "missing 'type' field on id-bearing node; defaulted to 'task'".to_string(),
+                        message: "missing 'type' field on id-bearing node; defaulted to 'task'"
+                            .to_string(),
                     });
                     Some("task".to_string())
                 } else {
@@ -1387,21 +1928,31 @@ impl GraphNode {
                 .and_then(|v| v.as_str())
                 .map(|s| resolve_status_alias(s).to_string())
         });
-        let intent = fm
-            .as_ref()
-            .and_then(|f| {
-                f.get("intent")
-                    .or_else(|| f.get("priority"))
-                    .and_then(|v| v.as_i64())
-                    .map(|v| v as i32)
-            });
+        let intent = fm.as_ref().and_then(|f| {
+            f.get("intent")
+                .or_else(|| f.get("priority"))
+                .and_then(|v| v.as_i64())
+                .map(|v| v as i32)
+        });
         let order = fm
             .as_ref()
             .and_then(|f| f.get("order").and_then(|v| v.as_i64()).map(|v| v as i32))
             .unwrap_or(0);
-        let parent = fm
-            .as_ref()
-            .and_then(|f| f.get("parent").and_then(|v| v.as_str()).map(String::from));
+        let parent = fm.as_ref().and_then(|f| {
+            f.get("parent").and_then(|v| {
+                if let Some(s) = v.as_str() {
+                    Some(s.to_string())
+                } else if let Some(obj) = v.as_object() {
+                    obj.get("to")
+                        .or_else(|| obj.get("id"))
+                        .or_else(|| obj.get("target"))
+                        .and_then(|t| t.as_str())
+                        .map(String::from)
+                } else {
+                    None
+                }
+            })
+        });
         let due = fm
             .as_ref()
             .and_then(|f| f.get("due").and_then(|v| v.as_str()).map(String::from));
@@ -1504,6 +2055,83 @@ impl GraphNode {
                 }
             }
             None => None,
+        };
+
+        // worth: float in -1.0..=1.0 or anchor word (pkb-flow-engine §3.2, R9).
+        // Out-of-range or unknown words emit a ParseWarning and are read as unpriced.
+        // standing_weight is read as worth until retired. If both are present, worth wins with a warning.
+        let parsed_worth = match fm.as_ref().and_then(|f| f.get("worth")) {
+            Some(v) => match parse_worth(v) {
+                Ok(Some(w)) => Some(w),
+                Ok(None) => None,
+                Err(err) => {
+                    parse_warnings.push(ParseWarning {
+                        field: "worth".to_string(),
+                        message: err,
+                    });
+                    None
+                }
+            },
+            None => None,
+        };
+        let worth = match (parsed_worth, standing_weight) {
+            (Some(w), Some(_)) => {
+                parse_warnings.push(ParseWarning {
+                    field: "worth".to_string(),
+                    message: "both worth and standing_weight are present; worth wins".to_string(),
+                });
+                Some(w)
+            }
+            (Some(w), None) => Some(w),
+            (None, Some(sw)) => {
+                if fm.as_ref().and_then(|f| f.get("worth")).is_some() {
+                    parse_warnings.push(ParseWarning {
+                        field: "worth".to_string(),
+                        message: "both worth and standing_weight are present; worth wins"
+                            .to_string(),
+                    });
+                    None
+                } else {
+                    Some(sw)
+                }
+            }
+            (None, None) => None,
+        };
+
+        // deadline_class: fake | soft | hard sits on any node with a due date (R10, Q18).
+        // Unclassed due date is read as fake. Nodes without due date have deadline_class: None.
+        let deadline_class = if due.is_some() {
+            match fm.as_ref().and_then(|f| f.get("deadline_class")) {
+                Some(v) => {
+                    if let Some(s) = v.as_str() {
+                        match DeadlineClass::from_str(s) {
+                            Some(dc) => Some(dc),
+                            None => {
+                                parse_warnings.push(ParseWarning {
+                                    field: "deadline_class".to_string(),
+                                    message: format!(
+                                        "deadline_class \"{s}\" not in {{fake, soft, hard}}; read as fake"
+                                    ),
+                                });
+                                Some(DeadlineClass::Fake)
+                            }
+                        }
+                    } else if !v.is_null() {
+                        parse_warnings.push(ParseWarning {
+                            field: "deadline_class".to_string(),
+                            message: format!(
+                                "deadline_class must be a string; got {v}; read as fake"
+                            ),
+                        });
+                        Some(DeadlineClass::Fake)
+                    } else {
+                        Some(DeadlineClass::Fake)
+                    }
+                }
+                None => Some(DeadlineClass::Fake),
+            }
+        } else {
+            None
         };
         // edge_template: nested object on `type: prototype` nodes (spec §1.6).
         // Each sub-field is validated with the same rules as the corresponding
@@ -1717,6 +2345,437 @@ impl GraphNode {
             None => (vec![], vec![], vec![], vec![], vec![], vec![]),
         };
 
+        // Consolidated flow links (§3.1, R4, R5, R6, R7, R26)
+        let mut links: Vec<Link> = Vec::new();
+        if let Some(links_val) = fm.as_ref().and_then(|f| f.get("links")) {
+            if let Some(arr) = links_val.as_array() {
+                for (i, item) in arr.iter().enumerate() {
+                    let obj = match item.as_object() {
+                        Some(o) => o,
+                        None => {
+                            parse_warnings.push(ParseWarning {
+                                field: format!("links[{i}]"),
+                                message: format!("expected object in links; got {item}"),
+                            });
+                            continue;
+                        }
+                    };
+                    let to_val = obj
+                        .get("to")
+                        .and_then(|v| v.as_str())
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty());
+                    let from_val = obj
+                        .get("from")
+                        .and_then(|v| v.as_str())
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty());
+                    if to_val.is_some() && from_val.is_some() {
+                        parse_warnings.push(ParseWarning {
+                            field: format!("links[{i}]"),
+                            message: "link cannot have both 'to' and 'from'".to_string(),
+                        });
+                        continue;
+                    }
+                    if to_val.is_none() && from_val.is_none() {
+                        parse_warnings.push(ParseWarning {
+                            field: format!("links[{i}]"),
+                            message: "link must have exactly one of 'to' or 'from'".to_string(),
+                        });
+                        continue;
+                    }
+
+                    let label = match obj.get("label") {
+                        Some(v) => match v.as_str().and_then(LinkLabel::from_str) {
+                            Some(l) => l,
+                            None => {
+                                parse_warnings.push(ParseWarning {
+                                    field: format!("links[{i}].label"),
+                                    message: format!("unrecognized link label \"{v}\"; not in {{serves, needs, part_of, supports, alternative, settles}}"),
+                                });
+                                continue;
+                            }
+                        },
+                        None => LinkLabel::Serves,
+                    };
+
+                    let set_by = match obj.get("set_by") {
+                        Some(v) => match v.as_str().and_then(LinkSetBy::from_str) {
+                            Some(s) => s,
+                            None => {
+                                parse_warnings.push(ParseWarning {
+                                    field: format!("links[{i}].set_by"),
+                                    message: format!("unrecognized set_by \"{v}\""),
+                                });
+                                LinkSetBy::Nic
+                            }
+                        },
+                        None => LinkSetBy::Nic,
+                    };
+
+                    let mut quantum = match obj.get("quantum") {
+                        Some(v) => match parse_quantum_word_or_float(v) {
+                            Ok(Some(q)) => q,
+                            Ok(None) => label.default_quantum(),
+                            Err(err) => {
+                                parse_warnings.push(ParseWarning {
+                                    field: format!("links[{i}].quantum"),
+                                    message: err,
+                                });
+                                label.default_quantum()
+                            }
+                        },
+                        None => label.default_quantum(),
+                    };
+
+                    if set_by == LinkSetBy::AgentProposed {
+                        quantum = 0.0;
+                    }
+
+                    let probability = match obj.get("probability") {
+                        Some(v) => match parse_probability_word_or_float(v) {
+                            Ok(Some(p)) => p,
+                            Ok(None) => 1.00,
+                            Err(err) => {
+                                parse_warnings.push(ParseWarning {
+                                    field: format!("links[{i}].probability"),
+                                    message: err,
+                                });
+                                1.00
+                            }
+                        },
+                        None => 1.00,
+                    };
+
+                    let effect = match obj.get("effect") {
+                        Some(v) => match v.as_str().and_then(LinkEffect::from_str) {
+                            Some(e) => e,
+                            None => {
+                                parse_warnings.push(ParseWarning {
+                                    field: format!("links[{i}].effect"),
+                                    message: format!("unrecognized effect \"{v}\""),
+                                });
+                                LinkEffect::Helps
+                            }
+                        },
+                        None => LinkEffect::Helps,
+                    };
+
+                    let justification = obj
+                        .get("justification")
+                        .and_then(|v| v.as_str())
+                        .map(String::from);
+
+                    links.push(Link {
+                        to: to_val.map(String::from),
+                        from: from_val.map(String::from),
+                        label,
+                        quantum,
+                        probability,
+                        effect,
+                        justification,
+                        set_by,
+                    });
+                }
+            } else if !links_val.is_null() {
+                parse_warnings.push(ParseWarning {
+                    field: "links".to_string(),
+                    message: format!("links must be an array; got {links_val}"),
+                });
+            }
+        }
+
+        // Helper to add mapped links from old keys with precedence (R7)
+        let mut add_mapped_link =
+            |target: String,
+             is_to: bool,
+             label: LinkLabel,
+             quantum: f64,
+             probability: f64,
+             effect: LinkEffect,
+             justification: Option<String>,
+             set_by: LinkSetBy,
+             old_key: &str,
+             warnings: &mut Vec<ParseWarning>| {
+                let conflict = links.iter().any(|l| {
+                    l.label == label
+                        && ((is_to && l.to.as_deref() == Some(&target))
+                            || (!is_to && l.from.as_deref() == Some(&target)))
+                });
+                if conflict {
+                    warnings.push(ParseWarning {
+                    field: old_key.to_string(),
+                    message: format!(
+                        "node carries both mapped old key '{old_key}' and explicit links entry for '{target}' with label {label:?}; links entry wins"
+                    ),
+                });
+                } else {
+                    let (to, from) = if is_to {
+                        (Some(target), None)
+                    } else {
+                        (None, Some(target))
+                    };
+                    let final_q = if set_by == LinkSetBy::AgentProposed {
+                        0.0
+                    } else {
+                        quantum
+                    };
+                    links.push(Link {
+                        to,
+                        from,
+                        label,
+                        quantum: final_q,
+                        probability,
+                        effect,
+                        justification,
+                        set_by,
+                    });
+                }
+            };
+
+        // R7: Map depends_on
+        if let Some(dep_val) = fm.as_ref().and_then(|f| f.get("depends_on")) {
+            if let Some(arr) = dep_val.as_array() {
+                for item in arr {
+                    if let Some(s) = item.as_str() {
+                        let t = s.trim();
+                        if !t.is_empty() {
+                            add_mapped_link(
+                                t.to_string(),
+                                false,
+                                LinkLabel::Needs,
+                                NEEDS_QUANTUM,
+                                1.0,
+                                LinkEffect::Helps,
+                                None,
+                                LinkSetBy::Migrated,
+                                "depends_on",
+                                &mut parse_warnings,
+                            );
+                        }
+                    } else if let Some(obj) = item.as_object() {
+                        if let Some(t) = obj
+                            .get("to")
+                            .or_else(|| obj.get("id"))
+                            .or_else(|| obj.get("target"))
+                            .and_then(|v| v.as_str())
+                            .map(str::trim)
+                            .filter(|s| !s.is_empty())
+                        {
+                            let q = obj
+                                .get("quantum")
+                                .and_then(|v| parse_quantum_word_or_float(v).ok().flatten())
+                                .unwrap_or(NEEDS_QUANTUM);
+                            let sb = obj
+                                .get("set_by")
+                                .and_then(|v| v.as_str())
+                                .and_then(LinkSetBy::from_str)
+                                .unwrap_or(LinkSetBy::Migrated);
+                            let p = obj
+                                .get("probability")
+                                .and_then(|v| parse_probability_word_or_float(v).ok().flatten())
+                                .unwrap_or(1.0);
+                            let eff = obj
+                                .get("effect")
+                                .and_then(|v| v.as_str())
+                                .and_then(LinkEffect::from_str)
+                                .unwrap_or(LinkEffect::Helps);
+                            let just = obj
+                                .get("justification")
+                                .and_then(|v| v.as_str())
+                                .map(String::from);
+                            add_mapped_link(
+                                t.to_string(),
+                                false,
+                                LinkLabel::Needs,
+                                q,
+                                p,
+                                eff,
+                                just,
+                                sb,
+                                "depends_on",
+                                &mut parse_warnings,
+                            );
+                        }
+                    }
+                }
+            } else if let Some(s) = dep_val.as_str() {
+                for part in s.split(',') {
+                    let t = part.trim();
+                    if !t.is_empty() {
+                        add_mapped_link(
+                            t.to_string(),
+                            false,
+                            LinkLabel::Needs,
+                            NEEDS_QUANTUM,
+                            1.0,
+                            LinkEffect::Helps,
+                            None,
+                            LinkSetBy::Migrated,
+                            "depends_on",
+                            &mut parse_warnings,
+                        );
+                    }
+                }
+            }
+        }
+
+        // R7: Map soft_depends_on
+        if let Some(sdep_val) = fm.as_ref().and_then(|f| f.get("soft_depends_on")) {
+            if let Some(arr) = sdep_val.as_array() {
+                for item in arr {
+                    if let Some(s) = item.as_str() {
+                        let t = s.trim();
+                        if !t.is_empty() {
+                            add_mapped_link(
+                                t.to_string(),
+                                false,
+                                LinkLabel::Supports,
+                                MIGRATED_SUPPORTS_QUANTUM,
+                                1.0,
+                                LinkEffect::Helps,
+                                None,
+                                LinkSetBy::Migrated,
+                                "soft_depends_on",
+                                &mut parse_warnings,
+                            );
+                        }
+                    } else if let Some(obj) = item.as_object() {
+                        if let Some(t) = obj
+                            .get("to")
+                            .or_else(|| obj.get("id"))
+                            .or_else(|| obj.get("target"))
+                            .and_then(|v| v.as_str())
+                            .map(str::trim)
+                            .filter(|s| !s.is_empty())
+                        {
+                            let q = obj
+                                .get("quantum")
+                                .and_then(|v| parse_quantum_word_or_float(v).ok().flatten())
+                                .unwrap_or(MIGRATED_SUPPORTS_QUANTUM);
+                            let sb = obj
+                                .get("set_by")
+                                .and_then(|v| v.as_str())
+                                .and_then(LinkSetBy::from_str)
+                                .unwrap_or(LinkSetBy::Migrated);
+                            let p = obj
+                                .get("probability")
+                                .and_then(|v| parse_probability_word_or_float(v).ok().flatten())
+                                .unwrap_or(1.0);
+                            let eff = obj
+                                .get("effect")
+                                .and_then(|v| v.as_str())
+                                .and_then(LinkEffect::from_str)
+                                .unwrap_or(LinkEffect::Helps);
+                            let just = obj
+                                .get("justification")
+                                .and_then(|v| v.as_str())
+                                .map(String::from);
+                            add_mapped_link(
+                                t.to_string(),
+                                false,
+                                LinkLabel::Supports,
+                                q,
+                                p,
+                                eff,
+                                just,
+                                sb,
+                                "soft_depends_on",
+                                &mut parse_warnings,
+                            );
+                        }
+                    }
+                }
+            } else if let Some(s) = sdep_val.as_str() {
+                for part in s.split(',') {
+                    let t = part.trim();
+                    if !t.is_empty() {
+                        add_mapped_link(
+                            t.to_string(),
+                            false,
+                            LinkLabel::Supports,
+                            MIGRATED_SUPPORTS_QUANTUM,
+                            1.0,
+                            LinkEffect::Helps,
+                            None,
+                            LinkSetBy::Migrated,
+                            "soft_depends_on",
+                            &mut parse_warnings,
+                        );
+                    }
+                }
+            }
+        }
+
+        // R7: Map contributes_to
+        for ct in &contributes_to {
+            let q = ct.quantum.unwrap_or_else(|| ct.numeric_weight().min(1.0));
+            let sb = ct
+                .set_by
+                .as_deref()
+                .and_then(LinkSetBy::from_str)
+                .unwrap_or(LinkSetBy::Migrated);
+            let just = if ct.justification.is_empty() {
+                None
+            } else {
+                Some(ct.justification.clone())
+            };
+            add_mapped_link(
+                ct.to.clone(),
+                true,
+                LinkLabel::Serves,
+                q,
+                1.0,
+                LinkEffect::Helps,
+                just,
+                sb,
+                "contributes_to",
+                &mut parse_warnings,
+            );
+        }
+
+        // R6 & R7: Map parent
+        if let Some(ref p) = parent {
+            let p_obj = fm
+                .as_ref()
+                .and_then(|f| f.get("parent"))
+                .and_then(|v| v.as_object());
+            let q = p_obj
+                .and_then(|o| o.get("quantum"))
+                .and_then(|v| parse_quantum_word_or_float(v).ok().flatten())
+                .unwrap_or(PART_OF_QUANTUM);
+            let sb = p_obj
+                .and_then(|o| o.get("set_by"))
+                .and_then(|v| v.as_str())
+                .and_then(LinkSetBy::from_str)
+                .unwrap_or(LinkSetBy::Migrated);
+            let prob = p_obj
+                .and_then(|o| o.get("probability"))
+                .and_then(|v| parse_probability_word_or_float(v).ok().flatten())
+                .unwrap_or(1.0);
+            let eff = p_obj
+                .and_then(|o| o.get("effect"))
+                .and_then(|v| v.as_str())
+                .and_then(LinkEffect::from_str)
+                .unwrap_or(LinkEffect::Helps);
+            let just = p_obj
+                .and_then(|o| o.get("justification"))
+                .and_then(|v| v.as_str())
+                .map(String::from);
+            add_mapped_link(
+                p.clone(),
+                true,
+                LinkLabel::PartOf,
+                q,
+                prob,
+                eff,
+                just,
+                sb,
+                "parent",
+                &mut parse_warnings,
+            );
+        }
+
         // Build lookup keys for link/reference resolution, split by authority.
         //
         // `permalinks` holds keys the document CLAIMS as its own identity —
@@ -1899,8 +2958,16 @@ impl GraphNode {
             unlock_breadth: 0.0,
             value_lineage: 0.0,
             edge_template,
+            links,
+            worth,
+            deadline_class,
             parse_warnings,
         }
+    }
+
+    /// Flow state of this node (open | done | gone) mapped from status (§2, C8).
+    pub fn flow_state(&self) -> FlowState {
+        status_to_flow_state(self.status.as_deref())
     }
 
     /// Returns true if this node represents a structurally-identified human gate
@@ -2196,13 +3263,167 @@ mod regex_tests {
     #[test]
     fn test_task_id_prefix_re() {
         assert_eq!(
-            TASK_ID_PREFIX_RE.captures("aops_1234_some_title").unwrap().get(1).unwrap().as_str(),
+            TASK_ID_PREFIX_RE
+                .captures("aops_1234_some_title")
+                .unwrap()
+                .get(1)
+                .unwrap()
+                .as_str(),
             "aops_1234"
         );
         assert_eq!(
-            TASK_ID_PREFIX_RE.captures("task-1234-some-title").unwrap().get(1).unwrap().as_str(),
+            TASK_ID_PREFIX_RE
+                .captures("task-1234-some-title")
+                .unwrap()
+                .get(1)
+                .unwrap()
+                .as_str(),
             "task-1234"
         );
         assert!(TASK_ID_PREFIX_RE.captures("invalid1234").is_none());
+    }
+}
+
+#[cfg(test)]
+mod flow_schema_tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_quantum_words_and_floats() {
+        assert_eq!(
+            parse_quantum_word_or_float(&serde_json::json!("all")).unwrap(),
+            Some(1.0)
+        );
+        assert_eq!(
+            parse_quantum_word_or_float(&serde_json::json!("most")).unwrap(),
+            Some(0.60)
+        );
+        assert_eq!(
+            parse_quantum_word_or_float(&serde_json::json!("a good part")).unwrap(),
+            Some(0.30)
+        );
+        assert_eq!(
+            parse_quantum_word_or_float(&serde_json::json!("some")).unwrap(),
+            Some(0.10)
+        );
+        assert_eq!(
+            parse_quantum_word_or_float(&serde_json::json!("a little")).unwrap(),
+            Some(0.03)
+        );
+        assert_eq!(
+            parse_quantum_word_or_float(&serde_json::json!("none")).unwrap(),
+            Some(0.00)
+        );
+        assert_eq!(
+            parse_quantum_word_or_float(&serde_json::json!(0.45)).unwrap(),
+            Some(0.45)
+        );
+        assert_eq!(
+            parse_quantum_word_or_float(&serde_json::json!("0.75")).unwrap(),
+            Some(0.75)
+        );
+        assert!(parse_quantum_word_or_float(&serde_json::json!(1.5)).is_err());
+        assert!(parse_quantum_word_or_float(&serde_json::json!(-0.1)).is_err());
+        assert!(parse_quantum_word_or_float(&serde_json::json!("unknown")).is_err());
+        assert_eq!(
+            parse_quantum_word_or_float(&serde_json::Value::Null).unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn test_parse_probability_words_and_floats() {
+        assert_eq!(
+            parse_probability_word_or_float(&serde_json::json!("certain")).unwrap(),
+            Some(1.0)
+        );
+        assert_eq!(
+            parse_probability_word_or_float(&serde_json::json!("probable")).unwrap(),
+            Some(0.85)
+        );
+        assert_eq!(
+            parse_probability_word_or_float(&serde_json::json!("expected")).unwrap(),
+            Some(0.75)
+        );
+        assert_eq!(
+            parse_probability_word_or_float(&serde_json::json!("fifty-fifty")).unwrap(),
+            Some(0.50)
+        );
+        assert_eq!(
+            parse_probability_word_or_float(&serde_json::json!("uncertain")).unwrap(),
+            Some(0.25)
+        );
+        assert_eq!(
+            parse_probability_word_or_float(&serde_json::json!("improbable")).unwrap(),
+            Some(0.15)
+        );
+        assert_eq!(
+            parse_probability_word_or_float(&serde_json::json!("impossible")).unwrap(),
+            Some(0.00)
+        );
+        assert_eq!(
+            parse_probability_word_or_float(&serde_json::json!(0.9)).unwrap(),
+            Some(0.9)
+        );
+        assert!(parse_probability_word_or_float(&serde_json::json!(1.2)).is_err());
+        assert!(parse_probability_word_or_float(&serde_json::json!("unknown")).is_err());
+    }
+
+    #[test]
+    fn test_parse_worth_anchors_and_floats() {
+        assert_eq!(
+            parse_worth(&serde_json::json!("critical")).unwrap(),
+            Some(1.00)
+        );
+        assert_eq!(parse_worth(&serde_json::json!("high")).unwrap(), Some(0.60));
+        assert_eq!(
+            parse_worth(&serde_json::json!("substantial")).unwrap(),
+            Some(0.35)
+        );
+        assert_eq!(
+            parse_worth(&serde_json::json!("moderate")).unwrap(),
+            Some(0.15)
+        );
+        assert_eq!(parse_worth(&serde_json::json!("low")).unwrap(), Some(0.05));
+        assert_eq!(
+            parse_worth(&serde_json::json!("catastrophic loss")).unwrap(),
+            Some(-1.00)
+        );
+        assert_eq!(
+            parse_worth(&serde_json::json!("severe loss")).unwrap(),
+            Some(-0.60)
+        );
+        assert_eq!(
+            parse_worth(&serde_json::json!("substantial loss")).unwrap(),
+            Some(-0.35)
+        );
+        assert_eq!(
+            parse_worth(&serde_json::json!("moderate loss")).unwrap(),
+            Some(-0.15)
+        );
+        assert_eq!(
+            parse_worth(&serde_json::json!("minor loss")).unwrap(),
+            Some(-0.05)
+        );
+        assert_eq!(parse_worth(&serde_json::json!(0.8)).unwrap(), Some(0.8));
+        assert_eq!(parse_worth(&serde_json::json!(-0.5)).unwrap(), Some(-0.5));
+        assert!(parse_worth(&serde_json::json!(1.5)).is_err());
+        assert!(parse_worth(&serde_json::json!(-1.5)).is_err());
+        assert!(parse_worth(&serde_json::json!("unknown")).is_err());
+    }
+
+    #[test]
+    fn test_status_to_flow_state() {
+        assert_eq!(status_to_flow_state(Some("cancelled")), FlowState::Gone);
+        assert_eq!(status_to_flow_state(Some("done")), FlowState::Done);
+        assert_eq!(status_to_flow_state(Some("retired")), FlowState::Done);
+        assert_eq!(status_to_flow_state(None), FlowState::Done);
+        assert_eq!(status_to_flow_state(Some("open")), FlowState::Open);
+        assert_eq!(status_to_flow_state(Some("ready")), FlowState::Open);
+        assert_eq!(status_to_flow_state(Some("in_progress")), FlowState::Open);
+        assert_eq!(status_to_flow_state(Some("paused")), FlowState::Open);
+        assert_eq!(status_to_flow_state(Some("blocked")), FlowState::Open);
+        assert_eq!(status_to_flow_state(Some("partial")), FlowState::Open);
+        assert_eq!(status_to_flow_state(Some("review")), FlowState::Open);
     }
 }
