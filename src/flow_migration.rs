@@ -619,6 +619,15 @@ pub fn apply_flow_migration(pkb_root: &Path) -> Result<FlowMigrationLedger> {
         bail!("git add -A failed in {}", pkb_root.display());
     }
 
+    // Explicitly add ledger file in case *.json is ignored by repo's .gitignore
+    let _ = Command::new("git")
+        .arg("-C")
+        .arg(pkb_root)
+        .arg("add")
+        .arg("-f")
+        .arg(&ledger_path)
+        .status();
+
     let commit_msg = format!(
         "chore(migration): apply flow migration ({migration_tag})\n\nMigration: {migration_tag}"
     );
