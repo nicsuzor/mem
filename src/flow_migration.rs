@@ -517,7 +517,16 @@ pub fn apply_flow_migration(pkb_root: &Path) -> Result<FlowMigrationLedger> {
     let mut ct_quanta = BTreeMap::new();
 
     for path in &md_paths {
-        let abs_path = pkb_root.join(path);
+        let abs_path = if path.is_absolute() {
+            path.clone()
+        } else {
+            pkb_root.join(path)
+        };
+        let rel_path = path
+            .strip_prefix(pkb_root)
+            .unwrap_or(path)
+            .to_string_lossy()
+            .to_string();
         let Ok(content) = std::fs::read_to_string(&abs_path) else {
             continue;
         };
@@ -539,7 +548,6 @@ pub fn apply_flow_migration(pkb_root: &Path) -> Result<FlowMigrationLedger> {
             .unwrap_or_else(|| path.file_stem().and_then(|s| s.to_str()).unwrap_or(""))
             .to_string();
 
-        let rel_path = path.to_string_lossy().to_string();
         let (patched_content, rows) =
             patch_file_text(&content, &node_id, &fm_val, &rel_path, &known_ids);
 
@@ -568,7 +576,12 @@ pub fn apply_flow_migration(pkb_root: &Path) -> Result<FlowMigrationLedger> {
         if is_task && node.status.is_none() {
             statusless_tasks.push(StatuslessTaskRow {
                 node_id: node.id.clone(),
-                path: node.path.to_string_lossy().to_string(),
+                path: node
+                    .path
+                    .strip_prefix(pkb_root)
+                    .unwrap_or(&node.path)
+                    .to_string_lossy()
+                    .to_string(),
                 note: "Statusless task read as done (flow-migration.md §5.4, §7.1)".to_string(),
             });
         }
@@ -665,7 +678,16 @@ pub fn revert_flow_migration(pkb_root: &Path, ledger_path: &Path) -> Result<Reve
     let mut report = RevertReport::default();
 
     for (rel_path, rows) in rows_by_path {
-        let abs_path = pkb_root.join(&rel_path);
+        let p = Path::new(&rel_path);
+        let abs_path = if p.is_relative() {
+            pkb_root.join(p)
+        } else if let Ok(rel) = p.strip_prefix("/workspace/brain") {
+            pkb_root.join(rel)
+        } else if let Ok(rel) = p.strip_prefix(pkb_root) {
+            pkb_root.join(rel)
+        } else {
+            pkb_root.join(p)
+        };
         let Ok(content) = std::fs::read_to_string(&abs_path) else {
             for r in rows {
                 report.drifted_rows.push(r);
@@ -728,7 +750,16 @@ pub fn status_flow_migration(
         if let Ok(ledger_str) = std::fs::read_to_string(lpath) {
             if let Ok(ledger) = serde_json::from_str::<FlowMigrationLedger>(&ledger_str) {
                 for row in ledger.rows {
-                    let abs_path = pkb_root.join(&row.path);
+                    let p = Path::new(&row.path);
+                    let abs_path = if p.is_relative() {
+                        pkb_root.join(p)
+                    } else if let Ok(rel) = p.strip_prefix("/workspace/brain") {
+                        pkb_root.join(rel)
+                    } else if let Ok(rel) = p.strip_prefix(pkb_root) {
+                        pkb_root.join(rel)
+                    } else {
+                        pkb_root.join(p)
+                    };
                     if let Ok(content) = std::fs::read_to_string(&abs_path) {
                         if !content.contains(&row.raw_after) {
                             drifted_rows.push(row);
@@ -796,7 +827,16 @@ pub fn cleanup_flow_migration(
 
     let paths: HashSet<String> = ledger.rows.into_iter().map(|r| r.path).collect();
     for rel_path in paths {
-        let abs_path = pkb_root.join(&rel_path);
+        let p = Path::new(&rel_path);
+        let abs_path = if p.is_relative() {
+            pkb_root.join(p)
+        } else if let Ok(rel) = p.strip_prefix("/workspace/brain") {
+            pkb_root.join(rel)
+        } else if let Ok(rel) = p.strip_prefix(pkb_root) {
+            pkb_root.join(rel)
+        } else {
+            pkb_root.join(p)
+        };
         let Ok(content) = std::fs::read_to_string(&abs_path) else {
             continue;
         };
