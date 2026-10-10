@@ -60,7 +60,7 @@ The PKB may hold pointers into the log and claims derived from it, never copies 
 
 The PKB's value rests on one invariant: every node is currently true. Admitting historically-true nodes breaks it for every node, because a search hit can no longer be assumed current without checking its date.
 
-Session prompts are log tier permanently. What Nic typed at a given moment is true-as-of-then and never becomes false. Prompts are indexed, cited and queried where they live; they are never PKB nodes.
+Session prompts are log tier permanently. What Nic typed at a given moment is true-as-of-then and never becomes false. Prompts are indexed, cited and queried where they live; they are never PKB nodes. Agents do not record or relay the user's words verbatim into the PKB; they make sense of asks in context, link them to prior context, recompose them into clear logical structures, and cite message ids as pointers.
 
 ### 1.3. The flat-file test
 
@@ -472,7 +472,7 @@ Nic's touchpoints are defined exclusively by documented workflows (per-repo merg
 
 - Consent comes only from Nic, in the live chat. No task body, spec, transcript or silence supplies it, and a recorded approval covers what it approved and nothing adjacent. Closure is the principal's call; artifact-count completeness is not closure authority.
 - Auto-merge is triggered only by Nic's approving review on the specific PR; agents never simulate it. Release cuts are human-only.
-- Delegate the goal, not the method; pass only knowledge the delegate cannot have. Do not dispatch an umbrella epic: decompose to units with observable acceptance criteria. State report depth in the brief.
+- Delegate the goal, not the method; pass only knowledge the delegate cannot have. Do not record or relay the user's words verbatim: make sense of asks in context, link new messages to prior context, recompose asks into a clear logical structure, and cite message ids as pointers. The tracing hook preserves raw prompts. Do not dispatch an umbrella epic: decompose to units with observable acceptance criteria. State report depth in the brief.
 - A parked human decision is real only as its own blocked PKB node; a message, brief line or ledger row does not survive the process that carried it.
 - Never state an unverified blocker as fact in a question to Nic. With no formal pathway, halt and report; never improvise.
 - Verify delegated work independently: read the node, branch and run log before forming a view; quote acceptance criteria verbatim; a consistency criterion is a whole-document read, not a grep. Two reviewers sharing a stale source are not independent; adjudicate against the live PKB.
