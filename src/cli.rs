@@ -3754,44 +3754,79 @@ fn handle_migrate_command(cmd: MigrateCommands, pkb_root: &std::path::Path) -> R
             revert,
             status,
             cleanup,
-            confirm: _,
+            confirm,
         } => {
-            if status {
-                let db_path = PathBuf::from(default_db_path());
-                let gs = load_graph(pkb_root, &db_path, None);
-                let statusless: Vec<_> = gs
-                    .nodes()
-                    .filter(|n| {
-                        let is_actionable = match n.node_type.as_deref() {
-                            Some(t) => mem::graph_store::ACTIONABLE_TYPES.contains(&t),
-                            None => true,
-                        };
-                        is_actionable && n.status.is_none()
-                    })
-                    .collect();
-                let targets_without_worth: Vec<_> = gs
-                    .nodes()
-                    .filter(|n| n.node_type.as_deref() == Some("target") && n.worth.is_none())
-                    .collect();
+            if dry_run {
+                let report = mem::flow_migration::generate_dry_run_report(pkb_root)?;
+                print!("{}", report);
+                return Ok(());
+            }
 
-                println!("pkb migrate flow status:");
-                println!("  Statusless tasks: {}", statusless.len());
-                for n in &statusless {
-                    let tid = n.task_id.as_deref().unwrap_or(&n.id);
-                    println!("    - [{tid}] {}", n.label);
-                }
-                println!("  Targets lacking worth: {}", targets_without_worth.len());
-                for n in &targets_without_worth {
-                    let tid = n.task_id.as_deref().unwrap_or(&n.id);
-                    println!("    - [{tid}] {}", n.label);
+            if apply {
+                let ledger = mem::flow_migration::apply_flow_migration(pkb_root)?;
+                println!("Successfully applied flow migration ({}):", ledger.migration);
+                println!("  Changed nodes: {}", ledger.report.changed_nodes);
+                println!("  Total rows:    {}", ledger.report.total_rows);
+                println!("  Ledger path:   .agents/migrations/{}.json", ledger.migration);
+                if let Some(ref commit) = ledger.snapshot_commit {
+                    println!("  Snapshot base: {}", commit);
                 }
                 return Ok(());
             }
 
-            if dry_run || apply || revert.is_some() || cleanup.is_some() {
+            if let Some(ref ledger_path) = revert {
+                let report = mem::flow_migration::revert_flow_migration(pkb_root, ledger_path)?;
+                println!("Reverted flow migration using {}:", ledger_path.display());
+                println!("  Files reverted: {}", report.files_reverted);
+                println!("  Rows reverted:  {}", report.rows_reverted);
+                if !report.drifted_rows.is_empty() {
+                    println!("  Drifted rows (skipped): {}", report.drifted_rows.len());
+                    for row in &report.drifted_rows {
+                        println!("    - [{}] {} on {}", row.node_id, row.key_path, row.path);
+                    }
+                }
+                if report.ledger_removed {
+                    println!("  Ledger removed.");
+                }
+                return Ok(());
+            }
+
+            if status {
+                let report = mem::flow_migration::status_flow_migration(pkb_root, None)?;
+                println!("pkb migrate flow status:");
                 println!(
-                    "pkb migrate flow: migration execution is assigned to task aops_c072a28b (flow-migration.md §5.5)."
+                    "  Migration applied: {}",
+                    if report.migration_applied { "yes" } else { "no" }
                 );
+                if let Some(ref lpath) = report.ledger_file {
+                    println!("  Active ledger:     {}", lpath.display());
+                }
+                println!("  Drifted rows:      {}", report.drifted_rows.len());
+                for r in &report.drifted_rows {
+                    println!("    - [{}] {} on {}", r.node_id, r.key_path, r.path);
+                }
+                println!("  Statusless tasks:  {}", report.statusless_tasks.len());
+                for n in &report.statusless_tasks {
+                    println!("    - [{}] {}", n.node_id, n.note);
+                }
+                println!(
+                    "  Targets lacking worth: {}",
+                    report.targets_lacking_worth.len()
+                );
+                for (id, label) in &report.targets_lacking_worth {
+                    println!("    - [{id}] {label}");
+                }
+                return Ok(());
+            }
+
+            if let Some(ref ledger_path) = cleanup {
+                let report = mem::flow_migration::cleanup_flow_migration(pkb_root, ledger_path, confirm)?;
+                println!("Cleaned up legacy fields using {}:", ledger_path.display());
+                println!("  Files cleaned:   {}", report.files_cleaned);
+                println!("  Fields removed:  {}", report.fields_removed);
+                if let Some(ref commit) = report.commit_hash {
+                    println!("  Cleanup commit:  {}", commit);
+                }
                 return Ok(());
             }
 
