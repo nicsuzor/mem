@@ -5,6 +5,69 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.102](https://github.com/nicsuzor/mem/compare/mem-v0.3.101...mem-v0.3.102) (2026-10-10)
+
+
+### Features
+
+* **cli:** wire §7.3 flow CLI commands and pkb migrate flow stub ([db73a92](https://github.com/nicsuzor/mem/commit/db73a9271ccb23ce1a74b6b294ca7ea124348b1e))
+* **config:** add RankingMode enum and resolve_ranking_mode for pkb-flow-engine §4 ([c045a81](https://github.com/nicsuzor/mem/commit/c045a8180387a454d5589458e9f8ffa9ea7a9fb8))
+* **crud:** reject task create and rename whose filename exceeds 80 characters ([#700](https://github.com/nicsuzor/mem/issues/700)) ([b629897](https://github.com/nicsuzor/mem/commit/b62989734de67e5a48fb697acf3a74a8b2cd80e4))
+* **display:** implement flow ranking display layer (src/display_rank.rs) ([035182a](https://github.com/nicsuzor/mem/commit/035182af9c521eb665271a7dd6e571d7367d817f))
+* **display:** implement flow ranking display layer (src/display_rank.rs) ([#707](https://github.com/nicsuzor/mem/issues/707)) ([fc682f2](https://github.com/nicsuzor/mem/commit/fc682f2e2c4e4a09b01bf1709d393cbc2e8852c0))
+* **document_crud:** wire write-time validation and serialization for links, worth, deadline_class ([6f88e5c](https://github.com/nicsuzor/mem/commit/6f88e5c64799d854681291a06ac2618b555864bb))
+* **flow:** implement flow maths engine (src/flow.rs) ([6e5990d](https://github.com/nicsuzor/mem/commit/6e5990d625f1a4d3ddf100164f10da2f42b9b998))
+* **flow:** implement flow maths engine (src/flow.rs) ([#706](https://github.com/nicsuzor/mem/issues/706)) ([27d507f](https://github.com/nicsuzor/mem/commit/27d507f3687e88cf181e405741690fef445a1825))
+* **graph_store:** compute flow and wire display ranking classification ([02d9bb3](https://github.com/nicsuzor/mem/commit/02d9bb38656e6880cee8049185d3cbc77ce71f4b))
+* **graph:** add flow output field to GraphNode and map deadline class in DisplayTask ([6dd6f6a](https://github.com/nicsuzor/mem/commit/6dd6f6a697acd2a1856cf0114a34e1cf133df9cd))
+* **graph:** implement engine §3 links parser, target worth, and write rules ([#708](https://github.com/nicsuzor/mem/issues/708)) ([b06db9d](https://github.com/nicsuzor/mem/commit/b06db9d005e81c7ddb9b27cef1ac73232615e7a0))
+* **graph:** implement links, worth, and deadline_class parser and store ([146db92](https://github.com/nicsuzor/mem/commit/146db92263a7d88ce08dc66fdd48792a2fdd24a1))
+* **lint:** implement flow model graph linter (specs §5, §7, §8) ([#709](https://github.com/nicsuzor/mem/issues/709)) ([2fa0e2c](https://github.com/nicsuzor/mem/commit/2fa0e2c1a6841067ea17ab43d1598c2988a3b325))
+* **lint:** implement flow model graph linter (specs/graph-lint.md §5, §7, §8) ([0e2042c](https://github.com/nicsuzor/mem/commit/0e2042cda98951bbf25671982d596a659999b1da))
+* **mcp:** expose links in task handlers and update MCP schemas ([565ead4](https://github.com/nicsuzor/mem/commit/565ead441b6f718a68ef490c98258ca3a4d11ae4))
+* **mcp:** implement §7.2 tool contracts and exports for flow ranking ([782e8c3](https://github.com/nicsuzor/mem/commit/782e8c3f11363a833f36ced4e074bf694ff21bcd))
+* **migration:** implement flow migration subcommand, ledger, and reversal ([9509ff9](https://github.com/nicsuzor/mem/commit/9509ff9664e324bcdc97a94bd9f4087ca2b7f866))
+* **migration:** implement flow migration subcommand, ledger, and reversal (aops_c072a28b) ([#711](https://github.com/nicsuzor/mem/issues/711)) ([9fd07e3](https://github.com/nicsuzor/mem/commit/9fd07e36f651d49352a4e6314d818b45d3744267))
+* **ranking:** wire tools, CLI and exports for flow ranking (aops_34aafc2f) ([#710](https://github.com/nicsuzor/mem/issues/710)) ([d5ec01b](https://github.com/nicsuzor/mem/commit/d5ec01b1297abfded48127f4702d13103807a55e))
+* **telemetry:** add server-side OTel spans and prevent delete full rebuilds ([#698](https://github.com/nicsuzor/mem/issues/698)) ([5df7149](https://github.com/nicsuzor/mem/commit/5df71497c0e266747710322a2edce717a41b6dd2))
+
+
+### Bug Fixes
+
+* **embeddings:** pad to batch max length instead of fixed 512 tokens ([#696](https://github.com/nicsuzor/mem/issues/696)) ([16ce5cc](https://github.com/nicsuzor/mem/commit/16ce5cc22225723b28c615c8bfab9f5994bce661))
+* **flow_migration:** exclude ghost destinations from apply and restore export task_id filter ([d69fc3e](https://github.com/nicsuzor/mem/commit/d69fc3e2692a156a294cfabd4d2e9a74982477ac))
+* **flow_migration:** keep legacy target alias and exclude ghost destinations from apply (aops_6e32b0ea) ([#712](https://github.com/nicsuzor/mem/issues/712)) ([b7fb0f4](https://github.com/nicsuzor/mem/commit/b7fb0f48d753665106eb155efa42a49b008a0d30))
+* **flow_migration:** keep legacy target alias and include ghost destinations in graph export ([09f719f](https://github.com/nicsuzor/mem/commit/09f719f78f70e99fc7250dd1077cd680a8bfcc90))
+* **migration:** ensure rel_path is relative to pkb_root for portability across clones and machines ([07db503](https://github.com/nicsuzor/mem/commit/07db5035a9508ff82770f1b05c24996b062939e4))
+* **migration:** force-add ledger file so it is committed even if *.json is in .gitignore ([c041c63](https://github.com/nicsuzor/mem/commit/c041c63133723ff8b8e583b96bbe791a788c76b3))
+* **ranking:** P4 excalidraw fallback and depth-cap value loss ([fa9f5d2](https://github.com/nicsuzor/mem/commit/fa9f5d296689b6b634cf435558291345bff2c439))
+* **ranking:** P4 excalidraw fallback and depth-cap value loss ([#685](https://github.com/nicsuzor/mem/issues/685) QA follow-up) ([ec1374e](https://github.com/nicsuzor/mem/commit/ec1374eeecb9ddd81d51c8a4ed139e395b7c08fc))
+* **tests:** resolve clippy useless_vec in display_rank tests ([98353e9](https://github.com/nicsuzor/mem/commit/98353e98ae7c8ec3b83b8255980ef206823dd0a2))
+* write daily notes to daily/YYYYMMDD-daily.md whatever their title ([#690](https://github.com/nicsuzor/mem/issues/690)) ([57a810d](https://github.com/nicsuzor/mem/commit/57a810dfb3157827c4623b180ef976c1f2dad9ec))
+
+
+### Performance Improvements
+
+* **index:** skip unchanged documents in status by file stamp without holding lock ([#697](https://github.com/nicsuzor/mem/issues/697)) ([40bbe33](https://github.com/nicsuzor/mem/commit/40bbe33038231bd3fe52b55363c144bd5be2417a))
+
+
+### Documentation
+
+* **pkb-rules:** specify that agents recompose asks and cite message ids rather than recording user words verbatim ([#695](https://github.com/nicsuzor/mem/issues/695)) ([3438a7a](https://github.com/nicsuzor/mem/commit/3438a7a283d26c08d07f1fba81f0a0111abd444d))
+* **specs:** graph linter for the flow model (draft) ([#672](https://github.com/nicsuzor/mem/issues/672)) ([5f8a1eb](https://github.com/nicsuzor/mem/commit/5f8a1eb07588e66b5ab76fbf59a0bdd593f5d166))
+* **specs:** PKB graph data and Excalidraw primitives for visualisation (draft) ([8fcf681](https://github.com/nicsuzor/mem/commit/8fcf6811e8ebd15f370807bfe09bb0b429258057))
+* **specs:** revise flow-rule.md and scripts after assessment (aops_fd2d10de) ([1b54db0](https://github.com/nicsuzor/mem/commit/1b54db0160fe314857958db9d3faaa14875a6809))
+* **specs:** revise flow-rule.md and scripts after assessment (aops_fd2d10de) ([0972ee7](https://github.com/nicsuzor/mem/commit/0972ee70f581169f7404bcc52fdf24a50b7781bb))
+* **specs:** revise graph-lint spec and examples after redesign assessment ([#702](https://github.com/nicsuzor/mem/issues/702)) ([7e5ad14](https://github.com/nicsuzor/mem/commit/7e5ad1492b812096841c68ae2d5e264e8db1ab68))
+* **specs:** revise pkb-flow-engine.md after assessment ([9e481c8](https://github.com/nicsuzor/mem/commit/9e481c87d16935a9f19ae529f337b157e6384838))
+* **specs:** revise pkb-flow-engine.md after assessment ([276b666](https://github.com/nicsuzor/mem/commit/276b66649a2944e954c957afbec66b13785cb707))
+
+
+### Tests
+
+* **flow:** add T-cli-parity, M10, and T-nosum integration tests ([6e2894c](https://github.com/nicsuzor/mem/commit/6e2894cc132c631452279257db9cb11f1dcffbd3))
+* **links:** add T-parse, T-schema, and T-write-reject integration tests ([58c2215](https://github.com/nicsuzor/mem/commit/58c2215085c87b2db975c0e9e63c9a4800f5e5a6))
+
 ## [0.3.101](https://github.com/nicsuzor/mem/compare/mem-v0.3.100...mem-v0.3.101) (2026-10-09)
 
 
