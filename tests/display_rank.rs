@@ -126,7 +126,7 @@ fn test_t_i17_display_inv17_cliff_lane() {
             days_before
         );
 
-        let mut list = vec![
+        let mut list = [
             fake_item.clone(),
             soft_item.clone(),
             high_item.clone(),
@@ -411,14 +411,14 @@ fn test_t_sort_gain_per_effort() {
     let item_c = DisplayItem::new("C", Some(&flow_c), None, None, 10, today, 7);
 
     // Default sort (Nic key): C (10.0) > A (6.0) > B (3.0)
-    let mut default_list = vec![item_a.clone(), item_b.clone(), item_c.clone()];
+    let mut default_list = [item_a.clone(), item_b.clone(), item_c.clone()];
     default_list.sort_by(display_cmp);
     assert_eq!(default_list[0].id, "C");
     assert_eq!(default_list[1].id, "A");
     assert_eq!(default_list[2].id, "B");
 
     // Gain per effort sort: B (3.0/d) > A (2.0/d) > C (1.0/d)
-    let mut per_effort_list = vec![item_a.clone(), item_b.clone(), item_c.clone()];
+    let mut per_effort_list = [item_a.clone(), item_b.clone(), item_c.clone()];
     per_effort_list.sort_by(|x, y| display_cmp_by(x, y, TaskSort::GainPerEffort));
     assert_eq!(per_effort_list[0].id, "B");
     assert_eq!(per_effort_list[1].id, "A");
