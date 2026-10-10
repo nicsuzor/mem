@@ -816,6 +816,17 @@ async fn test_delete_followed_by_read_does_no_full_rebuild() {
         "remove_node_in_place must update the generation stamp so cached matches disk"
     );
 
+    // Drain any background Tier-2 rebuild from deletion to ensure swap does not clobber generation
+    while server.graph_rebuild_pending() {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    let g_gen_post_swap = server.graph.read().generation();
+    assert_eq!(
+        g_gen_post_swap,
+        d_gen,
+        "Tier-2 rebuild swap must not clobber generation stamp updated by remove_node_in_place"
+    );
+
     let epoch_before_read = server.full_rebuild_epoch.load(std::sync::atomic::Ordering::SeqCst);
 
     // Read via handle_list_tasks (triggers ensure_graph_fresh)

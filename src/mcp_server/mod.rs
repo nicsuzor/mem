@@ -706,6 +706,10 @@ impl PkbSearchServer {
                 merged.reclassify();
                 reclassified = true;
             }
+            // Preserve the live generation stamp (which may have been updated
+            // by in-place node removals or concurrent mutations during rebuild)
+            // so the swap does not clobber it with the older scan from build start.
+            merged.set_generation(g.generation());
             *g = merged;
             #[cfg(test)]
             {

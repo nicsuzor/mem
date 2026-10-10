@@ -972,6 +972,10 @@ impl Embedder {
             let tracer = opentelemetry::global::tracer("mem");
             use opentelemetry::trace::Tracer;
             let mut span = tracer.start("session_mutex_wait");
+            // Test dummy embedder: simulate session mutex lock acquisition
+            // to verify span emission when ONNX model files are absent.
+            let dummy_mutex = std::sync::Mutex::new(());
+            let _guard = dummy_mutex.lock();
             use opentelemetry::trace::Span;
             span.end();
             return Ok(vec![vec![0.0; EMBEDDING_DIM]; texts.len()]);
