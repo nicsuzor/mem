@@ -381,7 +381,7 @@ VERBAL = {
     "impossible": 0.0, "none": 0.0,
 }  # mirrors numeric_weight(), src/graph.rs:292-318
 
-MIGRATION = {"part_of": 1.0, "needs": 1.0, "supports": 0.3, "default": 0.0}
+MIGRATION = {"part_of": 0.0, "needs": 1.0, "supports": 0.3, "default": 0.0}
 
 
 def stated_weight(ct: dict) -> float | None:
@@ -414,13 +414,15 @@ def from_export(data: dict, migration: dict = MIGRATION) -> Graph:
             prob = edge_item[5] if len(edge_item) > 5 else 1.0
             if label == "relates":
                 continue
+            if label == "part_of" and migration.get("part_of") is not None:
+                q = migration["part_of"]
             e = g.link(src, dst, migration["default"] if q is None else q, label=label, effect=eff, probability=prob)
             e.unvalued = q is None
         return g
 
     for n in data["nodes"]:
         st = n.get("status")
-        state = GONE if st == "cancelled" else DONE if st in (None, "done") else OPEN
+        state = GONE if st == "cancelled" else DONE if st in (None, "done", "retired") else OPEN
         g.add(n["id"], state, n.get("standing_weight"))
     ids = set(g.state)
     for n in data["nodes"]:

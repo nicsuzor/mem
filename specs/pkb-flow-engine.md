@@ -27,7 +27,8 @@ tags:
 | Topic | Owning spec |
 |---|---|
 | The rule, the edge fields and their scales | flow-rule (`epic_a463f704`, merged as `specs/flow-rule.md`) |
-| Moving today's frontmatter into the new schema | migration (`epic_d1679d4b`) |
+| Stored schema for edges and target worth | **this spec** (C1; additive in place during R1–R7; `links:` list is an R8 option) |
+| Moving today's frontmatter into the new schema | migration (`epic_d1679d4b`; owns the transform and the migration ledger) |
 | Linter checks on the new schema | linter (`epic_fc1de9ec`) |
 | How the dashboard shows the figures | dashboard (`epic_adf10cd3`) |
 | Skills and agent logic: densify, triage, soft-to-hard deadlines | skills (`epic_80ce44ae`) |
@@ -48,7 +49,7 @@ Traceability tags are as in `flow-rule.md`, plus two of this spec's own:
 
 **What the server will store.**
 
-- Each link becomes one entry in a single `links:` list in frontmatter. An entry says where the link goes, what it is for (its label), how much of the far end it delivers (its *quantum*), how likely that is (its *probability*, default 1.00), and whether it helps or harms.
+- This spec owns the stored schema for edges and target worth (C1). During stages R1–R7 (shadow phase), storage is additive in place on today's keys (`depends_on`, `soft_depends_on`, `contributes_to`, `parent`), which accept both bare IDs and map entries `{to, quantum, probability, effect, set_by, justification}`. A consolidated single `links:` list is an R8 option for Nic (E1).
 - Each target gets a `worth:` from −1 to +1. You set it.
 - Each dated node gets a `deadline_class:` of fake, soft or hard.
 - Nothing else feeds the maths.
@@ -59,25 +60,25 @@ Traceability tags are as in `flow-rule.md`, plus two of this spec's own:
 - *loss averted*: what loss you would fail to avert. It is negative, shown as "loss caused", when the work harms something you want;
 - *decision value*: what finding out is worth, for work that settles an open decision.
 
-The three are never added together, with one exception the build inherits from the reference and that waits on you (Q4, below). The server also records which priced targets each figure comes from, and through which routes. The maths sits in its own module, which cannot see dates, types, tags, severity, stakeholders or priority. Ready lists, the hard-deadline cliff lane and ordering sit in a separate display layer.
+The three are never added together, with the one exception of the open decision option comparison (Q4 settled; plain sum). The server also records which priced targets each figure comes from, and through which routes. The maths sits in its own module, which cannot see dates, types, tags, severity, stakeholders or priority. Ready lists, the hard-deadline cliff lane and ordering sit in a separate display layer.
 
 **What each tool returns.**
 
 - `get_task` shows the three figures, the share of each target at stake, the strongest routes to each target, and a one-sentence explanation (U18). Example: "serves `task_b3f01c80` × 1.00 and `targ_4e2cc92a` × 0.85, both via `proj-f8b942d5` → `brain_bf2be9d8`."
 - `list_tasks`, `nested_tasks`, `export_graph` and the CLI show the three figures per row and never add worth across tasks.
-- `focus_score`, the eleven `signals`, `downstream_weight`, `urgency`, `value_lineage`, `effective_intent`, `cost_of_delay`, `severity_gate` and `queue_rank` all disappear from every output (section 7).
+- `focus_score`, the eleven `signals`, `downstream_weight`, `urgency`, `value_lineage`, `effective_intent`, `cost_of_delay`, `severity_gate` and `queue_rank` all disappear from every output (section 7). Under the shadow phase (C2), legacy stages and fields are retained during R1–R7 and retired at migration R8.
 
-**What it costs.** Measured with the reference calculator on the committed copy of your graph (3,710 nodes, 1,502 open, 1,502 links that carry worth):
+**What it costs.** Measured with the reference calculator on the committed copy of your graph (3,710 nodes, 1,502 open, 409 links that carry worth at `part_of` quantum 0):
 
-- A full recompute takes under 0.1 s in Python with all 26 targets priced (section 5.4). The Rust build must stay under 0.25 s, enforced by a release-mode test that CI must run (A21).
-- If wikilinks were also read as links (Q23), the graph would form one loop of 852 nodes. Each recompute would then do 1,250 times the work and take 36 to 46 s in Python. This spec's cost budget assumes wikilinks stay out.
+- A full recompute takes ~0.01 s in Python with all 26 targets priced (section 5.4). The Rust build must stay under 0.25 s, enforced by a release-mode test that CI must run (A21).
+- If wikilinks were also read as links (Q23), the graph would form one loop of 661 nodes. Each recompute would take ~11.7 s in Python. This spec's cost budget assumes wikilinks stay out.
 
-**What it needs from you.** This spec adds eighteen questions (E1–E18, section 10). Nineteen questions already open in `flow-rule.md` change what gets built here (§10.2). The four that matter most:
+**What it needs from you.** This spec adds eighteen questions (E1–E18, section 10). Nineteen questions already open in `flow-rule.md` change what gets built here (§10.2). The key decisions addressed:
 
-- **E1.** Store links as one `links:` list, as proposed, or keep today's separate keys with new fields added?
-- **E3.** When a loop is rejected or fails to settle, should the work feeding it show "no figure", with the loop named, as proposed? The reference calculator shows 0.0, which looks the same as "linked to nothing".
-- **Q3** (from flow-rule). What orders the list? Until you answer, this spec proposes gain first, then loss averted, then id. That is a pending default, not a decision.
-- **Q4** (from flow-rule). To compare the options of an open decision, the reference adds each option's gain and loss averted. That is the one place a sum happens, against your settled point that the two are never netted (S16). Until you answer, the build copies the reference and says so.
+- **E1.** Store links additively in place during R1–R7 on today's keys, with a single `links:` list as an R8 option (C1).
+- **E3.** When a loop is rejected or fails to settle, work feeding it shows `null`, with the loop named (adopted).
+- **Q3** (from flow-rule). What orders the list? Settled by Nic (S17): the do-next list is ordered by the plain sum of gain and loss averted.
+- **Q4** (from flow-rule). To compare the options of an open decision, options are compared by the plain sum of gain and loss averted (Q4 settled; same as Q3/S17).
 
 ---
 
@@ -126,15 +127,27 @@ deadline_class, due ─┘         ParseWarning per entry   ─┘   decision ru
 
 `FlowInput` has no field for a date, type, tag, stakeholder, severity, intent, effort or deadline class, so the maths cannot read them (S1, S5, I6, I11).
 
+**Status to state mapping (C8):**
+
+| Frontmatter `status` | Flow state | Notes |
+|---|---|---|
+| `cancelled` | `gone` | Withdrawn or abandoned work; carries no worth and passes none |
+| `done`, `retired` | `done` | Completed work (`retired` is done per MQ10) |
+| `None` (omitted / missing) | `done` | Legacy / status-less tasks read as `done` (as in `flow.py:423`, `dryrun.py:69`); flagged by `--status` and the linter |
+| `open`, `ready`, `inbox`, `in_progress`, `blocked`, `paused`, `partial`, `review`, or any active status | `open` | Actionable or blocked active work; evaluated by flow |
+
+Tasks with omitted/missing `status` are listed by `pkb migrate flow --status` and by the graph linter (`flow-statusless`) so they can be triaged rather than silently lost.
+
 **R2. The display layer.** `src/display_rank.rs` reads `FlowOutput` and any node field it needs. It writes nothing that `flow.rs` reads (I6).
 
-**R3. The pipeline (S1, S3).** `build_internal` (`src/graph_store.rs:272-601`) becomes:
+**R3. The pipeline (S1, S3; C2).** During the shadow phase (stages R1–R7), both rankings run side by side under setting `ranking: legacy | flow` (default `legacy`, §4). The legacy stages (`compute_downstream_metrics` through `compute_focus_scores` and `compute_target_ancestors`) are kept in `build_internal` (`src/graph_store.rs:272-601`) until migration R8:
 
 ```text
 canonical node sort (id ASC)                  kept   (ranking.md §1.1)
   → compute_inverses                          kept   (resolves link endpoints, builds incoming lists)
   → compute_degree_metrics                    kept   (diagnostic)
   → compute_centrality_metrics                kept   (diagnostic; skipped on fast rebuilds as today)
+  → [legacy ranking pipeline stages]          kept in shadow phase R1–R7; removed at migration R8 (§7.1)
   → build_flow_input                          new    (§3.1)
   → compute_flow                              new    (§5)
   → compute_decision_value                    new    (§5.3)
@@ -145,15 +158,17 @@ canonical node sort (id ASC)                  kept   (ranking.md §1.1)
   → compute_divergence_anomalies              rewritten to read strength (§7.2)
 ```
 
-The stages removed are listed in §7.1.
+The legacy stages are removed at migration R8, as listed in §7.1.
 
 ---
 
 ## 3. Stored schema
 
-### 3.1. Links (S2, S3)
+This spec owns the stored schema for edges and target worth (C1). During stages R1–R7 (shadow phase), storage is additive in place on today's keys (`depends_on`, `soft_depends_on`, `contributes_to`, `parent`), accepting both bare IDs and map entries. A unified `links:` list is an option for Nic at migration R8 (E1).
 
-**R4. One edge form (S2, S3).** Every link that can carry worth is one entry in a `links:` list in the frontmatter of either end (E1, E2):
+### 3.1. Links (S2, S3; C1)
+
+**R4. Edge representation (S2, S3; C1).** Edges carrying worth may be written either additively within today's four keys (`depends_on`, `soft_depends_on`, `contributes_to`, `parent`) during R1–R7, or as entries in a consolidated `links:` list (R8 option, E1, E2):
 
 ```yaml
 links:
@@ -171,7 +186,7 @@ links:
 - **Words are stored as written.** The parser maps them to numbers, so Nic's words stay visible in the file (E2).
 - **Duplicates.** One logical edge declared at both ends (A lists `to: B` and B lists `from: A` with the same label) is read once. If the two declarations disagree on any field, the parser emits a `ParseWarning` and reads the entry on the `from` node (E4).
 
-**R5. Parsing (S2, S7, U20).** Each `links` entry is parsed on its own.
+**R5. Parsing (S2, S7, U20).** Each link entry is parsed on its own.
 
 - **A bad entry.** A malformed entry yields one `ParseWarning` naming the entry's index and field, and is dropped. The other entries are kept. This fixes today's silent whole-list drop (`src/graph.rs:1600-1604`).
 - **A recognised word.** It maps to its number.
@@ -179,19 +194,18 @@ links:
 - **A number out of range.** A quantum or probability outside `0.0..=1.0`, NaN or infinite yields a `ParseWarning`, and the field is read as unstated.
 - **A label outside the set.** It yields a `ParseWarning`, and the entry is dropped (Q21).
 
-**R6. The parent field (S2, S3).** What happens to the `parent:` field depends on Q1:
+**R6. The parent field (S2, S3; Q1).** `parent: P` is read as the link `{to: P, label: part_of}` with `PART_OF_QUANTUM` = 0.0 (R11). It is not a second edge kind. `part_of` is a filing label carrying quantum 0; grouping and progress within an epic read `part_of` links (§6). An explicit `part_of` entry in `links` with no quantum also takes `PART_OF_QUANTUM` (0.0).
 
-- **If Q1 keeps it:** `parent: P` is read as the link `{to: P, label: part_of}`, with `PART_OF_QUANTUM` (R11). It is not a second edge kind.
-- **Either way:** an explicit `part_of` entry in `links` with no quantum also takes `PART_OF_QUANTUM`.
-- **If Q1 removes it:** the field is no longer read by the maths. Grouping reads `part_of` links (§6).
+**R7. Old keys during migration (S2, S3, U20; Q22, C1).** Until the migration spec retires them at R8, the engine reads both bare string IDs and map entries `{to, quantum, set_by, probability, effect, justification}` inside today's four keys (`flow-migration.md:237`, :256).
 
-**R7. Old keys during migration (S2, S3, U20; Q22).** Until the migration spec retires them, the parser maps today's keys into `links` with the defaults in `flow-rule.md` §8:
+Today's `parse_string_array` (`src/graph.rs:1061-1067`) drops map entries; the parser is updated to parse both strings and map entries without dropping them:
 
-| Old key | Read as |
-|---|---|
-| `depends_on: [X]` | `{from: X, label: needs, quantum: 1.0, set_by: migrated}` |
-| `soft_depends_on: [X]` | `{from: X, label: supports, quantum: 0.3, set_by: migrated}` |
-| `contributes_to: [{to, stated_weight, multiplier}]` | `{to, label: serves, quantum: min(1, numeric_weight), set_by: migrated}` |
+| Old key | Bare string entry `X` | Map entry `{to: X, quantum: q, set_by: s, ...}` |
+|---|---|---|
+| `depends_on` | `{from: X, label: needs, quantum: 1.0, set_by: migrated}` | `{from: X, label: needs, quantum: q // 1.0, set_by: s // migrated}` |
+| `soft_depends_on` | `{from: X, label: supports, quantum: 0.3, set_by: migrated}` | `{from: X, label: supports, quantum: q // 0.3, set_by: s // migrated}` |
+| `contributes_to` | `{to: X, label: serves, quantum: min(1, numeric_weight), set_by: migrated}` | `{to: X, label: serves, quantum: q, set_by: s // migrated}` |
+| `parent` | `{to: X, label: part_of, quantum: 0.0, set_by: migrated}` | `{to: X, label: part_of, quantum: q // 0.0, set_by: s // migrated}` |
 
 When a node carries both a mapped old key and a `links` entry for the same ordered pair and label, the `links` entry wins, with a `ParseWarning`. The migration spec decides when the old keys stop being read (E5).
 
@@ -247,25 +261,36 @@ The following stay as stored frontmatter, are returned as plain fields, and are 
 
 ## 4. Engine configuration
 
-**R11. Constants (S7, S11).** The open numbers are constants in one place, `src/flow.rs` and `src/display_rank.rs`, each named after the question that will set it:
+**Configuration setting (C2 shadow phase).** The server configuration gains the setting:
 
-| Constant | Proposed value | Set by |
+```yaml
+ranking: legacy | flow   # default: legacy
+```
+
+- When set to `legacy` (the default during stages R1–R7), legacy metrics (`focus_score`, `signals`, `urgency`) drive default CLI sorting and MCP tool displays, while the flow engine computes `FlowOutput` in parallel for inspection and shadow parity testing.
+- When set to `flow`, `display_cmp` and flow metrics drive default ordering and tool displays.
+- At migration R8, `ranking: flow` becomes the sole engine mode and legacy pipeline stages are removed (§7.1).
+
+**R11. Constants (S7, S11; Q1, Q2).** The open numbers are constants in one place, `src/flow.rs` and `src/display_rank.rs`, each named after the question that sets it:
+
+| Constant | Value | Set by |
 |---|---|---|
-| `DEFAULT_QUANTUM`, for `serves` and `supports` | 0.0 | Q2 |
-| `PART_OF_QUANTUM`, for `part_of` and `parent:` | 1.0 | Q1 |
-| `NEEDS_QUANTUM`, for `needs` | 1.0, as `flow-rule.md` §5.2 | Q5 |
-| `SETTLES_QUANTUM`, for `settles` | 1.0, as `flow-rule.md` §5.2 | Q4 |
+| `DEFAULT_QUANTUM`, for `serves` and `supports` | 0.0 | Q2 settled (brief point 7) |
+| `PART_OF_QUANTUM`, for `part_of` and `parent:` | 0.0 | Q1 settled (filing label; grouping/progress read it) |
+| `DEFAULT_EFFORT_DAYS` | 3 | `display.py:14`; fallback when `effort` is unstated |
+| `NEEDS_QUANTUM`, for `needs` | 1.0 | `flow-rule.md` §5.2; Q5 |
+| `SETTLES_QUANTUM`, for `settles` | 1.0 | `flow-rule.md` §5.2; Q4 |
 | `CLIFF_BUFFER_DAYS` | 7 | Q9 |
 | `ROUTE_CAP` | 5 per target | E8 |
-| `TOL` | 1e-12, as `flow.py:39` | — |
-| `ITERATION_CAP` | 20,000 sweeps per component, as `flow.py:129` and `flow.py:162` | — |
+| `TOL` | 1e-12 | `flow.py:39` |
+| `ITERATION_CAP` | 20,000 sweeps per component | `flow.py:129`, `flow.py:162` |
 
-Changing a constant is a pull request (S11: simple beats complicated). Moving them to runtime configuration is E7. The display functions take `CLIFF_BUFFER_DAYS` as a parameter whose default is the constant, so a test can vary it without rebuilding.
+Changing a constant is a pull request (S11: simple beats complicated). Moving them to runtime configuration is E7. The display functions take `CLIFF_BUFFER_DAYS` and `DEFAULT_EFFORT_DAYS` as parameters whose defaults are the constants, so a test can vary them without rebuilding.
 
-**R26. Unapproved proposals (S7, U20).** `flow-rule.md` §8 says an unapproved proposal is read at the default quantum. The parser therefore reads an entry with `set_by: agent-proposed` at its label's default (above), whatever quantum it states. Entries marked `nic` or `migrated` are read at their stated quantum.
+**R26. Unapproved proposals (S7, U20).** An entry with `set_by: agent-proposed` reads at quantum 0.0 whatever its label (even for `needs` or `serves`), so an unapproved agent proposal never moves worth or blocks any work. Entries marked `nic` or `migrated` are read at their stated quantum (or label default).
 
-- **An omitted `set_by` is read as `nic`.** The densify routine always writes `agent-proposed` explicitly, and a link written by hand is Nic's.
-- **This departs from the foundation spec.** `flow-rule.md` §5.1 gives `agent-proposed` as the default. Under that default, every link written without `set_by` would carry no worth unless its label defaults to 1.0. This is E17.
+- **An omitted `set_by` is read as `nic`.** The densify routine always writes `agent-proposed` explicitly, and a link written by hand is Nic's. Omitted `set_by` reads at its stated quantum or label default.
+- **This departs from the foundation spec.** `flow-rule.md` §5.1 gives `agent-proposed` as the default. Under that default, every link written without `set_by` would carry no worth unless approved. This is E17 (adopted).
 
 ---
 
@@ -276,7 +301,7 @@ Changing a constant is a pull request (S11: simple beats complicated). Moving th
 `compute_flow` computes exactly the quantities `flow-rule.md` §3.2 defines. The reference is `worth_all` (`specs/flow-rule/flow.py:216`). The engine may compute them faster, but must give the same numbers (T-parity).
 
 1. **Flow edges.** Keep the edges whose label is not `alternative` or `settles`, whose endpoints are both not `gone`, and whose strength `quantum × probability` is above 0 (`flow.py:73-82`).
-2. **Loops.** Find the loops: Tarjan's strongly connected components over flow edges, as `tarjan_scc` does today (`src/graph_store.rs:4707`). Then order the component graph topologically, breaking ties by node id.
+2. **Loops.** Find the loops: Tarjan's strongly connected components over flow edges, as `tarjan_scc` does today (`src/graph_store.rs:4763`). Then order the component graph topologically, breaking ties by node id.
 3. **Saturated loops.** Mark as *saturated* each component in which open nodes are joined by full-strength `helps` edges into a loop (`flow.py:208-213`; S15).
 4. **Baseline.** Compute the baseline `y⁰`, under which every open node is assumed done and only harms from done nodes fire (`flow-rule.md` §3.2, "Baseline and harms semantics"; Q20). In a graph with no harms this is 1.0 everywhere, so no work is needed.
 5. **Knockouts.** For each open node `u` whose forward cone reaches a priced target:
@@ -295,7 +320,7 @@ Changing a constant is a pull request (S11: simple beats complicated). Moving th
 
 ### 5.2. Failure (S15)
 
-**R13. Failure status (S15, I7).** Each `FlowOutput` carries `flow_status`, which takes one of three values:
+**R13. Failure status (S15, I7; E3 adopted).** Each `FlowOutput` carries `flow_status`, which takes one of three values:
 
 - `ok`;
 - `saturated_loop`, with `loop: [ids]`;
@@ -306,48 +331,48 @@ A node whose cone reaches a priced target **and** touches a saturated or unsettl
 - **Other nodes are unaffected.** They are ranked as normal (`flow-rule.md` §3.2, lines 156 and 158).
 - **The linter names the loop** (`epic_fc1de9ec`).
 
-**This departs from the reference, and resolves a conflict (E3).**
+**This departs from the reference, and resolves a conflict (E3 adopted).**
 
 - **The reference shows zero.** `flow.py` returns `Worth(0.0, 0.0, {})` for such nodes (`flow.py:239-240`, `flow.py:254-255`), which reads the same as "linked to nothing" (U7, I7).
 - **The foundation spec contradicts itself.** `flow-rule.md:634` says "nothing is ranked from a partial result", while `flow-rule.md:156` and `flow-rule.md:158` say unaffected components remain ranked.
 
-This spec follows lines 156 and 158, and reports `null` instead of 0.
+This spec follows lines 156 and 158, and reports `null` instead of 0 (E3 adopted).
 
 ### 5.3. Decision value
 
-**R14. `compute_decision_value` (I10, U12, S16).** runs after `compute_flow`. It implements `flow-rule.md` §6 exactly, as `decision_worth` (`flow.py:288`):
+**R14. `compute_decision_value` (I10, U12, S16; Q4 settled).** runs after `compute_flow`. It implements `flow-rule.md` §6 exactly, as `decision_worth` (`flow.py:288`):
 
 - For each open node with at least two incoming `alternative` edges, compute EVPI over its options.
 - Add `quantum × EVPI` to each open node with a `settles` edge into it.
 
 **Two cautions.**
 
-- **The comparison scalar.** The reference compares options by `gain + loss_averted` (`flow.py:295`). That sum nets gain against loss averted, which S16 forbids. It happens only inside the comparison of options, never in an output, but it is still a sum. Whether it is allowed is Q4, which §0 lists among the top questions. Until Q4 is answered, the engine copies the reference, and the tool description says so.
+- **The comparison scalar.** The reference compares options by `gain + loss_averted` (`flow.py:295`). That sum nets gain against loss averted, which S16 forbids for display, but is settled for option comparison (Q4 settled; plain sum, consistent with the do-next comparator S17/Q3). It happens only inside the comparison of options, never in an output.
 - **Its own figure.** `decision_value` is never added to `gain` or `loss_averted`, in storage or in any output (S16).
 
 ### 5.4. Cost at the live graph's size (I13)
 
-`python3 specs/pkb-flow-engine/cost.py` prints these figures. It runs the reference calculator unchanged on the committed fixture `specs/flow-rule/fixtures/live-2026-10-05.json`. A full run takes about 2 minutes, of which scenario C takes about 42 s.
+`python3 specs/pkb-flow-engine/cost.py` prints these figures. It runs the reference calculator unchanged on the committed fixture `specs/flow-rule/fixtures/live-2026-10-05.json`. A full run takes about 20 s, of which scenario C takes about 12 s.
 
 | Scenario | Flow edges | Priced targets | Open nodes reaching a priced target | Σ cone edges (max per node) | Loops (largest) | Python `worth_all`, median per run, over three runs |
 |---|---|---|---|---|---|---|
-| A: fixture as committed | 1,502 | 7 | 247 | 1,571 (35) | 3 (4 nodes) | 0.035–0.051 s |
-| B: every target priced at +0.35 (**assumed**) | 1,502 | 26 | 370 | 2,126 (35) | 3 (4 nodes) | 0.041–0.090 s |
-| C: B, plus wikilinks as links at 0.05 (**assumed**, Q23) | 6,027 | 26 | 672 | 2,659,951 (4,054) | 34 (852 nodes) | 35.7–45.6 s (one timing per run) |
+| A: fixture as committed | 409 | 7 | 50 | 118 (15) | 1 (2 nodes) | ~0.009 s |
+| B: every target priced at +0.35 (**assumed**) | 409 | 26 | 79 | 157 (15) | 1 (2 nodes) | ~0.010 s |
+| C: B, plus wikilinks as links at 0.05 (**assumed**, Q23) | 4,934 | 26 | 455 | 1,445,781 (3,353) | 40 (661 nodes) | ~11.7 s (one timing per run) |
 
 **Recompute scope.** These are the nodes whose figures can change when one node's state, worth or links change: its upstream set (P4).
 
 | Scenario | Median | 95th percentile | 99th percentile | Largest |
 |---|---|---|---|---|
-| B | 0 | 3 | 22 | 460 |
-| C | 0 | 1,346 | 1,347 | 1,482 |
+| B | 0 | 1 | 5 | 67 |
+| C | 0 | 907 | 916 | 1,056 |
 
 **What the counts mean.** The counts are identical on every run. Wall times vary with machine load, so only their order of magnitude is used.
 
-- **The live graph is smaller than the fixture.** The brief describes the live graph as "about 1,900 nodes and 3,700 edges". The fixture holds 3,710 nodes, including done nodes, and 6,744 stored edges, of which 4,958 are wikilinks. Only 1,502 edges carry worth. Every cost above is measured on the fixture, which is the larger graph.
+- **The live graph is smaller than the fixture.** The brief describes the live graph as "about 1,900 nodes and 3,700 edges". The fixture holds 3,710 nodes, including done nodes, and 6,744 stored edges, of which 4,958 are wikilinks. With `part_of` at quantum 0, only 409 edges carry worth. Every cost above is measured on the fixture, which is the larger graph.
 - **Cost is the sum of cone edges.** The knockout rule costs `O(Σ_u |E(cone(u))|)` edge visits, plus the iterations inside any loop a cone crosses. In the worst case that is `O(V · E)`.
-- **Scenario B costs little.** It is 2,126 edge visits.
-- **Scenario C dominates.** One loop of 852 nodes, iterated inside the cone of every node that feeds it, accounts for most of its 2.66 million.
+- **Scenario B costs little.** It is 157 edge visits.
+- **Scenario C dominates.** One loop of 661 nodes, iterated inside the cone of every node that feeds it, accounts for most of its 1.45 million.
 
 **R15. The cost budget (I13, S11).** At scenario B scale, a release build of `compute_flow` plus `compute_decision_value` completes in under 0.25 s on the CI runner (T-cost). Today's whole background rebuild "typically completes in 1–3s" (`.agent/CORE.md`, "Graph rebuild"), so the flow takes at most a quarter of the low end. The budget assumes Q23 keeps wikilinks out of the flow. If Nic decides otherwise, this section must be revisited before build.
 
@@ -386,11 +411,11 @@ Its form follows `flow-rule.md` §12. The cost is one maximum-product search per
 
 ## 6. The display layer (S1, S4, S5, S13)
 
-**R19. One comparator (S1, S13, S16, I15, I17).** `display_cmp` is the only ordering of work in the server. It replaces all five orderings listed in §1.
+**R19. One comparator (S1, S13, S16, S17, I15, I17; Q3 settled).** `display_cmp` is the only ordering of work in the server. It replaces all five orderings listed in §1:
 
-1. **The cliff lane first.** These are nodes with `deadline_class: hard` and `days_left ≤ effort_days + CLIFF_BUFFER_DAYS`, ordered by `due` ascending (`flow-rule.md` §7; `display.py:47-52`; Q26). Fake and soft dates never enter it (I17).
-2. **Then the Nic key (Q3).** Until Q3 is answered, the proposed key is `gain` DESC, then `loss_averted` DESC, then `decision_value` DESC. This is lexicographic, so it never nets the figures. A task with gain 0.95 and loss −0.95 sorts with tasks of gain 0.95, not with tasks linked to nothing (I15).
-3. **Then nodes with no figure.** Nodes whose `flow_status ≠ ok` come next, then nodes with all figures at 0.
+1. **The cliff lane first.** These are nodes with `deadline_class: hard` and `days_left ≤ effort_days + CLIFF_BUFFER_DAYS` (where `effort_days` defaults to `DEFAULT_EFFORT_DAYS` 3), ordered by `due` ascending (`flow-rule.md` §7; `display.py:47-52`; Q26). Fake and soft dates never enter it (I17).
+2. **Then the Nic key (Q3 settled per S17).** Ordered by the plain sum of gain and loss averted: `gain + loss_averted` DESC (good and bad in equal measure cancel out for ordering; both figures stay shown separately, S16/S17). Ties are broken by `gain` DESC, then `loss_averted` DESC, then `decision_value` DESC.
+3. **Then nodes with no figure.** Nodes whose `flow_status ≠ ok` (carrying `null` figures per E3 adopted) come next, then nodes with all figures at 0.
 4. **Then id ASC,** a deterministic total order.
 
 **R20. Ready, blocked and roots (S4, I5, U3).** These keep their meaning from `ranking.md:497-517`, rewritten in `display_rank.rs`:
@@ -410,7 +435,9 @@ Its form follows `flow-rule.md` §12. The cost is one maximum-product search per
 
 ### 7.1. What is removed
 
-**Pipeline stages removed** from `build_internal` (`src/graph_store.rs:497-542`):
+**Shadow phase retention (C2).** During stages R1–R7 under setting `ranking: legacy | flow` (default `legacy`, §4), the legacy pipeline stages, functions, and `GraphNode` fields listed below are retained in the codebase so legacy ranking continues to operate. They are removed at migration R8 when `ranking: flow` becomes the sole engine mode.
+
+**Pipeline stages removed** from `build_internal` (`src/graph_store.rs:497-542` at migration R8):
 
 - `compute_downstream_metrics`;
 - `compute_effective_intent`;
@@ -503,15 +530,17 @@ When `flow_status ≠ ok`, the three figures are `null` and a `loop: [ids]` key 
 | `pkb metrics` | pagerank, betweenness, degrees | D.WT ranking, exposure | `src/cli.rs:1788-1905` |
 | `format_task_line` | `g:` and `l:` figures | `wt:`, "!" | `src/cli.rs:4452-4493`; `src/graph_display.rs:813` |
 | `pkb graph --format mcp-index` | `gain`, `loss_averted`, `decision_value`, `display_rank` | `downstream_weight`, `stakeholder_exposure`, `focus_score`; the intent-then-weight ready order | `src/task_index.rs:15-59`, `:279` |
-| Excalidraw card size | the larger of `gain` and `\|loss_averted\|`, never their sum (E14) | `effective_intent`, `focus_score ≥ 1000` | `src/excalidraw/schema.rs:101`, `:120-127`; `layout.rs:706`; `merge.rs:277`, `:402` |
+| Excalidraw card size | the larger of `gain` and `\|loss_averted\|`, never their sum (E14 adopted) | `effective_intent`, `focus_score ≥ 1000` | `src/excalidraw/schema.rs:101`, `:120-127`; `layout.rs:706`; `merge.rs:277`, `:402` |
+| `pkb migrate flow` | flow migration commands: `--dry-run`, `--apply`, `--revert LEDGER`, `--status`, `--cleanup LEDGER` (`flow-migration.md` §5.5); `--status` lists status-less tasks (C8) | — | assigned here by `flow-migration.md:315` |
 
 **R24. One field set everywhere (S1, U18).** The CLI and the MCP tools print the same figures from the same `FlowOutput`. Parity is tested as `tests/cli_default_ordering.rs` tests it today.
 
-### 7.4. Sections of `ranking.md` superseded
+### 7.4. Existing specs and sections superseded
 
-| `ranking.md` section | Outcome |
+| Spec / section | Outcome |
 |---|---|
-| §1 Overview and sort tuple (`:25-62`) | superseded by §2 and §6 here |
+| `specs/multi-parent.md` | **superseded**; multi-parent relationships are modelled via `part_of` and `serves` edges at quantum 0 / stated quantum |
+| `ranking.md` §1 Overview and sort tuple (`:25-62`) | superseded by §2 and §6 here |
 | §1.1 Canonical ordering and determinism (`:64-69`) | **kept**; R17 extends it to `FlowOutput` |
 | §2, §2.1–§2.9 tuple components (`:74-261`) | superseded; measure map in `flow-rule.md` §9 |
 | §3 Caps and observed ranges (`:263-291`) | superseded; one unit, the worth of a Critical target (`flow-rule.md` §5.6) |
@@ -555,15 +584,15 @@ Each criterion is something an observer can check against the built server. Ever
 | A15 | A task serving one target and harming another equally shows two non-zero figures, distinct from a task linked to nothing | S16, I15 | T-I15 |
 | A16 | A loop with a harms edge, including a pure negative loop at quantum 1, settles, with results independent of node ids | I16 | T-I16 |
 | A17 | A hard-deadline node with worth 0 is first in `list_tasks` from `effort + CLIFF_BUFFER_DAYS` days before `due`; the same node classed fake or soft never enters the cliff lane | S13, I17, U14, U15 | T-I17 |
-| A18 | No output of any tool or CLI command carries a field removed in §7.1–§7.3 | §7, R3, R23 | T-removed |
+| A18 | (Migration R8 criterion) No output of any tool or CLI command carries a field removed in §7.1–§7.3 | §7, R3, R23 | T-removed |
 | A19 | A malformed `links` entry yields one `ParseWarning`; an entry with a bad label is dropped, an entry with a bad number or word keeps the entry with that field unstated, and the node's other entries stay | R5 | T-parse |
-| A20 | A rejected or unsettled loop that reaches a priced target gives the nodes feeding it `flow_status ≠ ok` with null figures and the loop named; a node feeding an unpriced failed loop shows 0 / ok; unrelated nodes keep their figures | R12, R13, S15 | T-fail |
+| A20 | A rejected or unsettled loop that reaches a priced target gives the nodes feeding it `flow_status ≠ ok` with null figures and the loop named (E3 adopted); a node feeding an unpriced failed loop shows 0 / ok; unrelated nodes keep their figures | R12, R13, S15 | T-fail |
 | A21 | `compute_flow` and `compute_decision_value` together take under 0.25 s on the fixture with every target priced, in a release build | R15, I13 | T-cost |
 | A22 | Two rebuilds from identical input give byte-identical `flow` across every build entry point | R17 | T-determinism |
 | A23 | No tool or CLI output contains a sum of `gain`, `loss_averted` or `decision_value` over two or more nodes | R21 | T-nosum |
-| A24 | `pkb tasks`, `pkb focus` and `list_tasks` agree on order and figures | R19, R24 | T-cli-parity |
-| A25 | A link declared at both ends is read once; on disagreement the `from` entry wins with a warning; `parent:`, mapped old keys, `standing_weight` and `worth` words are read as R6, R7 and R9 say; an unclassed `due` is `fake` | R4, R6, R7, R9, R10 | T-schema |
-| A26 | An entry with `set_by: agent-proposed` moves worth only at its label's default; the same entry marked `nic` moves its stated quantum; a `needs` entry with no quantum carries 1.0 | R11, R26 | T-schema |
+| A24 | `pkb tasks`, `pkb focus` and `list_tasks` agree on order and figures under `display_cmp` | R19, R24 | T-cli-parity |
+| A25 | A link declared at both ends is read once; on disagreement the `from` entry wins with a warning; `parent:`, mapped old keys (including map entries `{to, quantum, set_by}` inside all four old keys), status→state table (`cancelled`→`gone`, `retired`→`done`, missing status→`done`, active/`paused`/`blocked`/`partial`/`review`→`open`), `standing_weight` and `worth` words are read as R1, R4, R6, R7 and R9 say; an unclassed `due` is `fake` | R1, R4, R6, R7, R9, R10 | T-schema |
+| A26 | An entry with `set_by: agent-proposed` reads at 0.0 whatever the label; the same entry marked `nic` moves its stated quantum; an omitted `set_by` is read as `nic`; a `needs` entry with no quantum carries 1.0 | R11, R26 | T-schema |
 | A27 | Immediately after a write, `get_task` shows the node's previous `flow`, or 0 / 0 / 0 with `ok` for a new node; after the background rebuild it shows the recomputed `flow` | R16 | T-carryover |
 | A28 | `get_task` returns at most `ROUTE_CAP` routes per target, strongest first, with `routes_truncated` set when more exist, and an explanation sentence naming each target and the strongest path | R18, U18 | T-routes |
 | A29 | A blocked node is never in the ready list but keeps its figures; the ready list is in `display_cmp` order | R20, S4 | T-ready |
@@ -591,19 +620,19 @@ There is one test per invariant, T-I1 to T-I17, and fourteen engine tests. Each 
 | T-I10 `flow_inv10_decision_value` | I10 / A10 | decision with two `alternative` options (p 0.4 and 0.3, each 1.11) and one `settles` link | 0.1998; 0.3996 with prices doubled; 0.0 once decided |
 | T-I11 `flow_inv11_no_dates_in_flow` | I11 / A11 | (a) a compile-time test that `FlowInput`'s fields are only ids, states, worths and edges; (b) a source scan of `src/flow.rs` for `chrono`, `NaiveDate`, `Utc`, `due`, `today`; (c) shift every `due` by 400 days | (a) compiles; (b) no match; (c) `flow` byte-identical |
 | T-I12 `flow_inv12_routes_explain` | I12 / A12 | the fixture | for every (node, target) pair: strongest-route strength ≤ `stake`; any excess over the loop-free bound appears as `loop_extra` (`n_d663317dd7`: 0.9712 against 0.9449) |
-| T-I13 → T-parity (the "differences explained" half of I13 is `flow-rule.md` §11 and is not re-tested by the engine) | I13 / A13 | load the fixture through the engine's own parser | every open node within 1e-9 of `expected-live-2026-10-05.json` (1,502 rows); 246 carrying worth |
+| T-I13 → T-parity (the "differences explained" half of I13 is `flow-rule.md` §11 and is not re-tested by the engine) | I13 / A13 | load the fixture through the engine's own parser | every open node within 1e-9 of `expected-live-2026-10-05.json` (1,502 rows); 49 carrying worth |
 | T-I14 `flow_inv14_negative_target_symmetry` | I14 / A14 | `targ_safety` at +0.35, then restated at −0.35 with protections as harms | 0.2625 / 0.2625 / 0.2822 move from `gain` to `loss_averted` unchanged |
 | T-I15 `flow_inv15_gain_and_loss_not_netted` | I15 / A15 | task serving a 1.0 target at 0.6 and harming another 1.0 target at 0.6 | `(0.60, −0.60)`, distinct from `(0, 0)` |
 | T-I16 `flow_inv16_harmful_loop_settles` | I16 / A16 | row-16 loop with a harms closing edge; a pure negative loop at quantum 1; ids permuted | 0.3878 / 0.3878 / 0.8163 and 0.2308 / 0.2308 / 0.7692; identical under permutation |
 | T-I17 `display_inv17_cliff_lane` | I17 / A17 | hard node due D with worth 0, effort 1 day; fake and soft nodes; `today` stepped from D−40 to D | (this spec's construction) hard first in `list_tasks` from D−8 (1 + 7 days); fake and soft never on the cliff lane |
-| T-removed `tool_outputs_carry_no_removed_field` | A18 | call every tool in §7.2 and every CLI command in §7.3 on a small graph | no key from the §7.1 removed list appears in any output |
+| T-removed `tool_outputs_carry_no_removed_field` | A18 (R8) | call every tool in §7.2 and every CLI command in §7.3 on a small graph | no key from the §7.1 removed list appears in any output (deferred to migration R8) |
 | T-parse `links_entry_errors_are_isolated` | A19 | `links` with one valid entry, one unknown label, one quantum of 1.5, and one unknown word | 3 entries kept (the 1.5 and the unknown word read at the label's default); the unknown-label entry dropped; 3 `ParseWarning`s, each naming its index and field |
 | T-fail `flow_failure_is_null_and_local` | A20 | a full-strength `helps` loop of two open nodes serving a priced target, fed by X; a second such loop serving nothing priced, fed by Y; an unrelated priced chain | X: `flow_status: saturated_loop`, figures `null`, `loop` names both; Y: 0 / 0 / 0, `ok`; unrelated chain unchanged |
 | T-cost `flow_cost_budget` (`#[ignore]`; run by the release CI step above) | A21 | fixture with every target priced at 0.35 | under 0.25 s |
 | T-determinism `flow_rebuild_determinism` | A22 | build through every entry point listed at `ranking.md:67` | byte-identical `flow` |
 | T-nosum `no_output_sums_worth` | A23 | two nodes with gain 0.37 and 0.58 under one parent; every group view | no numeric field within 1e-9 of 0.95 (their sum) or 0.475 (their mean) in any group-level output |
 | T-cli-parity `cli_and_mcp_display_order_parity` | A24 | replaces `cli_focus_agrees_with_canonical_focus_order` (`tests/cli_default_ordering.rs`) | identical id order and figures |
-| T-schema `links_schema_mapping` | A25, A26 | one node per case: both-ends duplicate (agreeing, then disagreeing); `parent:`; each old key of R7 beside a `links` entry for the same pair; `worth` as a float, an anchor word, 1.5, and alongside `standing_weight`; a `due` with no class; a `needs` entry with no quantum; one entry as `agent-proposed` and as `nic` | one edge for the agreeing duplicate; the `from` entry and a warning for the disagreeing one; R6, R7 and R9 readings exactly; `fake`; `needs` 1.0; `agent-proposed` at the default, `nic` at its stated quantum |
+| T-schema `links_schema_mapping` | A25, A26 | one node per case: both-ends duplicate (agreeing, then disagreeing); `parent:` at quantum 0; map entries `{to, quantum, set_by}` inside `depends_on`, `soft_depends_on`, `contributes_to`, and `parent`; status→state cases (`cancelled`, `retired`, missing `status`, `paused`, `blocked`, `partial`, `review`); `worth` as a float, an anchor word, 1.5, and alongside `standing_weight`; a `due` with no class; a `needs` entry with no quantum; one entry as `agent-proposed` (on `needs` and `serves`) and as `nic`; omitted `set_by` | one edge for the agreeing duplicate; the `from` entry and a warning for the disagreeing one; map entries parsed without dropping; status mapping verified; R1, R6, R7 and R9 readings exactly; `fake`; `needs` 1.0; `agent-proposed` at 0.0 whatever the label, `nic` and omitted `set_by` at stated quantum |
 | T-carryover `flow_carried_over_until_rebuild` | A27 | write to a node, read before and after the background rebuild; create a new node | previous `flow`, then the new one; new node 0 / 0 / 0 `ok` until rebuild |
 | T-routes `routes_cap_and_explanation` | A28 | a node with seven routes to one target | 5 routes, strongest first, `routes_truncated: true`; the sentence names the target and the strongest path |
 | T-ready `ready_predicate_reads_needs` | A29 | a blocked node and its open blocker | blocker ready, blocked node not ready, both with figures; ready list in `display_cmp` order |
@@ -629,50 +658,50 @@ The parse tests for severity and `goal_type` stay, since those fields stay store
 
 ### 10.1. Questions this spec adds (E1–E18)
 
-Each comes with the proposal this spec builds against if it is not answered. None is decided.
+Each comes with the proposal this spec builds against if it is not answered. Settled items from review assessment are noted.
 
-| # | Question | Proposed |
-|---|---|---|
-| E1 | Store every link in one `links:` list (§3.1), or keep `depends_on` / `soft_depends_on` / `contributes_to` as separate keys with quantum, probability and effect added to each? | one list |
-| E2 | Store Nic's words as written (`probable`) and map them on parse, or store numbers only? | words as written |
-| E3 | When a loop is rejected or does not settle, should the nodes feeding it show `null` with the loop named, unlike the reference's 0.0? This resolves `flow-rule.md:634` against `:156` and `:158`. | `null`, rest ranked |
-| E4 | When one edge is declared at both ends and the two disagree, which wins? | the `from` end, with a warning |
-| E5 | Until migration ends, may tools keep accepting `contributes_to` / `depends_on` / `soft_depends_on` and map them by R7? | yes, until the migration spec retires them |
-| E6 | Does the server need to store deadline extension history for the soft-to-hard rule, or does the skills spec keep it elsewhere? | the skills spec decides; the server stores only the class |
-| E7 | Are the open constants (§4) compile-time, changed by pull request, or runtime configuration? | compile-time |
-| E8 | How many routes per target should `get_task` return? | 5 |
-| E9 | An open child of a done parent carries nothing through that parent (§5.1, `n_4b3ea8a012`). Is that right? | yes: the parent's worth is already realised |
-| E10 | Full recompute on every background rebuild, with no incremental path? | full |
-| E11 | `criticality` is defined from `downstream_weight` (`src/graph_store.rs:4357-4374`), which `flow-rule.md` §9 drops, yet §9 keeps criticality as a diagnostic. Drop it, or redefine it? | drop; keep pagerank and betweenness |
-| E12 | `target_ancestors` is replaced by the keys of `stake`, which only list priced targets. Is a list of unpriced targets a node serves still wanted, for example to prompt pricing? | drop, and let the linter list unpriced targets |
-| E13 | `ContributesTo.inherits_from` and `brier_history` are dormant edge fields. Keep them on `links`? | drop `inherits_from`; keep `brier_history` as an optional field the maths does not read |
-| E14 | How big should an Excalidraw card be drawn? | by the larger of `gain` and `\|loss_averted\|`, never their sum |
-| E15 | Today a task with `affordable_loss: false` is removed from ranking. Should the server keep that filter, or leave it to agents? | leave it to agents (`flow-rule.md` §9); the field stays stored |
-| E16 | `status: blocked` counts as blocked in the mcp-index (`src/task_index.rs:260`) but not in `classify_tasks`. Should it count as blocked in R20? | no, to match `classify_tasks`; this replaces both |
-| E17 | Does an omitted `set_by` mean `nic`, as R26 proposes, or `agent-proposed`, as `flow-rule.md` §5.1 says? With `agent-proposed`, a hand-written `serves` link with no `set_by` carries no worth until it is approved. | `nic` |
-| E18 | `edge_template.weight` on prototype nodes uses the old seven-word scale. Replace it with template `quantum` and `probability`? | yes |
+| # | Question | Proposed | Status |
+|---|---|---|---|
+| E1 | Store every link in one `links:` list (§3.1), or keep `depends_on` / `soft_depends_on` / `contributes_to` as separate keys with quantum, probability and effect added to each? | additive in place during R1–R7; single `links:` list deferred to migration R8 option | Adopted (C1) |
+| E2 | Store Nic's words as written (`probable`) and map them on parse, or store numbers only? | words as written | Proposed |
+| E3 | When a loop is rejected or does not settle, should the nodes feeding it show `null` with the loop named, unlike the reference's 0.0? This resolves `flow-rule.md:634` against `:156` and `:158`. | `null`, rest ranked | Adopted |
+| E4 | When one edge is declared at both ends and the two disagree, which wins? | the `from` end, with a warning | Proposed |
+| E5 | Until migration ends, may tools keep accepting `contributes_to` / `depends_on` / `soft_depends_on` and map them by R7? | yes, until the migration spec retires them | Proposed |
+| E6 | Does the server need to store deadline extension history for the soft-to-hard rule, or does the skills spec keep it elsewhere? | the skills spec decides; the server stores only the class | Proposed |
+| E7 | Are the open constants (§4) compile-time, changed by pull request, or runtime configuration? | compile-time | Proposed |
+| E8 | How many routes per target should `get_task` return? | 5 | Proposed |
+| E9 | An open child of a done parent carries nothing through that parent (§5.1, `n_4b3ea8a012`). Is that right? | yes: the parent's worth is already realised | Proposed |
+| E10 | Full recompute on every background rebuild, with no incremental path? | full | Proposed |
+| E11 | `criticality` is defined from `downstream_weight` (`src/graph_store.rs:4357-4374`), which `flow-rule.md` §9 drops, yet §9 keeps criticality as a diagnostic. Drop it, or redefine it? | drop; keep pagerank and betweenness | Proposed |
+| E12 | `target_ancestors` is replaced by the keys of `stake`, which only list priced targets. Is a list of unpriced targets a node serves still wanted, for example to prompt pricing? | drop, and let the linter list unpriced targets | Proposed |
+| E13 | `ContributesTo.inherits_from` and `brier_history` are dormant edge fields. Keep them on `links`? | drop `inherits_from`; keep `brier_history` as an optional field the maths does not read | Proposed |
+| E14 | How big should an Excalidraw card be drawn? | by the larger of `gain` and `\|loss_averted\|`, never their sum | Adopted |
+| E15 | Today a task with `affordable_loss: false` is removed from ranking. Should the server keep that filter, or leave it to agents? | leave it to agents (`flow-rule.md` §9); the field stays stored | Proposed |
+| E16 | `status: blocked` counts as blocked in the mcp-index (`src/task_index.rs:260`) but not in `classify_tasks`. Should it count as blocked in R20? | no, to match `classify_tasks`; this replaces both | Proposed |
+| E17 | Does an omitted `set_by` mean `nic`, as R26 proposes, or `agent-proposed`, as `flow-rule.md` §5.1 says? With `agent-proposed`, a hand-written `serves` link with no `set_by` carries no worth until it is approved. | `nic` | Adopted |
+| E18 | `edge_template.weight` on prototype nodes uses the old seven-word scale. Replace it with template `quantum` and `probability`? | yes | Proposed |
 
 ### 10.2. Open questions in `flow-rule.md` §15 that change this build
 
-| Question | What it changes here |
-|---|---|
-| Q1 | R6, `PART_OF_QUANTUM`, and whether grouping reads `parent` or `part_of` |
-| Q2 | `DEFAULT_QUANTUM` |
-| Q3 | step 2 of `display_cmp` (R19) |
-| Q4 | the comparison scalar in `compute_decision_value` (R14) |
-| Q5, Q21 | the label set the parser accepts (R5) |
-| Q9, Q26 | `CLIFF_BUFFER_DAYS` and the cliff trigger |
-| Q10 | whether `intent` stays as a filter and a column |
-| Q12 | whether `gain_per_effort` is offered as a sort |
-| Q13 | who sets an opportunity `cancelled` or reprices it (R25) |
-| Q17 | whether worth passes between priced targets and adds (§5.1 copies the reference, which adds) |
-| Q18 | reading an unclassed `due` as `fake` (R10) |
-| Q20 | the baseline harms semantics in §5.1 |
-| Q22 | the migrated quanta in R7 |
-| Q23 | R8, and the cost budget R15 (scenario C) |
-| Q24 | whether `severity` stays only as a stored field (§3.4, §7.4) |
-| Q30 | keeping `supersedes` out of the flow (R8) |
-| Q31 | the ready predicate's type and status gates (R20) |
+| Question | What it changes here | Status |
+|---|---|---|
+| Q1 | R6, `PART_OF_QUANTUM` (0.0), and grouping reads `part_of` | Settled |
+| Q2 | `DEFAULT_QUANTUM` (0.0) | Settled |
+| Q3 | step 2 of `display_cmp` (R19) uses plain sum `gain + loss_averted` DESC | Settled |
+| Q4 | the comparison scalar in `compute_decision_value` (R14) uses `max(gain, loss_averted)` | Settled |
+| Q5, Q21 | the label set the parser accepts (R5) | Open |
+| Q9, Q26 | `CLIFF_BUFFER_DAYS` and the cliff trigger | Open |
+| Q10 | whether `intent` stays as a filter and a column | Open |
+| Q12 | whether `gain_per_effort` is offered as a sort | Open |
+| Q13 | who sets an opportunity `cancelled` or reprices it (R25) | Open |
+| Q17 | whether worth passes between priced targets and adds (§5.1 copies the reference, which adds) | Open |
+| Q18 | reading an unclassed `due` as `fake` (R10) | Open |
+| Q20 | the baseline harms semantics in §5.1 | Open |
+| Q22 | the migrated quanta in R7 | Open |
+| Q23 | R8, and the cost budget R15 (scenario C) | Open |
+| Q24 | whether `severity` stays only as a stored field (§3.4, §7.4) | Open |
+| Q30 | keeping `supersedes` out of the flow (R8) | Open |
+| Q31 | the ready predicate's type and status gates (R20) | Open |
 
 ---
 
@@ -696,4 +725,5 @@ These are cited lines in `flow-rule.md` that no longer match `specs/flow-rule/fl
 |---|---|
 | `specs/pkb-flow-engine.md` | this spec |
 | `specs/pkb-flow-engine/cost.py` | the cost figures in §5.4; runs the reference calculator unchanged |
-| `specs/pkb-flow-engine/expected-live-2026-10-05.json` | oracle for T-parity: `gain` and `loss_averted` for every open node of the fixture, from `python3 specs/flow-rule/flow.py live specs/flow-rule/fixtures/live-2026-10-05.json --out …` |
+| `specs/pkb-flow-engine/expected-live-2026-10-05.json` | oracle for T-parity: `gain` and `loss_averted` for every open node of the fixture (1,502 rows, 49 carrying worth), from `python3 specs/flow-rule/flow.py live specs/flow-rule/fixtures/live-2026-10-05.json --out …` |
+
