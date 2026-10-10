@@ -222,10 +222,14 @@ fn git_records_the_move_as_a_rename() {
 fn convert_document_over_limit_filename_rejected_and_writes_nothing() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path();
-    let old_path = write_capture(
-        root,
-        "title: \"This is an extremely long capture title that exceeds the tight filename length limit for PKB tasks\"\n",
-    );
+    let dir = root.join("notes/mobile-captures");
+    std::fs::create_dir_all(&dir).unwrap();
+    let old_path = dir.join(format!("{CAPTURE_STEM}.md"));
+    std::fs::write(
+        &old_path,
+        "---\ntitle: This is an extremely long capture title that exceeds the tight filename length limit for PKB tasks\ntype: note\n---\n\nAsk about the enrolment form.\n",
+    )
+    .unwrap();
     let original = std::fs::read_to_string(&old_path).unwrap();
     let server = make_server(root);
 
