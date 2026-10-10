@@ -45,9 +45,7 @@ impl PkbSearchServer {
         if !path.exists() {
             return Err(McpError {
                 code: ErrorCode::INVALID_PARAMS,
-                message: Cow::from(format!(
-                    "File not found for ID '{query}'"
-                )),
+                message: Cow::from(format!("File not found for ID '{query}'")),
                 data: None,
             });
         }
@@ -114,7 +112,8 @@ impl PkbSearchServer {
             let fm_yaml = serde_yaml::to_string(&frontmatter).unwrap_or_default();
             return Ok(CallToolResult::success(vec![Content::text(format!(
                 "## {} (metadata only)\n\n```yaml\n{}\n```",
-                label, fm_yaml.trim()
+                label,
+                fm_yaml.trim()
             ))]));
         }
 
@@ -126,13 +125,25 @@ impl PkbSearchServer {
         ))]))
     }
 
-    pub(crate) fn handle_list_documents(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+    pub(crate) fn handle_list_documents(
+        &self,
+        args: &JsonValue,
+    ) -> Result<CallToolResult, McpError> {
         let tag = args.get("tag").and_then(|v| v.as_str());
         let tags_vec: Option<Vec<String>> = args.get("tags").and_then(|v| {
             if let Some(arr) = v.as_array() {
-                Some(arr.iter().filter_map(|x| x.as_str().map(|s| s.to_ascii_lowercase())).collect())
+                Some(
+                    arr.iter()
+                        .filter_map(|x| x.as_str().map(|s| s.to_ascii_lowercase()))
+                        .collect(),
+                )
             } else {
-                v.as_str().map(|s| s.split(',').map(|x| x.trim().to_ascii_lowercase()).filter(|x| !x.is_empty()).collect())
+                v.as_str().map(|s| {
+                    s.split(',')
+                        .map(|x| x.trim().to_ascii_lowercase())
+                        .filter(|x| !x.is_empty())
+                        .collect()
+                })
             }
         });
         let doc_type = args.get("type").and_then(|v| v.as_str());
@@ -157,9 +168,9 @@ impl PkbSearchServer {
 
         if let Some(ref req_tags) = tags_vec {
             results.retain(|r| {
-                req_tags.iter().all(|want| {
-                    r.tags.iter().any(|have| have.eq_ignore_ascii_case(want))
-                })
+                req_tags
+                    .iter()
+                    .all(|want| r.tags.iter().any(|have| have.eq_ignore_ascii_case(want)))
             });
         }
 
@@ -231,7 +242,10 @@ impl PkbSearchServer {
     // GRAPH/TASK TOOLS (7)
     // =========================================================================
 
-    pub(crate) fn handle_create_memory(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+    pub(crate) fn handle_create_memory(
+        &self,
+        args: &JsonValue,
+    ) -> Result<CallToolResult, McpError> {
         if args.get("filename").is_some() || args.get("path").is_some() {
             return Err(McpError {
                 code: ErrorCode::INVALID_PARAMS,
@@ -284,10 +298,7 @@ impl PkbSearchServer {
                 .get("project")
                 .and_then(|v| v.as_str())
                 .map(String::from),
-            dir: args
-                .get("dir")
-                .and_then(|v| v.as_str())
-                .map(String::from),
+            dir: args.get("dir").and_then(|v| v.as_str()).map(String::from),
         };
 
         let t_total = std::time::Instant::now();
@@ -343,11 +354,16 @@ impl PkbSearchServer {
         ))]))
     }
 
-    pub(crate) fn handle_create_document(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+    pub(crate) fn handle_create_document(
+        &self,
+        args: &JsonValue,
+    ) -> Result<CallToolResult, McpError> {
         if args.get("filename").is_some() || args.get("path").is_some() {
             return Err(McpError {
                 code: ErrorCode::INVALID_PARAMS,
-                message: Cow::from("filename and path arguments are no longer supported. Use dir instead."),
+                message: Cow::from(
+                    "filename and path arguments are no longer supported. Use dir instead.",
+                ),
                 data: None,
             });
         }
@@ -374,6 +390,28 @@ impl PkbSearchServer {
 
         if let Some(body) = args.get("body").and_then(|v| v.as_str()) {
             self.reject_machine_paths(body, None)?;
+        }
+
+        if let Some(links_val) = args.get("links") {
+            crate::graph::validate_links_value(links_val).map_err(|e| McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from(e),
+                data: None,
+            })?;
+        }
+        if let Some(worth_val) = args.get("worth") {
+            crate::graph::validate_worth_value(worth_val).map_err(|e| McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from(e),
+                data: None,
+            })?;
+        }
+        if let Some(dc_val) = args.get("deadline_class") {
+            crate::graph::validate_deadline_class_value(dc_val).map_err(|e| McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from(e),
+                data: None,
+            })?;
         }
 
         let fields = crate::document_crud::DocumentFields {
@@ -466,8 +504,19 @@ impl PkbSearchServer {
                 .map(String::from),
             contributes_to: args
                 .get("contributes_to")
-                .and_then(|v| v.as_array()).cloned()
+                .and_then(|v| v.as_array())
+                .cloned()
                 .unwrap_or_default(),
+            links: args
+                .get("links")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default(),
+            worth: args.get("worth").cloned(),
+            deadline_class: args
+                .get("deadline_class")
+                .and_then(|v| v.as_str())
+                .map(String::from),
         };
 
         // Hierarchy validation: tasks/learn/target can be root-level.
@@ -594,7 +643,10 @@ impl PkbSearchServer {
         }
     }
 
-    pub(crate) fn handle_append_to_document(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+    pub(crate) fn handle_append_to_document(
+        &self,
+        args: &JsonValue,
+    ) -> Result<CallToolResult, McpError> {
         if args.get("path").is_some() {
             return Err(McpError {
                 code: ErrorCode::INVALID_PARAMS,
@@ -645,9 +697,13 @@ impl PkbSearchServer {
         let t_total = std::time::Instant::now();
 
         let t = std::time::Instant::now();
-        let new_modified =
-            crate::document_crud::append_to_document(&abs_path, content, section, expected_modified)
-                .map_err(|e| Self::write_error_to_mcp("append", e))?;
+        let new_modified = crate::document_crud::append_to_document(
+            &abs_path,
+            content,
+            section,
+            expected_modified,
+        )
+        .map_err(|e| Self::write_error_to_mcp("append", e))?;
         let elapsed_write = t.elapsed();
         tracing::debug!(target: "perf::append_to_document", phase = "write_file", elapsed_ms = elapsed_write.as_secs_f64() * 1000.0);
 
@@ -731,7 +787,10 @@ impl PkbSearchServer {
                 message: Cow::from(format!("Document not found: {id}")),
                 data: None,
             })?;
-            (self.abs_path_for_node(node, Some(&graph))?, node.label.clone())
+            (
+                self.abs_path_for_node(node, Some(&graph))?,
+                node.label.clone(),
+            )
         };
 
         let existing_body = std::fs::read_to_string(&abs_path)
@@ -815,7 +874,10 @@ impl PkbSearchServer {
                 message: Cow::from(format!("Document not found: {id}")),
                 data: None,
             })?;
-            (self.abs_path_for_node(node, Some(&graph))?, node.label.clone())
+            (
+                self.abs_path_for_node(node, Some(&graph))?,
+                node.label.clone(),
+            )
         };
 
         self.reject_machine_paths(&crate::path_lint::added_lines_of_diff(diff), None)?;
@@ -861,7 +923,10 @@ impl PkbSearchServer {
         Ok(CallToolResult::success(vec![Content::text(response_text)]))
     }
 
-    pub(crate) fn handle_add_observations(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+    pub(crate) fn handle_add_observations(
+        &self,
+        args: &JsonValue,
+    ) -> Result<CallToolResult, McpError> {
         let id = args
             .get("id")
             .and_then(|v| v.as_str())
@@ -877,20 +942,20 @@ impl PkbSearchServer {
             .and_then(|v| v.as_array())
             .ok_or_else(|| McpError {
                 code: ErrorCode::INVALID_PARAMS,
-                message: Cow::from("Missing required parameter: lines (must be an array of strings)"),
+                message: Cow::from(
+                    "Missing required parameter: lines (must be an array of strings)",
+                ),
                 data: None,
             })?;
 
         let lines_vec: Vec<String> = lines
             .iter()
             .map(|v| {
-                v.as_str()
-                    .map(|s| s.to_string())
-                    .ok_or_else(|| McpError {
-                        code: ErrorCode::INVALID_PARAMS,
-                        message: Cow::from("Each item in 'lines' must be a string"),
-                        data: None,
-                    })
+                v.as_str().map(|s| s.to_string()).ok_or_else(|| McpError {
+                    code: ErrorCode::INVALID_PARAMS,
+                    message: Cow::from("Each item in 'lines' must be a string"),
+                    data: None,
+                })
             })
             .collect::<Result<Vec<String>, McpError>>()?;
 
@@ -916,7 +981,10 @@ impl PkbSearchServer {
                 message: Cow::from(format!("Document not found: {id}")),
                 data: None,
             })?;
-            (self.abs_path_for_node(node, Some(&graph))?, node.label.clone())
+            (
+                self.abs_path_for_node(node, Some(&graph))?,
+                node.label.clone(),
+            )
         };
 
         self.reject_machine_paths(&lines_vec.join("\n"), None)?;
@@ -958,7 +1026,10 @@ impl PkbSearchServer {
         Ok(CallToolResult::success(vec![Content::text(response_text)]))
     }
 
-    pub(crate) fn handle_delete_observations(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+    pub(crate) fn handle_delete_observations(
+        &self,
+        args: &JsonValue,
+    ) -> Result<CallToolResult, McpError> {
         let id = args
             .get("id")
             .and_then(|v| v.as_str())
@@ -974,20 +1045,20 @@ impl PkbSearchServer {
             .and_then(|v| v.as_array())
             .ok_or_else(|| McpError {
                 code: ErrorCode::INVALID_PARAMS,
-                message: Cow::from("Missing required parameter: selectors (must be an array of strings)"),
+                message: Cow::from(
+                    "Missing required parameter: selectors (must be an array of strings)",
+                ),
                 data: None,
             })?;
 
         let selectors_vec: Vec<String> = selectors
             .iter()
             .map(|v| {
-                v.as_str()
-                    .map(|s| s.to_string())
-                    .ok_or_else(|| McpError {
-                        code: ErrorCode::INVALID_PARAMS,
-                        message: Cow::from("Each item in 'selectors' must be a string"),
-                        data: None,
-                    })
+                v.as_str().map(|s| s.to_string()).ok_or_else(|| McpError {
+                    code: ErrorCode::INVALID_PARAMS,
+                    message: Cow::from("Each item in 'selectors' must be a string"),
+                    data: None,
+                })
             })
             .collect::<Result<Vec<String>, McpError>>()?;
 
@@ -1008,15 +1079,15 @@ impl PkbSearchServer {
                 message: Cow::from(format!("Document not found: {id}")),
                 data: None,
             })?;
-            (self.abs_path_for_node(node, Some(&graph))?, node.label.clone())
+            (
+                self.abs_path_for_node(node, Some(&graph))?,
+                node.label.clone(),
+            )
         };
 
-        let result = crate::document_crud::delete_observations(
-            &abs_path,
-            &selectors_vec,
-            expected_modified,
-        )
-        .map_err(|e| Self::write_error_to_mcp("delete observations", e))?;
+        let result =
+            crate::document_crud::delete_observations(&abs_path, &selectors_vec, expected_modified)
+                .map_err(|e| Self::write_error_to_mcp("delete observations", e))?;
 
         if let Some(doc) = crate::pkb::parse_file_relative(&abs_path, &self.pkb_root) {
             self.rebuild_graph_for_pkb_document(&doc);
@@ -1046,7 +1117,10 @@ impl PkbSearchServer {
         Ok(CallToolResult::success(vec![Content::text(response_text)]))
     }
 
-    pub(crate) fn handle_delete_document(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+    pub(crate) fn handle_delete_document(
+        &self,
+        args: &JsonValue,
+    ) -> Result<CallToolResult, McpError> {
         let id = args
             .get("id")
             .and_then(|v| v.as_str())
@@ -1122,12 +1196,14 @@ impl PkbSearchServer {
 
         Ok(CallToolResult::success(vec![Content::text(format!(
             "Deleted: {} (`{}`)",
-            label,
-            node_id
+            label, node_id
         ))]))
     }
 
-    pub(crate) fn handle_convert_document(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+    pub(crate) fn handle_convert_document(
+        &self,
+        args: &JsonValue,
+    ) -> Result<CallToolResult, McpError> {
         let required = |key: &str| {
             args.get(key)
                 .and_then(|v| v.as_str())
@@ -1206,7 +1282,9 @@ impl PkbSearchServer {
             "retyped": result.retyped,
             "moved": result.moved,
         });
-        Ok(CallToolResult::success(vec![Content::text(payload.to_string())]))
+        Ok(CallToolResult::success(vec![Content::text(
+            payload.to_string(),
+        )]))
     }
 
     /// Build the compact "mutation neighborhood" returned by `complete_task` and
@@ -1216,7 +1294,10 @@ impl PkbSearchServer {
     ///
     /// `cascade_closed` is the number of descendants closed by a recursive cascade
     /// (0 when the close was non-recursive).
-    pub(crate) fn handle_retrieve_memory(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+    pub(crate) fn handle_retrieve_memory(
+        &self,
+        args: &JsonValue,
+    ) -> Result<CallToolResult, McpError> {
         self.ensure_graph_fresh();
         let query = args
             .get("query")
@@ -1227,7 +1308,8 @@ impl PkbSearchServer {
                 message: Cow::from("Missing required parameter: query"),
                 data: None,
             })?;
-        let limit = (args.get("limit").and_then(|v| v.as_u64()).unwrap_or(10) as usize).min(MAX_RESULTS);
+        let limit =
+            (args.get("limit").and_then(|v| v.as_u64()).unwrap_or(10) as usize).min(MAX_RESULTS);
         let tags: Option<Vec<String>> = args.get("tags").and_then(|v| v.as_array()).map(|arr| {
             arr.iter()
                 .filter_map(|v| v.as_str().map(String::from))
@@ -1241,7 +1323,14 @@ impl PkbSearchServer {
         })?;
 
         let store = self.store.read();
-        let results = store.search(&query_embedding, limit * 3, &self.pkb_root, None, None, None);
+        let results = store.search(
+            &query_embedding,
+            limit * 3,
+            &self.pkb_root,
+            None,
+            None,
+            None,
+        );
 
         let graph = self.graph.read();
 
@@ -1323,7 +1412,13 @@ impl PkbSearchServer {
             let abs_path = graph
                 .get_node(&r.id)
                 .and_then(|n| self.abs_path_for_node(n, Some(&graph)).ok())
-                .unwrap_or_else(|| if r.path.as_os_str().is_empty() { PathBuf::new() } else { r.path.clone() });
+                .unwrap_or_else(|| {
+                    if r.path.as_os_str().is_empty() {
+                        PathBuf::new()
+                    } else {
+                        r.path.clone()
+                    }
+                });
             if !abs_path.as_os_str().is_empty() {
                 if let Ok(content) = std::fs::read_to_string(&abs_path) {
                     let body = if content.starts_with("---") {
@@ -1350,9 +1445,13 @@ impl PkbSearchServer {
         ))]))
     }
 
-    pub(crate) fn handle_list_memories(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+    pub(crate) fn handle_list_memories(
+        &self,
+        args: &JsonValue,
+    ) -> Result<CallToolResult, McpError> {
         self.ensure_graph_fresh();
-        let limit = (args.get("limit").and_then(|v| v.as_u64()).unwrap_or(20) as usize).min(MAX_RESULTS);
+        let limit =
+            (args.get("limit").and_then(|v| v.as_u64()).unwrap_or(20) as usize).min(MAX_RESULTS);
         let tags: Option<Vec<String>> = args.get("tags").and_then(|v| v.as_array()).map(|arr| {
             arr.iter()
                 .filter_map(|v| v.as_str().map(String::from))
@@ -1403,5 +1502,4 @@ impl PkbSearchServer {
 
         Ok(CallToolResult::success(vec![Content::text(output)]))
     }
-
 }

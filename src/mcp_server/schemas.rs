@@ -170,7 +170,10 @@ impl PkbSearchServer {
                         "issue_url": { "type": "string", "description": "External issue/ticket URL to link on the task" },
                         "follow_up_tasks": { "type": "array", "items": { "type": "string" }, "description": "IDs of related follow-up tasks" },
                         "release_summary": { "type": "string", "description": "Detailed technical summary, if creating this task as part of a release/handover" },
-                        "contributes_to": { "type": "array", "items": { "type": "object" }, "description": "Edges to target nodes this task contributes to, e.g. [{\"to\": \"target-id\", \"stated_weight\": \"expected\", \"multiplier\": 0.5}]. `stated_weight` accepts recognized verbal terms (certain, probable, expected, fifty-fifty, uncertain, improbable, impossible) or direct numeric float values. `multiplier` (alias `x`) is an optional float multiplier scaling the propagated weight (propagates x * weight). Supports `inherits_from` to copy fields from a prototype edge." }
+                        "contributes_to": { "type": "array", "items": { "type": "object" }, "description": "Edges to target nodes this task contributes to, e.g. [{\"to\": \"target-id\", \"stated_weight\": \"expected\", \"multiplier\": 0.5}]. `stated_weight` accepts recognized verbal terms (certain, probable, expected, fifty-fifty, uncertain, improbable, impossible) or direct numeric float values. `multiplier` (alias `x`) is an optional float multiplier scaling the propagated weight (propagates x * weight). Supports `inherits_from` to copy fields from a prototype edge." },
+                        "links": { "type": "array", "items": { "type": "object" }, "description": "Consolidated flow links (pkb-flow-engine §3.1). Array of objects with 'to' or 'from', 'label' (serves|needs|part_of|supports|alternative|settles), optional 'quantum' (0.0..=1.0 or anchor word), optional 'probability' (0.0..=1.0 or anchor word), optional 'effect' (helps|harms), optional 'set_by' (nic|agent-proposed|migrated), optional 'justification'." },
+                        "worth": { "description": "Target worth in [-1.0, 1.0] or anchor word.", "anyOf": [{ "type": "number" }, { "type": "string" }] },
+                        "deadline_class": { "type": "string", "enum": ["fake", "soft", "hard"], "description": "Deadline class for dated nodes: fake | soft | hard (pkb-flow-engine §3.3)." }
                     },
                     "required": ["title"]
                 }))
@@ -228,7 +231,10 @@ impl PkbSearchServer {
                         "goal_type": { "type": "string", "description": "Goal classification: committed | aspirational | learning.", "enum": GOAL_TYPE_ENUM },
                         "dir": { "type": "string", "description": "Override subdirectory placement" },
                         "stakeholder": { "type": "string", "description": "Who is waiting on this task (e.g. 'Jacob', 'funding-committee'). Drives waiting urgency in focus scoring." },
-                        "waiting_since": { "type": "string", "description": "When the stakeholder started waiting (ISO date, e.g. '2026-03-20'). Falls back to created date if omitted." }
+                        "waiting_since": { "type": "string", "description": "When the stakeholder started waiting (ISO date, e.g. '2026-03-20'). Falls back to created date if omitted." },
+                        "links": { "type": "array", "items": { "type": "object" }, "description": "Consolidated flow links (pkb-flow-engine §3.1). Array of objects with 'to' or 'from', 'label' (serves|needs|part_of|supports|alternative|settles), optional 'quantum' (0.0..=1.0 or anchor word), optional 'probability' (0.0..=1.0 or anchor word), optional 'effect' (helps|harms), optional 'set_by' (nic|agent-proposed|migrated), optional 'justification'." },
+                        "worth": { "description": "Target worth in [-1.0, 1.0] or anchor word.", "anyOf": [{ "type": "number" }, { "type": "string" }] },
+                        "deadline_class": { "type": "string", "enum": ["fake", "soft", "hard"], "description": "Deadline class for dated nodes: fake | soft | hard (pkb-flow-engine §3.3)." }
                     },
                     "required": ["title", "type"]
                 }))
@@ -479,7 +485,10 @@ impl PkbSearchServer {
                         "unparent": { "type": "boolean", "description": "Pass true to remove a task's parent" },
                         "allow_missing_parent": { "type": "boolean", "description": "Allow setting a parent ID that does not yet exist in PKB (proceeds with warning)" },
                         "force": { "type": "boolean", "description": "Allow reparenting under a closed parent task" },
-                        "recursive": { "type": "boolean", "description": "When setting status to done/cancelled/archived, cascade-close all open descendant tasks. Default: false (rejects if open children exist)." }
+                        "recursive": { "type": "boolean", "description": "When setting status to done/cancelled/archived, cascade-close all open descendant tasks. Default: false (rejects if open children exist)." },
+                        "links": { "type": "array", "items": { "type": "object" }, "description": "Consolidated flow links (pkb-flow-engine §3.1). Array of objects with 'to' or 'from', 'label' (serves|needs|part_of|supports|alternative|settles), optional 'quantum' (0.0..=1.0 or anchor word), optional 'probability' (0.0..=1.0 or anchor word), optional 'effect' (helps|harms), optional 'set_by' (nic|agent-proposed|migrated), optional 'justification'." },
+                        "worth": { "description": "Target worth in [-1.0, 1.0] or anchor word.", "anyOf": [{ "type": "number" }, { "type": "string" }] },
+                        "deadline_class": { "type": "string", "enum": ["fake", "soft", "hard"], "description": "Deadline class for dated nodes: fake | soft | hard (pkb-flow-engine §3.3)." }
                     },
                     "required": ["id"]
                 }))
@@ -579,7 +588,7 @@ impl PkbSearchServer {
                         "orphan": { "type": "boolean", "description": "Filter: no parent and no project" },
                         "title_contains": { "type": "string", "description": "Filter: title substring (case-insensitive)" },
                         "weight_gte": { "type": "integer", "description": "Filter: downstream weight >= N" },
-                        "updates": { "type": "object", "description": "Fields to set (null to remove). Special keys: _add_tags, _remove_tags, _add_depends_on, _remove_depends_on. An `intent` or `priority` key is accepted under Nic's standing delegation to agents — set only from Nic's strategic context read across the graph, never a self-assessment of the batch's own importance, and never propagated from one node onto its siblings." },
+                        "updates": { "type": "object", "description": "Fields to set (null to remove). Special keys: _add_tags, _remove_tags, _add_depends_on, _remove_depends_on. Accepts `links`, `worth`, `deadline_class`. An `intent` or `priority` key is accepted under Nic's standing delegation to agents — set only from Nic's strategic context read across the graph, never a self-assessment of the batch's own importance, and never propagated from one node onto its siblings." },
                         "dry_run": { "type": "boolean", "description": "Preview only (default: true — must explicitly set false to execute)" }
                     },
                     "required": ["updates"]
@@ -852,8 +861,6 @@ impl PkbSearchServer {
     }
 }
 
-
-
 #[cfg(test)]
 mod annotation_tests {
     use super::*;
@@ -963,5 +970,3 @@ mod annotation_tests {
         );
     }
 }
-
-
