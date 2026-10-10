@@ -32,7 +32,7 @@ Traceability tags used throughout:
 
 ## 0. Summary for Nic
 
-**What changes.** Two figures replace today's tuple of eleven terms: what you would fail to gain, and what loss you would fail to avert, if a piece of work were never done. They are never netted into one number. You price the targets. Every link says how much of the thing it points at the work delivers (its *quantum*) and, optionally, how likely that is (its *probability*, default 1.00). Worth flows backwards along links from the targets to the work.
+**What changes.** Two figures replace today's tuple of eleven terms: what you would fail to gain, and what loss you would fail to avert, if a piece of work were never done. They are never netted into one number. Targets are priced: agents make educated price guesses and you review them (S14). Every link says how much of the thing it points at the work delivers (its *quantum*) and, optionally, how likely that is (its *probability*, default 1.00). Worth flows backwards along links from the targets to the work.
 
 **The rule in one line.** A task is worth what you would lose if it were never done, assuming everything else gets done.
 
@@ -370,7 +370,7 @@ The default is 1.00 (S2).
 
 ### 5.6. Target worth scale, positive and negative (S12, S14)
 
-Nic prices every target. The five standing-weight anchors (`pkb-standing-weight-elicitation-instrument`, "Scale") are mirrored for targets to avoid:
+Agents make educated price guesses for every target and Nic reviews them (S14). The five standing-weight anchors (`pkb-standing-weight-elicitation-instrument`, "Scale") are mirrored for targets to avoid:
 
 | Positive anchor | Worth | Negative anchor | Worth |
 |---|---|---|---|

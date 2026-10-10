@@ -38,7 +38,7 @@ Traceability tags follow `flow-rule.md`:
 
 **What it checks:**
 
-1. **Targets.** Each target without a price gets a warning. Today 36 of your 43 targets have none (the predicate is `STRATEGIC_TARGET_TYPES`, counting the 17 goal nodes alongside the 26 targets; `src/graph.rs:1016`, `:1371`), including `targ_safety` and `qut-f71664e8` ("Meet QUT employment obligations"; that id was observed against the live PKB via `export_graph` on 2026-10-06; not reproducible from the committed fixture or `examples.py`). A price outside −1 to +1, or a price on something that is not a target, is an error.
+1. **Targets.** Each target without a price gets a warning. Today 83 of your 90 strategic nodes have none (the predicate is `STRATEGIC_TARGET_TYPES`, counting the 17 goal nodes alongside the 73 targets; `src/graph.rs:1016`, `:1371`), including `targ_safety` and `qut-f71664e8` ("Meet QUT employment obligations"; that id was observed against the live PKB via `export_graph` on 2026-10-06; not reproducible from the committed fixture or `examples.py`). A price outside −1 to +1, or a price on something that is not a target, is an error.
 2. **Links.** A label, sign, quantum or probability the maths cannot read is an error. Today the stated weights "high", "medium" and "Marginal" sit on live links (observed against the live PKB via `export_graph` on 2026-10-06; not reproducible from the committed fixture or `examples.py`). Each scores zero, with only a parse warning that nothing acts on. Links pointing at deleted or cancelled nodes, and two links joining the same pair, are warnings. A link with no value is just noted, because the default is a legitimate answer (S7).
 3. **Loops.** Loops are allowed, and the live graph has three. A loop is an error only when every link in it is full strength and every node on it is open. Such a loop has no stable answer, and the maths refuses it. Today's cycle check misses one live case of this shape, a child that depends on its own parent. This rests on a Python re-implementation of today's rule (`old_hard_cycles` in `examples.py`), not on a run of `pkb lint`. It also flags loops the maths would accept.
 4. **Decisions.** A decision with only one option is a warning, and so is "finding out" work pointed at something that is not a decision. Neither earns anything.
@@ -52,7 +52,7 @@ Traceability tags follow `flow-rule.md`:
 **Decisions waiting on you:** twelve linter questions in section 10. The first three matter most:
 
 - **L1.** Decided (2026-10-10): parent cycle stays an error at quantum 0 (Q1 settled: a parent cycle is a filing mistake).
-- **L5.** Should an unpriced target fail the lint, so that pricing all 43 is enforced, or stay a warning?
+- **L5.** Should an unpriced target fail the lint, so that pricing all 90 strategic nodes is enforced, or stay a warning?
 - **L4.** Decided (2026-10-10): full-strength loops are reported by the linter, never refused at write time.
 
 ---
@@ -161,7 +161,7 @@ An **assumed** example edits a real node hypothetically, because the live graph 
 
 | Rule | Fires when | Severity | Real example | Agent may fix unasked? | Traces to |
 |---|---|---|---|---|---|
-| `flow-target-unpriced` | An open target (matching `STRATEGIC_TARGET_TYPES`, `src/graph.rs:1016`, including `type: goal` per `:1371`) has no `worth` | warning | **Observed:** 36 of 43 open targets. `targ_safety` has 6 incoming edges, 3 from open work, and all of that work gets nothing from it. Live (observed against the live PKB via `export_graph` on 2026-10-06; not reproducible from the committed fixture or `examples.py`): `qut-f71664e8`, `admin-73e215bc` | propose | S14, U20, §5.6 |
+| `flow-target-unpriced` | An open target (matching `STRATEGIC_TARGET_TYPES`, `src/graph.rs:1016`, including `type: goal` per `:1371`) has no `worth` | warning | **Observed:** 83 of 90 open targets. `targ_safety` has 6 incoming edges, 3 from open work, and all of that work gets nothing from it. Live (observed against the live PKB via `export_graph` on 2026-10-06; not reproducible from the committed fixture or `examples.py`): `qut-f71664e8`, `admin-73e215bc` | propose | S14, U20, §5.6 |
 | `flow-worth-invalid` | `worth` is not a number in −1.0..=1.0 | error | **Assumed:** `targ_4e2cc92a` given `worth: high` or `worth: 6` | no | S12, S14, §5.6 |
 | `flow-worth-not-target` | A node that is not a target (not in `STRATEGIC_TARGET_TYPES`, `src/graph.rs:1016`) carries `worth` | error | **Assumed:** `worth: 0.6` on task `proj-76fbc546`, which would make it a source of its own worth. The same mistake under today's model is observed on the live PKB (observed against the live PKB via `export_graph` on 2026-10-06; not reproducible from the committed fixture or `examples.py`): `severity` on tasks `aops_bug_subagents_fabricated_completion_reports` and `aops_bug_learn_requires_trace_halts_on_cowork` (`pkb-rules.md` §6.2 forbids it) | no | S14, §12 inputs |
 
@@ -345,7 +345,7 @@ Each criterion is something an observer can check by running `pkb lint --refs --
 The questions are ordered by consequence.
 
 1. **L1. Parent cycles if parent links weaken (Q1).** Settled: Q1 gives `part_of` quantum 0. Decided (2026-10-10): a parent cycle stays an error at quantum 0, because a parent cycle is a filing mistake whatever its strength.
-2. **L5. Unpriced targets: warning or error?** As an error, `pkb lint` would fail until all 43 targets are priced, which enforces S14. As a warning, the graph stays usable while pricing is under way (U20). Proposed: warning.
+2. **L5. Unpriced targets: warning or error?** As an error, `pkb lint` would fail until all 90 strategic nodes are priced, which enforces S14. As a warning, the graph stays usable while pricing is under way (U20). Proposed: warning.
 3. **L4. Refuse at write time?** Decided (2026-10-10): full-strength loops are reported by the linter, never refused at write time. Write-time rejection is retired.
 4. **L2. Harms on hard links.** Can a `needs` or `part_of` edge carry `effect: harms`? Neither has an obvious meaning. Should the linter make that an error? This spec leaves it unchecked, because the label set is itself open (Q21).
 5. **L3. Dangling links and links to cancelled nodes.** Both drop worth silently. Should they be errors, rather than warnings as today? On the graph that would put 17 dangling dependency and contribution references and 19 links to cancelled nodes into the error count. The 17 was observed against the live PKB via `export_graph` on 2026-10-06; not reproducible from the committed fixture or `examples.py`; the 19 is from the fixture and is reproduced by `examples.py`.
