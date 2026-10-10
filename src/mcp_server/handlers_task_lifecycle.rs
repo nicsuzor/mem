@@ -1,10 +1,10 @@
+use crate::graph_store::GraphStore;
 use rmcp::model::*;
 use rmcp::ErrorData as McpError;
 use serde_json::Value as JsonValue;
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
-use crate::graph_store::GraphStore;
 
 use super::PkbSearchServer;
 
@@ -49,7 +49,11 @@ impl PkbSearchServer {
     /// `status: in_progress`, optionally record `assignee`/`session_id`, and
     /// return the task via get_task. No new node is created — this is
     /// distinct from `claim_template_instance`'s datestamped-copy behavior.
-    pub(crate) fn claim_task_in_place(&self, id: &str, args: &JsonValue) -> Result<CallToolResult, McpError> {
+    pub(crate) fn claim_task_in_place(
+        &self,
+        id: &str,
+        args: &JsonValue,
+    ) -> Result<CallToolResult, McpError> {
         let mut update_args = serde_json::Map::new();
         update_args.insert("id".to_string(), JsonValue::String(id.to_string()));
         update_args.insert(
@@ -106,13 +110,7 @@ impl PkbSearchServer {
         // (aops_ad8d9e07). The instance's tags are read straight from the
         // template's own frontmatter `tags` field below (see
         // `template_tags`), after `fm` is parsed.
-        let (
-            template_id,
-            template_path,
-            template_label,
-            template_intent,
-            template_assignee,
-        ) = {
+        let (template_id, template_path, template_label, template_intent, template_assignee) = {
             let graph = self.graph.read();
             let node = graph.resolve(id).ok_or_else(|| McpError {
                 code: ErrorCode::INVALID_PARAMS,
@@ -391,7 +389,10 @@ impl PkbSearchServer {
         }
     }
 
-    pub(crate) fn handle_complete_task(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+    pub(crate) fn handle_complete_task(
+        &self,
+        args: &JsonValue,
+    ) -> Result<CallToolResult, McpError> {
         let id = args
             .get("id")
             .and_then(|v| v.as_str())
@@ -424,9 +425,11 @@ impl PkbSearchServer {
             .open_descendants(&node.id)
             .into_iter()
             .filter_map(|desc_id| {
-                graph
-                    .get_node(&desc_id)
-                    .and_then(|n| self.abs_path_for_node(n, Some(&graph)).ok().map(|p| (desc_id, p)))
+                graph.get_node(&desc_id).and_then(|n| {
+                    self.abs_path_for_node(n, Some(&graph))
+                        .ok()
+                        .map(|p| (desc_id, p))
+                })
             })
             .collect();
 
@@ -463,16 +466,16 @@ impl PkbSearchServer {
                 serde_json::Value::String("done".to_string()),
             );
             for (desc_id, desc_path) in &open_descs {
-                crate::document_crud::update_document(desc_path, desc_updates.clone())
-                    .map_err(|e| McpError {
+                crate::document_crud::update_document(desc_path, desc_updates.clone()).map_err(
+                    |e| McpError {
                         code: ErrorCode::INTERNAL_ERROR,
                         message: Cow::from(format!(
                             "Failed to recursively close child task '{desc_id}': {e}"
                         )),
                         data: None,
-                    })?;
-                if let Some(doc) = crate::pkb::parse_file_relative(desc_path, &self.pkb_root)
-                {
+                    },
+                )?;
+                if let Some(doc) = crate::pkb::parse_file_relative(desc_path, &self.pkb_root) {
                     self.rebuild_graph_for_pkb_document(&doc);
                     self.try_upsert_document(&doc);
                 }
@@ -645,14 +648,22 @@ impl PkbSearchServer {
             }
         }
 
+        let sid_len = session_id.floor_char_boundary(session_id.len().min(8));
+        let short_sid = &session_id[..sid_len];
+
+        // Epic ID is adhoc_{hash8} (14 chars) + '_' + slug + '.md' (3 chars) = 18 chars overhead.
+        // MAX_FILENAME_LEN is 80 chars, leaving at most 62 chars for slug.
+        // Prefix slug is 'session_{short_sid}' (at most 16 chars) + '_' (1 char) = 17 chars.
+        // That leaves 45 chars for hint slug. We truncate hint to at most 40 chars.
         let hint = title_hint.trim();
-        let hint_end = hint.floor_char_boundary(hint.len().min(80));
+        let hint_end = hint.floor_char_boundary(hint.len().min(40));
         let truncated = hint[..hint_end].trim_end();
         let title = if truncated.is_empty() {
-            format!("Session {session_id}")
+            format!("Session {short_sid}")
         } else {
-            format!("Session {session_id}: {truncated}")
+            format!("Session {short_sid}: {truncated}")
         };
+
 
         let fields = crate::document_crud::TaskFields {
             title,
@@ -711,16 +722,26 @@ impl PkbSearchServer {
 
         let summary = args.get("summary").and_then(|v| v.as_str()).unwrap_or("");
 
-        // Truncate summary to 200 chars for title
+        // Dynamically clamp title length based on project prefix length so generated filename
+        // stays strictly within MAX_FILENAME_LEN (80 chars).
+        // Fixed overhead: prefix (project) + 1 ('_') + 8 (hash) + 1 ('_') + 3 ('.md') = project.len() + 13.
+        let max_title_len = crate::document_crud::MAX_FILENAME_LEN
+            .saturating_sub(project.len() + 14)
+            .clamp(15, 50);
+
         let mut title = summary.trim().replace('\n', " ");
-        if title.len() > 200 {
-            let end = title.floor_char_boundary(200);
+        if title.len() > max_title_len {
+            let end = title.floor_char_boundary(max_title_len);
             let last_space = title[..end].rfind(' ').unwrap_or(end);
             title.truncate(last_space);
         }
-        if title.is_empty() {
-            title = "Ad-hoc Session Task".to_string();
-        }
+        let title_clean = title.trim();
+        let title = if title_clean.is_empty() {
+            "Ad-hoc Session Task".to_string()
+        } else {
+            title_clean.to_string()
+        };
+
 
         // Ensure adhoc-sessions root exists
         crate::document_crud::ensure_adhoc_sessions_root(&self.pkb_root).map_err(|e| McpError {
@@ -840,16 +861,12 @@ impl PkbSearchServer {
             })?;
 
         // Validate status enum with helpful suggestions
-        let valid_statuses = [
-            "done",
-            "review",
-            "blocked",
-            "cancelled",
-            "partial",
-        ];
+        let valid_statuses = ["done", "review", "blocked", "cancelled", "partial"];
         if !valid_statuses.contains(&status) {
             let suggestion = match status {
-                "complete" | "completed" | "merge_ready" | "merge-ready" => " Did you mean \"done\"?",
+                "complete" | "completed" | "merge_ready" | "merge-ready" => {
+                    " Did you mean \"done\"?"
+                }
                 "cancel" => " Did you mean \"cancelled\"?",
                 _ => "",
             };
@@ -954,24 +971,25 @@ impl PkbSearchServer {
         // Applies to terminal success statuses: done.
         // Escalation / handback statuses (blocked, cancelled, review, partial)
         // do not reject open children so escalation paths stay open.
-        let recursive_close_descs: Vec<(String, std::path::PathBuf)> =
-            if status == "done" {
-                let recursive = args
-                    .get("recursive")
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(false);
-                let open_descs: Vec<(String, std::path::PathBuf)> = graph
-                    .open_descendants(&node.id)
-                    .into_iter()
-                    .filter_map(|desc_id| {
-                        graph
-                            .get_node(&desc_id)
-                            .and_then(|n| self.abs_path_for_node(n, Some(&graph)).ok().map(|p| (desc_id, p)))
+        let recursive_close_descs: Vec<(String, std::path::PathBuf)> = if status == "done" {
+            let recursive = args
+                .get("recursive")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            let open_descs: Vec<(String, std::path::PathBuf)> = graph
+                .open_descendants(&node.id)
+                .into_iter()
+                .filter_map(|desc_id| {
+                    graph.get_node(&desc_id).and_then(|n| {
+                        self.abs_path_for_node(n, Some(&graph))
+                            .ok()
+                            .map(|p| (desc_id, p))
                     })
-                    .collect();
-                if !open_descs.is_empty() && !recursive {
-                    let ids: Vec<&str> = open_descs.iter().map(|(id, _)| id.as_str()).collect();
-                    return Err(McpError {
+                })
+                .collect();
+            if !open_descs.is_empty() && !recursive {
+                let ids: Vec<&str> = open_descs.iter().map(|(id, _)| id.as_str()).collect();
+                return Err(McpError {
                         code: ErrorCode::INVALID_PARAMS,
                         message: Cow::from(format!(
                             "Cannot release '{}' as '{}': {} open child task(s) still exist: {}. \
@@ -980,15 +998,15 @@ impl PkbSearchServer {
                         )),
                         data: None,
                     });
-                }
-                if recursive {
-                    open_descs
-                } else {
-                    vec![]
-                }
+            }
+            if recursive {
+                open_descs
             } else {
                 vec![]
-            };
+            }
+        } else {
+            vec![]
+        };
 
         // Failure-reason-mandatory gate
         // specs/enforcement/evidence-contract.md: releasing to a handback status that isn't a clean
@@ -996,8 +1014,7 @@ impl PkbSearchServer {
         // `blocked`) — the "evidence or a stated failure reason" contract's
         // failure-path half. Success statuses already require `summary`
         // above, unchanged. Presence-only: no content inspection.
-        if Self::FAILURE_HANDBACK_STATUSES.contains(&status)
-        {
+        if Self::FAILURE_HANDBACK_STATUSES.contains(&status) {
             let has_reason = reason.is_some_and(|r| !r.trim().is_empty());
             if !has_reason {
                 let field_hint = "reason";
@@ -1034,16 +1051,18 @@ impl PkbSearchServer {
             // Phase 1: rewrite descendant files + parse them. Sequential — the
             // file writes are I/O bound and not worth rayon for typical
             // cascades (<100 docs). Errors fail loud instead of being silently skipped.
-            let mut parsed_descs: Vec<crate::pkb::PkbDocument> = Vec::with_capacity(recursive_close_descs.len());
+            let mut parsed_descs: Vec<crate::pkb::PkbDocument> =
+                Vec::with_capacity(recursive_close_descs.len());
             for (desc_id, desc_path) in &recursive_close_descs {
-                crate::document_crud::update_document(desc_path, desc_updates.clone())
-                    .map_err(|e| McpError {
+                crate::document_crud::update_document(desc_path, desc_updates.clone()).map_err(
+                    |e| McpError {
                         code: ErrorCode::INTERNAL_ERROR,
                         message: Cow::from(format!(
                             "Failed to recursively close child task '{desc_id}': {e}"
                         )),
                         data: None,
-                    })?;
+                    },
+                )?;
                 if let Some(doc) = crate::pkb::parse_file_relative(desc_path, &self.pkb_root) {
                     parsed_descs.push(doc);
                 }
@@ -1276,7 +1295,10 @@ impl PkbSearchServer {
     // NEW TOOLS: Memory CRUD, decompose, dependency tree, children
     // =========================================================================
 
-    pub(crate) fn handle_decompose_task(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+    pub(crate) fn handle_decompose_task(
+        &self,
+        args: &JsonValue,
+    ) -> Result<CallToolResult, McpError> {
         let parent_id = args
             .get("parent_id")
             .and_then(|v| v.as_str())
@@ -1339,13 +1361,13 @@ impl PkbSearchServer {
                     let prefix = node.node_type.clone().unwrap_or_else(|| "task".to_string());
                     // Read parent's raw frontmatter `project` field so subtasks can inherit it.
                     // GraphNode.project is a computed ancestor label, not the frontmatter value.
-                    let parent_project =
-                        crate::pkb::parse_file_relative(&self.abs_path_for_node(node, Some(&graph))?, &self.pkb_root)
-                            .and_then(|doc| doc.frontmatter)
-                            .and_then(|fm| {
-                                fm.get("project").and_then(|v| v.as_str()).map(String::from)
-                            })
-                            .or_else(|| node.project.clone());
+                    let parent_project = crate::pkb::parse_file_relative(
+                        &self.abs_path_for_node(node, Some(&graph))?,
+                        &self.pkb_root,
+                    )
+                    .and_then(|doc| doc.frontmatter)
+                    .and_then(|fm| fm.get("project").and_then(|v| v.as_str()).map(String::from))
+                    .or_else(|| node.project.clone());
                     (prefix, parent_project)
                 }
             }
@@ -1417,9 +1439,10 @@ impl PkbSearchServer {
                                     unresolvable.push(dep.to_string());
                                 }
                             } else if !title_to_id.contains_key(&dep.to_lowercase())
-                                && graph.resolve(dep).is_none() {
-                                    unresolvable.push(dep.to_string());
-                                }
+                                && graph.resolve(dep).is_none()
+                            {
+                                unresolvable.push(dep.to_string());
+                            }
                         }
                     }
                 }
@@ -1438,7 +1461,8 @@ impl PkbSearchServer {
 
         let mut created: Vec<(String, String, PathBuf)> = Vec::new();
         static ID_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
-            regex::Regex::new(r"^([a-z0-9_]+_[0-9a-f]{8}|[a-z]+-[0-9a-f]{8})").expect("valid static regex")
+            regex::Regex::new(r"^([a-z0-9_]+_[0-9a-f]{8}|[a-z]+-[0-9a-f]{8})")
+                .expect("valid static regex")
         });
 
         let mut severity_warning = false;
@@ -1487,7 +1511,9 @@ impl PkbSearchServer {
             if let Err(msg) = graph.would_create_hard_cycle_edges(&edges_refs) {
                 return Err(McpError {
                     code: ErrorCode::INVALID_PARAMS,
-                    message: Cow::from(format!("Circular dependency detected in decompose_task: {msg}")),
+                    message: Cow::from(format!(
+                        "Circular dependency detected in decompose_task: {msg}"
+                    )),
                     data: None,
                 });
             }
@@ -1652,5 +1678,4 @@ impl PkbSearchServer {
 
         Ok(CallToolResult::success(vec![Content::text(output)]))
     }
-
 }

@@ -2830,3 +2830,40 @@ read_timestamp_utc: 2026-08-31T01:38:00.370857830Z\n";
             summary.errors[0].error
         );
     }
+
+    #[test]
+    fn test_adhoc_release_with_uuid_session_id_and_long_summary_succeeds() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::create_dir_all(root.join("tasks")).unwrap();
+        write_test_polecat_yaml(root);
+
+        let graph = GraphStore::build(&[], root);
+        let store = VectorStore::new(3);
+        let embedder = Embedder::new_dummy();
+        let db_path = root.join("db");
+        let server = PkbSearchServer::new(
+            Arc::new(RwLock::new(store)),
+            Arc::new(embedder),
+            root.to_path_buf(),
+            db_path,
+            Arc::new(RwLock::new(graph)),
+        );
+
+        let session_id = "c9927f3f-e654-493b-98f1-2d06d37b0364";
+        let summary = "This is an extensive release summary for an ad-hoc session that implements important feature work and verifies everything end to end";
+        let res = server.handle_release_task(&json!({
+            "project": "adhoc-sessions",
+            "session_id": session_id,
+            "status": "done",
+            "summary": summary,
+            "completion_evidence": "All tests passed and verified",
+        }));
+
+        assert!(
+            res.is_ok(),
+            "ad-hoc release with UUID session_id and long summary must succeed, got error: {:?}",
+            res.err()
+        );
+    }
+
