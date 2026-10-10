@@ -16,6 +16,7 @@ pub mod embeddings;
 pub mod eval;
 pub mod excalidraw;
 pub mod facts;
+pub mod flow;
 pub mod graph;
 pub mod graph_display;
 pub mod graph_store;
