@@ -648,14 +648,22 @@ impl PkbSearchServer {
             }
         }
 
+        let sid_len = session_id.floor_char_boundary(session_id.len().min(8));
+        let short_sid = &session_id[..sid_len];
+
+        // Epic ID is adhoc_{hash8} (14 chars) + '_' + slug + '.md' (3 chars) = 18 chars overhead.
+        // MAX_FILENAME_LEN is 80 chars, leaving at most 62 chars for slug.
+        // Prefix slug is 'session_{short_sid}' (at most 16 chars) + '_' (1 char) = 17 chars.
+        // That leaves 45 chars for hint slug. We truncate hint to at most 40 chars.
         let hint = title_hint.trim();
-        let hint_end = hint.floor_char_boundary(hint.len().min(35));
+        let hint_end = hint.floor_char_boundary(hint.len().min(40));
         let truncated = hint[..hint_end].trim_end();
         let title = if truncated.is_empty() {
-            format!("Session {session_id}")
+            format!("Session {short_sid}")
         } else {
-            format!("Session {session_id}: {truncated}")
+            format!("Session {short_sid}: {truncated}")
         };
+
 
         let fields = crate::document_crud::TaskFields {
             title,
@@ -714,16 +722,26 @@ impl PkbSearchServer {
 
         let summary = args.get("summary").and_then(|v| v.as_str()).unwrap_or("");
 
-        // Truncate summary to ~45 chars for title so ad-hoc task filename stays within MAX_FILENAME_LEN (80 chars)
+        // Dynamically clamp title length based on project prefix length so generated filename
+        // stays strictly within MAX_FILENAME_LEN (80 chars).
+        // Fixed overhead: prefix (project) + 1 ('_') + 8 (hash) + 1 ('_') + 3 ('.md') = project.len() + 13.
+        let max_title_len = crate::document_crud::MAX_FILENAME_LEN
+            .saturating_sub(project.len() + 14)
+            .clamp(15, 50);
+
         let mut title = summary.trim().replace('\n', " ");
-        if title.len() > 45 {
-            let end = title.floor_char_boundary(45);
+        if title.len() > max_title_len {
+            let end = title.floor_char_boundary(max_title_len);
             let last_space = title[..end].rfind(' ').unwrap_or(end);
             title.truncate(last_space);
         }
-        if title.is_empty() {
-            title = "Ad-hoc Session Task".to_string();
-        }
+        let title_clean = title.trim();
+        let title = if title_clean.is_empty() {
+            "Ad-hoc Session Task".to_string()
+        } else {
+            title_clean.to_string()
+        };
+
 
         // Ensure adhoc-sessions root exists
         crate::document_crud::ensure_adhoc_sessions_root(&self.pkb_root).map_err(|e| McpError {
