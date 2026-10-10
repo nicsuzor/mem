@@ -430,7 +430,7 @@ There are three levels. Each is checkable (M3, M10, M14).
 
 **How to reproduce:** `python3 specs/flow-migration/dryrun.py`. It runs in under a second.
 
-The dry run applies §5 to every node of the fixture, reads the migrated graph as the engine would (`read_migrated`), and runs the flow-rule reference calculator. As a cross-check it also runs flow-rule's own adapter (`flow.from_export`) on the unmigrated fixture. The two agree on all 1,490 open nodes. So the stored form proposed in §5, read back, gives the same numbers as FR §8's adapter. No files are written; the check on real files is M7.
+The dry run applies §5 to every node of the fixture, reads the migrated graph as the engine would (`read_migrated`), and runs the flow-rule reference calculator. As a cross-check it also runs flow-rule's own adapter (`flow.from_export`) on the unmigrated fixture. The two agree on all 1,489 open nodes. So the stored form proposed in §5, read back, gives the same numbers as FR §8's adapter. No files are written; the check on real files is M7.
 
 **Headline:**
 
@@ -602,7 +602,7 @@ Each criterion is something an observer can check. The test beside it is the one
 | M4 | A second `--apply` writes nothing | T3 | run apply twice: the second commit is empty; add a bare soft link after apply and re-run: it is not written. Reference: `dryrun.py` §4 |
 | M5 | The migration commit changes only frontmatter. Its added keys are a subset of §5.3, and no body line changes | T1, T3 | parse the diff; every hunk is inside frontmatter and every added key is allowed |
 | M6 | Every changed value has exactly one ledger row, and every ledger row matches a change | T3 | join the ledger with the diff; no unmatched rows on either side; reference: 346 rows on the fixture |
-| M7 | After apply, the engine's shadow `gain` and `loss_averted` equal the dry run's for every open node | I13, FR §12 | compare the shadow export with the dry-run table; reference: `dryrun.py` §5 "identical to flow-rule's own adapter: 1490 of 1490" |
+| M7 | After apply, the engine's shadow `gain` and `loss_averted` equal the dry run's for every open node | I13, FR §12 | compare the shadow export with the dry-run table; reference: `dryrun.py` §5 "identical to flow-rule's own adapter: 1489 of 1489" |
 | M8 | Each pricing answer writes `worth` per FR §5.6, and only that, plus `deadline_class` for the dates asked | T2, S14, U20 | price one target and class one date; the diff shows those two keys only |
 | M9 | Under MQ1, cutover refuses while a target lacks `worth` and names it | T2, S14, MQ1 | remove one `worth`; the cutover command exits non-zero with that id |
 | M10 | Setting `ranking: legacy` after cutover restores the legacy order exactly | T3, T5 | list before cutover, cut over, set legacy, list again, diff empty |
