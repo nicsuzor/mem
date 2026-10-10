@@ -206,7 +206,7 @@ impl PkbSearchServer {
                     "type": "object",
                     "properties": {
                         "title": { "type": "string", "description": "Document title (required)" },
-                        "type": { "type": "string", "enum": ["task", "learn", "pr", "template", "target", "note", "knowledge", "memory", "insight", "observation", "contact", "document", "reference", "review", "case", "spec", "prototype", "index"], "description": "Document type (required): note, knowledge, memory, insight, observation, task, target, etc." },
+                        "type": { "type": "string", "enum": ["task", "learn", "pr", "template", "target", "note", "knowledge", "memory", "insight", "observation", "contact", "document", "reference", "review", "case", "spec", "prototype", "index", "daily"], "description": "Document type (required): note, knowledge, memory, insight, observation, task, target, etc." },
                         "id": { "type": "string", "description": "Document ID (auto-generated if omitted)" },
                         "tags": { "type": "array", "items": { "type": "string" }, "description": "Free-form tags for search and filtering" },
                         "body": { "type": "string", "description": "Markdown body. Refer to other PKB files by wikilink (`[[id]]`) or PKB-root-relative path; a machine-specific path such as `~/brain/...` or `/home/nic/brain/...` is rejected with error_type `machine_specific_path`." },
