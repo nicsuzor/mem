@@ -539,7 +539,11 @@ impl DisplayTask {
             blocks: node.blocks.clone(),
             parent: node.parent.clone(),
             due: due_date,
-            deadline_class: None, // Will default to Fake on resolution if due is Some
+            deadline_class: node.deadline_class.map(|dc| match dc {
+                crate::graph::DeadlineClass::Fake => DeadlineClass::Fake,
+                crate::graph::DeadlineClass::Soft => DeadlineClass::Soft,
+                crate::graph::DeadlineClass::Hard => DeadlineClass::Hard,
+            }),
             effort_days: eff,
             flow: flow.cloned(),
         }

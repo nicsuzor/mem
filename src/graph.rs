@@ -1134,6 +1134,9 @@ pub struct GraphNode {
     /// Deadline class for dated nodes: fake | soft | hard (spec pkb-flow-engine §3.3).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub deadline_class: Option<DeadlineClass>,
+    /// Computed flow output (pkb-flow-engine §7.1, §7.2).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub flow: Option<crate::flow::FlowOutput>,
     /// Structured parse warnings collected during frontmatter validation.
     /// Surfaced by the linter and `/maintain`; non-fatal at parse time.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -2961,6 +2964,7 @@ impl GraphNode {
             links,
             worth,
             deadline_class,
+            flow: None,
             parse_warnings,
         }
     }
