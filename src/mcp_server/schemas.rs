@@ -328,7 +328,7 @@ impl PkbSearchServer {
             .with_annotations(ToolAnnotations::new().read_only(false).destructive(false)),
             Tool::new(
                 "release_task",
-                "Release a task to a terminal or handoff status (done, review, blocked, cancelled, partial). Supersedes complete_task (use status='done'). Performs session handover by recording work history, linking PRs/issues, and tracking follow-up work. If 'id' is omitted, an ad-hoc session task is created (requires `project` parameter). Evidence-or-failure-reason contract: `summary` (or `completion_evidence`) is always required; releasing to blocked/cancelled/review/partial additionally requires a non-empty `reason` (or `blocker`, for `blocked`) — a handback with neither is rejected. Tasks created before this requirement shipped release under the old, optional rules.",
+                "Release a task to a terminal or handoff status (done, review, blocked, cancelled, partial). Supersedes complete_task (use status='done'). Performs session handover by recording work history, linking PRs/issues, and tracking follow-up work. If 'id' is omitted, an ad-hoc session task is created (requires `project` parameter). Evidence-or-failure-reason contract: `summary` (or `completion_evidence`) is always required; releasing to done requires all acceptance checklist items in the task body to be ticked (- [x]); releasing to blocked/cancelled/review/partial additionally requires a non-empty `reason` (or `blocker`, for `blocked`) — a handback with neither is rejected. Tasks created before this requirement shipped release under the old, optional rules.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -340,7 +340,7 @@ impl PkbSearchServer {
                             "description": "Target status"
                         },
                         "summary": { "type": "string", "description": "What was done and outcome. 1-3 sentences minimum. Always required (or provide completion_evidence)." },
-                        "completion_evidence": { "type": "string", "description": "Alias for summary: what was done and outcome (required when status is done)." },
+                        "completion_evidence": { "type": "string", "description": "Alias for summary: what was done and outcome (required when status is done). Releasing as done requires all acceptance checklist items to be checked (- [x])." },
                         "pr_url": { "type": "string", "description": "Pull request or commit URL" },
                         "branch": { "type": "string", "description": "Git branch name (optional)" },
                         "blocker": { "type": "string", "description": "What is blocking this task. Required (non-empty), together with `reason`, when status=blocked — at least one of the two must be given." },

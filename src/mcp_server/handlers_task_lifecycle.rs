@@ -1032,6 +1032,31 @@ impl PkbSearchServer {
         let node_id = node.id.clone();
         drop(graph);
 
+        // academicOps#2747: release to done requires all acceptance criteria checkboxes to be ticked.
+        if status == "done" {
+            let doc = crate::pkb::parse_file_relative(&abs_path, &self.pkb_root)
+                .or_else(|| crate::pkb::parse_file(&abs_path));
+            if let Some(doc) = doc {
+                let unticked = crate::graph::find_unticked_acceptance_items(&doc.body);
+                if !unticked.is_empty() {
+                    let items_list: Vec<String> = unticked
+                        .iter()
+                        .map(|item| format!("  - [ ] {item}"))
+                        .collect();
+                    return Err(McpError {
+                        code: ErrorCode::INVALID_PARAMS,
+                        message: Cow::from(format!(
+                            "Cannot release task \"{id}\" as \"done\": {} unticked acceptance item(s) remain:\n{}\n\n\
+                             All acceptance items must be verified and checked (- [x]) before releasing as done.",
+                            unticked.len(),
+                            items_list.join("\n")
+                        )),
+                        data: None,
+                    });
+                }
+            }
+        }
+
         // Cascade-close open descendants when recursive=true. Batch the
         // graph patches into a single write lock + one reclassify, and queue
         // re-embeds for the background worker, so 100 descendants don't cost
