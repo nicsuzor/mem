@@ -2199,19 +2199,13 @@ impl GraphStore {
         // self" holds by construction for any node carrying real value
         // (below), not just up to a 20-day cap.
         //
-        // `deadline_pressure_active` records whether a `due` date was present
-        // and parseable at all (regardless of how far away) -- it gates the
-        // stakeholder-waiting day-ramp below, so the two lateness clocks
-        // never compound multiplicatively.
         let mut deadline_pressure_multiplier: f64 = 1.0;
-        let mut deadline_pressure_active = false;
 
         if let Some(ref due) = node.due {
             let len = std::cmp::min(10, due.len());
             if let Ok(due_date) =
                 chrono::NaiveDate::parse_from_str(&due[..due.floor_char_boundary(len)], "%Y-%m-%d")
             {
-                deadline_pressure_active = true;
                 let days_until = (due_date - today).num_days();
                 let effort_days = node
                     .effort
@@ -2318,47 +2312,6 @@ impl GraphStore {
             }
         }
 
-        let mut stakeholder_waiting: i64 = 0;
-        // Stakeholder waiting urgency: a named person is waiting on this task.
-        // Base +2000 (someone is waiting), growing +200/day, capped at +8000 total.
-        //
-        // Ruling (Nic, 2026-09-11, mem_537e44a9 "Verdict: stakeholder_waiting /
-        // human gate"): this clock fires only when `stakeholder` is actually
-        // set — never merely because `is_human_gate()` is true. A bare
-        // `decision`-tagged node (or any `status: review` node) with no named
-        // stakeholder has nobody waiting on it, so it earns no waiting clock.
-        // `is_human_gate()` continues to serve the courtesy-decay gate only
-        // (`has_real_stakes`, above) and `focus_picks` surfacing — never this
-        // accrual.
-        let is_waiting = node.stakeholder.is_some();
-        if is_waiting {
-            if deadline_pressure_active {
-                // A `due` date already carries the lateness signal, via the
-                // deadline pressure multiplier applied to this very base
-                // below -- growing this term by days-waited too would
-                // compound the same lateness twice (once linearly here, once
-                // again through the multiplier). Keep only the "someone is
-                // waiting" base; the multiplier does the rest.
-                stakeholder_waiting = 2000;
-            } else {
-                let anchor = node.waiting_since.as_ref().or(node.created.as_ref());
-                if let Some(anchor_str) = anchor {
-                    let len = std::cmp::min(10, anchor_str.len());
-                    if let Ok(anchor_date) = chrono::NaiveDate::parse_from_str(
-                        &anchor_str[..anchor_str.floor_char_boundary(len)],
-                        "%Y-%m-%d",
-                    ) {
-                        let days = (today - anchor_date).num_days().max(0);
-                        stakeholder_waiting = 2000 + std::cmp::min(days * 200, 6000);
-                    } else {
-                        stakeholder_waiting = 2000; // stakeholder/gate set but unparseable date
-                    }
-                } else {
-                    stakeholder_waiting = 2000; // stakeholder/gate set but no date at all
-                }
-            }
-        }
-
         let urgency_term = node.urgency.round() as i64;
         let voi_term = node.voi_value.map(|v| v.round() as i64).unwrap_or(0);
         // Value lineage (Phase 2): the sanctioned importance channel
@@ -2368,8 +2321,9 @@ impl GraphStore {
         // was limited to (specs/ranking.md §3).
         let value_lineage_term = node.value_lineage.round() as i64;
 
-        // The task's own value points -- intent, a named stakeholder waiting,
-        // and priced target lineage -- are what deadline pressure multiplies.
+        // The task's own value points -- intent and priced target lineage --
+        // are what deadline pressure multiplies (stakeholder-waiting points
+        // removed per 2026-10-12 ruling, spec_866ee53d point 21).
         // `urgency_term` and `voi_term` are added unmultiplied: `urgency`
         // already carries its own time-value curve (`f(slack)`, §4.3) and
         // double-applying deadline pressure on top of it would compound two
@@ -2378,7 +2332,7 @@ impl GraphStore {
         // with no value points has nothing for a deadline to amplify -- its
         // `cost_of_delay` still carries whatever `urgency_term`/`voi_term` it
         // earns on their own.
-        let value_points = intent_pressure + stakeholder_waiting + value_lineage_term;
+        let value_points = intent_pressure + value_lineage_term;
         let deadline_boosted_value =
             (value_points as f64 * deadline_pressure_multiplier).round() as i64;
 
@@ -7421,8 +7375,8 @@ mod tests {
 
         // A: overdue `due` (13d late, effort 1d) AND a stakeholder waiting 28d.
         // ratio = 1 + 13 + 1 = 15, multiplier = 1 + 2*sqrt(15) = 8.746.
-        // Stakeholder is suppressed to its +2000 base (a `due` is present).
-        // value_points = 3000 + 2000 = 5000; cost_of_delay = round(5000*8.746) = 43730.
+        // Under 2026-10-12 ruling (spec_866ee53d point 21), stakeholder adds 0 points.
+        // value_points = 3000; cost_of_delay = round(3000*8.746) = 26238.
         let mut a = GraphNode::default();
         a.value_lineage = BASELINE_VALUE_LINEAGE;
         a.due = Some(
@@ -7434,8 +7388,9 @@ mod tests {
         a.stakeholder = Some("external-party".to_string());
         a.waiting_since = Some(d28_ago.clone());
 
-        // B: stakeholder waiting 28d, NO `due`. Full ramp: 2000 + min(28*200, 6000) = 7600.
-        // No `due` -> multiplier stays neutral (1.0). cost_of_delay = 3000 + 7600 = 10600.
+        // B: stakeholder waiting 28d, NO `due`.
+        // Under 2026-10-12 ruling, stakeholder adds 0 points.
+        // No `due` -> multiplier stays neutral (1.0). cost_of_delay = 3000.
         let mut b = GraphNode::default();
         b.value_lineage = BASELINE_VALUE_LINEAGE;
         b.stakeholder = Some("external-party".to_string());
@@ -7462,45 +7417,29 @@ mod tests {
         );
 
         assert_eq!(
-            sa, 43730,
-            "value_lineage(3000) + stakeholder base(2000), boosted by the 13d-overdue multiplier"
+            sa, 26238,
+            "value_lineage(3000) alone boosted by 13d-overdue multiplier; stakeholder adds 0"
         );
         assert_eq!(
-            sb, 10600,
-            "no due date: full per-day stakeholder ramp, no multiplier"
+            sb, 3000,
+            "no due date: value_lineage alone, no multiplier and no stakeholder ramp"
         );
         assert_eq!(
             sc, 26238,
             "value_lineage(3000) alone, boosted by the same 13d-overdue multiplier"
         );
 
-        // Core AC: adding a stakeholder to a due-bearing node adds only the
-        // boosted +2000 base (round(2000 * multiplier)), not an independent
-        // day-scaled ramp stacked on top of the deadline multiplier.
+        // Core AC (2026-10-12 ruling, spec_866ee53d point 21): adding a stakeholder
+        // adds 0 points to cost of delay.
         assert_eq!(
             sa - sc,
-            17492,
-            "stakeholder's marginal contribution on a due-bearing node is the boosted +2000 base only"
-        );
-        // If the two lateness clocks were naively summed -- the day-scaled
-        // stakeholder ramp AND the deadline multiplier both counting the same
-        // 13 days late -- the stakeholder's marginal contribution would be
-        // far larger than the boosted base (17492). Bounding it well under
-        // the no-due full ramp (7600) confirms the day-based growth was
-        // suppressed, not stacked.
-        assert!(
-            sa - sc < 20000,
-            "stakeholder's marginal contribution must stay near the boosted base, not blow out with day-scaled growth: got {}",
-            sa - sc
+            0,
+            "stakeholder's marginal contribution is 0 points under 2026-10-12 ruling"
         );
     }
 
-    /// Ruling (Nic, 2026-09-11, mem_537e44a9 "Verdict: stakeholder_waiting /
-    /// human gate"): the stakeholder-waiting clock fires only when
-    /// `stakeholder` is actually named. A bare `status: review` node (which
-    /// makes `is_human_gate()` true) with no stakeholder has nobody waiting
-    /// on it and must contribute zero `stakeholder_waiting`; a node with a
-    /// stakeholder set is unchanged.
+    /// 2026-10-12 ruling (spec_866ee53d point 21): the stakeholder-waiting
+    /// points are removed. Both nodes contribute zero stakeholder points.
     #[test]
     fn test_stakeholder_waiting_fires_only_when_stakeholder_named() {
         use crate::graph::GraphNode;
@@ -7512,13 +7451,12 @@ mod tests {
             .to_string();
 
         // A: `status: review` (is_human_gate() == true), NO stakeholder.
-        // Must earn NO stakeholder_waiting credit despite being a human gate.
         let mut a = GraphNode::default();
         a.status = Some("review".to_string());
         a.waiting_since = Some(d10_ago.clone());
 
-        // B: same waiting_since, but WITH a named stakeholder. Must still
-        // ramp exactly as before: 2000 + min(10*200, 6000) = 4000.
+        // B: same waiting_since, but WITH a named stakeholder.
+        // Under 2026-10-12 ruling, earns 0 stakeholder points.
         let mut b = GraphNode::default();
         b.status = Some("review".to_string());
         b.stakeholder = Some("nic".to_string());
@@ -7532,11 +7470,11 @@ mod tests {
 
         assert_eq!(
             sa, 0,
-            "status:review with no stakeholder must contribute zero stakeholder_waiting, got {sa}"
+            "status:review with no stakeholder contributes zero points, got {sa}"
         );
         assert_eq!(
-            sb, 4000,
-            "named stakeholder still ramps 2000 + 10d*200 = 4000, got {sb}"
+            sb, 0,
+            "named stakeholder adds zero points under 2026-10-12 ruling (spec_866ee53d point 21), got {sb}"
         );
     }
 
@@ -7617,10 +7555,13 @@ mod tests {
             nodes[2].focus_score.unwrap(),
         );
 
-        // (1) JOLT: boosted stakeholder base (18971) + raw urgency (100).
+        // (1) JOLT: With stakeholder-waiting points removed (2026-10-12 ruling,
+        //     spec_866ee53d point 21), JOLT has no value points of its own (intent P2
+        //     bands to 0, no value_lineage), so deadline multiplier has nothing to boost:
+        //     it scores only its raw urgency (100).
         assert_eq!(
-            jolt_new, 19071,
-            "JOLT re-scores to 19071 (boosted stakeholder base 18971 + urgency 100)"
+            jolt_new, 100,
+            "JOLT re-scores to 100 (urgency 100 alone; stakeholder points removed)"
         );
 
         // (2) Marking: value-less, so only its raw SEV4-inherited urgency and
@@ -7631,13 +7572,10 @@ mod tests {
             "marking re-scores to 10023 (urgency 10000 + staleness 23, no value to boost)"
         );
 
-        // (3) JOLT now clearly outranks marking -- the emergent inversion
-        //     documented above. This is the multiplier doing its job: a task
-        //     with a named stakeholder waiting on a missed deadline presses
-        //     harder than an unowned severity number sitting on its own.
+        // (3) Marking outranks JOLT now that stakeholder-waiting points are removed.
         assert!(
-            jolt_new > marking_new,
-            "JOLT (real value + deadline pressure) must now outrank value-less marking"
+            marking_new > jolt_new,
+            "marking (severity urgency 10000) outranks JOLT (urgency 100) without stakeholder points"
         );
 
         // (4) Ethics: same value-less shape as marking, own urgency + staleness only.
@@ -7745,10 +7683,10 @@ mod tests {
         let score_3d6 = nodes[3].focus_score.unwrap();
         let score_norm = nodes[4].focus_score.unwrap();
 
-        // Reference score with stakeholder: Nic is 4814 (2000 base + 14*200 ramp + 14 age staleness)
+        // Reference score with stakeholder: Nic is 14 (age staleness only, stakeholder waiting removed)
         assert_eq!(
-            score_3d6, 4814,
-            "reference node with stakeholder: Nic scores 4814"
+            score_3d6, 14,
+            "reference node with stakeholder: Nic scores only staleness (14)"
         );
 
         // AC1 (superseded): structurally-identified human gates WITHOUT a named
@@ -12151,12 +12089,12 @@ mod tests {
         );
 
         // ...while the otherwise-identical task with a real stakeholder does
-        // not decay at all: value_points = 4000 (lineage) + 2000 (stakeholder
-        // base, suppressed since due is active), multiplier stays the full
-        // undecayed 19.4391 -> cost_of_delay = round(6000 * 19.4391) = 116635.
+        // not decay at all: value_points = 4000 (lineage; stakeholder-waiting points
+        // removed under 2026-10-12 ruling), multiplier stays the full
+        // undecayed 19.4391 -> cost_of_delay = round(4000 * 19.4391) = 77756.
         assert_eq!(
-            real_tuple.cost_of_delay, 116635,
-            "real stakeholder must not decay: full undecayed multiplier applies"
+            real_tuple.cost_of_delay, 77756,
+            "real stakeholder must not decay: full undecayed multiplier applies to lineage value"
         );
 
         // The real task clearly outranks the decayed courtesy task.
@@ -12441,12 +12379,12 @@ mod tests {
         assert_eq!(book_cod, 6000, "book: value_lineage alone, no due date");
         assert_eq!(email_target, 3181, "overdue email tied to a 0.05 target");
         assert_eq!(
-            kathy, 23909,
-            "Kathy Bowrey: boosted stakeholder base, 26d overdue"
+            kathy, 0,
+            "Kathy Bowrey: 0 value points with stakeholder waiting removed"
         );
         assert_eq!(
-            copper_cod, 11807,
-            "copper: stakeholder + value_lineage, boosted by 18-days-out multiplier"
+            copper_cod, 8174,
+            "copper: value_lineage alone, boosted by 18-days-out multiplier"
         );
         assert_eq!(cv, 5000, "undated P1 CV");
 
@@ -12459,15 +12397,6 @@ mod tests {
         assert!(
             book_cod > email_target,
             "target 2: book must outrank the low-target overdue email"
-        );
-        // Target 3: Kathy Bowrey ranks above both.
-        assert!(
-            kathy > p0,
-            "target 3: Kathy Bowrey must outrank the undated P0"
-        );
-        assert!(
-            kathy > book_cod,
-            "target 3: Kathy Bowrey must outrank the book"
         );
         // Target 4: copper ranks above the undated P1 CV -- because its pressure
         // times value earns it, not because deadlines are ranked above value.

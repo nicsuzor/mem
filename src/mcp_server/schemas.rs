@@ -158,7 +158,7 @@ impl PkbSearchServer {
                         "goal_type": { "type": "string", "description": "Goal classification: committed | aspirational | learning.", "enum": GOAL_TYPE_ENUM },
                         "classification": { "type": "string", "description": "Optional content classification: bug | feature | spike | chore | refactor | docs | milestone | action." },
                         "body": { "type": "string", "description": "Markdown body. Refer to other PKB files by wikilink (`[[id]]`) or PKB-root-relative path; a machine-specific path such as `~/brain/...` or `/home/nic/brain/...` is rejected with error_type `machine_specific_path`." },
-                        "stakeholder": { "type": "string", "description": "Who is waiting on this task (e.g. 'Jacob', 'funding-committee'). Drives waiting urgency in focus scoring." },
+                        "stakeholder": { "type": "string", "description": "Who is waiting on this task (e.g. 'Jacob', 'funding-committee'). Informational field; does not affect focus scoring." },
                         "waiting_since": { "type": "string", "description": "When the stakeholder started waiting (ISO date, e.g. '2026-03-20'). Falls back to created date if omitted." },
                         "due": { "type": "string", "description": "Due date (ISO date, e.g. '2026-06-01')" },
                         "project": { "type": "string", "description": "Project routing slug, validated against polecat.yaml (slug or any registered alias; canonicalized on write). Optional — omitted tasks inherit the nearest ancestor's project. Builtins 'task' and 'adhoc-sessions' are always accepted." },
@@ -230,7 +230,7 @@ impl PkbSearchServer {
                         "severity": { "type": "integer", "description": "Severity ladder (0-4) for target nodes." },
                         "goal_type": { "type": "string", "description": "Goal classification: committed | aspirational | learning.", "enum": GOAL_TYPE_ENUM },
                         "dir": { "type": "string", "description": "Override subdirectory placement" },
-                        "stakeholder": { "type": "string", "description": "Who is waiting on this task (e.g. 'Jacob', 'funding-committee'). Drives waiting urgency in focus scoring." },
+                        "stakeholder": { "type": "string", "description": "Who is waiting on this task (e.g. 'Jacob', 'funding-committee'). Informational field; does not affect focus scoring." },
                         "waiting_since": { "type": "string", "description": "When the stakeholder started waiting (ISO date, e.g. '2026-03-20'). Falls back to created date if omitted." },
                         "links": { "type": "array", "items": { "type": "object" }, "description": "Consolidated flow links (pkb-flow-engine §3.1). Array of objects with 'to' or 'from', 'label' (serves|needs|part_of|supports|alternative|settles), optional 'quantum' (0.0..=1.0 or anchor word), optional 'probability' (0.0..=1.0 or anchor word), optional 'effect' (helps|harms), optional 'set_by' (nic|agent-proposed|migrated), optional 'justification'." },
                         "worth": { "description": "Target worth in [-1.0, 1.0] or anchor word.", "anyOf": [{ "type": "number" }, { "type": "string" }] },
@@ -359,7 +359,7 @@ impl PkbSearchServer {
             .with_annotations(ToolAnnotations::new().read_only(false).idempotent(true)),
             Tool::new(
                 "list_tasks",
-                "List tasks with smart filtering. Results are returned in `focus_score`-descending order by default (highest-focus first) across every path — default, ready — with a deterministic tie-break, so the top rows are the most important and repeated calls are stable; no re-sort is needed. Every row carries `status`. Done/cancelled tasks are hidden by default — pass `include_done=true` to include them (matches task_search convention). JSON output puts `focus_score` (composite ranking integer) at the top level as the primary sort key, combining intent, severity, deadline urgency, age/staleness, downstream weight, stakeholder waiting urgency, urgency (propagated/chain), and value of information (VoI). Component signals — criticality, urgency, downstream_weight, scope, uncertainty — are nested under `signals: {}` for filter/debug use. See specs/ranking.md. `status=` filters strictly on the stored frontmatter status field (never a computed set) — pass status='ready' to match nodes literally stored with that status.",
+                "List tasks with smart filtering. Results are returned in `focus_score`-descending order by default (highest-focus first) across every path — default, ready — with a deterministic tie-break, so the top rows are the most important and repeated calls are stable; no re-sort is needed. Every row carries `status`. Done/cancelled tasks are hidden by default — pass `include_done=true` to include them (matches task_search convention). JSON output puts `focus_score` (composite ranking integer) at the top level as the primary sort key, combining intent, severity, deadline urgency, age/staleness, downstream weight, urgency (propagated/chain), and value of information (VoI). Component signals — criticality, urgency, downstream_weight, scope, uncertainty — are nested under `signals: {}` for filter/debug use. See specs/ranking.md. `status=` filters strictly on the stored frontmatter status field (never a computed set) — pass status='ready' to match nodes literally stored with that status.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -457,7 +457,7 @@ impl PkbSearchServer {
             .with_annotations(ToolAnnotations::new().read_only(true)),
             Tool::new(
                 "get_task",
-                "Retrieve full details for a task, including metadata, body content, and graph relationship context (dependencies, blockers, children, subtasks). The returned JSON puts `focus_score` (composite ranking integer) at the top level as the primary importance metric, combining intent, severity, deadline urgency, age/staleness, downstream weight, stakeholder waiting urgency, urgency (propagated/chain), and value of information (VoI). Component signals — criticality, urgency, downstream_weight, scope, uncertainty — are nested under `signals: {}` for filter/debug use. See specs/ranking.md.",
+                "Retrieve full details for a task, including metadata, body content, and graph relationship context (dependencies, blockers, children, subtasks). The returned JSON puts `focus_score` (composite ranking integer) at the top level as the primary importance metric, combining intent, severity, deadline urgency, age/staleness, downstream weight, urgency (propagated/chain), and value of information (VoI). Component signals — criticality, urgency, downstream_weight, scope, uncertainty — are nested under `signals: {}` for filter/debug use. See specs/ranking.md.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -523,7 +523,7 @@ impl PkbSearchServer {
                                     "assignee": { "type": "string", "description": "Who is responsible for this subtask" },
                                     "complexity": { "type": "string", "description": "Free-form complexity/size label (e.g. 'S', 'M', 'L')" },
                                     "body": { "type": "string", "description": "Markdown body. Refer to other PKB files by wikilink (`[[id]]`) or PKB-root-relative path; a machine-specific path such as `~/brain/...` or `/home/nic/brain/...` is rejected with error_type `machine_specific_path`." },
-                                    "stakeholder": { "type": "string", "description": "Who is waiting on this subtask. Drives waiting urgency in focus scoring." },
+                                    "stakeholder": { "type": "string", "description": "Who is waiting on this subtask. Informational field; does not affect focus scoring." },
                                     "waiting_since": { "type": "string", "description": "When the stakeholder started waiting (ISO date). Falls back to created date if omitted." },
                                     "consequence": { "type": "string", "description": "Narrative description of what happens if this subtask is not done or fails" },
                                     "severity": { "type": "integer", "description": "Severity ladder (0-4); only honored for type: target subtasks, otherwise reset to 0 with a warning" },

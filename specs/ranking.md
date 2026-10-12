@@ -76,7 +76,7 @@ To guarantee that graph rebuilds are strictly deterministic and immune to Rust's
 Ranking is produced by the explicit 3-component tuple `FocusTuple`:
 
 1. **`severity_gate`**: Non-linear catastrophic obligation override (`Catastrophic` for SEV4-committed, else `Normal`).
-2. **`cost_of_delay`**: Commensurable dynamic pressure. A node's *value points* — `intent_pressure` + `stakeholder_waiting` + `value_lineage_term` — are scaled by the *deadline pressure multiplier* (§2.3); `urgency_term` and `voi_term` are added on top unmultiplied (each already carries its own independent time-value curve).
+2. **`cost_of_delay`**: Commensurable dynamic pressure. A node's *value points* — `intent_pressure` + `value_lineage_term` — are scaled by the *deadline pressure multiplier* (§2.3); `urgency_term` and `voi_term` are added on top unmultiplied (each already carries its own independent time-value curve).
 3. **`tie_breakers`**: Deterministic tie-breaking signals (`downstream_weight × 10`, (Phase 2) `unlock_breadth × 10`, `age_staleness_bonus`, `effective_intent`, `order`, `id`).
 
 ```
@@ -88,7 +88,7 @@ Ranking is produced by the explicit 3-component tuple `FocusTuple`:
 | 3. deadline_pressure_mult. | 1 + 2*sqrt(ratio) on value_points; see §2.3       | 1.0 – ∞ (decays) |
 | 4. age_staleness_bonus     | If pri >= 2: min(days_since_created, 200)         | 0 – 200          |
 | 5. downstream_weight × 10  | (downstream_weight * 10.0) as i64                 | 0 – ~53 (obs)    |
-| 6. stakeholder/human gate  | Base 2000 + lateness ramp (unless a `due` exists) | 0 / 2,000 – 8,000|
+| 6. stakeholder/human gate  | Removed (§2.6; informational only)                 | 0                |
 | 7. urgency_term            | round(node.urgency); added unmultiplied           | 0 – 10,000+      |
 | 8. voi_term                | round(node.voi_value) (leaf nodes only); unmult.  | 0 – 5,000        |
 | 9. affordable_loss         | Non-compensatory filter zeroing unaffordable tasks| Bool filter      |
@@ -98,7 +98,7 @@ Ranking is produced by the explicit 3-component tuple `FocusTuple`:
 +---------------------------------------------------------------------------------------------------+
 ```
 
-`deadline_score` — the old flat additive ramp (`0` to `12,000`, capped after 20 days overdue) — no longer exists, for the same non-double-counting reason row 2's `severity_bonus` doesn't: a deadline is pressure, never a flat bonus. Term 3 replaces it with a multiplier on rows 1/6/10 (`intent_pressure` + `stakeholder_waiting` + `value_lineage_term`) — see §2.3.
+`deadline_score` — the old flat additive ramp (`0` to `12,000`, capped after 20 days overdue) — no longer exists, for the same non-double-counting reason row 2's `severity_bonus` doesn't: a deadline is pressure, never a flat bonus. Term 3 replaces it with a multiplier on rows 1/10 (`intent_pressure` + `value_lineage_term`) — see §2.3. Row 6 (`stakeholder_waiting`) has been removed from value points per Nic's ruling on 2026-10-12 (`spec_866ee53d` point 21).
 
 Term 10, `value_lineage_term`, is the fix for the failure terms 5/11 cannot be: `downstream_weight × 10` and `unlock_breadth × 10` are both deliberately capped, shallow, tie-breaker-only signals (§4.1, §4.10), so the sanctioned importance channel (`contributes_to`) needed a term that lives inside `cost_of_delay` itself, at comparable magnitude to `intent_pressure`/`urgency_term`, to be able to move a ranking at all (§3, §4.11).
 
@@ -140,17 +140,17 @@ predates this spec and was never restored.
 ### 2.3. Deadline Pressure Multiplier (`deadline_pressure_multiplier`; formerly `deadline_score`)
 **Superseded (ruling, Nic, 2026-09-12, `mem_537e44a9` "Ruling: deadline pressure is a multiplier on value, not a tier"; `mem_fix_deadline_multiplier`).** Nic, verbatim: "deadline pressure should multiply importance in proportion to the size of the task vs days left." The flat additive ramp described below — `deadline_score`, `0` to `12,000`, capped after 20 days overdue and never falling again outside §2.3a's decay — no longer exists. It is replaced by a **deadline pressure multiplier**, `deadline_pressure_multiplier`, applied to a node's own *value points* rather than added as a free-standing term:
 
-$$\text{value\_points} = \text{intent\_pressure} + \text{stakeholder\_waiting} + \text{value\_lineage\_term}$$
+$$\text{value\_points} = \text{intent\_pressure} + \text{value\_lineage\_term}$$
 $$\text{cost\_of\_delay} = \text{round}(\text{value\_points} \times \text{deadline\_pressure\_multiplier}) + \text{urgency\_term} + \text{voi\_term}$$
 
-`urgency_term` and `voi_term` are **not** multiplied: `urgency` already carries its own independent time-value curve (`f(slack)`, §4.3), and `voi_term` measures the value of resolving an open question, not a promise against a calendar date — multiplying either would compound two independent lateness/value signals into one. A node with `value_points == 0` (no curated intent, no named stakeholder, no priced target lineage) has nothing for a deadline to amplify: its `cost_of_delay` is whatever `urgency_term`/`voi_term` it earns on their own, regardless of how pressing its `due` date is. This is a deliberate, accepted consequence of the ruling, not an edge case to work around.
+`urgency_term` and `voi_term` are **not** multiplied: `urgency` already carries its own independent time-value curve (`f(slack)`, §4.3), and `voi_term` measures the value of resolving an open question, not a promise against a calendar date — multiplying either would compound two independent lateness/value signals into one. A node with `value_points == 0` (no curated intent, no priced target lineage) has nothing for a deadline to amplify: its `cost_of_delay` is whatever `urgency_term`/`voi_term` it earns on their own, regardless of how pressing its `due` date is. This is a deliberate, accepted consequence of the ruling, not an edge case to work around.
 
 - **Code reference**: `compute_cost_of_delay`, `src/graph_store.rs:1790-2002`.
 - **Formula**: Let `today = Utc::now().date_naive()`, `due_date = parse(node.due)`, `days_until = (due_date - today).num_days()`, and `effort_days = parse_effort_days(node.effort).unwrap_or(3)`. `deadline_pressure_multiplier` starts at the neutral `1.0` (used whenever `due` is absent or unparseable) and, when a `due` parses:
   $$\text{ratio} = \begin{cases} \dfrac{\text{effort\_days}}{\text{days\_until}} & \text{days\_until} \ge 1 \\ \text{effort\_days} + (-\text{days\_until}) + 1 & \text{days\_until} \le 0 \end{cases}$$
   $$\text{deadline\_pressure\_multiplier} = 1.0 + 2.0 \times \sqrt{\max(\text{ratio}, 0.0)}$$
   The pre-due branch is the classic "effort left / runway left" — a bigger job against a nearer date presses harder, reaching exactly `effort_days` as `days_until` shrinks to `1`. There is no positive runway left to divide by at or past the due date, so the post-due branch instead continues additively in `days_overdue` — the `+1` keeps it strictly above the pre-due branch's floor at `days_until == 1` (both would otherwise land on exactly `effort_days`, a tie at the crossing that would violate "an overdue task outranks its day-before self" at the exact due-date boundary) — and then grows by a flat `+1` per additional day overdue regardless of task size, so growth continues past the due date rather than plateauing (contrast the retired ramp's cliff, capped after 20 days). The size of the task still sets where the climb starts; the per-day growth rate once overdue is the same for every task.
-- **Flag side-effect**: `deadline_pressure_active = due.is_some() && parseable` (regardless of how far away, or whether the multiplier is later decayed) — gates the stakeholder-waiting day-ramp in §2.6, so the two lateness signals never compound.
+- **Retired flag side-effect**: Previously `deadline_pressure_active` gated the stakeholder-waiting day-ramp in §2.6; with `stakeholder_waiting` removed (2026-10-12 ruling, `spec_866ee53d` point 21), this flag side-effect no longer exists.
 - **Theoretical Range**: `1.0` (no `due`, or `value_points == 0` makes the multiplier moot) to unbounded for a real-stakes node arbitrarily far overdue (§2.3a bounds it back toward `1.0` for a no-stakes node).
 - **Consumers**: `compute_cost_of_delay` (multiplies `value_points`; §1).
 
@@ -209,22 +209,15 @@ Without this term, an overdue `due` date presses harder without limit, forever, 
 - **Zeroing conditions**: Empty downstream cone or all descendants completed.
 - **Consumers**: `compute_focus_scores`.
 
-### 2.6. Stakeholder Waiting Urgency (`stakeholder_waiting_bonus`)
-- **Code reference**: `src/graph_store.rs:1932–1965` (`compute_cost_of_delay`).
-- **Ruling (Nic, 2026-09-11, `mem_537e44a9` "Verdict: stakeholder_waiting / human gate"):** this term fires **only when a `stakeholder` is actually named** — never merely because `node.is_human_gate()` is true. A bare `decision`-tagged node, or any node satisfying `is_human_gate()` (`status: review`, or tags `decision`/`sign-off`/`signoff`/`one-way-door`/`human-approval`), with no named stakeholder has nobody waiting on it and earns no waiting clock. `is_human_gate()` continues to gate the courtesy-decay mechanism (§2.3a's `has_real_stakes`) and `focus_picks`/`pkb focus` surfacing (both structurally distinct from this accrual) — it no longer independently triggers this term.
-- **Formula**:
-  Applies when `node.stakeholder.is_some()`:
-  - If `deadline_pressure_active` is `true` (§2.3 — a `due` date is present and parses, regardless of how far away):
-    $$\text{score} += 2000 \quad \text{(base only; the deadline pressure multiplier, §2.3, already carries the day-scaled lateness signal for this base)}$$
-  - Else (no `due` at all — no multiplier exists to carry a lateness signal instead):
-    Let $\text{anchor} = \text{parse}(\text{node.waiting\_since} \lor \text{node.created})$, and $\text{days} = \max((\text{today} - \text{anchor}).\text{num\_days}(), 0)$:
-    $$\text{score} += 2000 + \min(\text{days} \times 200, 6000) \quad \in [2000, 8000]$$
-    If anchor date is missing or unparseable, score is `2000`.
-- **Theoretical Range**: `0`, or `2000` to `8000`.
-- **Observed Range**: `0` (unset) or `2000`–`8000`.
-- **Default (absent input)**: `0`.
-- **Zeroing conditions**: `stakeholder` field is absent (`None`) — `node.is_human_gate()` is irrelevant to this term.
-- **Consumers**: `compute_focus_scores`.
+### 2.6. Stakeholder Waiting Urgency (`stakeholder_waiting_bonus` / `stakeholder_waiting`) — Removed
+
+**Removed (ruling, Nic, 2026-10-12, `spec_866ee53d` point 21).** The `stakeholder_waiting` term has been removed from `compute_cost_of_delay`. `stakeholder` and `waiting_since` remain on nodes strictly as informational metadata fields and do not affect focus scoring or queue ranking.
+
+- **Status**: Removed.
+- **Historical Ruling (Nic, 2026-09-11, `mem_537e44a9`):** Formerly fired only when a `stakeholder` was named (base 2000 + lateness ramp up to 8000). Superseded by 2026-10-12 removal.
+- **Current Behavior**: Adds 0 points to `value_points` / `cost_of_delay`. Two tasks differing only by `stakeholder` and `waiting_since` receive identical cost of delay and queue rank.
+- **Informational Fields**: `stakeholder` and `waiting_since` are preserved in task storage, reads, and graph exports for human context and reporting.
+- **Courtesy Decay Gate**: `node.stakeholder.is_some()` remains recognized in §2.3a `has_real_stakes` to prevent dormant review decay on tasks where a stakeholder is actively involved.
 
 ### 2.7. Urgency Term (`urgency_term`)
 - **Code reference**: `src/graph_store.rs:1799`
@@ -271,17 +264,16 @@ The eight additive terms carry widely disparate theoretical caps versus realised
 | `intent_pressure` | 0 – 10,000 | 0 – 10,000 |
 | `urgency_term` | 0 – 10,000 | 0 – 10,000 |
 | `value_lineage_term` | 0 – 10,000 | 0 – 6,000 (`[[targ_4e2cc92a]]`, priced 0.60 — §2.9) |
-| `stakeholder_waiting` | 0 – 8,000 | 0 – 8,000 |
+| `stakeholder_waiting` | 0 (removed, §2.6) | 0 |
 | `voi_term` | 0 – 5,000 | 0 – ~1,500 |
 | `age_staleness_bonus` | 0 – 200 | 0 – 200 |
 | `downstream_weight × 10` (tie-breaker) | 0 – $\infty$ | 0 – ~500 |
 | `unlock_breadth × 10` (tie-breaker) | 0 – $\infty$ | not yet measured on the live PKB |
-| **`focus_score` Composite** | **0 – unbounded (multiplier applies to `intent_pressure` + `stakeholder_waiting` + `value_lineage_term`)** | **0 – ~30,000+** |
+| **`focus_score` Composite** | **0 – unbounded (multiplier applies to `intent_pressure` + `value_lineage_term`)** | **0 – ~30,000+** |
 
 No `deadline_score` row exists any more: the flat additive ramp this table
 once carried was replaced by `deadline_pressure_multiplier` (§2.3) — a
-scalar applied to `intent_pressure` + `stakeholder_waiting` +
-`value_lineage_term`, never a free-standing additive term — so it is listed
+scalar applied to `intent_pressure` + `value_lineage_term`, never a free-standing additive term — so it is listed
 above as a multiplier, not summed into the composite the way the other rows
 are. No `severity_bonus` row exists either: the additive severity bonus this
 table once carried was replaced by `severity_gate` (§1, §2.2) — a binary
@@ -469,9 +461,8 @@ value_lineage(l) = max( raw(l) if l is an eligible leaf,
 
 - **Intended share: at most 10% of open tasks in the live graph** (type `task`, status not completed).
 - **Below 1,000:** the open tasks whose cost of delay is a fractional share of a priced target.
-- **Above 1,000**, only three kinds of task:
+- **Above 1,000**, only two kinds of task:
   - Nic-curated P0/P1 intent (§2.1);
-  - a named stakeholder waiting (§2.6);
   - priced value concentrated on a few leaves, either a small subtree, a direct edge, or the last open leaves of a nearly finished epic.
 
 **Why a share and not a cap in code:** the share depends on how many targets Nic prices and how heavily. Those are legitimate inputs, and the engine must not clip them. The 10% figure is a live-graph diagnostic. When it is exceeded, check pricing and decomposition before touching the formula. It is not a hard invariant. The invariants that make the share achievable are structural, and they are the regression properties below.

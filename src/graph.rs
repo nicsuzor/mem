@@ -98,7 +98,7 @@ pub struct FocusTieBreakers {
 /// justified a deadline tier ranking above value, and a due date alone no
 /// longer buys a node a rung above every non-overdue task regardless of
 /// `cost_of_delay` magnitude. Deadline pressure now multiplies a node's own
-/// value points (`intent_pressure + stakeholder_waiting + value_lineage_term`)
+/// value points (`intent_pressure + value_lineage_term`)
 /// inside `cost_of_delay` itself — see `compute_cost_of_delay` in
 /// `graph_store.rs` — so a node with no value has nothing for a deadline to
 /// amplify, and a node with real value is pressed harder the bigger its
@@ -950,10 +950,10 @@ pub struct GraphNode {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub assignee: Option<String>,
     /// Who is waiting on this task (e.g. "Jacob", "funding-committee").
-    /// Drives waiting urgency in focus scoring — the longer since waiting_since, the higher the score.
+    /// Informational field (stakeholder-waiting ranking term removed per spec_866ee53d point 21).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stakeholder: Option<String>,
-    /// When the stakeholder started waiting (ISO date). Falls back to `created` if absent.
+    /// When the stakeholder started waiting (ISO date). Informational field.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub waiting_since: Option<String>,
     /// Computed: slug/permalink of nearest ancestor with node_type == "project". Set by `compute_project_field` during graph build.
