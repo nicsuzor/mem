@@ -3644,13 +3644,38 @@ async fn main() -> Result<()> {
                 let mcp_service =
                     StreamableHttpService::new(move || Ok(server.clone()), session_manager, config);
 
-                let app =
-                    axum::Router::new().route("/mcp", axum::routing::any_service(mcp_service));
+                let app = axum::Router::new()
+                    .route("/mcp", axum::routing::any_service(mcp_service))
+                    .layer(axum::middleware::from_fn(|mut req: axum::extract::Request, next: axum::middleware::Next| async move {
+                        // Ensure Host header is present for HTTP/2 requests where the :authority pseudo-header
+                        // is populated on uri.authority(), satisfying downstream rmcp DNS rebinding validation.
+                        if !req.headers().contains_key(http::header::HOST) {
+                            if let Some(auth) = req.uri().authority() {
+                                if let Ok(val) = http::HeaderValue::from_str(auth.as_str()) {
+                                    req.headers_mut().insert(http::header::HOST, val);
+                                }
+                            }
+                        }
+                        next.run(req).await
+                    }));
 
                 let addr: std::net::SocketAddr = format!("{host}:{port}").parse()?;
                 let listener = tokio::net::TcpListener::bind(addr).await?;
                 let bound_addr = listener.local_addr()?;
                 eprintln!("   Starting MCP HTTP/SSE server on http://{bound_addr}/mcp");
+
+                use axum::serve::ListenerExt;
+                let keepalive = socket2::TcpKeepalive::new()
+                    .with_time(std::time::Duration::from_secs(60))
+                    .with_interval(std::time::Duration::from_secs(10));
+                let listener = listener.tap_io(move |stream| {
+                    let sock_ref = socket2::SockRef::from(&*stream);
+                    if let Err(e) = sock_ref.set_tcp_keepalive(&keepalive) {
+                        tracing::debug!("failed to set TCP keepalive: {e}");
+                    }
+                    let _ = stream.set_nodelay(true);
+                });
+
                 axum::serve(listener, app)
                     .with_graceful_shutdown(async move { ct.cancelled().await })
                     .await?;

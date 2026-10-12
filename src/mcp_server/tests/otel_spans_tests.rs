@@ -164,7 +164,10 @@ async fn test_traceparent_parents_mcp_and_internal_spans() {
     let mcp_span_id = mcp_span.span_context.span_id().to_string();
     let child_spans: Vec<_> = spans
         .iter()
-        .filter(|s| s.name == "encode_query" || s.name == "search_hybrid" || s.name == "ensure_graph_fresh")
+        .filter(|s| {
+            s.parent_span_id.to_string() == mcp_span_id
+                && (s.name == "encode_query" || s.name == "search_hybrid" || s.name == "ensure_graph_fresh")
+        })
         .collect();
 
     assert!(!child_spans.is_empty(), "child spans must be present");
