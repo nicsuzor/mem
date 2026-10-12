@@ -446,9 +446,14 @@ impl PkbSearchServer {
         scored.truncate(limit);
 
         if scored.is_empty() {
-            return Ok(CallToolResult::success(vec![Content::text(
-                "No results found.",
-            )]));
+            let zero = serde_json::json!({
+                "total": 0,
+                "showing": 0,
+                "items": [],
+                "count": 0,
+                "results": [],
+            });
+            return Ok(Self::structured_result("No results found.".to_string(), zero));
         }
 
         if format.eq_ignore_ascii_case("json") {
@@ -492,11 +497,14 @@ impl PkbSearchServer {
 
             let payload = serde_json::json!({
                 "query": query,
+                "total": json_results.len(),
+                "showing": json_results.len(),
                 "count": json_results.len(),
+                "items": json_results.clone(),
                 "results": json_results,
             });
             let json_str = serde_json::to_string_pretty(&payload).unwrap_or_default();
-            return Ok(CallToolResult::success(vec![Content::text(json_str)]));
+            return Ok(Self::structured_result(json_str, payload));
         }
 
         let mut output = format!(
@@ -575,7 +583,21 @@ impl PkbSearchServer {
             output.push('\n');
         }
 
-        Ok(CallToolResult::success(vec![Content::text(output)]))
+        let payload = serde_json::json!({
+            "query": query,
+            "total": scored.len(),
+            "showing": scored.len(),
+            "count": scored.len(),
+            "items": scored.iter().map(|(r, score)| {
+                serde_json::json!({
+                    "id": r.id,
+                    "title": r.title,
+                    "score": score,
+                    "tags": r.tags,
+                })
+            }).collect::<Vec<_>>(),
+        });
+        Ok(Self::structured_result(output, payload))
     }
 
     pub(crate) fn handle_pkb_trace(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {

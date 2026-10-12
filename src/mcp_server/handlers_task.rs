@@ -611,6 +611,47 @@ impl PkbSearchServer {
     /// in-place claim. See `mem_e8f3aa17` / `task_9d568b1b`.
     pub(crate) fn handle_get_task(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
         self.ensure_graph_fresh();
+
+        if let Some(id_array) = args.get("ids").and_then(|v| v.as_array()) {
+            let mut items = Vec::new();
+            let mut not_found = Vec::new();
+            for id_val in id_array {
+                let id_str = id_val.as_str().unwrap_or_default();
+                let mut single_args = args.clone();
+                if let Some(obj) = single_args.as_object_mut() {
+                    obj.remove("ids");
+                    obj.insert("id".to_string(), serde_json::json!(id_str));
+                    if !obj.contains_key("detail") {
+                        obj.insert("detail".to_string(), serde_json::json!("summary"));
+                    }
+                }
+                match self.handle_get_task_single(&single_args) {
+                    Ok(res) => {
+                        if let Some(val) = res.structured_content {
+                            items.push(val);
+                        } else if let Some(first) = res.content.first().and_then(|c| c.raw.as_text()) {
+                            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&first.text) {
+                                items.push(v);
+                            }
+                        }
+                    }
+                    Err(_) => {
+                        not_found.push(serde_json::json!(id_str));
+                    }
+                }
+            }
+            let res_obj = serde_json::json!({
+                "items": items,
+                "not_found": not_found,
+            });
+            let text = serde_json::to_string_pretty(&res_obj).unwrap_or_default();
+            return Ok(Self::structured_result(text, res_obj));
+        }
+
+        self.handle_get_task_single(args)
+    }
+
+    pub(crate) fn handle_get_task_single(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
         let id = args
             .get("id")
             .and_then(|v| v.as_str())
@@ -805,11 +846,13 @@ impl PkbSearchServer {
             body
         };
 
+        let detail = args.get("detail").and_then(|v| v.as_str());
         let max_bytes = args
             .get("max_bytes")
             .and_then(|v| v.as_u64())
-            .map(|v| v as usize);
-        let body = Self::truncate_body(body, max_bytes);
+            .map(|v| v as usize)
+            .or(Some(4000));
+        let (body, truncated, total_bytes) = Self::truncate_body_with_info(body, max_bytes);
 
         // Compute deadline metadata
         let today = chrono::Utc::now().date_naive();
@@ -872,7 +915,8 @@ impl PkbSearchServer {
         let metadata_only = args
             .get("metadata_only")
             .and_then(|v| v.as_bool())
-            .unwrap_or(false);
+            .unwrap_or(false)
+            || detail == Some("metadata");
 
         let buffer_days = crate::display_rank::DISPLAY_CLIFF_BUFFER_DAYS;
         let eff = crate::display_rank::resolve_effort_days(node.effort.as_deref());
@@ -894,6 +938,7 @@ impl PkbSearchServer {
 
         let mut result = serde_json::json!({
             "id": node.task_id.as_deref().unwrap_or(&node.id),
+            "title": node.label,
             "status": node.status,
             "project": node.project,
             "classification": node.classification,
@@ -909,30 +954,17 @@ impl PkbSearchServer {
             "contributes_to": contributes_to,
             "contributed_by": node.contributed_by,
             "follow_up_tasks": node.follow_up_tasks,
-            "intent": node.intent.unwrap_or(4),
-            "effective_intent": node.effective_intent.unwrap_or(node.intent.unwrap_or(4)),
             "focus_score": node.focus_score,
             "blocked": graph.is_blocked(&node.id),
-            "stakeholder_exposure": node.stakeholder_exposure,
-            "stakeholder": node.stakeholder,
-            "waiting_since": node.waiting_since,
-            "due": node.due,
-            "effort": node.effort,
-            "consequence": node.consequence,
-            "severity": node.severity,
-            "goal_type": node.goal_type,
-            "standing_weight": node.standing_weight,
-            "edge_template": node.edge_template,
             "parse_warnings": node.parse_warnings,
             "days_until_due": days_until_due,
             "urgency_ratio": urgency_ratio,
-            "links": node.links,
-            "worth": node.worth,
-            "deadline_class": node.deadline_class,
             "links_out": graph.links_out(&node.id),
             "links_in": graph.links_in(&node.id),
             "flow": node.flow,
             "display": display,
+            "truncated": truncated,
+            "body_bytes": total_bytes,
         });
 
         if include_routes {
@@ -987,8 +1019,10 @@ impl PkbSearchServer {
             }
         }
 
+        Self::prune_null_and_empty(&mut result);
+
         let json = serde_json::to_string_pretty(&result).unwrap_or_default();
-        Ok(CallToolResult::success(vec![Content::text(json)]))
+        Ok(Self::structured_result(json, result))
     }
 
     // =========================================================================
@@ -1536,7 +1570,13 @@ impl PkbSearchServer {
             } else {
                 "No tasks found matching filters."
             };
-            return Ok(CallToolResult::success(vec![Content::text(label)]));
+            let zero = serde_json::json!({
+                "total": 0,
+                "showing": 0,
+                "items": [],
+                "tasks": [],
+            });
+            return Ok(Self::structured_result(label.to_string(), zero));
         }
 
         // Default ordering (AC1/AC6): focus_score DESC with a deterministic
@@ -1730,11 +1770,11 @@ impl PkbSearchServer {
             let result = serde_json::json!({
                 "total": total,
                 "showing": tasks.len(),
+                "items": json_tasks.clone(),
                 "tasks": json_tasks,
             });
-            return Ok(CallToolResult::success(vec![Content::text(
-                serde_json::to_string_pretty(&result).unwrap_or_default(),
-            )]));
+            let text = serde_json::to_string_pretty(&result).unwrap_or_default();
+            return Ok(Self::structured_result(text, result));
         }
 
         let output = if is_blocked {
@@ -2018,7 +2058,18 @@ impl PkbSearchServer {
             out
         };
 
-        Ok(CallToolResult::success(vec![Content::text(output)]))
+        let payload = serde_json::json!({
+            "total": total,
+            "showing": tasks.len(),
+            "items": tasks.iter().map(|t| {
+                serde_json::json!({
+                    "id": t.task_id.as_deref().unwrap_or(&t.id),
+                    "title": t.label,
+                    "status": t.status,
+                })
+            }).collect::<Vec<_>>(),
+        });
+        Ok(Self::structured_result(output, payload))
     }
 
     pub(crate) fn handle_update_task(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
@@ -2405,9 +2456,31 @@ impl PkbSearchServer {
         };
 
         if update_map.is_empty() {
-            return Ok(CallToolResult::success(vec![Content::text(format!(
-                "Task {id} unchanged (no modifications)"
-            ))]));
+            let (node_title, node_status, node_modified) = {
+                let graph = self.graph.read();
+                if let Some(node) = graph.resolve(id) {
+                    (
+                        Some(node.label.clone()),
+                        node.status.clone(),
+                        node.modified.clone(),
+                    )
+                } else {
+                    (None, None, None)
+                }
+            };
+            let mut summary_obj = serde_json::json!({
+                "id": id,
+                "modified": node_modified.unwrap_or_else(|| chrono::Utc::now().to_rfc3339()),
+                "message": format!("Task {id} unchanged (no modifications)"),
+            });
+            if let Some(t) = node_title {
+                summary_obj["title"] = serde_json::json!(t);
+            }
+            if let Some(s) = node_status {
+                summary_obj["status"] = serde_json::json!(s);
+            }
+            let msg = format!("Task {id} unchanged (no modifications)");
+            return Ok(Self::structured_result(msg, summary_obj));
         }
 
         // Per-phase timing for write-path perf investigation (task-a4dcc039).
@@ -2478,9 +2551,32 @@ impl PkbSearchServer {
             })
             .unwrap_or_default();
 
-        Ok(CallToolResult::success(vec![Content::text(format!(
-            "Task updated: `{id}`{hint}"
-        ))]))
+        let (node_title, node_status, node_modified) = {
+            let graph = self.graph.read();
+            if let Some(node) = graph.resolve(id) {
+                (
+                    Some(node.label.clone()),
+                    node.status.clone(),
+                    node.modified.clone(),
+                )
+            } else {
+                (None, None, None)
+            }
+        };
+        let new_modified = node_modified.unwrap_or_else(|| chrono::Utc::now().to_rfc3339());
+        let mut summary_obj = serde_json::json!({
+            "id": id,
+            "modified": new_modified,
+            "message": format!("Task updated: `{id}`{hint}"),
+        });
+        if let Some(t) = node_title {
+            summary_obj["title"] = serde_json::json!(t);
+        }
+        if let Some(s) = node_status {
+            summary_obj["status"] = serde_json::json!(s);
+        }
+        let msg = format!("Task updated: `{id}`{hint}");
+        Ok(Self::structured_result(msg, summary_obj))
     }
 
     // =========================================================================

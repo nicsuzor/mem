@@ -1299,19 +1299,25 @@ impl PkbSearchServer {
             Self::build_mutation_neighborhood(&graph, &node_id, cascade_closed)
         };
 
+        let node_modified = {
+            let graph = self.graph.read();
+            graph.resolve(id).and_then(|n| n.modified.clone())
+        };
+        let new_modified = node_modified.unwrap_or_else(|| chrono::Utc::now().to_rfc3339());
         let mut json = serde_json::json!({
             "ok": true,
             "id": id,
+            "title": label,
             "status": status,
+            "modified": new_modified,
             "message": response_text,
             "neighborhood": neighborhood,
         });
         if let Some(nid) = created_id {
             json["created_id"] = serde_json::json!(nid);
         }
-        Ok(CallToolResult::success(vec![Content::text(
-            serde_json::to_string_pretty(&json).unwrap_or_default(),
-        )]))
+        let text = serde_json::to_string_pretty(&json).unwrap_or_default();
+        Ok(Self::structured_result(text, json))
     }
 
     // =========================================================================

@@ -7476,6 +7476,9 @@ pub const UPDATE_KNOWN_KEYS: &[&str] = &[
     "links",
     "worth",
     "deadline_class",
+    "branch",
+    "container",
+    "alias",
 ];
 
 /// Reject any key not on [`UPDATE_KNOWN_KEYS`]. Shared by `update_task` and

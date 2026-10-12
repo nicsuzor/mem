@@ -1548,7 +1548,7 @@ impl PkbSearchServer {
         name: &str,
         args: &JsonValue,
     ) -> Result<CallToolResult, McpError> {
-        match name {
+        let mut res = match name {
             "search" => self.handle_pkb_search(args),
             "get_document" => self.handle_get_document(args),
             "list_documents" => self.handle_list_documents(args),
@@ -1610,7 +1610,27 @@ impl PkbSearchServer {
                 message: Cow::from(format!("Unknown tool: {name}")),
                 data: None,
             }),
+        };
+
+        if let Ok(ref mut result) = res {
+            if result.structured_content.is_none() {
+                let text = result
+                    .content
+                    .iter()
+                    .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+                    .collect::<String>();
+                if let Ok(val) = serde_json::from_str::<serde_json::Value>(&text) {
+                    result.structured_content = Some(val);
+                } else {
+                    result.structured_content = Some(serde_json::json!({
+                        "ok": true,
+                        "text": text,
+                    }));
+                }
+            }
         }
+
+        res
     }
 
     pub async fn execute_tool_call(

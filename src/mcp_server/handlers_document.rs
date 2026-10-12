@@ -17,6 +17,46 @@ impl PkbSearchServer {
             });
         }
 
+        if let Some(id_array) = args.get("ids").and_then(|v| v.as_array()) {
+            let mut items = Vec::new();
+            let mut not_found = Vec::new();
+            for id_val in id_array {
+                let id_str = id_val.as_str().unwrap_or_default();
+                let mut single_args = args.clone();
+                if let Some(obj) = single_args.as_object_mut() {
+                    obj.remove("ids");
+                    obj.insert("id".to_string(), serde_json::json!(id_str));
+                    if !obj.contains_key("detail") {
+                        obj.insert("detail".to_string(), serde_json::json!("summary"));
+                    }
+                }
+                match self.handle_get_document_single(&single_args) {
+                    Ok(res) => {
+                        if let Some(val) = res.structured_content {
+                            items.push(val);
+                        } else if let Some(first) = res.content.first().and_then(|c| c.raw.as_text()) {
+                            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&first.text) {
+                                items.push(v);
+                            }
+                        }
+                    }
+                    Err(_) => {
+                        not_found.push(serde_json::json!(id_str));
+                    }
+                }
+            }
+            let res_obj = serde_json::json!({
+                "items": items,
+                "not_found": not_found,
+            });
+            let text = serde_json::to_string_pretty(&res_obj).unwrap_or_default();
+            return Ok(Self::structured_result(text, res_obj));
+        }
+
+        self.handle_get_document_single(args)
+    }
+
+    pub(crate) fn handle_get_document_single(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
         let query = args
             .get("id")
             .and_then(|v| v.as_str())
@@ -72,14 +112,17 @@ impl PkbSearchServer {
             data: None,
         })?;
 
+        let detail = args.get("detail").and_then(|v| v.as_str());
         let max_bytes = args
             .get("max_bytes")
             .and_then(|v| v.as_u64())
-            .map(|v| v as usize);
+            .map(|v| v as usize)
+            .or(Some(4000));
         let metadata_only = args
             .get("metadata_only")
             .and_then(|v| v.as_bool())
-            .unwrap_or(false);
+            .unwrap_or(false)
+            || detail == Some("metadata");
         let format = args
             .get("format")
             .and_then(|v| v.as_str())
@@ -93,36 +136,46 @@ impl PkbSearchServer {
             .and_then(|d| d.deserialize::<JsonValue>().ok())
             .unwrap_or(JsonValue::Object(serde_json::Map::new()));
 
+        let body = parsed.content.trim().to_string();
+        let (truncated_body, truncated, total_bytes) = Self::truncate_body_with_info(body, max_bytes);
+
+        let mut structured = serde_json::json!({
+            "id": query,
+            "title": label,
+            "frontmatter": frontmatter,
+            "truncated": truncated,
+            "body_bytes": total_bytes,
+        });
+
+        if !metadata_only {
+            structured["content"] = serde_json::json!(truncated_body);
+            structured["body"] = serde_json::json!(truncated_body);
+        }
+
+        Self::prune_null_and_empty(&mut structured);
+
         if format.eq_ignore_ascii_case("json") {
-            let mut obj = serde_json::json!({
-                "id": query,
-                "title": label,
-                "frontmatter": frontmatter,
-            });
-            if !metadata_only {
-                let body = parsed.content.trim().to_string();
-                let body = Self::truncate_body(body, max_bytes);
-                obj["content"] = serde_json::json!(body);
-            }
-            let json_str = serde_json::to_string_pretty(&obj).unwrap_or_default();
-            return Ok(CallToolResult::success(vec![Content::text(json_str)]));
+            let json_str = serde_json::to_string_pretty(&structured).unwrap_or_default();
+            return Ok(Self::structured_result(json_str, structured));
         }
 
         if metadata_only {
-            let fm_yaml = serde_yaml::to_string(&frontmatter).unwrap_or_default();
-            return Ok(CallToolResult::success(vec![Content::text(format!(
-                "## {} (metadata only)\n\n```yaml\n{}\n```",
-                label,
-                fm_yaml.trim()
-            ))]));
+            let fm_yaml = serde_yaml::to_string(&structured.get("frontmatter").unwrap_or(&serde_json::json!({}))).unwrap_or_default();
+            return Ok(Self::structured_result(
+                format!(
+                    "## {} (metadata only)\n\n```yaml\n{}\n```",
+                    label,
+                    fm_yaml.trim()
+                ),
+                structured,
+            ));
         }
 
-        let content = Self::truncate_body(content, max_bytes);
-
-        Ok(CallToolResult::success(vec![Content::text(format!(
-            "## {}\n\n{}",
-            label, content
-        ))]))
+        let (truncated_content, _, _) = Self::truncate_body_with_info(content, max_bytes);
+        Ok(Self::structured_result(
+            format!("## {}\n\n{}", label, truncated_content),
+            structured,
+        ))
     }
 
     pub(crate) fn handle_list_documents(
@@ -177,9 +230,16 @@ impl PkbSearchServer {
         let total = results.len();
 
         if total == 0 {
-            return Ok(CallToolResult::success(vec![Content::text(
-                "No documents found matching filters.",
-            )]));
+            let zero = serde_json::json!({
+                "total": 0,
+                "showing": 0,
+                "items": [],
+                "documents": [],
+            });
+            return Ok(Self::structured_result(
+                "No documents found matching filters.".to_string(),
+                zero,
+            ));
         }
 
         // Default is "all matching" but always capped at MAX_RESULTS so a giant
@@ -213,10 +273,11 @@ impl PkbSearchServer {
                 "total": total,
                 "showing": showing,
                 "offset": offset,
+                "items": docs.clone(),
                 "documents": docs,
             });
             let json_str = serde_json::to_string_pretty(&payload).unwrap_or_default();
-            return Ok(CallToolResult::success(vec![Content::text(json_str)]));
+            return Ok(Self::structured_result(json_str, payload));
         }
 
         let mut output =
@@ -235,7 +296,20 @@ impl PkbSearchServer {
             output.push('\n');
         }
 
-        Ok(CallToolResult::success(vec![Content::text(output)]))
+        let payload = serde_json::json!({
+            "total": total,
+            "showing": showing,
+            "offset": offset,
+            "items": page.iter().map(|r| {
+                serde_json::json!({
+                    "id": r.id,
+                    "title": r.title,
+                    "type": r.doc_type,
+                    "tags": r.tags,
+                })
+            }).collect::<Vec<_>>(),
+        });
+        Ok(Self::structured_result(output, payload))
     }
 
     // =========================================================================
@@ -737,10 +811,17 @@ impl PkbSearchServer {
         let section_msg = section
             .map(|s| format!(" under ## {s}"))
             .unwrap_or_default();
-        Ok(CallToolResult::success(vec![Content::text(format!(
+        let msg = format!(
             "Appended to: {} (`{}`){section_msg}\nmodified: {}",
             label, id, new_modified
-        ))]))
+        );
+        let summary = serde_json::json!({
+            "id": id,
+            "title": label,
+            "modified": new_modified,
+            "message": msg,
+        });
+        Ok(Self::structured_result(msg, summary))
     }
 
     pub(crate) fn handle_update_body(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {

@@ -151,6 +151,46 @@ impl PkbSearchServer {
         }
     }
 
+    pub(crate) fn truncate_body_with_info(
+        body: String,
+        max_bytes: Option<usize>,
+    ) -> (String, bool, usize) {
+        let total = body.len();
+        match max_bytes {
+            Some(max) if total > max => {
+                let boundary = body.floor_char_boundary(max);
+                let truncated = body[..boundary].to_string();
+                (truncated, true, total)
+            }
+            _ => (body, false, total),
+        }
+    }
+
+    pub(crate) fn prune_null_and_empty(val: &mut JsonValue) -> bool {
+        match val {
+            JsonValue::Null => true,
+            JsonValue::String(s) => s.is_empty(),
+            JsonValue::Array(arr) => {
+                arr.retain_mut(|elem| !Self::prune_null_and_empty(elem));
+                arr.is_empty()
+            }
+            JsonValue::Object(map) => {
+                map.retain(|_, v| !Self::prune_null_and_empty(v));
+                map.is_empty()
+            }
+            _ => false,
+        }
+    }
+
+    pub(crate) fn structured_result(
+        content_text: String,
+        structured: JsonValue,
+    ) -> CallToolResult {
+        let mut res = CallToolResult::success(vec![Content::text(content_text)]);
+        res.structured_content = Some(structured);
+        res
+    }
+
     /// Statuses that are a handback rather than a clean success. Releasing to
     /// one of these requires a stated failure reason. Canonical list lives at
     /// `crate::graph::FAILURE_HANDBACK_STATUSES` so `batch_update` (which
