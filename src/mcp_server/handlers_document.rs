@@ -153,7 +153,14 @@ impl PkbSearchServer {
             .unwrap_or(JsonValue::Object(serde_json::Map::new()));
 
         let body = parsed.content.trim().to_string();
-        let (truncated_body, truncated, total_bytes) = Self::truncate_body_with_info(body, max_bytes);
+        let (truncated_body, truncated, total_bytes) = if detail == Some("summary") {
+            let limit = max_bytes.unwrap_or(300).min(300);
+            let (exc, was_cut) = Self::excerpt_body(&body, limit);
+            let total = body.len();
+            (exc, was_cut, total)
+        } else {
+            Self::truncate_body_with_info(body, max_bytes)
+        };
 
         let mut structured = serde_json::json!({
             "id": query,
@@ -187,7 +194,13 @@ impl PkbSearchServer {
             ));
         }
 
-        let (truncated_content, _, _) = Self::truncate_body_with_info(content, max_bytes);
+        let (truncated_content, _, _) = if detail == Some("summary") {
+            let limit = max_bytes.unwrap_or(300).min(300);
+            let (exc, was_cut) = Self::excerpt_body(&content, limit);
+            (exc, was_cut, content.len())
+        } else {
+            Self::truncate_body_with_info(content, max_bytes)
+        };
         Ok(Self::structured_result(
             format!("## {}\n\n{}", label, truncated_content),
             structured,
@@ -1564,9 +1577,16 @@ impl PkbSearchServer {
         }
 
         if count == 0 {
-            return Ok(CallToolResult::success(vec![Content::text(
-                "No memories found matching query.",
-            )]));
+            let zero = serde_json::json!({
+                "total": 0,
+                "showing": 0,
+                "items": [],
+                "memories": [],
+            });
+            return Ok(Self::structured_result(
+                "No memories found matching query.".to_string(),
+                zero,
+            ));
         }
 
         Ok(CallToolResult::success(vec![Content::text(format!(
@@ -1612,9 +1632,16 @@ impl PkbSearchServer {
         memories.truncate(limit);
 
         if memories.is_empty() {
-            return Ok(CallToolResult::success(vec![Content::text(
-                "No memories found.",
-            )]));
+            let zero = serde_json::json!({
+                "total": 0,
+                "showing": 0,
+                "items": [],
+                "memories": [],
+            });
+            return Ok(Self::structured_result(
+                "No memories found.".to_string(),
+                zero,
+            ));
         }
 
         let total = memories.len();

@@ -927,14 +927,485 @@ impl PkbSearchServer {
         for tool in &mut tools {
             if tool.output_schema.is_none() {
                 tool.output_schema = Some(std::sync::Arc::new(
-                    serde_json::from_value(serde_json::json!({
-                        "type": "object"
-                    }))
-                    .unwrap(),
+                    serde_json::from_value(Self::output_schema_for_tool(&tool.name))
+                        .unwrap(),
                 ));
             }
         }
         tools
+    }
+
+    pub fn output_schema_for_tool(name: &str) -> serde_json::Value {
+        match name {
+            "get_consolidation_cluster" => serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "seed_id": { "type": "string", "description": "Seed node ID" },
+                    "nodes": { "type": "array", "description": "Related cluster nodes", "items": { "type": "object" } }
+                }
+            }),
+            "apply_consolidation_batch" | "batch_update" => serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "operation": { "type": "string" },
+                    "dry_run": { "type": "boolean" },
+                    "total_matched": { "type": "integer" },
+                    "total_modified": { "type": "integer" },
+                    "total_skipped": { "type": "integer" },
+                    "total_failed": { "type": "integer" },
+                    "actions": { "type": "array", "items": { "type": "object" } },
+                    "errors": { "type": "array", "items": { "type": "string" } }
+                }
+            }),
+            "search" => serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "total": { "type": "integer", "description": "Total matching count" },
+                    "showing": { "type": "integer", "description": "Results returned in this payload" },
+                    "items": { "type": "array", "items": { "type": "object" }, "description": "Matching results" },
+                    "count": { "type": "integer" },
+                    "results": { "type": "array", "items": { "type": "object" } },
+                    "ids": { "type": "array", "items": { "type": "string" }, "description": "Matching IDs when ids_only=true" }
+                }
+            }),
+            "get_document" => serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "id": { "type": "string", "description": "Document ID" },
+                    "title": { "type": "string", "description": "Document title" },
+                    "frontmatter": { "type": "object", "description": "Frontmatter metadata" },
+                    "body": { "type": "string", "description": "Document body" },
+                    "content": { "type": "string", "description": "Alias for body" },
+                    "truncated": { "type": "boolean", "description": "Whether body was truncated" },
+                    "body_bytes": { "type": "integer", "description": "Total body size in bytes" },
+                    "items": { "type": "array", "items": { "type": "object" }, "description": "Batch read items" },
+                    "not_found": { "type": "array", "items": { "type": "string" }, "description": "IDs not found in batch read" },
+                    "timed_out": { "type": "array", "items": { "type": "string" }, "description": "IDs timed out in batch read" }
+                }
+            }),
+            "list_documents" => serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "total": { "type": "integer", "description": "Total matching documents" },
+                    "showing": { "type": "integer", "description": "Number of documents returned" },
+                    "items": { "type": "array", "items": { "type": "object" }, "description": "Matching documents" },
+                    "documents": { "type": "array", "items": { "type": "object" } },
+                    "timed_out": { "type": "array", "items": { "type": "string" } }
+                }
+            }),
+            "top_n_by_metric" => serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "metric": { "type": "string", "description": "Centrality metric evaluated" },
+                    "count": { "type": "integer", "description": "Count of returned nodes" },
+                    "nodes": { "type": "array", "items": { "type": "object" }, "description": "Ranked nodes" },
+                    "id": { "type": "string" },
+                    "pagerank": { "type": "number" },
+                    "betweenness": { "type": "number" },
+                    "degree": { "type": "integer" }
+                }
+            }),
+            "create_task" => serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "id": { "type": "string", "description": "Created task ID" },
+                    "path": { "type": "string", "description": "File path" },
+                    "title": { "type": "string", "description": "Task title" },
+                    "project": { "type": "string", "description": "Project slug" },
+                    "status": { "type": "string", "description": "Task status" },
+                    "parent": { "type": "string", "description": "Parent task ID" },
+                    "message": { "type": "string", "description": "Result message" },
+                    "modified": { "type": "string", "description": "Modification timestamp" }
+                }
+            }),
+            "claim_task" => serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "id": { "type": "string", "description": "Task ID" },
+                    "title": { "type": "string", "description": "Task title" },
+                    "status": { "type": "string", "description": "Task status (in_progress)" },
+                    "assignee": { "type": "string", "description": "Claimant assignee" },
+                    "session_id": { "type": "string", "description": "Active session ID" },
+                    "modified": { "type": "string", "description": "Modification timestamp" },
+                    "message": { "type": "string", "description": "Result message" },
+                    "frontmatter": { "type": "object" },
+                    "body": { "type": "string" }
+                }
+            }),
+            "create" => serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "id": { "type": "string", "description": "Created document ID" },
+                    "path": { "type": "string", "description": "File path" },
+                    "title": { "type": "string", "description": "Document title" },
+                    "type": { "type": "string", "description": "Document type" },
+                    "status": { "type": "string", "description": "Document status" },
+                    "message": { "type": "string", "description": "Result message" },
+                    "modified": { "type": "string", "description": "Modification timestamp" }
+                }
+            }),
+            "append" => serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "id": { "type": "string", "description": "Target document ID" },
+                    "modified": { "type": "string", "description": "Updated modified timestamp" },
+                    "message": { "type": "string", "description": "Result message" },
+                    "appended_bytes": { "type": "integer", "description": "Bytes appended" }
+                }
+            }),
+            "update_body" => serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "id": { "type": "string", "description": "Document ID" },
+                    "modified": { "type": "string", "description": "Updated modified timestamp" },
+                    "message": { "type": "string", "description": "Result message" },
+                    "bytes_written": { "type": "integer", "description": "Number of bytes written" }
+                }
+            }),
+            "edit_body" => serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "id": { "type": "string", "description": "Document ID" },
+                    "modified": { "type": "string", "description": "Updated modified timestamp" },
+                    "message": { "type": "string", "description": "Result message" },
+                    "applied_hunks": { "type": "integer", "description": "Count of successfully applied hunks" },
+                    "total_hunks": { "type": "integer", "description": "Total hunks in diff" },
+                    "dry_run": { "type": "boolean", "description": "Whether this was a dry run" }
+                }
+            }),
+            "delete" => serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "id": { "type": "string", "description": "Deleted document ID" },
+                    "deleted": { "type": "boolean", "description": "Whether deletion succeeded" },
+                    "message": { "type": "string", "description": "Result message" }
+                }
+            }),
+            "convert_document" => serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "id": { "type": "string", "description": "Document ID" },
+                    "title": { "type": "string", "description": "Document title" },
+                    "type": { "type": "string", "description": "New document type" },
+                    "status": { "type": "string", "description": "Document status" },
+                    "path": { "type": "string", "description": "New file path" },
+                    "old_path": { "type": "string", "description": "Previous file path" },
+                    "message": { "type": "string", "description": "Result message" },
+                    "modified": { "type": "string", "description": "Updated modified timestamp" }
+                }
+            }),
+            "release_task" => serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "ok": { "type": "boolean", "description": "Success flag" },
+                    "id": { "type": "string", "description": "Released task ID" },
+                    "title": { "type": "string", "description": "Task title" },
+                    "status": { "type": "string", "description": "Terminal or handoff status" },
+                    "modified": { "type": "string", "description": "New modified timestamp" },
+                    "message": { "type": "string", "description": "Result summary message" },
+                    "created_id": { "type": "string", "description": "Created ad-hoc task ID if ID was omitted" },
+                    "neighborhood": { "type": "object", "description": "Post-write graph neighborhood" }
+                }
+            }),
+            "complete_task" => serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "ok": { "type": "boolean", "description": "Success flag" },
+                    "id": { "type": "string", "description": "Task ID" },
+                    "title": { "type": "string", "description": "Task title" },
+                    "status": { "type": "string", "description": "done" },
+                    "modified": { "type": "string", "description": "New modified timestamp" },
+                    "message": { "type": "string", "description": "Completion message" },
+                    "neighborhood": { "type": "object", "description": "Post-write graph neighborhood" }
+                }
+            }),
+            "list_tasks" => serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "total": { "type": "integer", "description": "Total matching tasks" },
+                    "showing": { "type": "integer", "description": "Number of tasks returned" },
+                    "tasks": { "type": "array", "items": { "type": "object" }, "description": "Matching task summaries" },
+                    "items": { "type": "array", "items": { "type": "object" }, "description": "Alias for tasks" },
+                    "timed_out": { "type": "array", "items": { "type": "string" }, "description": "Task IDs timed out" }
+                }
+            }),
+            "nested_tasks" => serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "total": { "type": "integer", "description": "Total task count" },
+                    "showing": { "type": "integer", "description": "Number of tasks shown" },
+                    "projects": { "type": "object", "description": "Tasks grouped by project" },
+                    "tasks": { "type": "array", "items": { "type": "object" } },
+                    "items": { "type": "array", "items": { "type": "object" } },
+                    "tree": { "type": "string", "description": "ASCII tree representation" }
+                }
+            }),
+            "get_task" => serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "id": { "type": "string", "description": "Task ID" },
+                    "title": { "type": "string", "description": "Task title" },
+                    "status": { "type": "string", "description": "Task status" },
+                    "project": { "type": "string", "description": "Project slug" },
+                    "classification": { "type": "string", "description": "Classification" },
+                    "frontmatter": { "type": "object", "description": "Full frontmatter object" },
+                    "depends_on": { "type": "array", "items": { "type": "object" }, "description": "Dependencies" },
+                    "blocks": { "type": "array", "items": { "type": "object" }, "description": "Blocked tasks" },
+                    "children": { "type": "array", "items": { "type": "object" }, "description": "Child tasks" },
+                    "subtasks": { "type": "array", "items": { "type": "object" }, "description": "Subtask nodes" },
+                    "parent": { "type": "object", "description": "Parent task summary" },
+                    "closes": { "type": "array", "items": { "type": "object" }, "description": "Closed targets" },
+                    "target_ancestors": { "type": "array", "items": { "type": "string" }, "description": "Target ancestors" },
+                    "goals": { "type": "array", "items": { "type": "object" }, "description": "Associated goals" },
+                    "contributes_to": { "type": "array", "items": { "type": "object" }, "description": "Contribution edges" },
+                    "contributed_by": { "type": "array", "items": { "type": "string" }, "description": "Contributing nodes" },
+                    "follow_up_tasks": { "type": "array", "items": { "type": "string" }, "description": "Follow-up tasks" },
+                    "focus_score": { "type": "integer", "description": "Composite priority integer" },
+                    "blocked": { "type": "boolean", "description": "Whether task is blocked" },
+                    "parse_warnings": { "type": "array", "items": { "type": "string" }, "description": "Frontmatter parse warnings" },
+                    "days_until_due": { "type": "integer", "description": "Days remaining until deadline" },
+                    "urgency_ratio": { "type": "number", "description": "Effort to deadline ratio" },
+                    "links_out": { "type": "array", "items": { "type": "object" }, "description": "Outgoing flow links" },
+                    "links_in": { "type": "array", "items": { "type": "object" }, "description": "Incoming flow links" },
+                    "flow": { "type": "object", "description": "Flow ranking details" },
+                    "display": { "type": "object", "description": "Display ranking information" },
+                    "truncated": { "type": "boolean", "description": "Whether body was truncated" },
+                    "body_bytes": { "type": "integer", "description": "Total body size in bytes" },
+                    "routes": { "type": "object", "description": "Routing details" },
+                    "explanation": { "type": "string", "description": "Routing explanation" },
+                    "body": { "type": "string", "description": "Task markdown body" },
+                    "signals": { "type": "object", "description": "Underlying component ranking signals" },
+                    "items": { "type": "array", "items": { "type": "object" }, "description": "Batch read items" },
+                    "not_found": { "type": "array", "items": { "type": "string" }, "description": "IDs not found in batch read" },
+                    "timed_out": { "type": "array", "items": { "type": "string" }, "description": "IDs timed out in batch read" }
+                }
+            }),
+            "update_task" => serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "id": { "type": "string", "description": "Updated task ID" },
+                    "title": { "type": "string", "description": "Task title" },
+                    "status": { "type": "string", "description": "Task status" },
+                    "modified": { "type": "string", "description": "New modified timestamp" },
+                    "message": { "type": "string", "description": "Update message" }
+                }
+            }),
+            "decompose_task" => serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "parent_id": { "type": "string", "description": "Parent task ID" },
+                    "subtasks": { "type": "array", "items": { "type": "object" }, "description": "Created subtasks" },
+                    "created_ids": { "type": "array", "items": { "type": "string" }, "description": "List of new subtask IDs" },
+                    "message": { "type": "string", "description": "Decomposition summary" }
+                }
+            }),
+            "get_dependency_tree" => serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "id": { "type": "string", "description": "Root task ID" },
+                    "direction": { "type": "string", "description": "Tree direction" },
+                    "depth": { "type": "integer", "description": "Traversal depth" },
+                    "nodes": { "type": "array", "items": { "type": "object" }, "description": "Tree nodes" },
+                    "edges": { "type": "array", "items": { "type": "object" }, "description": "Tree edges" },
+                    "tree": { "type": "object", "description": "Hierarchical tree structure" }
+                }
+            }),
+            "pkb_trace" => serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "from": { "type": "string", "description": "Source node ID" },
+                    "to": { "type": "string", "description": "Target node ID" },
+                    "paths": { "type": "array", "items": { "type": "object" }, "description": "Discovered paths" },
+                    "found": { "type": "boolean", "description": "Whether any path was found" }
+                }
+            }),
+            "detect_weight_divergence" => serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "divergences": { "type": "array", "items": { "type": "object" }, "description": "Divergence records" },
+                    "count": { "type": "integer", "description": "Number of divergences found" },
+                    "threshold_days": { "type": "integer", "description": "Threshold used in days" }
+                }
+            }),
+            "graph_excalidraw" => serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "type": { "type": "string", "description": "Excalidraw diagram type" },
+                    "version": { "type": "integer", "description": "Schema version" },
+                    "source": { "type": "string", "description": "Origin application" },
+                    "elements": { "type": "array", "items": { "type": "object" }, "description": "Canvas elements" },
+                    "appState": { "type": "object", "description": "Application state" },
+                    "files": { "type": "object", "description": "Embedded files" }
+                }
+            }),
+            "export_graph" => serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "format": { "type": "string", "description": "Export format" },
+                    "nodes": { "type": "array", "items": { "type": "object" }, "description": "Exported nodes" },
+                    "edges": { "type": "array", "items": { "type": "object" }, "description": "Exported edges" },
+                    "dot": { "type": "string", "description": "GraphViz DOT content" },
+                    "ready": { "type": "array", "items": { "type": "string" } },
+                    "blocked": { "type": "array", "items": { "type": "string" } },
+                    "roots": { "type": "array", "items": { "type": "string" } },
+                    "focus": { "type": "string" }
+                }
+            }),
+            "diff_excalidraw" => serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "added": { "type": "array", "items": { "type": "object" } },
+                    "updated": { "type": "array", "items": { "type": "object" } },
+                    "removed": { "type": "array", "items": { "type": "object" } },
+                    "edge_mutations": { "type": "array", "items": { "type": "object" } },
+                    "conflicts": { "type": "array", "items": { "type": "object" } }
+                }
+            }),
+            "sync_excalidraw" => serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "dry_run": { "type": "boolean" },
+                    "applied": { "type": "array", "items": { "type": "object" } },
+                    "errors": { "type": "array", "items": { "type": "string" } },
+                    "message": { "type": "string" }
+                }
+            }),
+            "list_excalidraw" => serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "canvases": { "type": "array", "items": { "type": "object" } },
+                    "count": { "type": "integer" },
+                    "items": { "type": "array", "items": { "type": "object" } },
+                    "total": { "type": "integer" }
+                }
+            }),
+            "get_excalidraw" => serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string" },
+                    "scene": { "type": "object" },
+                    "elements": { "type": "array", "items": { "type": "object" } },
+                    "appState": { "type": "object" }
+                }
+            }),
+            "write_excalidraw" => serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string" },
+                    "bytes_written": { "type": "integer" },
+                    "message": { "type": "string" }
+                }
+            }),
+            "task_summary" => serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "ready": { "type": "integer" },
+                    "blocked": { "type": "integer" },
+                    "total": { "type": "integer" },
+                    "intent_breakdown": { "type": "object" },
+                    "project": { "type": "string" }
+                }
+            }),
+            "find_duplicates" => serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "total_clusters": { "type": "integer" },
+                    "total_duplicates": { "type": "integer" },
+                    "clusters": { "type": "array", "items": { "type": "object" } }
+                }
+            }),
+            "batch_merge" => serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "canonical": { "type": "string" },
+                    "merged_ids": { "type": "array", "items": { "type": "string" } },
+                    "dry_run": { "type": "boolean" },
+                    "actions": { "type": "array", "items": { "type": "object" } },
+                    "errors": { "type": "array", "items": { "type": "string" } },
+                    "message": { "type": "string" }
+                }
+            }),
+            "batch_create_epics" => serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "created_epics": { "type": "array", "items": { "type": "object" } },
+                    "dry_run": { "type": "boolean" },
+                    "message": { "type": "string" }
+                }
+            }),
+            "get_stats" => serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "tools": { "type": "object" },
+                    "total_calls": { "type": "integer" },
+                    "total_response_bytes": { "type": "integer" }
+                }
+            }),
+            "status" => serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "document_count": { "type": "integer" },
+                    "last_reindex": { "type": "object" },
+                    "is_fresh": { "type": "boolean" },
+                    "stale_documents": { "type": "integer" },
+                    "queue_depth": { "type": "integer" },
+                    "version": { "type": "string" },
+                    "git_commit": { "type": "string" }
+                }
+            }),
+            "refresh_graph" => serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "nodes_loaded": { "type": "integer" },
+                    "elapsed_ms": { "type": "number" },
+                    "message": { "type": "string" },
+                    "is_fresh": { "type": "boolean" }
+                }
+            }),
+            "repair_index_orphans" => serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "dry_run": { "type": "boolean" },
+                    "orphans_found": { "type": "integer" },
+                    "orphans_purged": { "type": "integer" },
+                    "orphaned_ids": { "type": "array", "items": { "type": "string" } }
+                }
+            }),
+            "task_search" => serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "total": { "type": "integer" },
+                    "showing": { "type": "integer" },
+                    "items": { "type": "array", "items": { "type": "object" } },
+                    "tasks": { "type": "array", "items": { "type": "object" } }
+                }
+            }),
+            "list_memories" | "retrieve_memory" => serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "total": { "type": "integer" },
+                    "showing": { "type": "integer" },
+                    "items": { "type": "array", "items": { "type": "object" } },
+                    "memories": { "type": "array", "items": { "type": "object" } }
+                }
+            }),
+            "search_by_tag" => serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "total": { "type": "integer" },
+                    "showing": { "type": "integer" },
+                    "items": { "type": "array", "items": { "type": "object" } },
+                    "documents": { "type": "array", "items": { "type": "object" } }
+                }
+            }),
+            _ => serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "ok": { "type": "boolean" },
+                    "message": { "type": "string" }
+                }
+            }),
+        }
     }
 }
 

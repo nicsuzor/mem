@@ -213,9 +213,16 @@ impl PkbSearchServer {
         }
 
         if count == 0 {
-            return Ok(CallToolResult::success(vec![Content::text(
-                "No tasks found matching query.",
-            )]));
+            let zero = serde_json::json!({
+                "total": 0,
+                "showing": 0,
+                "items": [],
+                "tasks": [],
+            });
+            return Ok(Self::structured_result(
+                "No tasks found matching query.".to_string(),
+                zero,
+            ));
         }
 
         Ok(CallToolResult::success(vec![Content::text(format!(
@@ -942,10 +949,16 @@ impl PkbSearchServer {
         matching.truncate(limit);
 
         if matching.is_empty() {
-            return Ok(CallToolResult::success(vec![Content::text(format!(
-                "No documents found with tags: {}",
-                tags.join(", ")
-            ))]));
+            let zero = serde_json::json!({
+                "total": 0,
+                "showing": 0,
+                "items": [],
+                "documents": [],
+            });
+            return Ok(Self::structured_result(
+                format!("No documents found with tags: {}", tags.join(", ")),
+                zero,
+            ));
         }
 
         let total = matching.len();

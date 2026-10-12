@@ -539,16 +539,27 @@ impl PkbSearchServer {
             Self::build_mutation_neighborhood(&graph, &node_id, cascade_closed)
         };
 
+        let (node_title, node_modified) = {
+            let graph = self.graph.read();
+            (
+                graph.resolve(id).map(|n| n.label.clone()),
+                graph.resolve(id).and_then(|n| n.modified.clone()),
+            )
+        };
+        let new_modified = node_modified.unwrap_or_else(|| chrono::Utc::now().to_rfc3339());
+        let title_to_use = node_title.as_deref().unwrap_or(&label);
+
         let response = serde_json::json!({
             "ok": true,
             "id": id,
+            "title": title_to_use,
             "status": "done",
-            "message": format!("Completed: {} (`{}`)", label, id),
+            "modified": new_modified,
+            "message": format!("Completed: {} (`{}`)", title_to_use, id),
             "neighborhood": neighborhood,
         });
-        Ok(CallToolResult::success(vec![Content::text(
-            serde_json::to_string_pretty(&response).unwrap_or_default(),
-        )]))
+        let text = serde_json::to_string_pretty(&response).unwrap_or_default();
+        Ok(Self::structured_result(text, response))
     }
 
     /// M3: Semantic attach — search open epics for a confident topic match.

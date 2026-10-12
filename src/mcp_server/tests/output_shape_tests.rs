@@ -21,28 +21,84 @@ fn make_test_server(root: &Path) -> PkbSearchServer {
 fn test_all_tools_declare_output_schema() {
     let tools = PkbSearchServer::get_all_tools();
     assert!(!tools.is_empty(), "tools list should not be empty");
-    let mut missing_schema = Vec::new();
+    let mut invalid_tools = Vec::new();
     for tool in &tools {
         match &tool.output_schema {
             Some(schema) => {
                 let schema_val = serde_json::to_value(schema.as_ref()).unwrap();
-                assert_eq!(
-                    schema_val.get("type").and_then(|v| v.as_str()),
-                    Some("object"),
-                    "tool '{}' outputSchema type must be 'object'",
-                    tool.name
-                );
+                let is_obj = schema_val.get("type").and_then(|v| v.as_str()) == Some("object");
+                let has_props = schema_val
+                    .get("properties")
+                    .and_then(|p| p.as_object())
+                    .map(|m| !m.is_empty())
+                    .unwrap_or(false);
+                if !is_obj || !has_props {
+                    invalid_tools.push(format!(
+                        "tool '{}' outputSchema must have type='object' and non-empty properties (got: {})",
+                        tool.name, schema_val
+                    ));
+                }
             }
             None => {
-                missing_schema.push(tool.name.to_string());
+                invalid_tools.push(format!("tool '{}' missing outputSchema", tool.name));
             }
         }
     }
     assert!(
-        missing_schema.is_empty(),
-        "Tools missing outputSchema: {:?}",
-        missing_schema
+        invalid_tools.is_empty(),
+        "Tools with invalid or missing outputSchema:\n{}",
+        invalid_tools.join("\n")
     );
+}
+
+#[test]
+fn test_generated_codemode_types_are_typed_not_bare_object() {
+    let tools = PkbSearchServer::get_all_tools();
+    let mut declarations = Vec::new();
+
+    for tool in &tools {
+        let schema = tool
+            .output_schema
+            .as_ref()
+            .expect("output_schema must exist");
+        let schema_val = serde_json::to_value(schema.as_ref()).unwrap();
+        let props = schema_val
+            .get("properties")
+            .and_then(|v| v.as_object())
+            .expect("properties must exist and be object");
+        assert!(
+            !props.is_empty(),
+            "Tool '{}' outputSchema properties must not be empty",
+            tool.name
+        );
+
+        let mut field_decls = Vec::new();
+        for (prop_name, prop_def) in props {
+            let ts_type = match prop_def.get("type").and_then(|t| t.as_str()) {
+                Some("string") => "string",
+                Some("integer") | Some("number") => "number",
+                Some("boolean") => "boolean",
+                Some("array") => "any[]",
+                Some("object") => "Record<string, any>",
+                _ => "any",
+            };
+            field_decls.push(format!("    {prop_name}?: {ts_type};"));
+        }
+        let interface_name = format!("{}Result", tool.name);
+        let decl = format!(
+            "interface {interface_name} {{\n{}\n}}\nexport function {}(args: any): Promise<{interface_name}>;",
+            field_decls.join("\n"),
+            tool.name
+        );
+        declarations.push(decl);
+    }
+
+    let all_dts = declarations.join("\n\n");
+    assert!(
+        !all_dts.contains("Promise<object>"),
+        "Generated Code Mode types must not return bare Promise<object>"
+    );
+    assert_eq!(declarations.len(), tools.len());
 }
 
 #[test]
@@ -70,6 +126,37 @@ fn test_zero_matches_return_json_envelope() {
     // search on empty graph
     let res = server.handle_pkb_search(&json!({"query": "nonexistent term"})).expect("search should succeed");
     assert!(res.structured_content.is_some(), "search must return structured content");
+    let structured = res.structured_content.as_ref().unwrap();
+    assert_eq!(structured.get("total").and_then(|v| v.as_u64()), Some(0));
+    assert_eq!(structured.get("showing").and_then(|v| v.as_u64()), Some(0));
+    assert_eq!(structured.get("items").and_then(|v| v.as_array()).map(|a| a.len()), Some(0));
+}
+
+#[test]
+fn test_task_search_list_memories_and_search_by_tag_zero_match_structured_content() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    let server = make_test_server(root);
+
+    // 1. task_search on empty graph / no match
+    let res = server.handle_task_search(&json!({"query": "nonexistent"})).expect("task_search should succeed");
+    assert!(res.structured_content.is_some(), "task_search must return structured content on zero match");
+    let structured = res.structured_content.as_ref().unwrap();
+    assert_eq!(structured.get("total").and_then(|v| v.as_u64()), Some(0));
+    assert_eq!(structured.get("showing").and_then(|v| v.as_u64()), Some(0));
+    assert_eq!(structured.get("items").and_then(|v| v.as_array()).map(|a| a.len()), Some(0));
+
+    // 2. list_memories on empty graph / no match
+    let res = server.handle_list_memories(&json!({})).expect("list_memories should succeed");
+    assert!(res.structured_content.is_some(), "list_memories must return structured content on zero match");
+    let structured = res.structured_content.as_ref().unwrap();
+    assert_eq!(structured.get("total").and_then(|v| v.as_u64()), Some(0));
+    assert_eq!(structured.get("showing").and_then(|v| v.as_u64()), Some(0));
+    assert_eq!(structured.get("items").and_then(|v| v.as_array()).map(|a| a.len()), Some(0));
+
+    // 3. search_by_tag on empty graph / no match
+    let res = server.handle_search_by_tag(&json!({"tags": ["nonexistent_tag"]})).expect("search_by_tag should succeed");
+    assert!(res.structured_content.is_some(), "search_by_tag must return structured content on zero match");
     let structured = res.structured_content.as_ref().unwrap();
     assert_eq!(structured.get("total").and_then(|v| v.as_u64()), Some(0));
     assert_eq!(structured.get("showing").and_then(|v| v.as_u64()), Some(0));
@@ -159,6 +246,55 @@ fn test_get_task_and_get_document_detail_and_max_bytes() {
     let val_doc = get_doc_res.structured_content.unwrap();
     assert_eq!(val_doc.get("truncated").and_then(|v| v.as_bool()), Some(true));
     assert_eq!(val_doc.get("body_bytes").and_then(|v| v.as_u64()), Some(5000));
+}
+
+#[test]
+fn test_get_task_and_get_document_detail_summary_yields_distinct_excerpt() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    let server = make_test_server(root);
+
+    let doc_path = root.join("tasks/doc-excerpt.md");
+    let long_body = "This is sentence one of the body. ".repeat(40); // ~1360 chars
+    let content = format!("---\nid: doc-excerpt\ntitle: Excerpt test\ntype: task\nstatus: ready\n---\n\n{long_body}\n");
+    std::fs::write(&doc_path, &content).unwrap();
+
+    let doc = crate::pkb::parse_file_relative(&doc_path, root).unwrap();
+    server.rebuild_graph_for_pkb_document(&doc);
+
+    // 1. get_task: compare full vs summary vs metadata
+    let full_res = server.handle_get_task(&json!({"id": "doc-excerpt", "detail": "full"})).unwrap();
+    let full_val = full_res.structured_content.unwrap();
+    let full_body = full_val.get("body").and_then(|v| v.as_str()).expect("full body must be present");
+
+    let summary_res = server.handle_get_task(&json!({"id": "doc-excerpt", "detail": "summary"})).unwrap();
+    let summary_val = summary_res.structured_content.unwrap();
+    let summary_body = summary_val.get("body").and_then(|v| v.as_str()).expect("summary body must be present");
+
+    let meta_res = server.handle_get_task(&json!({"id": "doc-excerpt", "detail": "metadata"})).unwrap();
+    let meta_val = meta_res.structured_content.unwrap();
+    assert!(meta_val.get("body").is_none(), "metadata detail must omit body");
+
+    assert_ne!(summary_body, full_body, "summary body must be distinct from full body in get_task");
+    assert!(summary_body.len() < full_body.len(), "summary body must be shorter than full body");
+    assert!(summary_body.len() <= 310, "summary body should be excerpted (around 300 chars)");
+
+    // 2. get_document: compare full vs summary vs metadata
+    let doc_full_res = server.handle_get_document(&json!({"id": "doc-excerpt", "detail": "full"})).unwrap();
+    let doc_full_val = doc_full_res.structured_content.unwrap();
+    let doc_full_body = doc_full_val.get("body").and_then(|v| v.as_str()).expect("full body must be present");
+
+    let doc_summary_res = server.handle_get_document(&json!({"id": "doc-excerpt", "detail": "summary"})).unwrap();
+    let doc_summary_val = doc_summary_res.structured_content.unwrap();
+    let doc_summary_body = doc_summary_val.get("body").and_then(|v| v.as_str()).expect("summary body must be present");
+
+    let doc_meta_res = server.handle_get_document(&json!({"id": "doc-excerpt", "detail": "metadata"})).unwrap();
+    let doc_meta_val = doc_meta_res.structured_content.unwrap();
+    assert!(doc_meta_val.get("body").is_none(), "metadata detail must omit body in get_document");
+
+    assert_ne!(doc_summary_body, doc_full_body, "summary body must be distinct from full body in get_document");
+    assert!(doc_summary_body.len() < doc_full_body.len(), "summary body must be shorter than full body in get_document");
+    assert!(doc_summary_body.len() <= 310, "summary body should be excerpted (around 300 chars) in get_document");
 }
 
 #[test]
@@ -263,4 +399,40 @@ fn test_mutations_return_summary_with_modified() {
     let release_val = release_res.structured_content.unwrap();
     assert_eq!(release_val.get("status").and_then(|v| v.as_str()), Some("partial"));
     assert!(release_val.get("modified").is_some(), "release_task must return modified timestamp");
+}
+
+#[test]
+fn test_complete_task_returns_structured_summary_with_modified() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    let server = make_test_server(root);
+
+    let doc_path = root.join("tasks/task-comp.md");
+    std::fs::write(
+        &doc_path,
+        "---\nid: task-comp\ntitle: Complete me\ntype: task\nstatus: ready\nmodified: 2026-01-01T00:00:00Z\n---\n\nInitial body\n",
+    )
+    .unwrap();
+    let doc = crate::pkb::parse_file_relative(&doc_path, root).unwrap();
+    server.rebuild_graph_for_pkb_document(&doc);
+
+    let comp_res = server
+        .handle_complete_task(&json!({
+            "id": "task-comp",
+            "completion_evidence": "All tests passed and verified"
+        }))
+        .expect("complete_task should succeed");
+
+    assert!(
+        comp_res.structured_content.is_some(),
+        "complete_task must return structured content"
+    );
+    let val = comp_res.structured_content.unwrap();
+    assert_eq!(val.get("id").and_then(|v| v.as_str()), Some("task-comp"));
+    assert_eq!(val.get("title").and_then(|v| v.as_str()), Some("Complete me"));
+    assert_eq!(val.get("status").and_then(|v| v.as_str()), Some("done"));
+    assert!(
+        val.get("modified").is_some(),
+        "complete_task must return new modified timestamp in structured content"
+    );
 }

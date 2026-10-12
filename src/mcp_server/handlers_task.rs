@@ -868,7 +868,14 @@ impl PkbSearchServer {
             .and_then(|v| v.as_u64())
             .map(|v| v as usize)
             .or(Some(4000));
-        let (body, truncated, total_bytes) = Self::truncate_body_with_info(body, max_bytes);
+        let (body, truncated, total_bytes) = if detail == Some("summary") {
+            let limit = max_bytes.unwrap_or(300).min(300);
+            let (exc, was_cut) = Self::excerpt_body(&body, limit);
+            let total = body.len();
+            (exc, was_cut, total)
+        } else {
+            Self::truncate_body_with_info(body, max_bytes)
+        };
 
         // Compute deadline metadata
         let today = chrono::Utc::now().date_naive();

@@ -166,6 +166,17 @@ impl PkbSearchServer {
         }
     }
 
+    pub(crate) fn excerpt_body(body: &str, max_chars: usize) -> (String, bool) {
+        let trimmed = body.trim();
+        let mut chars = trimmed.chars();
+        let exc: String = chars.by_ref().take(max_chars).collect();
+        if chars.next().is_some() {
+            (format!("{exc}..."), true)
+        } else {
+            (exc, false)
+        }
+    }
+
     pub(crate) fn prune_null_and_empty(val: &mut JsonValue) -> bool {
         match val {
             JsonValue::Null => true,
