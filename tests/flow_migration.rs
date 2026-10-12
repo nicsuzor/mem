@@ -529,3 +529,129 @@ Task body.
     assert_eq!(ledger.report.total_rows, 3);
 }
 
+#[test]
+fn test_word_probability_scale() {
+    use mem::flow_migration::word_probability;
+
+    assert_eq!(word_probability("certain"), Some(1.00));
+    assert_eq!(word_probability("almost certain"), Some(1.00));
+    assert_eq!(word_probability("probable"), Some(0.85));
+    assert_eq!(word_probability("very probable"), Some(0.85));
+    assert_eq!(word_probability("expected"), Some(0.75));
+    assert_eq!(word_probability("likely"), Some(0.75));
+    assert_eq!(word_probability("fifty-fifty"), Some(0.50));
+    assert_eq!(word_probability("fifty_fifty"), Some(0.50));
+    assert_eq!(word_probability("fifty fifty"), Some(0.50));
+    assert_eq!(word_probability("uncertain"), Some(0.25));
+    assert_eq!(word_probability("improbable"), Some(0.15));
+    assert_eq!(word_probability("impossible"), Some(0.00));
+    assert_eq!(word_probability("none"), Some(0.00));
+    assert_eq!(word_probability("0.42"), Some(0.42));
+    assert_eq!(word_probability("bogus_word"), None);
+}
+
+#[test]
+fn test_extract_prose_odds_unit() {
+    use mem::flow_migration::extract_prose_odds;
+
+    // From justification
+    let just1 = "Odds: improbable. No success rate is published.";
+    assert_eq!(extract_prose_odds(Some(just1), None), 0.15);
+
+    let just2 = "University labs in round... Odds: uncertain.";
+    assert_eq!(extract_prose_odds(Some(just2), None), 0.25);
+
+    // From body ## Odds
+    let body1 = "## Summary\n\nSome text.\n\n## Odds\n\nImprobable. No success rate.\n";
+    assert_eq!(extract_prose_odds(None, Some(body1)), 0.15);
+
+    let body2 = "## Details\n\nSome text.\n\n## Odds\n\nUncertain. A pool of USD 10M.\n";
+    assert_eq!(extract_prose_odds(None, Some(body2)), 0.25);
+
+    // Fallback to 1.0 when absent
+    assert_eq!(extract_prose_odds(None, None), 1.0);
+    assert_eq!(
+        extract_prose_odds(Some("No odds mentioned here"), Some("Plain body without odds")),
+        1.0
+    );
+}
+
+#[test]
+fn test_prose_odds_migrated_onto_edge() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+    init_git_repo(root);
+
+    let target_content = r#"---
+id: targ-funding
+title: Research Outside Money
+type: target
+standing_weight: 0.85
+status: ready
+---
+
+Strategic target for external grant funding.
+"#;
+    fs::write(root.join("target.md"), target_content).unwrap();
+
+    let task_content = r#"---
+id: task-grant-app
+title: Apply for SFF Grant
+type: task
+status: ready
+contributes_to:
+- justification: "University labs in the round received support. Odds: improbable. No success rate published."
+  stated_weight: fifty-fifty
+  to: targ-funding
+---
+
+## Summary
+Grant application task.
+
+## Odds
+
+Improbable. No success rate is published and applicant is first-time.
+"#;
+    fs::write(root.join("task.md"), task_content).unwrap();
+    commit_all(root, "Initial snapshot");
+
+    let ledger = apply_flow_migration(root).expect("apply failed");
+    assert_eq!(ledger.report.changed_nodes, 2);
+
+    let new_target = fs::read_to_string(root.join("target.md")).unwrap();
+    assert!(new_target.contains("worth: 0.85"));
+
+    let new_task = fs::read_to_string(root.join("task.md")).unwrap();
+    // quantum from fifty-fifty -> 0.5
+    assert!(new_task.contains("quantum: 0.5"));
+    // probability extracted from prose odds "improbable" -> 0.15
+    assert!(
+        new_task.contains("probability: 0.15"),
+        "Expected probability: 0.15 from prose odds, got:\n{new_task}"
+    );
+    assert!(new_task.contains("set_by: migrated"));
+    // Markdown body preserved untouched
+    assert!(new_task.contains("## Odds\n\nImprobable. No success rate is published and applicant is first-time."));
+
+    // Verify revert cleanly restores byte-identical content
+    let ledger_path = root
+        .join(".agents")
+        .join("migrations")
+        .join(format!("{}.json", ledger.migration));
+    let rep = revert_flow_migration(root, &ledger_path).expect("revert failed");
+    assert_eq!(rep.files_reverted, 2);
+    assert_eq!(fs::read_to_string(root.join("target.md")).unwrap(), target_content);
+    assert_eq!(fs::read_to_string(root.join("task.md")).unwrap(), task_content);
+}
+
+#[test]
+fn test_generate_dry_run_report_runs() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+    let report = mem::flow_migration::generate_dry_run_report(root).unwrap();
+    assert!(report.contains("## 1. Edge kinds"));
+    assert!(report.contains("## 3. Writes the migration makes"));
+    assert!(report.contains("## 5. Flow on the migrated graph"));
+    assert!(report.contains("## 6. Calibration cases"));
+}
+
