@@ -439,18 +439,73 @@ fn get_onnx_runtime_path() -> Option<PathBuf> {
 /// Threads per ONNX inference session.
 const THREADS_PER_SESSION: usize = 8;
 
+#[derive(Debug)]
+struct LruQueryCache {
+    capacity: usize,
+    map: std::collections::HashMap<String, Vec<f32>>,
+    order: std::collections::VecDeque<String>,
+}
+
+impl LruQueryCache {
+    fn new(capacity: usize) -> Self {
+        Self {
+            capacity,
+            map: std::collections::HashMap::new(),
+            order: std::collections::VecDeque::new(),
+        }
+    }
+
+    fn get(&mut self, key: &str) -> Option<Vec<f32>> {
+        if let Some(val) = self.map.get(key) {
+            if let Some(pos) = self.order.iter().position(|k| k == key) {
+                self.order.remove(pos);
+            }
+            self.order.push_back(key.to_string());
+            Some(val.clone())
+        } else {
+            None
+        }
+    }
+
+    fn insert(&mut self, key: String, val: Vec<f32>) {
+        if self.map.contains_key(&key) {
+            self.map.insert(key.clone(), val);
+            if let Some(pos) = self.order.iter().position(|k| k == &key) {
+                self.order.remove(pos);
+            }
+            self.order.push_back(key);
+            return;
+        }
+
+        if self.map.len() >= self.capacity {
+            if let Some(oldest) = self.order.pop_front() {
+                self.map.remove(&oldest);
+            }
+        }
+        self.map.insert(key.clone(), val);
+        self.order.push_back(key);
+    }
+
+    fn len(&self) -> usize {
+        self.map.len()
+    }
+}
+
 /// Max parallel ONNX sessions for CPU mode, computed from available cores.
-/// Pool starts with 1 session (fast startup for search), grows on demand for reindex.
-/// GPU mode uses exactly 1 session (hardcoded in the GPU path) — the GPU parallelizes internally.
-///
-/// BGE-M3 FP32 loads ~2.1GB per session, so we cap at 2 sessions (~4GB RAM max).
-/// Fewer sessions with more threads per session reduces memory-bandwidth contention
-/// from multiple model copies competing for cache/DRAM.
+/// Pool pre-warms with at least 2 sessions on multi-core systems so concurrent searches do not serialise.
 fn max_sessions_cpu() -> usize {
     let cores = std::thread::available_parallelism()
         .map(|n| n.get())
         .unwrap_or(4);
-    (cores / THREADS_PER_SESSION).clamp(1, 2)
+    if cores <= 1 {
+        1
+    } else {
+        (cores / 2).clamp(2, 4)
+    }
+}
+
+fn threads_per_session_cpu(cores: usize, max_sess: usize) -> usize {
+    (cores / max_sess).clamp(1, 4)
 }
 
 struct SessionPool {
@@ -549,8 +604,30 @@ impl SessionPool {
             }))
             .map_err(|e| anyhow::anyhow!("Failed to set truncation: {e}"))?;
 
+        let max_sess = if override_max_sessions > 0 {
+            override_max_sessions
+        } else {
+            max_sessions_cpu()
+        };
+        let mut initial_sessions = vec![Arc::new(Mutex::new(session))];
+        if !using_gpu && max_sess >= 2 {
+            let cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
+            let sess_threads = if override_threads > 0 {
+                override_threads
+            } else {
+                threads_per_session_cpu(cores, max_sess)
+            };
+            if let Ok(extra_sess) = Session::builder()
+                .and_then(|b| b.with_optimization_level(GraphOptimizationLevel::Level3))
+                .and_then(|b| b.with_intra_threads(sess_threads))
+                .and_then(|b| b.commit_from_file(&config.model_path))
+            {
+                initial_sessions.push(Arc::new(Mutex::new(extra_sess)));
+            }
+        }
+
         let pool = Self {
-            sessions: parking_lot::RwLock::new(vec![Arc::new(Mutex::new(session))]),
+            sessions: parking_lot::RwLock::new(initial_sessions),
             model_path: config.model_path.clone(),
             tokenizer,
             uses_token_type_ids,
@@ -771,13 +848,45 @@ impl SessionPool {
         Ok(())
     }
 
-    /// Get the first available (unlocked) session, or block on session 0.
+    /// Get the first available (unlocked) session, or spawn a new session if pool not full, or block on session 0.
     fn acquire_session(&self) -> Arc<Mutex<Session>> {
-        let sessions = self.sessions.read();
-        // Try each session without blocking
+        {
+            let sessions = self.sessions.read();
+            // Try each session without blocking
+            for session in sessions.iter() {
+                if session.try_lock().is_some() {
+                    return Arc::clone(session);
+                }
+            }
+        }
+        let max_sess = if self.override_max_sessions > 0 {
+            self.override_max_sessions
+        } else {
+            max_sessions_cpu()
+        };
+        let mut sessions = self.sessions.write();
         for session in sessions.iter() {
             if session.try_lock().is_some() {
                 return Arc::clone(session);
+            }
+        }
+        if sessions.len() < max_sess && !self.gpu_mode.load(Ordering::Relaxed) {
+            let cores = std::thread::available_parallelism()
+                .map(|n| n.get())
+                .unwrap_or(4);
+            let threads = if self.override_threads > 0 {
+                self.override_threads
+            } else {
+                threads_per_session_cpu(cores, max_sess)
+            };
+            if let Ok(sess) = Session::builder()
+                .and_then(|b| b.with_optimization_level(ort::session::builder::GraphOptimizationLevel::Level3))
+                .and_then(|b| b.with_intra_threads(threads))
+                .and_then(|b| b.commit_from_file(&self.model_path))
+            {
+                let arc = Arc::new(Mutex::new(sess));
+                sessions.push(Arc::clone(&arc));
+                return arc;
             }
         }
         // All busy — return first (caller will block on lock)
@@ -800,6 +909,12 @@ pub struct Embedder {
     override_batch_size: usize,
     /// If true, return dummy zero vectors (used for testing without model files).
     is_dummy: bool,
+    /// Query embedding cache (LRU)
+    query_cache: parking_lot::Mutex<LruQueryCache>,
+    /// Dummy sessions for testing concurrency without model files
+    dummy_sessions: parking_lot::RwLock<Vec<Arc<Mutex<()>>>>,
+    /// Artificial delay for dummy sessions in tests
+    dummy_delay: parking_lot::Mutex<Option<std::time::Duration>>,
 }
 
 impl Embedder {
@@ -847,6 +962,12 @@ impl Embedder {
             override_threads: 0,
             override_batch_size: 0,
             is_dummy: false,
+            query_cache: parking_lot::Mutex::new(LruQueryCache::new(512)),
+            dummy_sessions: parking_lot::RwLock::new(vec![
+                Arc::new(Mutex::new(())),
+                Arc::new(Mutex::new(())),
+            ]),
+            dummy_delay: parking_lot::Mutex::new(None),
         })
     }
 
@@ -880,7 +1001,21 @@ impl Embedder {
             override_threads: 0,
             override_batch_size: 0,
             is_dummy: true,
+            query_cache: parking_lot::Mutex::new(LruQueryCache::new(512)),
+            dummy_sessions: parking_lot::RwLock::new(vec![
+                Arc::new(Mutex::new(())),
+                Arc::new(Mutex::new(())),
+            ]),
+            dummy_delay: parking_lot::Mutex::new(None),
         }
+    }
+
+    pub fn query_cache_len(&self) -> usize {
+        self.query_cache.lock().len()
+    }
+
+    pub fn set_dummy_delay(&mut self, delay: std::time::Duration) {
+        *self.dummy_delay.lock() = Some(delay);
     }
 
     /// Set parallelism overrides for benchmarking. Zero values use defaults.
@@ -924,10 +1059,18 @@ impl Embedder {
         let span = tracer.start("encode_query");
         let _guard = opentelemetry::trace::mark_span_as_active(span);
         let start = std::time::Instant::now();
+
+        if let Some(cached) = self.query_cache.lock().get(text) {
+            crate::otel::call_metrics::CallMetrics::record_embed_duration(start.elapsed());
+            return Ok(cached);
+        }
+
         let prefixed = format!("{QUERY_PREFIX}{text}");
-        let res = self.encode(&prefixed);
+        let res = self.encode(&prefixed)?;
+
+        self.query_cache.lock().insert(text.to_string(), res.clone());
         crate::otel::call_metrics::CallMetrics::record_embed_duration(start.elapsed());
-        res
+        Ok(res)
     }
 
     /// Encode a document without prefix (asymmetric retrieval).
@@ -975,12 +1118,23 @@ impl Embedder {
             let tracer = opentelemetry::global::tracer("mem");
             use opentelemetry::trace::Tracer;
             let mut span = tracer.start("session_mutex_wait");
-            // Test dummy embedder: simulate session mutex lock acquisition
-            // to verify span emission when ONNX model files are absent.
-            let dummy_mutex = std::sync::Mutex::new(());
-            let _guard = dummy_mutex.lock();
+            let dummy_pool = self.dummy_sessions.read().clone();
+            let mut _guard = None;
+            for s in &dummy_pool {
+                if let Some(g) = s.try_lock() {
+                    _guard = Some(g);
+                    break;
+                }
+            }
+            let _guard = _guard.unwrap_or_else(|| dummy_pool[0].lock());
             use opentelemetry::trace::Span;
             span.end();
+
+            let delay = *self.dummy_delay.lock();
+            if let Some(d) = delay {
+                std::thread::sleep(d);
+            }
+
             return Ok(vec![vec![0.0; EMBEDDING_DIM]; texts.len()]);
         }
 

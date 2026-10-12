@@ -54,7 +54,8 @@ impl PkbSearchServer {
                         "since": { "type": "string", "description": "Filter: return only results whose stored `modified` timestamp is on or after YYYY-MM-DD or RFC 3339 timestamp (inclusive). Documents with no modified date are excluded." },
                         "before": { "type": "string", "description": "Filter: return only results whose stored `modified` timestamp is on or before YYYY-MM-DD or RFC 3339 timestamp (inclusive). Documents with no modified date are excluded." },
                         "boost_id": { "type": "string", "description": "Optional: boost results near this node (ID, filename, or title)" },
-                        "detail": { "type": "string", "description": "Result detail level: 'chunk' (default), 'snippet' (300 chars), 'full' (entire document), or 'metadata' (metadata only, omitting content extracts)", "enum": ["chunk", "snippet", "full", "metadata"], "default": "chunk" },
+                        "detail": { "type": "string", "description": "Result detail level: 'chunk' (default), 'snippet' (300 chars), 'full' (entire document), 'metadata' (metadata only, omitting content extracts), or 'ids' (IDs only)", "enum": ["chunk", "snippet", "full", "metadata", "ids"], "default": "chunk" },
+                        "ids_only": { "type": "boolean", "description": "When true, returns only the list of matching document IDs without fetching bodies or snippets (equivalent to detail='ids'). Default: false." },
                         "max_bytes": { "type": "integer", "description": "Maximum byte length of body to return when detail='full' (default: 4000)" },
                         "format": { "type": "string", "enum": ["markdown", "json"], "description": "Output format: 'markdown' (default) or structured 'json'" }
                     },
@@ -73,6 +74,7 @@ impl PkbSearchServer {
                         "id": { "type": "string", "description": "Document ID, filename stem, title, or permalink (uses flexible resolution)" },
                         "ids": { "type": "array", "items": { "type": "string" }, "description": "Batch read multiple document IDs (returns {items, not_found})" },
                         "detail": { "type": "string", "enum": ["metadata", "summary", "full"], "description": "Result detail level: 'metadata', 'summary', or 'full' (default: full)" },
+                        "budget_ms": { "type": "integer", "description": "Optional: time budget in milliseconds for batch reads. Returns partial results and a `timed_out` list when exceeded." },
                         "max_bytes": { "type": "integer", "description": "Optional: truncate the returned body to at most N bytes (UTF-8-safe). Default: 4000." },
                         "metadata_only": { "type": "boolean", "description": "Optional: return only frontmatter and metadata, omitting the document body (default: false)." },
                         "format": { "type": "string", "enum": ["markdown", "json"], "description": "Output format: 'markdown' (default) or structured 'json'." }
@@ -100,6 +102,7 @@ impl PkbSearchServer {
                         "status": { "type": "string", "description": "Filter by status" },
                         "limit": { "type": "integer", "description": "Max results (default: all matching, capped at 1000 — use offset to page further)" },
                         "offset": { "type": "integer", "description": "Skip first N results (default: 0)" },
+                        "budget_ms": { "type": "integer", "description": "Optional: time budget in milliseconds. Returns partial results and a `timed_out` list when exceeded." },
                         "format": { "type": "string", "enum": ["markdown", "json"], "description": "Output format: 'markdown' (default) or structured 'json'." }
                     }
                 }))
@@ -394,8 +397,9 @@ impl PkbSearchServer {
                         "limit": { "type": "integer", "description": "Max results (default: 50)" },
                         "include_subtasks": { "type": "boolean", "description": "Include sub-tasks (type=subtask) in results. Default: false — subtasks are hidden since they travel with their parent task." },
                         "include_done": { "type": "boolean", "description": "Include done and cancelled tasks. Default: false (silently hides closed tasks so the list shows actionable work, which can cause state blindness if you aren't expecting it). Ignored when an explicit `status` filter is provided." },
+                        "budget_ms": { "type": "integer", "description": "Optional: time budget in milliseconds. Returns partial results and a `timed_out` list when exceeded." },
                         "fields": {
-                            "description": "Optional: return only specific fields per task to reduce token usage. Comma-separated string or array of field names (e.g. ['id', 'title', 'status', 'focus_score']).",
+                            "description": "Optional: return only specific fields per task to reduce token usage. Comma-separated string or array of field names (e.g. ['id', 'title', 'status', 'focus_score', 'relationship_summary', 'body_excerpt']).",
                             "anyOf": [
                                 { "type": "string" },
                                 { "type": "array", "items": { "type": "string" } }
@@ -465,6 +469,7 @@ impl PkbSearchServer {
                         "id": { "type": "string", "description": "Task ID (e.g. 'framework-6b4325a1'). Also accepts filename stem or title." },
                         "ids": { "type": "array", "items": { "type": "string" }, "description": "Batch read multiple task IDs (returns {items, not_found})" },
                         "detail": { "type": "string", "enum": ["metadata", "summary", "full"], "description": "Result detail level: 'metadata' (metadata only), 'summary' (brief extract), or 'full' (full document body, default)" },
+                        "budget_ms": { "type": "integer", "description": "Optional: time budget in milliseconds for batch reads. Returns partial results and a `timed_out` list when exceeded." },
                         "max_bytes": { "type": "integer", "description": "Optional: truncate the returned body to at most N bytes (UTF-8-safe). Default: 4000." },
                         "metadata_only": { "type": "boolean", "description": "Optional: return only frontmatter metadata and signals, omitting the markdown body (default: false)." },
                         "include_signals": { "type": "boolean", "description": "Include individual ranking component signals in response (default: true). Set to false to reduce token payload." },

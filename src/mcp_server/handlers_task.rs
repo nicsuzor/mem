@@ -615,8 +615,21 @@ impl PkbSearchServer {
         if let Some(id_array) = args.get("ids").and_then(|v| v.as_array()) {
             let mut items = Vec::new();
             let mut not_found = Vec::new();
-            for id_val in id_array {
+            let mut timed_out = Vec::new();
+            let budget_ms = args.get("budget_ms").and_then(|v| v.as_u64());
+            let start = std::time::Instant::now();
+
+            for (idx, id_val) in id_array.iter().enumerate() {
                 let id_str = id_val.as_str().unwrap_or_default();
+                if let Some(b) = budget_ms {
+                    if start.elapsed().as_millis() as u64 >= b {
+                        for rem in &id_array[idx..] {
+                            let s = rem.as_str().unwrap_or_default();
+                            timed_out.push(serde_json::json!(s));
+                        }
+                        break;
+                    }
+                }
                 let mut single_args = args.clone();
                 if let Some(obj) = single_args.as_object_mut() {
                     obj.remove("ids");
@@ -640,10 +653,13 @@ impl PkbSearchServer {
                     }
                 }
             }
-            let res_obj = serde_json::json!({
+            let mut res_obj = serde_json::json!({
                 "items": items,
                 "not_found": not_found,
             });
+            if budget_ms.is_some() || !timed_out.is_empty() {
+                res_obj["timed_out"] = serde_json::json!(timed_out);
+            }
             let text = serde_json::to_string_pretty(&res_obj).unwrap_or_default();
             return Ok(Self::structured_result(text, res_obj));
         }
@@ -1361,7 +1377,11 @@ impl PkbSearchServer {
         let format = args
             .get("format")
             .and_then(|v| v.as_str())
-            .unwrap_or("markdown");
+            .unwrap_or(if args.get("fields").is_some() || args.get("budget_ms").is_some() {
+                "json"
+            } else {
+                "markdown"
+            });
         let fields_filter: Option<HashSet<String>> = args.get("fields").and_then(|v| {
             if let Some(arr) = v.as_array() {
                 Some(
@@ -1666,113 +1686,192 @@ impl PkbSearchServer {
 
         // JSON output mode
         if format.eq_ignore_ascii_case("json") {
-            let json_tasks: Vec<serde_json::Value> = tasks
-                .iter()
-                .map(|t| {
-                    let mut obj = if graph.ranking_mode() == crate::polecat_config::RankingMode::Flow {
-                        let flow = t.flow.as_ref();
-                        let eff = crate::display_rank::resolve_effort_days(t.effort.as_deref());
-                        let mapped_deadline_class = t.deadline_class.map(|dc| match dc {
-                            crate::graph::DeadlineClass::Fake => crate::display_rank::DeadlineClass::Fake,
-                            crate::graph::DeadlineClass::Soft => crate::display_rank::DeadlineClass::Soft,
-                            crate::graph::DeadlineClass::Hard => crate::display_rank::DeadlineClass::Hard,
-                        });
-                        let due_date = t.due.as_deref().and_then(crate::display_rank::parse_due_date);
-                        let on_cliff = crate::display_rank::is_on_cliff(due_date, mapped_deadline_class, eff, today, buffer_days);
-                        serde_json::json!({
-                            "id": t.task_id.as_deref().unwrap_or(&t.id),
-                            "title": t.label,
-                            "status": t.status.as_deref().unwrap_or("unknown"),
-                            "gain": flow.and_then(|f| f.gain),
-                            "loss_averted": flow.and_then(|f| f.loss_averted),
-                            "decision_value": flow.and_then(|f| f.decision_value),
-                            "flow_status": flow.map(|f| f.flow_status).unwrap_or(crate::flow::FlowStatus::Ok),
-                            "ready": t.classification.as_deref() == Some("ready"),
-                            "blocked": graph.is_blocked(&t.id),
-                            "on_cliff": on_cliff,
-                            "due": t.due,
-                            "deadline_class": t.deadline_class,
-                            "effort": t.effort,
-                            "classification": t.classification,
-                            "intent": t.intent.unwrap_or(4),
-                            "project": t.project,
-                            "assignee": t.assignee,
-                            "modified": t.modified,
-                            "tags": t.tags,
-                            "parent": t.parent,
-                            "depends_on": t.depends_on,
-                            "node_type": t.node_type,
-                            "consequence": t.consequence,
-                            "severity": t.severity,
-                            "goal_type": t.goal_type,
-                            "edge_template": t.edge_template,
-                        })
-                    } else {
-                        serde_json::json!({
-                            "id": t.task_id.as_deref().unwrap_or(&t.id),
-                            "title": t.label,
-                            "status": t.status.as_deref().unwrap_or("unknown"),
-                            "classification": t.classification,
-                            "intent": t.intent.unwrap_or(4),
-                            "effective_intent": t.effective_intent.unwrap_or(t.intent.unwrap_or(4)),
-                            "focus_score": t.focus_score,
-                            "blocked": graph.is_blocked(&t.id),
-                            "signals": {
-                                "criticality": t.criticality,
-                                "urgency": t.urgency,
-                                "downstream_weight": t.downstream_weight,
-                                "scope": t.scope,
-                                "uncertainty": t.uncertainty,
-                                "voi_value": t.voi_value,
-                                "affordable_loss": t.affordable_loss,
-                                "affordable_loss_filtered": t.affordable_loss_filtered,
-                                "chain_slack": t.chain_slack,
-                                "unlock_breadth": t.unlock_breadth,
-                                "value_lineage": t.value_lineage,
-                            },
-                            "project": t.project,
-                            "assignee": t.assignee,
-                            "modified": t.modified,
-                            "tags": t.tags,
-                            "parent": t.parent,
-                            "depends_on": t.depends_on,
-                            "node_type": t.node_type,
-                            "due": t.due,
-                            "effort": t.effort,
-                            "consequence": t.consequence,
-                            "severity": t.severity,
-                            "goal_type": t.goal_type,
-                            "edge_template": t.edge_template,
-                        })
+            let budget_ms = args.get("budget_ms").and_then(|v| v.as_u64());
+            let start_time = std::time::Instant::now();
+            let mut timed_out: Vec<String> = Vec::new();
+
+            let wants_body_excerpt = fields_filter
+                .as_ref()
+                .map(|f| f.contains("body_excerpt") || f.contains("excerpt"))
+                .unwrap_or(false);
+            let wants_rel_summary = fields_filter
+                .as_ref()
+                .map(|f| f.contains("relationship_summary"))
+                .unwrap_or(true);
+
+            let mut json_tasks: Vec<serde_json::Value> = Vec::new();
+            for (idx, t) in tasks.iter().enumerate() {
+                if let Some(b) = budget_ms {
+                    if start_time.elapsed().as_millis() as u64 >= b {
+                        for rem in &tasks[idx..] {
+                            let rem_id = rem.task_id.as_deref().unwrap_or(&rem.id);
+                            timed_out.push(rem_id.to_string());
+                        }
+                        break;
+                    }
+                }
+
+                let mut obj = if graph.ranking_mode() == crate::polecat_config::RankingMode::Flow {
+                    let flow = t.flow.as_ref();
+                    let eff = crate::display_rank::resolve_effort_days(t.effort.as_deref());
+                    let mapped_deadline_class = t.deadline_class.map(|dc| match dc {
+                        crate::graph::DeadlineClass::Fake => crate::display_rank::DeadlineClass::Fake,
+                        crate::graph::DeadlineClass::Soft => crate::display_rank::DeadlineClass::Soft,
+                        crate::graph::DeadlineClass::Hard => crate::display_rank::DeadlineClass::Hard,
+                    });
+                    let due_date = t.due.as_deref().and_then(crate::display_rank::parse_due_date);
+                    let on_cliff = crate::display_rank::is_on_cliff(due_date, mapped_deadline_class, eff, today, buffer_days);
+                    serde_json::json!({
+                        "id": t.task_id.as_deref().unwrap_or(&t.id),
+                        "title": t.label,
+                        "status": t.status.as_deref().unwrap_or("unknown"),
+                        "gain": flow.and_then(|f| f.gain),
+                        "loss_averted": flow.and_then(|f| f.loss_averted),
+                        "decision_value": flow.and_then(|f| f.decision_value),
+                        "flow_status": flow.map(|f| f.flow_status).unwrap_or(crate::flow::FlowStatus::Ok),
+                        "ready": t.classification.as_deref() == Some("ready"),
+                        "blocked": graph.is_blocked(&t.id),
+                        "on_cliff": on_cliff,
+                        "due": t.due,
+                        "deadline_class": t.deadline_class,
+                        "effort": t.effort,
+                        "classification": t.classification,
+                        "intent": t.intent.unwrap_or(4),
+                        "project": t.project,
+                        "assignee": t.assignee,
+                        "modified": t.modified,
+                        "tags": t.tags,
+                        "parent": t.parent,
+                        "depends_on": t.depends_on,
+                        "node_type": t.node_type,
+                        "consequence": t.consequence,
+                        "severity": t.severity,
+                        "goal_type": t.goal_type,
+                        "edge_template": t.edge_template,
+                    })
+                } else {
+                    serde_json::json!({
+                        "id": t.task_id.as_deref().unwrap_or(&t.id),
+                        "title": t.label,
+                        "status": t.status.as_deref().unwrap_or("unknown"),
+                        "classification": t.classification,
+                        "intent": t.intent.unwrap_or(4),
+                        "effective_intent": t.effective_intent.unwrap_or(t.intent.unwrap_or(4)),
+                        "focus_score": t.focus_score,
+                        "blocked": graph.is_blocked(&t.id),
+                        "signals": {
+                            "criticality": t.criticality,
+                            "urgency": t.urgency,
+                            "downstream_weight": t.downstream_weight,
+                            "scope": t.scope,
+                            "uncertainty": t.uncertainty,
+                            "voi_value": t.voi_value,
+                            "affordable_loss": t.affordable_loss,
+                            "affordable_loss_filtered": t.affordable_loss_filtered,
+                            "chain_slack": t.chain_slack,
+                            "unlock_breadth": t.unlock_breadth,
+                            "value_lineage": t.value_lineage,
+                        },
+                        "project": t.project,
+                        "assignee": t.assignee,
+                        "modified": t.modified,
+                        "tags": t.tags,
+                        "parent": t.parent,
+                        "depends_on": t.depends_on,
+                        "node_type": t.node_type,
+                        "due": t.due,
+                        "effort": t.effort,
+                        "consequence": t.consequence,
+                        "severity": t.severity,
+                        "goal_type": t.goal_type,
+                        "edge_template": t.edge_template,
+                    })
+                };
+
+                if wants_rel_summary {
+                    let resolve_ref = |rid: &str| -> serde_json::Value {
+                        if let Some(n) = graph.resolve(rid) {
+                            serde_json::json!({
+                                "id": n.id,
+                                "title": n.label,
+                                "status": n.status,
+                            })
+                        } else {
+                            serde_json::json!({ "id": rid })
+                        }
                     };
-                    if has_superseded_by.is_some() {
-                        if let Some(map) = obj.as_object_mut() {
-                            map.insert(
-                                "superseded_by".to_string(),
-                                serde_json::Value::Array(
-                                    t.superseded_by
-                                        .iter()
-                                        .cloned()
-                                        .map(serde_json::Value::String)
-                                        .collect(),
-                                ),
-                            );
-                        }
+                    let rel_summary = serde_json::json!({
+                        "parent": t.parent.as_ref().map(|p| resolve_ref(p)),
+                        "depends_on": t.depends_on.iter().map(|d| resolve_ref(d)).collect::<Vec<_>>(),
+                        "blocks": t.blocks.iter().map(|b| resolve_ref(b)).collect::<Vec<_>>(),
+                        "children": t.children.iter().map(|c| resolve_ref(c)).collect::<Vec<_>>(),
+                        "subtasks": t.subtasks.iter().map(|s| resolve_ref(s)).collect::<Vec<_>>(),
+                        "blocked": graph.is_blocked(&t.id),
+                    });
+                    if let Some(map) = obj.as_object_mut() {
+                        map.insert("relationship_summary".to_string(), rel_summary);
                     }
-                    if let Some(ref filter) = fields_filter {
-                        if let Some(map) = obj.as_object_mut() {
-                            map.retain(|k, _| filter.contains(k));
+                }
+
+                if wants_body_excerpt {
+                    let excerpt = if let Ok(abs_path) = self.abs_path_for_node(t, Some(&graph)) {
+                        if abs_path.is_file() {
+                            if let Ok(content) = std::fs::read_to_string(&abs_path) {
+                                let matter = gray_matter::Matter::<gray_matter::engine::YAML>::new();
+                                let parsed = matter.parse(&content);
+                                let body_text = parsed.content.trim();
+                                let mut chars = body_text.chars();
+                                let exc: String = chars.by_ref().take(300).collect();
+                                if chars.next().is_some() {
+                                    format!("{exc}...")
+                                } else {
+                                    exc
+                                }
+                            } else {
+                                String::new()
+                            }
+                        } else {
+                            String::new()
                         }
+                    } else {
+                        String::new()
+                    };
+                    if let Some(map) = obj.as_object_mut() {
+                        map.insert("body_excerpt".to_string(), serde_json::json!(excerpt));
                     }
-                    obj
-                })
-                .collect();
-            let result = serde_json::json!({
+                }
+
+                if has_superseded_by.is_some() {
+                    if let Some(map) = obj.as_object_mut() {
+                        map.insert(
+                            "superseded_by".to_string(),
+                            serde_json::Value::Array(
+                                t.superseded_by
+                                    .iter()
+                                    .cloned()
+                                    .map(serde_json::Value::String)
+                                    .collect(),
+                            ),
+                        );
+                    }
+                }
+                if let Some(ref filter) = fields_filter {
+                    if let Some(map) = obj.as_object_mut() {
+                        map.retain(|k, _| filter.contains(k));
+                    }
+                }
+                json_tasks.push(obj);
+            }
+
+            let mut result = serde_json::json!({
                 "total": total,
-                "showing": tasks.len(),
+                "showing": json_tasks.len(),
                 "items": json_tasks.clone(),
                 "tasks": json_tasks,
             });
+            if budget_ms.is_some() || !timed_out.is_empty() {
+                result["timed_out"] = serde_json::json!(timed_out);
+            }
             let text = serde_json::to_string_pretty(&result).unwrap_or_default();
             return Ok(Self::structured_result(text, result));
         }

@@ -186,6 +186,10 @@ pub struct PkbSearchServer {
     pub(crate) last_reindex: Arc<RwLock<ReindexStatus>>,
     /// Stats from the last disk scan and graph rebuild.
     pub(crate) last_rebuild_stats: Arc<RwLock<RebuildStats>>,
+    /// Mutex ensuring single-flight graph rebuilds under concurrent callers.
+    pub(crate) rebuild_mutex: Arc<Mutex<()>>,
+    /// Total count of full graph rebuilds performed.
+    pub(crate) rebuild_count: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -252,7 +256,15 @@ impl PkbSearchServer {
                 parsed_documents: initial_file_backed,
                 loaded_nodes: initial_loaded,
             })),
+            rebuild_mutex: Arc::new(Mutex::new(())),
+            rebuild_count: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         }
+    }
+
+    /// Total count of full graph rebuilds that have executed.
+    pub fn rebuild_count(&self) -> usize {
+        self.rebuild_count
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Number of Tier-2 background rebuilds that have actually executed.
@@ -392,14 +404,18 @@ impl PkbSearchServer {
         let current_gen = crate::pkb::scan_generation(&self.pkb_root);
         let cached_gen = self.graph.read().generation();
         if current_gen != cached_gen {
-            tracing::info!(
-                target: "pkb::invalidation",
-                disk_count = current_gen.file_count,
-                cached_count = cached_gen.file_count,
-                "In-memory graph index out of date with disk; invalidating and rebuilding"
-            );
-            self.rebuild_graph();
-            crate::otel::call_metrics::CallMetrics::record_rebuild(true);
+            let _lock = self.rebuild_mutex.lock();
+            let cached_gen = self.graph.read().generation();
+            if current_gen != cached_gen {
+                tracing::info!(
+                    target: "pkb::invalidation",
+                    disk_count = current_gen.file_count,
+                    cached_count = cached_gen.file_count,
+                    "In-memory graph index out of date with disk; invalidating and rebuilding"
+                );
+                self.rebuild_graph();
+                crate::otel::call_metrics::CallMetrics::record_rebuild(true);
+            }
         }
     }
 
@@ -490,6 +506,8 @@ impl PkbSearchServer {
             // the bump lands and then clobber this fresher graph.
             self.full_rebuild_epoch
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.rebuild_count
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             count
         };
         *self.last_reindex.write() = ReindexStatus {

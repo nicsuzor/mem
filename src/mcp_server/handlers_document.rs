@@ -20,8 +20,21 @@ impl PkbSearchServer {
         if let Some(id_array) = args.get("ids").and_then(|v| v.as_array()) {
             let mut items = Vec::new();
             let mut not_found = Vec::new();
-            for id_val in id_array {
+            let mut timed_out = Vec::new();
+            let budget_ms = args.get("budget_ms").and_then(|v| v.as_u64());
+            let start = std::time::Instant::now();
+
+            for (idx, id_val) in id_array.iter().enumerate() {
                 let id_str = id_val.as_str().unwrap_or_default();
+                if let Some(b) = budget_ms {
+                    if start.elapsed().as_millis() as u64 >= b {
+                        for rem in &id_array[idx..] {
+                            let s = rem.as_str().unwrap_or_default();
+                            timed_out.push(serde_json::json!(s));
+                        }
+                        break;
+                    }
+                }
                 let mut single_args = args.clone();
                 if let Some(obj) = single_args.as_object_mut() {
                     obj.remove("ids");
@@ -45,10 +58,13 @@ impl PkbSearchServer {
                     }
                 }
             }
-            let res_obj = serde_json::json!({
+            let mut res_obj = serde_json::json!({
                 "items": items,
                 "not_found": not_found,
             });
+            if budget_ms.is_some() || !timed_out.is_empty() {
+                res_obj["timed_out"] = serde_json::json!(timed_out);
+            }
             let text = serde_json::to_string_pretty(&res_obj).unwrap_or_default();
             return Ok(Self::structured_result(text, res_obj));
         }
@@ -252,30 +268,43 @@ impl PkbSearchServer {
             .collect();
         let showing = page.len();
 
-        if format.eq_ignore_ascii_case("json") {
-            let docs: Vec<serde_json::Value> = page
-                .iter()
-                .map(|r| {
-                    let mut obj = serde_json::json!({
-                        "id": r.id,
-                        "title": r.title,
-                        "type": r.doc_type,
-                        "tags": r.tags,
-                    });
-                    if let Some(ref st) = r.status {
-                        obj["status"] = serde_json::json!(st);
-                    }
-                    obj
-                })
-                .collect();
+        let budget_ms = args.get("budget_ms").and_then(|v| v.as_u64());
+        let start_time = std::time::Instant::now();
+        let mut timed_out: Vec<String> = Vec::new();
 
-            let payload = serde_json::json!({
+        if format.eq_ignore_ascii_case("json") {
+            let mut docs: Vec<serde_json::Value> = Vec::new();
+            for (idx, r) in page.iter().enumerate() {
+                if let Some(b) = budget_ms {
+                    if start_time.elapsed().as_millis() as u64 >= b {
+                        for rem in &page[idx..] {
+                            timed_out.push(rem.id.clone());
+                        }
+                        break;
+                    }
+                }
+                let mut obj = serde_json::json!({
+                    "id": r.id,
+                    "title": r.title,
+                    "type": r.doc_type,
+                    "tags": r.tags,
+                });
+                if let Some(ref st) = r.status {
+                    obj["status"] = serde_json::json!(st);
+                }
+                docs.push(obj);
+            }
+
+            let mut payload = serde_json::json!({
                 "total": total,
-                "showing": showing,
+                "showing": docs.len(),
                 "offset": offset,
                 "items": docs.clone(),
                 "documents": docs,
             });
+            if budget_ms.is_some() || !timed_out.is_empty() {
+                payload["timed_out"] = serde_json::json!(timed_out);
+            }
             let json_str = serde_json::to_string_pretty(&payload).unwrap_or_default();
             return Ok(Self::structured_result(json_str, payload));
         }
@@ -283,7 +312,16 @@ impl PkbSearchServer {
         let mut output =
             format!("**{total} documents found** (showing {showing}, offset {offset})\n\n");
 
-        for r in &page {
+        let mut rendered_items = Vec::new();
+        for (idx, r) in page.iter().enumerate() {
+            if let Some(b) = budget_ms {
+                if start_time.elapsed().as_millis() as u64 >= b {
+                    for rem in &page[idx..] {
+                        timed_out.push(rem.id.clone());
+                    }
+                    break;
+                }
+            }
             let id = &r.id;
             output.push_str(&format!("- **{}**", r.title));
             if let Some(ref dt) = r.doc_type {
@@ -293,22 +331,32 @@ impl PkbSearchServer {
                 output.push_str(&format!(" ({})", r.tags.join(", ")));
             }
             output.push_str(&format!(" — `{id}`"));
+            if let Some(ref st) = r.status {
+                output.push_str(&format!(" [{st}]"));
+            }
             output.push('\n');
+
+            let mut obj = serde_json::json!({
+                "id": r.id,
+                "title": r.title,
+                "type": r.doc_type,
+                "tags": r.tags,
+            });
+            if let Some(ref st) = r.status {
+                obj["status"] = serde_json::json!(st);
+            }
+            rendered_items.push(obj);
         }
 
-        let payload = serde_json::json!({
+        let mut payload = serde_json::json!({
             "total": total,
-            "showing": showing,
+            "showing": rendered_items.len(),
             "offset": offset,
-            "items": page.iter().map(|r| {
-                serde_json::json!({
-                    "id": r.id,
-                    "title": r.title,
-                    "type": r.doc_type,
-                    "tags": r.tags,
-                })
-            }).collect::<Vec<_>>(),
+            "items": rendered_items,
         });
+        if budget_ms.is_some() || !timed_out.is_empty() {
+            payload["timed_out"] = serde_json::json!(timed_out);
+        }
         Ok(Self::structured_result(output, payload))
     }
 

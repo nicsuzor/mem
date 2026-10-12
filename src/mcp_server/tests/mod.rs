@@ -23,6 +23,7 @@ mod span_truncation_tests;
 mod otel_spans_tests;
 mod daily_note_tests;
 mod output_shape_tests;
+mod slow_tail_tests;
 
 
 pub(crate) fn make_doc(

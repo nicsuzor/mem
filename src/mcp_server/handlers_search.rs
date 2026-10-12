@@ -330,6 +330,11 @@ impl PkbSearchServer {
             .get("detail")
             .and_then(|v| v.as_str())
             .unwrap_or("chunk");
+        let ids_only = args
+            .get("ids_only")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+            || detail.eq_ignore_ascii_case("ids");
         let actionable_only = args
             .get("actionable_only")
             .and_then(|v| v.as_bool())
@@ -454,6 +459,47 @@ impl PkbSearchServer {
                 "results": [],
             });
             return Ok(Self::structured_result("No results found.".to_string(), zero));
+        }
+
+        if ids_only {
+            let id_list: Vec<String> = scored
+                .iter()
+                .map(|(r, _)| {
+                    let node = graph.get_node(&r.id);
+                    node.map(|n| n.task_id.as_deref().unwrap_or(&n.id))
+                        .unwrap_or(&r.id)
+                        .to_string()
+                })
+                .collect();
+
+            let payload = serde_json::json!({
+                "query": query,
+                "total": id_list.len(),
+                "showing": id_list.len(),
+                "count": id_list.len(),
+                "ids": id_list.clone(),
+                "items": id_list,
+            });
+
+            if format.eq_ignore_ascii_case("json") {
+                let json_str = serde_json::to_string_pretty(&payload).unwrap_or_default();
+                return Ok(Self::structured_result(json_str, payload));
+            }
+
+            let mut output = format!(
+                "**Found {} results for:** \"{}\"{}\n\n",
+                id_list.len(),
+                query,
+                if boost_id.is_some() {
+                    " (with graph proximity boost)"
+                } else {
+                    ""
+                }
+            );
+            for id in &id_list {
+                output.push_str(&format!("- `{}`\n", id));
+            }
+            return Ok(Self::structured_result(output, payload));
         }
 
         if format.eq_ignore_ascii_case("json") {
