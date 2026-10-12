@@ -2,9 +2,10 @@
 id: graph-lint
 title: "Graph linter for the flow model"
 type: spec
-status: draft
+status: settled
 created: 2026-10-06
-task: epic_fc1de9ec
+settled_at: 2026-10-12
+task: aops_bed11e87
 epic: aops_ee1257cb
 brief: spec_866ee53d
 depends_on: flow-rule
@@ -19,14 +20,14 @@ tags:
 
 **Home:** `specs/graph-lint.md` in the `nicsuzor/mem` repository. Its evidence script is `specs/graph-lint/examples.py`. The checks it specifies are built into `pkb lint` (`src/lint.rs`).
 
-**Status: draft for Nic's decision.** This spec depends on [`flow-rule.md`](flow-rule.md), which is also a draft. It specifies checks and does not implement them. Until both are approved and built, `pkb lint` keeps its current checks.
+**Status: settled (points 1–30 of spec_866ee53d).** This canonical specification defines the linter checks and diagnostics contract for the settled flow model ([`flow-rule.md`](flow-rule.md)). It specifies checks built into `pkb lint` (`src/lint.rs`).
 
 Traceability tags follow `flow-rule.md`:
 
-- **S1–S16:** settled points in the brief (`spec_866ee53d`).
+- **S1–S30:** settled points in the brief (`spec_866ee53d`).
 - **I1–I17:** the brief's invariants.
 - **U1–U20:** user stories in `pkb-arch-framework`.
-- **Q1–Q31:** questions already open in `flow-rule.md` §15.
+- **Q1–Q31:** settled decisions in `flow-rule.md` §15.
 - **L1–L12:** questions this spec adds (section 10).
 - **§n:** sections of `flow-rule.md`.
 
@@ -38,7 +39,7 @@ Traceability tags follow `flow-rule.md`:
 
 **What it checks:**
 
-1. **Targets.** Each target without a price gets a warning. Today 83 of your 90 strategic nodes have none (the predicate is `STRATEGIC_TARGET_TYPES`, counting the 17 goal nodes alongside the 73 targets; `src/graph.rs:1016`, `:1371`), including `targ_safety` and `qut-f71664e8` ("Meet QUT employment obligations"; that id was observed against the live PKB via `export_graph` on 2026-10-06; not reproducible from the committed fixture or `examples.py`). A price outside −1 to +1, or a price on something that is not a target, is an error.
+1. **Targets.** Each target without a price gets a warning. Today 83 of your 90 strategic nodes have none (the predicate is `STRATEGIC_TARGET_TYPES`, counting the 17 goal nodes alongside the 73 targets; `src/graph.rs:1016`, `:1371`), including `targ_safety` and `qut-f71664e8` ("Meet QUT employment obligations"; that id was observed against the live PKB via `export_graph` on 2026-10-06; not reproducible from the committed fixture or `examples.py`). A non-numeric price, NaN, or infinity, or a price on something that is not a target, is an error. Valid prices span an open-ended continuous logarithmic scale $W_t \in \mathbb{R}$ (S26), and targets may function as capital stock hubs (S27).
 2. **Links.** A label, sign, quantum or probability the maths cannot read is an error. Today the stated weights "high", "medium" and "Marginal" sit on live links (observed against the live PKB via `export_graph` on 2026-10-06; not reproducible from the committed fixture or `examples.py`). Each scores zero, with only a parse warning that nothing acts on. Links pointing at deleted or cancelled nodes, and two links joining the same pair, are warnings. A link with no value is just noted, because the default is a legitimate answer (S7).
 3. **Loops.** Loops are allowed, and the live graph has three. A loop is an error only when every link in it is full strength and every node on it is open. Such a loop has no stable answer, and the maths refuses it. Today's cycle check misses one live case of this shape, a child that depends on its own parent. This rests on a Python re-implementation of today's rule (`old_hard_cycles` in `examples.py`), not on a run of `pkb lint`. It also flags loops the maths would accept.
 4. **Decisions.** A decision with only one option is a warning, and so is "finding out" work pointed at something that is not a decision. Neither earns anything.
@@ -162,7 +163,7 @@ An **assumed** example edits a real node hypothetically, because the live graph 
 | Rule | Fires when | Severity | Real example | Agent may fix unasked? | Traces to |
 |---|---|---|---|---|---|
 | `flow-target-unpriced` | An open target (matching `STRATEGIC_TARGET_TYPES`, `src/graph.rs:1016`, including `type: goal` per `:1371`) has no `worth` | warning | **Observed:** 83 of 90 open targets. `targ_safety` has 6 incoming edges, 3 from open work, and all of that work gets nothing from it. Live (observed against the live PKB via `export_graph` on 2026-10-06; not reproducible from the committed fixture or `examples.py`): `qut-f71664e8`, `admin-73e215bc` | propose | S14, U20, §5.6 |
-| `flow-worth-invalid` | `worth` is not a number in −1.0..=1.0 | error | **Assumed:** `targ_4e2cc92a` given `worth: high` or `worth: 6` | no | S12, S14, §5.6 |
+| `flow-worth-invalid` | `worth` is not a valid float (e.g. NaN, infinity, or an unrecognised string that is not an anchor word per §5.6) | error | **Assumed:** `targ_4e2cc92a` given `worth: NaN` or `worth: invalid_string` (numeric floats like `1.0`, `6.0`, `50.0`, `-10.0` pass under S26) | no | S12, S14, S26, §5.6 |
 | `flow-worth-not-target` | A node that is not a target (not in `STRATEGIC_TARGET_TYPES`, `src/graph.rs:1016`) carries `worth` | error | **Assumed:** `worth: 0.6` on task `proj-76fbc546`, which would make it a source of its own worth. The same mistake under today's model is observed on the live PKB (observed against the live PKB via `export_graph` on 2026-10-06; not reproducible from the committed fixture or `examples.py`): `severity` on tasks `aops_bug_subagents_fabricated_completion_reports` and `aops_bug_learn_requires_trace_halts_on_cowork` (`pkb-rules.md` §6.2 forbids it) | no | S14, §12 inputs |
 
 ### 5.2. Edge fields: labels and signs
@@ -317,7 +318,7 @@ Each criterion is something an observer can check by running `pkb lint --refs --
 | # | Observable criterion | Traces to | Test |
 |---|---|---|---|
 | G1 | An open target with no `worth` yields one `flow-target-unpriced` warning with `agent_fix: propose`; pricing it removes the warning | S14, U20 | `lint_flow_target_unpriced` |
-| G2 | `worth` of `high`, `6` or `-1.5` yields `flow-worth-invalid` (error, exit 1); `-1.0` and `1.0` pass | S12, S14 | `lint_flow_worth_invalid` |
+| G2 | `worth` of `NaN` or unrecognised string yields `flow-worth-invalid` (error, exit 1); `-10.0`, `1.0`, `50.0` pass | S12, S14, S26 | `lint_flow_worth_invalid` |
 | G3 | `worth` on a task yields `flow-worth-not-target` (error) | S14 | `lint_flow_worth_not_target` |
 | G4 | Each of `label: blocks`, `effect: negative`, `quantum: -0.3` yields its own error; `label: Serves` yields no diagnostic; `label: "serves "` yields an error whose `agent_fix` is `yes` if L10 is answered yes, and `no` otherwise | S2, S12 | `lint_flow_edge_label_sign` |
 | G5 | `effect: harms` on a `settles` edge yields `flow-edge-effect-ignored` (warning) | S2, S3 | `lint_flow_edge_effect_ignored` |
