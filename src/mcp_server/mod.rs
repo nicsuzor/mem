@@ -54,13 +54,40 @@ pub struct ReindexStatus {
 }
 
 #[derive(Clone)]
+pub struct InstrumentedGraphStore {
+    inner: Arc<RwLock<GraphStore>>,
+}
+
+impl InstrumentedGraphStore {
+    pub fn new(inner: Arc<RwLock<GraphStore>>) -> Self {
+        Self { inner }
+    }
+
+    pub fn read(&self) -> parking_lot::RwLockReadGuard<'_, GraphStore> {
+        let start = std::time::Instant::now();
+        let guard = self.inner.read();
+        let wait = start.elapsed();
+        crate::otel::call_metrics::CallMetrics::record_graph_read_wait(wait);
+        guard
+    }
+
+    pub fn write(&self) -> parking_lot::RwLockWriteGuard<'_, GraphStore> {
+        self.inner.write()
+    }
+
+    pub fn inner(&self) -> &Arc<RwLock<GraphStore>> {
+        &self.inner
+    }
+}
+
+#[derive(Clone)]
 pub struct PkbSearchServer {
     pub(crate) store: Arc<RwLock<VectorStore>>,
     pub(crate) embedder: Arc<Embedder>,
     pub(crate) reranker: Arc<crate::rerank::CrossEncoderReranker>,
     pub(crate) pkb_root: PathBuf,
     pub(crate) db_path: PathBuf,
-    pub(crate) graph: Arc<RwLock<GraphStore>>,
+    pub(crate) graph: InstrumentedGraphStore,
     pub(crate) session_registry: Arc<crate::otel::session_registry::SessionRegistry>,
     pub(crate) stale_count: usize,
     /// True when a background vector-store save is already scheduled. Used
@@ -197,7 +224,7 @@ impl PkbSearchServer {
             reranker,
             pkb_root,
             db_path,
-            graph,
+            graph: InstrumentedGraphStore::new(graph),
             session_registry: crate::otel::session_registry::SessionRegistry::new(),
             stale_count: 0,
             save_pending: Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -372,6 +399,7 @@ impl PkbSearchServer {
                 "In-memory graph index out of date with disk; invalidating and rebuilding"
             );
             self.rebuild_graph();
+            crate::otel::call_metrics::CallMetrics::record_rebuild(true);
         }
     }
 
@@ -1584,6 +1612,214 @@ impl PkbSearchServer {
             }),
         }
     }
+
+    pub async fn execute_tool_call(
+        &self,
+        tool_name: &str,
+        args: &JsonValue,
+        parts: Option<&http::request::Parts>,
+        meta: Option<&rmcp::model::Meta>,
+    ) -> Result<CallToolResult, McpError> {
+        let start = std::time::Instant::now();
+        let tool_name = tool_name.to_string();
+        let args = args.clone();
+
+        let client_context = crate::otel::client_context::ClientContext::extract(
+            parts,
+            meta,
+            &self.session_registry,
+        );
+
+        if let Some(ref mcp_id) = client_context.mcp_session_id {
+            self.session_registry
+                .update_activity(mcp_id, Some(client_context.session_id.clone()));
+        }
+        let session_id = client_context.session_id.clone();
+
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let this_task = self.clone();
+        let tool_name_task = tool_name.clone();
+
+        tokio::task::spawn_blocking(move || {
+            crate::otel::call_metrics::CallMetrics::start_recording();
+
+            let parent_cx = client_context
+                .parent_context
+                .unwrap_or_else(opentelemetry::Context::current);
+
+            let tracer = opentelemetry::global::tracer("mem");
+            use opentelemetry::trace::Tracer;
+
+            let canonical_name = match tool_name_task.as_str() {
+                "pkb_trace" | "pkb_orphans" => tool_name_task.clone(),
+                other => other.strip_prefix("pkb_").unwrap_or(other).to_string(),
+            };
+
+            let mut builder = tracer
+                .span_builder(format!("mcp.{}", canonical_name))
+                .with_kind(opentelemetry::trace::SpanKind::Server);
+
+            let mut attrs = vec![
+                opentelemetry::KeyValue::new("openinference.span.kind", "TOOL"),
+                opentelemetry::KeyValue::new("tool.name", canonical_name.clone()),
+                opentelemetry::KeyValue::new("session.id", client_context.session_id.clone()),
+            ];
+
+            if let Some(ref tid) = client_context.task_id {
+                attrs.push(opentelemetry::KeyValue::new(
+                    "tag.tags",
+                    format!("[\"task:{}\"]", tid),
+                ));
+            }
+            if let Some(ref mcp_id) = client_context.mcp_session_id {
+                attrs.push(opentelemetry::KeyValue::new(
+                    "mcp.session_id",
+                    mcp_id.clone(),
+                ));
+            }
+
+            let input_str = serde_json::to_string(&args).unwrap_or_default();
+            let truncated_input = Self::truncate_span_value(input_str);
+            attrs.push(opentelemetry::KeyValue::new("input.value", truncated_input));
+            attrs.push(opentelemetry::KeyValue::new(
+                "input.mime_type",
+                "application/json",
+            ));
+
+            builder = builder.with_attributes(attrs);
+
+            let span = tracer.build_with_context(builder, &parent_cx);
+            let cx = parent_cx.with_span(span);
+            let _guard = cx.clone().attach();
+
+            let res = this_task.dispatch_tool_sync(&canonical_name, &args);
+
+            let metrics = crate::otel::call_metrics::CallMetrics::finish_recording().unwrap_or_default();
+
+            // Add output attributes
+            let is_error = res.is_err();
+            let output_str = match &res {
+                Ok(r) => serde_json::to_string(r).unwrap_or_default(),
+                Err(e) => serde_json::to_string(e).unwrap_or_default(),
+            };
+            let response_bytes = output_str.len();
+            let truncated_output = Self::truncate_span_value(output_str);
+
+            use opentelemetry::trace::TraceContextExt;
+            let current_span = cx.span();
+
+            current_span.set_attribute(opentelemetry::KeyValue::new(
+                "output.value",
+                truncated_output,
+            ));
+            current_span.set_attribute(opentelemetry::KeyValue::new(
+                "output.mime_type",
+                "application/json",
+            ));
+
+            // Required per-call attributes
+            current_span.set_attribute(opentelemetry::KeyValue::new(
+                "result_bytes",
+                response_bytes as i64,
+            ));
+            current_span.set_attribute(opentelemetry::KeyValue::new(
+                "result-bytes",
+                response_bytes as i64,
+            ));
+
+            let graph_read_wait_ms = (metrics.graph_read_wait_us as f64) / 1000.0;
+            current_span.set_attribute(opentelemetry::KeyValue::new(
+                "graph.read_wait_ms",
+                graph_read_wait_ms,
+            ));
+            current_span.set_attribute(opentelemetry::KeyValue::new(
+                "graph_read_wait_ms",
+                graph_read_wait_ms,
+            ));
+            current_span.set_attribute(opentelemetry::KeyValue::new(
+                "graph.read.wait_ms",
+                graph_read_wait_ms,
+            ));
+            current_span.set_attribute(opentelemetry::KeyValue::new(
+                "graph.read_count",
+                metrics.graph_read_count as i64,
+            ));
+
+            current_span.set_attribute(opentelemetry::KeyValue::new(
+                "rebuild_flag",
+                metrics.rebuilt,
+            ));
+            current_span.set_attribute(opentelemetry::KeyValue::new(
+                "ensure_graph_fresh.rebuilt",
+                metrics.rebuilt,
+            ));
+
+            let embed_time_ms = (metrics.embed_time_us as f64) / 1000.0;
+            current_span.set_attribute(opentelemetry::KeyValue::new(
+                "embed_time_ms",
+                embed_time_ms,
+            ));
+            current_span.set_attribute(opentelemetry::KeyValue::new(
+                "embed.time_ms",
+                embed_time_ms,
+            ));
+
+            let hybrid_search_time_ms = (metrics.hybrid_search_time_us as f64) / 1000.0;
+            current_span.set_attribute(opentelemetry::KeyValue::new(
+                "hybrid_search_time_ms",
+                hybrid_search_time_ms,
+            ));
+            current_span.set_attribute(opentelemetry::KeyValue::new(
+                "hybrid_search.time_ms",
+                hybrid_search_time_ms,
+            ));
+
+            if is_error {
+                current_span.set_status(opentelemetry::trace::Status::Error {
+                    description: std::borrow::Cow::Borrowed("Tool error"),
+                });
+            } else {
+                current_span.set_status(opentelemetry::trace::Status::Ok);
+            }
+            current_span.end();
+
+            drop(_guard);
+
+            let _ = tx.send((res, response_bytes, is_error));
+        });
+
+        let (result, response_bytes, is_error) = rx.await.map_err(|_| McpError {
+            code: ErrorCode::INTERNAL_ERROR,
+            message: Cow::from("Internal error in tool execution task"),
+            data: None,
+        })?;
+
+        let latency = start.elapsed().as_millis();
+        crate::telemetry::record_call(&tool_name, response_bytes, latency, is_error);
+
+        if session_id == "unknown" {
+            tracing::info!(
+                target: "pkb::tool_call",
+                tool = %tool_name,
+                status = %if is_error { "error" } else { "ok" },
+                latency_ms = latency as u64,
+                response_bytes,
+                "tool call"
+            );
+        } else {
+            tracing::info!(
+                target: "pkb::tool_call",
+                tool = %tool_name,
+                status = %if is_error { "error" } else { "ok" },
+                latency_ms = latency as u64,
+                response_bytes,
+                session = %session_id,
+                "tool call"
+            );
+        }
+
+        result
+    }
 }
 
 impl ServerHandler for PkbSearchServer {
@@ -1617,158 +1853,25 @@ impl ServerHandler for PkbSearchServer {
         request: CallToolRequestParams,
         context: rmcp::service::RequestContext<rmcp::service::RoleServer>,
     ) -> impl std::future::Future<Output = Result<CallToolResult, McpError>> + Send + '_ {
-        let start = std::time::Instant::now();
-        let tool_name = request.name.clone();
         let args = Self::args_to_value(request.arguments);
-
-        let effective_name = tool_name.to_string();
-
-        let client_context = crate::otel::client_context::ClientContext::extract(
-            context.extensions.get::<http::request::Parts>(),
-            request.meta.as_ref(),
-            &self.session_registry,
-        );
-
-        if let Some(ref mcp_id) = client_context.mcp_session_id {
-            self.session_registry
-                .update_activity(mcp_id, Some(client_context.session_id.clone()));
-        }
-        let session_id = client_context.session_id.clone();
-
+        let name = request.name.clone();
+        let parts = context.extensions.get::<http::request::Parts>().cloned();
+        let meta = request.meta.clone();
+        let ct = context.ct.clone();
         let this = self.clone();
+
         async move {
-            let (tx, rx) = tokio::sync::oneshot::channel();
-
-            // Offload to a blocking thread so the async task can respond to
-            // session cancellation (e.g. keep-alive timeout or disconnect).
-            // Refs task-2ae61ce6.
-            let tool_name_task = tool_name.clone();
-            let args_task = args.clone();
-            let this_task = this.clone();
-
-            tokio::task::spawn_blocking(move || {
-                let tracer = opentelemetry::global::tracer("mem");
-                use opentelemetry::trace::Tracer;
-                let mut builder = tracer
-                    .span_builder(format!("mcp.{}", tool_name_task))
-                    .with_kind(opentelemetry::trace::SpanKind::Server);
-
-                let mut attrs = vec![
-                    opentelemetry::KeyValue::new("openinference.span.kind", "TOOL"),
-                    opentelemetry::KeyValue::new("tool.name", tool_name_task.clone()),
-                    opentelemetry::KeyValue::new("session.id", client_context.session_id.clone()),
-                ];
-
-                if let Some(ref tid) = client_context.task_id {
-                    attrs.push(opentelemetry::KeyValue::new(
-                        "tag.tags",
-                        format!("[\"task:{}\"]", tid),
-                    ));
-                }
-                if let Some(ref mcp_id) = client_context.mcp_session_id {
-                    attrs.push(opentelemetry::KeyValue::new(
-                        "mcp.session_id",
-                        mcp_id.clone(),
-                    ));
-                }
-
-                let input_str = serde_json::to_string(&args_task).unwrap_or_default();
-                let truncated_input = Self::truncate_span_value(input_str);
-                attrs.push(opentelemetry::KeyValue::new("input.value", truncated_input));
-                attrs.push(opentelemetry::KeyValue::new(
-                    "input.mime_type",
-                    "application/json",
-                ));
-
-                builder = builder.with_attributes(attrs);
-
-                let mut span = if let Some(ref parent) = client_context.parent_context {
-                    use opentelemetry::trace::Tracer;
-                    tracer.build_with_context(builder, parent)
-                } else {
-                    use opentelemetry::trace::Tracer;
-                    tracer.build(builder)
-                };
-
-                let res = this_task.dispatch_tool_sync(&tool_name_task, &args_task);
-
-                // Add output attributes
-                let is_error = res.is_err();
-                let output_str = match &res {
-                    Ok(r) => serde_json::to_string(r).unwrap_or_default(),
-                    Err(e) => serde_json::to_string(e).unwrap_or_default(),
-                };
-                let truncated_output = Self::truncate_span_value(output_str);
-
-                use opentelemetry::trace::Span;
-                span.set_attribute(opentelemetry::KeyValue::new(
-                    "output.value",
-                    truncated_output,
-                ));
-                span.set_attribute(opentelemetry::KeyValue::new(
-                    "output.mime_type",
-                    "application/json",
-                ));
-                if is_error {
-                    span.set_status(opentelemetry::trace::Status::Error {
-                        description: std::borrow::Cow::Borrowed("Tool error"),
-                    });
-                } else {
-                    span.set_status(opentelemetry::trace::Status::Ok);
-                }
-                span.end();
-
-                let _ = tx.send(res);
-            });
-
-            let result = tokio::select! {
-                res = rx => res.unwrap_or_else(|_| Err(McpError {
-                    code: ErrorCode::INTERNAL_ERROR,
-                    message: Cow::from("Internal error in tool execution task"),
-                    data: None,
-                })),
-                _ = context.ct.cancelled() => {
-                    tracing::warn!("Session terminated while tool '{}' was in flight", tool_name);
+            tokio::select! {
+                res = this.execute_tool_call(&name, &args, parts.as_ref(), meta.as_ref()) => res,
+                _ = ct.cancelled() => {
+                    tracing::warn!("Session terminated while tool '{}' was in flight", name);
                     Err(McpError {
                         code: ErrorCode::INTERNAL_ERROR,
                         message: Cow::from("Session terminated"),
                         data: None,
                     })
                 }
-            };
-
-            let latency = start.elapsed().as_millis();
-            let is_error = result.is_err();
-            let response_bytes = match &result {
-                Ok(res) => serde_json::to_vec(res).map(|v| v.len()).unwrap_or(0),
-                Err(e) => serde_json::to_vec(e).map(|v| v.len()).unwrap_or(0),
-            };
-
-            crate::telemetry::record_call(&effective_name, response_bytes, latency, is_error);
-
-            // The one INFO line per transaction; per-step detail is DEBUG.
-            if session_id == "unknown" {
-                tracing::info!(
-                    target: "pkb::tool_call",
-                    tool = %effective_name,
-                    status = %if is_error { "error" } else { "ok" },
-                    latency_ms = latency as u64,
-                    response_bytes,
-                    "tool call"
-                );
-            } else {
-                tracing::info!(
-                    target: "pkb::tool_call",
-                    tool = %effective_name,
-                    status = %if is_error { "error" } else { "ok" },
-                    latency_ms = latency as u64,
-                    response_bytes,
-                    session = %session_id,
-                    "tool call"
-                );
             }
-
-            result
         }
     }
 

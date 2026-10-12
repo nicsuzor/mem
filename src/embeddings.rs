@@ -923,8 +923,11 @@ impl Embedder {
         use opentelemetry::trace::Tracer;
         let span = tracer.start("encode_query");
         let _guard = opentelemetry::trace::mark_span_as_active(span);
+        let start = std::time::Instant::now();
         let prefixed = format!("{QUERY_PREFIX}{text}");
-        self.encode(&prefixed)
+        let res = self.encode(&prefixed);
+        crate::otel::call_metrics::CallMetrics::record_embed_duration(start.elapsed());
+        res
     }
 
     /// Encode a document without prefix (asymmetric retrieval).

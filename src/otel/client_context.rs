@@ -1,7 +1,7 @@
 use crate::otel::session_registry::SessionRegistry;
 use http::request::Parts;
 use opentelemetry::{global, Context};
-use opentelemetry::propagation::Extractor;
+use opentelemetry::propagation::{Extractor, TextMapPropagator};
 use opentelemetry::trace::TraceContextExt;
 
 
@@ -10,6 +10,40 @@ pub struct HeaderExtractor<'a>(pub &'a http::HeaderMap);
 impl<'a> Extractor for HeaderExtractor<'a> {
     fn get(&self, key: &str) -> Option<&str> {
         self.0.get(key).and_then(|v| v.to_str().ok())
+    }
+
+    fn keys(&self) -> Vec<&str> {
+        self.0.keys().map(|k| k.as_str()).collect()
+    }
+}
+
+pub struct JsonMapExtractor<'a>(pub &'a serde_json::Map<String, serde_json::Value>);
+
+impl<'a> Extractor for JsonMapExtractor<'a> {
+    fn get(&self, key: &str) -> Option<&str> {
+        if let Some(v) = self.0.get(key).and_then(|v| v.as_str()) {
+            return Some(v);
+        }
+        for (k, v) in self.0.iter() {
+            if k.eq_ignore_ascii_case(key) {
+                if let Some(s) = v.as_str() {
+                    return Some(s);
+                }
+            }
+        }
+        if let Some(nested) = self.0.get("_meta").and_then(|v| v.as_object()) {
+            if let Some(v) = nested.get(key).and_then(|v| v.as_str()) {
+                return Some(v);
+            }
+            for (k, v) in nested.iter() {
+                if k.eq_ignore_ascii_case(key) {
+                    if let Some(s) = v.as_str() {
+                        return Some(s);
+                    }
+                }
+            }
+        }
+        None
     }
 
     fn keys(&self) -> Vec<&str> {
@@ -38,7 +72,10 @@ impl ClientContext {
 
         if let Some(parts) = parts {
             let extractor = HeaderExtractor(&parts.headers);
-            let ctx = global::get_text_map_propagator(|prop| prop.extract(&extractor));
+            let mut ctx = global::get_text_map_propagator(|prop| prop.extract(&extractor));
+            if !ctx.span().span_context().is_valid() {
+                ctx = opentelemetry_sdk::propagation::TraceContextPropagator::new().extract(&extractor);
+            }
             if ctx.span().span_context().is_valid() {
                 parent_context = Some(ctx);
             }
@@ -55,6 +92,19 @@ impl ClientContext {
                 .or_else(|| parts.headers.get("session-id"))
                 .and_then(|v| v.to_str().ok())
                 .map(|s| s.to_string());
+        }
+
+        if parent_context.is_none() {
+            if let Some(meta) = meta {
+                let extractor = JsonMapExtractor(&meta.0);
+                let mut ctx = global::get_text_map_propagator(|prop| prop.extract(&extractor));
+                if !ctx.span().span_context().is_valid() {
+                    ctx = opentelemetry_sdk::propagation::TraceContextPropagator::new().extract(&extractor);
+                }
+                if ctx.span().span_context().is_valid() {
+                    parent_context = Some(ctx);
+                }
+            }
         }
 
         if session_id.is_none() {
