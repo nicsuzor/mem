@@ -10,9 +10,10 @@
 
 use chrono::NaiveDate;
 use mem::display_rank::{
-    classify_tasks, compute_task_summary, display_cmp, display_cmp_by, resolve_effort_days,
-    DeadlineClass, DisplayItem, DisplayTask, GroupProgress, TaskDisplay, TaskSort,
-    ACTIONABLE_TYPES, CLAIMABLE_TYPES, DISPLAY_CLIFF_BUFFER_DAYS, DISPLAY_DEFAULT_EFFORT_DAYS,
+    classify_tasks, compute_draw_distribution, compute_task_summary, display_cmp, display_cmp_by,
+    do_next_draw_one, do_next_draw_sample, resolve_effort_days, DeadlineClass, DisplayItem,
+    DisplayTask, DrawConfig, GroupProgress, TaskDisplay, TaskSort, ACTIONABLE_TYPES,
+    CLAIMABLE_TYPES, DISPLAY_CLIFF_BUFFER_DAYS, DISPLAY_DEFAULT_EFFORT_DAYS,
 };
 use mem::flow::{
     clean_num, compute_flow, from_export_json, FlowEdge, FlowInput, FlowOutput, FlowState,
@@ -460,6 +461,7 @@ fn test_t_ready_predicate_and_classification() {
             deadline_class: None,
             effort_days: 1,
             flow: Some(make_flow(0.95)),
+            uncertainty: 0.0,
         },
     );
 
@@ -479,6 +481,7 @@ fn test_t_ready_predicate_and_classification() {
             deadline_class: None,
             effort_days: 1,
             flow: Some(make_flow(0.95)),
+            uncertainty: 0.0,
         },
     );
 
@@ -498,6 +501,7 @@ fn test_t_ready_predicate_and_classification() {
             deadline_class: None,
             effort_days: 1,
             flow: Some(make_flow(0.95)),
+            uncertainty: 0.0,
         },
     );
 
@@ -517,6 +521,7 @@ fn test_t_ready_predicate_and_classification() {
             deadline_class: None,
             effort_days: 1,
             flow: Some(make_flow(0.50)),
+            uncertainty: 0.0,
         },
     );
 
@@ -687,3 +692,177 @@ fn test_display_constants() {
     assert_eq!(ACTIONABLE_TYPES, &["task", "learn", "pr"]);
     assert_eq!(CLAIMABLE_TYPES, &["task"]);
 }
+
+// ── Do-Next Draw Tests (S29, Acceptance 3) ───────────────────────────────────
+
+/// Acceptance 3: Tests show the draw's distribution over items, not a fixed order, at the configured exploitation rate.
+#[test]
+fn test_draw_distribution_matches_exploitation_rate() {
+    let today = NaiveDate::from_ymd_opt(2026, 10, 1).unwrap();
+    let flow_a = FlowOutput {
+        gain: Some(1.0),
+        loss_averted: Some(0.0),
+        deltas: BTreeMap::new(),
+        stake: BTreeMap::new(),
+        decision_value: Some(0.0),
+        loop_extra: BTreeMap::new(),
+        flow_status: FlowStatus::Ok,
+        loop_nodes: None,
+    };
+    let flow_b = FlowOutput {
+        gain: Some(0.0),
+        loss_averted: Some(0.0),
+        deltas: BTreeMap::new(),
+        stake: BTreeMap::new(),
+        decision_value: Some(1.0), // High EVPI / decision value
+        loop_extra: BTreeMap::new(),
+        flow_status: FlowStatus::Ok,
+        loop_nodes: None,
+    };
+    let flow_c = FlowOutput {
+        gain: Some(0.0),
+        loss_averted: Some(0.0),
+        deltas: BTreeMap::new(),
+        stake: BTreeMap::new(),
+        decision_value: Some(0.0),
+        loop_extra: BTreeMap::new(),
+        flow_status: FlowStatus::Ok,
+        loop_nodes: None,
+    };
+
+    let item_a = DisplayItem::new("item_a", Some(&flow_a), None, None, 3, today, 7);
+    let item_b = DisplayItem::new("item_b", Some(&flow_b), None, None, 3, today, 7)
+        .with_uncertainty(0.5);
+    let item_c = DisplayItem::new("item_c", Some(&flow_c), None, None, 3, today, 7);
+
+    let items = vec![item_a, item_b, item_c];
+
+    // 1. Pure exploitation (rate = 1.0): 100% of probability mass on item_a (only node with positive surplus)
+    let dist_exploit = compute_draw_distribution(&items, &DrawConfig::new(1.0));
+    assert_eq!(dist_exploit.len(), 3);
+    let p_a = dist_exploit.iter().find(|(id, _)| id == "item_a").unwrap().1;
+    let p_b = dist_exploit.iter().find(|(id, _)| id == "item_b").unwrap().1;
+    let p_c = dist_exploit.iter().find(|(id, _)| id == "item_c").unwrap().1;
+    assert_eq!(p_a, 1.0);
+    assert_eq!(p_b, 0.0);
+    assert_eq!(p_c, 0.0);
+
+    // 2. Default exploitation rate (0.85): 85% exploit + 15% explore
+    let dist_default = compute_draw_distribution(&items, &DrawConfig::default());
+    let p_a_def = dist_default.iter().find(|(id, _)| id == "item_a").unwrap().1;
+    let p_b_def = dist_default.iter().find(|(id, _)| id == "item_b").unwrap().1;
+    let p_c_def = dist_default.iter().find(|(id, _)| id == "item_c").unwrap().1;
+    assert!(p_a_def > 0.85); // Receives 0.85 + its share of 0.15 explore
+    assert!(p_b_def > 0.0);  // Receives exploration weight from EVPI + uncertainty
+    assert!(p_c_def > 0.0);  // Receives non-zero exploration baseline floor
+    let sum: f64 = dist_default.iter().map(|(_, p)| p).sum();
+    assert!((sum - 1.0).abs() < 1e-6, "probabilities must sum to 1.0");
+
+    // 3. Lower exploitation rate (0.50): shifts probability mass toward exploratory items
+    let dist_explore = compute_draw_distribution(&items, &DrawConfig::new(0.50));
+    let p_b_50 = dist_explore.iter().find(|(id, _)| id == "item_b").unwrap().1;
+    assert!(p_b_50 > p_b_def, "lowering exploitation rate increases exploratory probability");
+}
+
+/// Acceptance 3: Tests show sampling produces a distribution over items, not a fixed order.
+#[test]
+fn test_draw_sampling_distribution_not_fixed_order() {
+    use rand::SeedableRng;
+    let today = NaiveDate::from_ymd_opt(2026, 10, 1).unwrap();
+
+    let flow_high = FlowOutput {
+        gain: Some(3.0),
+        loss_averted: Some(0.0),
+        deltas: BTreeMap::new(),
+        stake: BTreeMap::new(),
+        decision_value: Some(0.0),
+        loop_extra: BTreeMap::new(),
+        flow_status: FlowStatus::Ok,
+        loop_nodes: None,
+    };
+    let flow_med = FlowOutput {
+        gain: Some(1.0),
+        loss_averted: Some(0.0),
+        deltas: BTreeMap::new(),
+        stake: BTreeMap::new(),
+        decision_value: Some(0.5),
+        loop_extra: BTreeMap::new(),
+        flow_status: FlowStatus::Ok,
+        loop_nodes: None,
+    };
+    let flow_probe = FlowOutput {
+        gain: Some(0.0),
+        loss_averted: Some(0.0),
+        deltas: BTreeMap::new(),
+        stake: BTreeMap::new(),
+        decision_value: Some(1.5),
+        loop_extra: BTreeMap::new(),
+        flow_status: FlowStatus::Ok,
+        loop_nodes: None,
+    };
+
+    let item_1 = DisplayItem::new("task_proven_high", Some(&flow_high), None, None, 3, today, 7);
+    let item_2 = DisplayItem::new("task_moderate", Some(&flow_med), None, None, 3, today, 7);
+    let item_3 = DisplayItem::new("task_uncertain_probe", Some(&flow_probe), None, None, 3, today, 7)
+        .with_uncertainty(0.8);
+
+    let items = vec![item_1, item_2, item_3];
+    let config = DrawConfig::new(0.80).with_cliff_first(false);
+    let theoretical = compute_draw_distribution(&items, &config);
+
+    let mut counts: HashMap<String, usize> = HashMap::new();
+    let trials = 10_000;
+    let mut rng = rand::rngs::StdRng::seed_from_u64(42);
+
+    let mut first_draws: Vec<String> = Vec::new();
+
+    for _ in 0..trials {
+        let drawn = do_next_draw_one(&items, &config, &mut rng).expect("must draw an item");
+        *counts.entry(drawn.id.clone()).or_insert(0) += 1;
+        if first_draws.len() < 10 {
+            first_draws.push(drawn.id);
+        }
+    }
+
+    // (a) Not a fixed order: first draws contain multiple distinct items
+    let unique_in_first_ten: HashSet<String> = first_draws.into_iter().collect();
+    assert!(
+        unique_in_first_ten.len() >= 2,
+        "draw must not produce a fixed deterministic choice across samples"
+    );
+
+    // (b) Distribution over items: every item is drawn non-zero times
+    assert_eq!(counts.len(), 3);
+    assert!(counts["task_proven_high"] > 0);
+    assert!(counts["task_moderate"] > 0);
+    assert!(counts["task_uncertain_probe"] > 0);
+
+    // (c) Frequencies match theoretical distribution within ±2% margin
+    for (id, exp_p) in theoretical {
+        let obs_p = counts[&id] as f64 / trials as f64;
+        let diff = (obs_p - exp_p).abs();
+        assert!(
+            diff < 0.02,
+            "item {} empirical freq {} deviates from theoretical p {} by {}",
+            id,
+            obs_p,
+            exp_p,
+            diff
+        );
+    }
+
+    // (d) Draw list sample without replacement produces permutations, not fixed sorts
+    let sample1 = do_next_draw_sample(&items, &config, 3, &mut rng);
+    let mut found_different_order = false;
+    for _ in 0..50 {
+        let sample2 = do_next_draw_sample(&items, &config, 3, &mut rng);
+        let ids1: Vec<&str> = sample1.iter().map(|i| i.id.as_str()).collect();
+        let ids2: Vec<&str> = sample2.iter().map(|i| i.id.as_str()).collect();
+        if ids1 != ids2 {
+            found_different_order = true;
+            break;
+        }
+    }
+    assert!(found_different_order, "sampled orders must vary across trials");
+}
+

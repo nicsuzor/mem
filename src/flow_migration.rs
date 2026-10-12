@@ -130,6 +130,97 @@ pub fn word_quantum(word: Option<&str>, multiplier: Option<f64>) -> Option<f64> 
     }
 }
 
+/// Map probability word from flow-rule §5.5 (Renooij & Witteman scale).
+pub fn word_probability(word: &str) -> Option<f64> {
+    let clean = word
+        .trim()
+        .trim_matches(|c: char| !c.is_alphanumeric() && c != '-')
+        .to_lowercase();
+    match clean.as_str() {
+        "certain" | "almost certain" => Some(1.00),
+        "probable" | "very probable" | "highly likely" => Some(0.85),
+        "expected" | "likely" => Some(0.75),
+        "fifty-fifty" | "fifty_fifty" | "fifty fifty" | "even chance" => Some(0.50),
+        "uncertain" | "possible" | "perhaps" | "maybe" => Some(0.25),
+        "improbable" | "unlikely" | "very unlikely" | "almost impossible" => Some(0.15),
+        "impossible" | "none" => Some(0.00),
+        s => s
+            .parse::<f64>()
+            .ok()
+            .filter(|v| v.is_finite() && (0.0..=1.0).contains(v)),
+    }
+}
+
+/// Helper to scan a text block for "Odds: <word>" or explicit probability words.
+fn find_odds_in_text(text: &str) -> Option<f64> {
+    let lower = text.to_lowercase();
+    if let Some(pos) = lower.find("odds:") {
+        let after = &text[pos + 5..];
+        for token in after.split_whitespace() {
+            let clean = token.trim_matches(|c: char| !c.is_alphanumeric() && c != '-');
+            if let Some(p) = word_probability(clean) {
+                return Some(p);
+            }
+        }
+    }
+    None
+}
+
+/// Helper to extract odds from a markdown body's "## Odds" section.
+fn find_odds_in_body(body: &str) -> Option<f64> {
+    let lines: Vec<&str> = body.lines().collect();
+    for (i, line) in lines.iter().enumerate() {
+        let trimmed = line.trim();
+        let is_odds_heading = (trimmed.starts_with('#') && trimmed.to_lowercase().ends_with("odds"))
+            || trimmed.eq_ignore_ascii_case("## odds")
+            || trimmed.eq_ignore_ascii_case("# odds")
+            || trimmed.eq_ignore_ascii_case("### odds");
+
+        if is_odds_heading {
+            // Find the first non-empty paragraph under this heading
+            for next_line in &lines[i + 1..] {
+                let next_trimmed = next_line.trim();
+                if next_trimmed.is_empty() {
+                    continue;
+                }
+                if next_trimmed.starts_with('#') {
+                    // Reached next section
+                    break;
+                }
+                // Try finding "Odds:" within this paragraph
+                if let Some(p) = find_odds_in_text(next_trimmed) {
+                    return Some(p);
+                }
+                // Check each word in the paragraph for a probability word
+                for token in next_trimmed.split_whitespace() {
+                    let clean = token.trim_matches(|c: char| !c.is_alphanumeric() && c != '-');
+                    if let Some(p) = word_probability(clean) {
+                        return Some(p);
+                    }
+                }
+                break;
+            }
+            break;
+        }
+    }
+    None
+}
+
+/// Extract prose odds from an edge's justification or the task's body.
+pub fn extract_prose_odds(justification: Option<&str>, body: Option<&str>) -> f64 {
+    if let Some(just) = justification {
+        if let Some(p) = find_odds_in_text(just) {
+            return p;
+        }
+    }
+    if let Some(b) = body {
+        if let Some(p) = find_odds_in_body(b) {
+            return p;
+        }
+    }
+    1.0
+}
+
 /// Check if a git working tree is clean.
 pub fn check_git_clean(dir: &Path) -> Result<bool> {
     let out = Command::new("git")
@@ -397,8 +488,24 @@ pub fn patch_file_text(
                             };
                             if is_match {
                                 new_lines.push(line.clone());
+                                let prob = ct_obj
+                                    .get("probability")
+                                    .and_then(|v| {
+                                        v.as_f64().or_else(|| {
+                                            v.as_str().and_then(word_probability)
+                                        })
+                                    })
+                                    .unwrap_or_else(|| {
+                                        let just = ct_obj.get("justification").and_then(|v| v.as_str());
+                                        extract_prose_odds(just, Some(body))
+                                    });
+                                let prob_str = if (prob - 1.0).abs() < 1e-6 {
+                                    "1.0".to_string()
+                                } else {
+                                    format!("{prob}")
+                                };
                                 let raw_after = format!(
-                                    "{item_indent}quantum: {q}\n{item_indent}probability: 1.0\n{item_indent}set_by: migrated\n"
+                                    "{item_indent}quantum: {q}\n{item_indent}probability: {prob_str}\n{item_indent}set_by: migrated\n"
                                 );
                                 new_lines.push(raw_after.clone());
                                 let mut after_obj = ct_obj.clone();
@@ -411,7 +518,7 @@ pub fn patch_file_text(
                                 after_obj.insert(
                                     "probability".to_string(),
                                     serde_json::Value::Number(
-                                        serde_json::Number::from_f64(1.0).unwrap(),
+                                        serde_json::Number::from_f64(prob).unwrap(),
                                     ),
                                 );
                                 after_obj.insert(
@@ -955,18 +1062,23 @@ pub fn generate_dry_run_report(pkb_root: &Path) -> Result<String> {
         .map(|p| p.join("mem").join("specs").join("flow-migration").join("dryrun.py"))
         .unwrap_or_else(|| PathBuf::from("specs/flow-migration/dryrun.py"));
 
-    let script = if script_path.exists() {
-        script_path
-    } else {
-        PathBuf::from("/workspace/mem/specs/flow-migration/dryrun.py")
-    };
+    let candidates = [
+        script_path,
+        PathBuf::from("specs/flow-migration/dryrun.py"),
+        PathBuf::from("/workspace/specs/flow-migration/dryrun.py"),
+        PathBuf::from("/workspace/mem/specs/flow-migration/dryrun.py"),
+    ];
 
-    if script.exists() {
+    let script = candidates.into_iter().find(|p| p.exists());
+
+    if let Some(script) = script {
+        let script_abs = script.canonicalize().unwrap_or(script);
+        let cur_dir = script_abs.parent().unwrap_or(Path::new("."));
         let out = Command::new("python3")
-            .arg(&script)
-            .current_dir(script.parent().unwrap())
+            .arg(&script_abs)
+            .current_dir(cur_dir)
             .output()
-            .with_context(|| format!("Failed executing {}", script.display()))?;
+            .with_context(|| format!("Failed executing {}", script_abs.display()))?;
         if out.status.success() {
             return Ok(String::from_utf8_lossy(&out.stdout).to_string());
         }
