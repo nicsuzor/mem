@@ -3,7 +3,497 @@ use rmcp::model::*;
 use super::{PkbSearchServer, GOAL_TYPE_ENUM};
 
 impl PkbSearchServer {
-    pub fn get_all_tools() -> Vec<Tool> {
+    fn attach_output_schemas(tools: &mut [Tool]) {
+        for tool in tools {
+            if tool.output_schema.is_none() {
+                tool.output_schema = Some(std::sync::Arc::new(
+                    serde_json::from_value(Self::output_schema_for_tool(&tool.name))
+                        .unwrap(),
+                ));
+            }
+        }
+    }
+
+    pub fn get_published_tools() -> Vec<Tool> {
+        let mut tools = vec![
+            Tool::new(
+                "search",
+                "Hybrid semantic + graph search across the PKB using ONNX embeddings (~100-300ms). If search times out under load, back off and retry. Supports proximity boosting.",
+                serde_json::from_value::<JsonObject>(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "query": { "type": "string", "description": "Natural language query" },
+                        "limit": { "type": "integer" },
+                        "type": { "type": "string" },
+                        "actionable_only": { "type": "boolean" },
+                        "include_done": { "type": "boolean", "description": "Include done/cancelled items" },
+                        "since": { "type": "string" },
+                        "before": { "type": "string" },
+                        "boost_id": { "type": "string" },
+                        "detail": { "type": "string", "enum": ["chunk", "snippet", "full", "metadata", "ids"], "default": "chunk" },
+                        "ids_only": { "type": "boolean" },
+                        "max_bytes": { "type": "integer" },
+                        "format": { "type": "string", "enum": ["markdown", "json"] }
+                    },
+                    "required": ["query"]
+                }))
+                .unwrap(),
+            )
+            .with_title("Hybrid Semantic Search")
+            .with_annotations(ToolAnnotations::new().read_only(true)),
+            Tool::new(
+                "get_document",
+                "Read contents or metadata of a PKB document by ID, filename stem, or title. Supports batch reads via ids.",
+                serde_json::from_value::<JsonObject>(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "id": { "type": "string" },
+                        "ids": { "type": "array", "items": { "type": "string" } },
+                        "detail": { "type": "string", "enum": ["metadata", "summary", "full"] },
+                        "budget_ms": { "type": "integer" },
+                        "max_bytes": { "type": "integer" },
+                        "metadata_only": { "type": "boolean" },
+                        "format": { "type": "string", "enum": ["markdown", "json"] }
+                    }
+                }))
+                .unwrap(),
+            )
+            .with_title("Get Document Content")
+            .with_annotations(ToolAnnotations::new().read_only(true)),
+            Tool::new(
+                "get_task",
+                "Retrieve full task details, metadata, body, and graph context. Top-level focus_score combines intent, severity, deadline urgency, age staleness, downstream weight, stakeholder waiting urgency, urgency, and VoI. Signals nested under signals: {}.",
+                serde_json::from_value::<JsonObject>(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "id": { "type": "string" },
+                        "ids": { "type": "array", "items": { "type": "string" } },
+                        "detail": { "type": "string", "enum": ["metadata", "summary", "full"] },
+                        "budget_ms": { "type": "integer" },
+                        "max_bytes": { "type": "integer" },
+                        "metadata_only": { "type": "boolean" },
+                        "include_signals": { "type": "boolean" },
+                        "include_routes": { "type": "boolean" },
+                        "fields": {
+                            "anyOf": [
+                                { "type": "string" },
+                                { "type": "array", "items": { "type": "string" } }
+                            ]
+                        }
+                    }
+                }))
+                .unwrap(),
+            )
+            .with_title("Get Task Detail")
+            .with_annotations(ToolAnnotations::new().read_only(true)),
+            Tool::new(
+                "list_documents",
+                "List indexed documents with optional filters and pagination.",
+                serde_json::from_value::<JsonObject>(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "tag": { "type": "string" },
+                        "tags": {
+                            "anyOf": [
+                                { "type": "string" },
+                                { "type": "array", "items": { "type": "string" } }
+                            ]
+                        },
+                        "type": { "type": "string" },
+                        "status": { "type": "string" },
+                        "limit": { "type": "integer" },
+                        "offset": { "type": "integer" },
+                        "budget_ms": { "type": "integer" },
+                        "format": { "type": "string", "enum": ["markdown", "json"] }
+                    }
+                }))
+                .unwrap(),
+            )
+            .with_title("List Documents")
+            .with_annotations(ToolAnnotations::new().read_only(true)),
+            Tool::new(
+                "list_tasks",
+                "List tasks with smart filtering in focus_score-descending order. Top-level focus_score combines intent, severity, deadline urgency, age staleness, downstream weight, stakeholder waiting urgency, urgency, and VoI. Signals nested under signals: {}.",
+                serde_json::from_value::<JsonObject>(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "project": { "type": "string" },
+                        "status": {
+                            "anyOf": [
+                                { "type": "string" },
+                                { "type": "array", "items": { "type": "string" } }
+                            ],
+                            "description": "Stored status: inbox, ready, queued, in_progress, review, done, etc."
+                        },
+                        "intent": { "type": "integer" },
+                        "severity": { "type": "integer" },
+                        "goal_type": { "type": "string" },
+                        "assignee": { "type": "string" },
+                        "type": { "type": "string" },
+                        "title_contains": { "type": "string" },
+                        "weight_gte": { "type": "integer" },
+                        "gain_gte": { "type": "number" },
+                        "loss_averted_gte": { "type": "number" },
+                        "sort": {
+                            "type": "string",
+                            "enum": ["default", "gain", "loss_averted", "decision_value", "gain_per_effort", "loss_averted_per_effort", "due", "id"]
+                        },
+                        "tags": { "type": "array", "items": { "type": "string" } },
+                        "has_superseded_by": { "type": "boolean" },
+                        "focus_score_gte": { "type": "integer" },
+                        "since": { "type": "string" },
+                        "before": { "type": "string" },
+                        "limit": { "type": "integer" },
+                        "include_subtasks": { "type": "boolean" },
+                        "include_done": { "type": "boolean", "description": "Include done and cancelled tasks (default: false)" },
+                        "budget_ms": { "type": "integer" },
+                        "fields": {
+                            "anyOf": [
+                                { "type": "string" },
+                                { "type": "array", "items": { "type": "string" } }
+                            ]
+                        },
+                        "nested": { "type": "boolean" },
+                        "view": { "type": "string", "enum": ["flat", "tree"] },
+                        "format": {
+                            "type": "string",
+                            "enum": ["markdown", "json", "tree", "ascii_tree", "nested_json", "json_tree"]
+                        }
+                    }
+                }))
+                .unwrap(),
+            )
+            .with_title("List Tasks")
+            .with_annotations(ToolAnnotations::new().read_only(true)),
+            Tool::new(
+                "create",
+                "Generic document creation with automatic subdirectory routing (tasks/, projects/, goals/, notes/).",
+                serde_json::from_value::<JsonObject>(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "title": { "type": "string" },
+                        "type": {
+                            "type": "string",
+                            "enum": ["task", "learn", "pr", "template", "target", "note", "knowledge", "memory", "insight", "observation", "contact", "document", "reference", "review", "case", "spec", "prototype", "index", "daily"]
+                        },
+                        "id": { "type": "string" },
+                        "tags": { "type": "array", "items": { "type": "string" } },
+                        "body": { "type": "string", "description": "Markdown body (wikilinks supported; host paths rejected)" },
+                        "status": { "type": "string", "enum": ["inbox", "ready"] },
+                        "intent": { "type": "integer" },
+                        "parent": { "type": "string" },
+                        "depends_on": { "type": "array", "items": { "type": "string" } },
+                        "soft_depends_on": { "type": "array", "items": { "type": "string" } },
+                        "assignee": { "type": "string" },
+                        "complexity": { "type": "string", "description": "Complexity size label (e.g. S, M, L; use effort for duration strings)" },
+                        "effort": { "type": "string", "description": "Effort duration string: 1d, 2h, 1w (minimum 1h; use complexity for size labels)" },
+                        "consequence": { "type": "string" },
+                        "contributes_to": { "type": "array", "items": { "type": "object" } },
+                        "source": { "type": "string" },
+                        "due": { "type": "string" },
+                        "confidence": { "type": "number", "minimum": 0.0, "maximum": 1.0 },
+                        "supersedes": { "type": "string" },
+                        "severity": { "type": "integer" },
+                        "goal_type": { "type": "string", "enum": GOAL_TYPE_ENUM },
+                        "dir": { "type": "string" },
+                        "stakeholder": { "type": "string" },
+                        "waiting_since": { "type": "string" },
+                        "links": { "type": "array", "items": { "type": "object" } },
+                        "worth": { "anyOf": [{ "type": "number" }, { "type": "string" }] },
+                        "deadline_class": { "type": "string", "enum": ["fake", "soft", "hard"] }
+                    },
+                    "required": ["title", "type"]
+                }))
+                .unwrap(),
+            )
+            .with_title("Create Document")
+            .with_annotations(ToolAnnotations::new().read_only(false)),
+            Tool::new(
+                "create_task",
+                "Create a new task markdown file with YAML frontmatter. Parent is optional (omitted tasks are root tasks). Project inherits from ancestor if omitted.",
+                serde_json::from_value::<JsonObject>(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "title": { "type": "string", "description": "Task title (required, alias task_title)" },
+                        "task_title": { "type": "string" },
+                        "id": { "type": "string" },
+                        "parent": { "type": "string" },
+                        "intent": { "type": "integer" },
+                        "tags": { "type": "array", "items": { "type": "string" } },
+                        "depends_on": { "type": "array", "items": { "type": "string" } },
+                        "soft_depends_on": { "type": "array", "items": { "type": "string" } },
+                        "assignee": { "type": "string" },
+                        "complexity": { "type": "string", "description": "Complexity size label (e.g. S, M, L; use effort for duration strings)" },
+                        "effort": { "type": "string", "description": "Effort duration string: 1d, 2h, 1w (minimum 1h; use complexity for size labels)" },
+                        "consequence": { "type": "string" },
+                        "severity": { "type": "integer" },
+                        "goal_type": { "type": "string", "enum": GOAL_TYPE_ENUM },
+                        "classification": { "type": "string" },
+                        "body": { "type": "string", "description": "Markdown body (wikilinks supported; host paths rejected)" },
+                        "stakeholder": { "type": "string" },
+                        "waiting_since": { "type": "string" },
+                        "due": { "type": "string" },
+                        "project": { "type": "string" },
+                        "type": { "type": "string", "enum": ["task", "learn", "pr", "target"] },
+                        "status": { "type": "string", "enum": ["inbox", "ready"] },
+                        "allow_missing_parent": { "type": "boolean" },
+                        "force": { "type": "boolean" },
+                        "session_id": { "type": "string" },
+                        "issue_url": { "type": "string" },
+                        "follow_up_tasks": { "type": "array", "items": { "type": "string" } },
+                        "release_summary": { "type": "string" },
+                        "contributes_to": { "type": "array", "items": { "type": "object" } },
+                        "links": { "type": "array", "items": { "type": "object" } },
+                        "worth": { "anyOf": [{ "type": "number" }, { "type": "string" }] },
+                        "deadline_class": { "type": "string", "enum": ["fake", "soft", "hard"] }
+                    },
+                    "required": ["title"]
+                }))
+                .unwrap(),
+            )
+            .with_title("Create Task")
+            .with_annotations(ToolAnnotations::new().read_only(false)),
+            Tool::new(
+                "update_task",
+                "Patch metadata fields on an existing task (flat or nested under updates). Supports status, type, intent, and severity. Requires completion_evidence when setting status=done. For state transitions, prefer release_task.",
+                serde_json::from_str::<JsonObject>(r#"{
+                    "type": "object",
+                    "properties": {
+                        "id": { "type": "string" },
+                        "updates": { "type": "object" },
+                        "status": {
+                            "type": "string",
+                            "enum": ["inbox", "ready", "queued", "in_progress", "review", "done", "paused", "someday", "cancelled", "partial"]
+                        },
+                        "type": {
+                            "type": "string",
+                            "enum": ["task", "learn", "pr", "template", "target", "note", "knowledge", "memory", "insight", "observation", "contact", "document", "reference", "review", "case", "spec", "prototype", "index", "daily", "session-log", "audit-report"]
+                        },
+                        "intent": { "type": "integer" },
+                        "priority": { "type": "integer" },
+                        "severity": { "type": "integer" },
+                        "title": { "type": "string" },
+                        "tags": { "type": "array", "items": { "type": "string" } },
+                        "parent": { "type": "string" },
+                        "depends_on": { "type": "array", "items": { "type": "string" } },
+                        "soft_depends_on": { "type": "array", "items": { "type": "string" } },
+                        "blocks": { "type": "array", "items": { "type": "string" } },
+                        "soft_blocks": { "type": "array", "items": { "type": "string" } },
+                        "assignee": { "type": "string" },
+                        "complexity": { "type": "string" },
+                        "effort": { "type": "string" },
+                        "consequence": { "type": "string" },
+                        "goal_type": { "type": "string", "enum": ["committed", "aspirational", "learning"] },
+                        "body": { "type": "string" },
+                        "content": { "type": "string" },
+                        "stakeholder": { "type": "string" },
+                        "waiting_since": { "type": "string" },
+                        "due": { "type": "string" },
+                        "project": { "type": "string" },
+                        "session_id": { "type": "string" },
+                        "issue_url": { "type": "string" },
+                        "follow_up_tasks": { "type": "array", "items": { "type": "string" } },
+                        "release_summary": { "type": "string" },
+                        "released_at": { "type": "string" },
+                        "contributes_to": { "type": "array", "items": { "type": "object" } },
+                        "supersedes": { "type": "string" },
+                        "superseded_by": { "type": "array", "items": { "type": "string" } },
+                        "blocked": { "type": "boolean" },
+                        "blocker": { "type": "string" },
+                        "reason": { "type": "string" },
+                        "completion_evidence": { "type": "string", "description": "Required when setting status=done" },
+                        "evidence": { "type": "string" },
+                        "pr_url": { "type": "string" },
+                        "_add_tags": { "type": "array", "items": { "type": "string" } },
+                        "_remove_tags": { "type": "array", "items": { "type": "string" } },
+                        "_add_depends_on": { "type": "array", "items": { "type": "string" } },
+                        "_remove_depends_on": { "type": "array", "items": { "type": "string" } },
+                        "classification": { "type": "string" },
+                        "links": { "type": "array", "items": { "type": "object" } },
+                        "worth": { "anyOf": [{ "type": "number" }, { "type": "string" }] },
+                        "deadline_class": { "type": "string", "enum": ["fake", "soft", "hard"] },
+                        "branch": { "type": "string" },
+                        "container": { "type": "string" },
+                        "alias": { "type": "string" },
+                        "unparent": { "type": "boolean" },
+                        "allow_missing_parent": { "type": "boolean" },
+                        "force": { "type": "boolean" },
+                        "recursive": { "type": "boolean" }
+                    },
+                    "required": ["id"]
+                }"#)
+                .unwrap(),
+            )
+            .with_title("Update Task")
+            .with_annotations(ToolAnnotations::new().idempotent(true)),
+            Tool::new(
+                "update_body",
+                "Atomically rewrite markdown body of a document. Preserves frontmatter and updates modified date. Supports compare-and-swap via expected_modified.",
+                serde_json::from_value::<JsonObject>(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "id": { "type": "string", "minLength": 1 },
+                        "new_body": { "type": "string", "minLength": 1, "description": "New markdown body (wikilinks supported; host paths rejected)" },
+                        "preserve_frontmatter": { "type": "boolean" },
+                        "expected_modified": { "type": "string" }
+                    },
+                    "required": ["id", "new_body"]
+                }))
+                .unwrap(),
+            )
+            .with_title("Rewrite Document Body")
+            .with_annotations(ToolAnnotations::new().read_only(false)),
+            Tool::new(
+                "edit_body",
+                "Apply unified-diff hunks to document body. Preserves frontmatter and updates modified date. Supports compare-and-swap via expected_modified.",
+                serde_json::from_value::<JsonObject>(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "id": { "type": "string" },
+                        "diff": { "type": "string", "description": "Unified-diff hunks (host paths rejected)" },
+                        "preserve_frontmatter": { "type": "boolean" },
+                        "dry_run": { "type": "boolean" },
+                        "expected_modified": { "type": "string" }
+                    },
+                    "required": ["id", "diff"]
+                }))
+                .unwrap(),
+            )
+            .with_title("Edit Document Body (Unified Diff)")
+            .with_annotations(ToolAnnotations::new().read_only(false)),
+            Tool::new(
+                "append",
+                "Append timestamped content to an existing document by ID or section. Supports compare-and-swap via expected_modified.",
+                serde_json::from_value::<JsonObject>(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "id": { "type": "string" },
+                        "content": { "type": "string", "description": "Content to append (wikilinks supported; host paths rejected)" },
+                        "section": { "type": "string" },
+                        "expected_modified": { "type": "string" }
+                    },
+                    "required": ["id", "content"]
+                }))
+                .unwrap(),
+            )
+            .with_title("Append to Document")
+            .with_annotations(ToolAnnotations::new().read_only(false)),
+            Tool::new(
+                "delete",
+                "Permanently delete a document by ID and remove from search index.",
+                serde_json::from_value::<JsonObject>(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "id": { "type": "string" },
+                        "type": { "type": "string" }
+                    },
+                    "required": ["id"]
+                }))
+                .unwrap(),
+            )
+            .with_title("Delete Document")
+            .with_annotations(ToolAnnotations::new().destructive(true)),
+            Tool::new(
+                "claim_task",
+                "Claim a task or instantiate a template. Tasks are claimed in place (status: in_progress). Templates instantiate a datestamped copy.",
+                serde_json::from_value::<JsonObject>(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "id": { "type": "string" },
+                        "assignee": { "type": "string" },
+                        "session_id": { "type": "string" }
+                    },
+                    "required": ["id"]
+                }))
+                .unwrap(),
+            )
+            .with_title("Claim Template")
+            .with_annotations(ToolAnnotations::new().read_only(false)),
+            Tool::new(
+                "release_task",
+                "Release a task to a terminal or handoff status (done, review, blocked, cancelled, partial). Supersedes complete_task (use status='done'). Performs session handover by recording work history, linking PRs/issues, and tracking follow-up work. If 'id' is omitted, an ad-hoc session task is created (requires `project` parameter). Evidence-or-failure-reason contract: `summary` (or `completion_evidence`) is always required; releasing to done requires all acceptance checklist items in the task body to be ticked (- [x]); releasing to blocked/cancelled/review/partial additionally requires a non-empty `reason` (or `blocker`, for `blocked`) — a handback with neither is rejected. Tasks created before this requirement shipped release under the old, optional rules.",
+                serde_json::from_value::<JsonObject>(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "id": { "type": "string", "description": "Task ID (flexible resolution: ID, filename stem, or title). If omitted, an ad-hoc task is created." },
+                        "project": { "type": "string", "description": "Project routing slug, validated against polecat.yaml (e.g. 'aops', 'mem'). Required when 'id' is omitted (ad-hoc task creation); optional when 'id' is provided." },
+                        "status": {
+                            "type": "string",
+                            "enum": ["done", "review", "cancelled", "partial"],
+                            "description": "Target status"
+                        },
+                        "summary": { "type": "string", "description": "What was done and outcome. 1-3 sentences minimum. Always required (or provide completion_evidence)." },
+                        "completion_evidence": { "type": "string", "description": "Alias for summary: what was done and outcome (required when status is done). Releasing as done requires all acceptance checklist items to be checked (- [x])." },
+                        "pr_url": { "type": "string", "description": "Pull request or commit URL" },
+                        "branch": { "type": "string", "description": "Git branch name (optional)" },
+                        "blocker": { "type": "string", "description": "What is blocking this task. Required (non-empty), together with `reason`, when status=blocked — at least one of the two must be given." },
+                        "reason": { "type": "string", "description": "Why the task didn't ship cleanly. Required (non-empty) when status is blocked/cancelled/review/partial (for status=blocked, `blocker` may be given instead)." },
+                        "session_id": { "type": "string", "description": "Active session ID. Falls back to $AOPS_SESSION_ID if omitted." },
+                        "issue_url": { "type": "string", "description": "External issue/ticket URL" },
+                        "follow_up_tasks": { "type": "array", "items": { "type": "string" }, "description": "IDs of new tasks created as follow-ups. Validated for existence." },
+                        "release_summary": { "type": "string", "description": "Detailed technical summary for the release. Warning if > 500 chars." },
+                        "recursive": { "type": "boolean", "description": "Cascade-close all open descendant tasks when releasing as done. Default: false." }
+                    },
+                    "required": ["status", "summary"]
+                }))
+                .unwrap(),
+            )
+            .with_title("Release Task")
+            .with_annotations(ToolAnnotations::new().read_only(false).idempotent(true)),
+            Tool::new(
+                "decompose_task",
+                "Split a parent task into subtasks in one call. Supports positional dependency references () and sibling title matching.",
+                serde_json::from_value::<JsonObject>(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "parent_id": { "type": "string" },
+                        "subtasks": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "title": { "type": "string" },
+                                    "id": { "type": "string" },
+                                    "intent": { "type": "integer" },
+                                    "depends_on": { "type": "array", "items": { "type": "string" } },
+                                    "tags": { "type": "array", "items": { "type": "string" } },
+                                    "assignee": { "type": "string" },
+                                    "complexity": { "type": "string" },
+                                    "body": { "type": "string", "description": "Markdown body (wikilinks supported; host paths rejected)" },
+                                    "stakeholder": { "type": "string" },
+                                    "waiting_since": { "type": "string" },
+                                    "consequence": { "type": "string" },
+                                    "severity": { "type": "integer" },
+                                    "goal_type": { "type": "string" },
+                                    "project": { "type": "string" }
+                                },
+                                "required": ["title"]
+                            }
+                        }
+                    },
+                    "required": ["parent_id", "subtasks"]
+                }))
+                .unwrap(),
+            )
+            .with_title("Decompose Task")
+            .with_annotations(ToolAnnotations::new().read_only(false)),
+            Tool::new(
+                "status",
+                "Report server operational diagnostics: document count, reindex queue depth, write locks, and vector-store freshness.",
+                serde_json::from_value::<JsonObject>(serde_json::json!({
+                    "type": "object",
+                    "properties": {}
+                }))
+                .unwrap(),
+            )
+            .with_title("Server Status & Diagnostics")
+            .with_annotations(ToolAnnotations::new().read_only(true))
+        ];
+        Self::attach_output_schemas(&mut tools);
+        tools
+    }
+
+    pub fn get_retired_tools() -> Vec<Tool> {
         let mut tools = vec![
             Tool::new(
                 "get_consolidation_cluster",
@@ -41,76 +531,6 @@ impl PkbSearchServer {
             .with_title("Apply Consolidation Batch")
             .with_annotations(ToolAnnotations::new().read_only(false).destructive(true)),
             Tool::new(
-                "search",
-                "Hybrid semantic + graph-proximity search across the personal knowledge base. Uses ONNX embeddings (~100-300ms, an order of magnitude slower than direct id reads like get_document/get_task). If a search times out under high load, back off and retry rather than rewording — latency is compute-bound embedding generation, not query mismatch. Use this for general discovery, finding related knowledge, or task search via `actionable_only=true`. Supports proximity boosting.",
-                serde_json::from_value::<JsonObject>(serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "query": { "type": "string", "description": "Natural language search query" },
-                        "limit": { "type": "integer", "description": "Max results (default: 10)" },
-                        "type": { "type": "string", "description": "Filter by document type (e.g. 'task', 'template', 'note', '!task' to exclude tasks, or comma-separated list 'task,epic')" },
-                        "actionable_only": { "type": "boolean", "description": "When true, only returns actionable tasks/epics/projects/learn and hides completed/cancelled work (unless include_done=true), superseding task_search." },
-                        "include_done": { "type": "boolean", "description": "When actionable_only is true or filtering tasks, include done and cancelled items. Default: false." },
-                        "since": { "type": "string", "description": "Filter: return only results whose stored `modified` timestamp is on or after YYYY-MM-DD or RFC 3339 timestamp (inclusive). Documents with no modified date are excluded." },
-                        "before": { "type": "string", "description": "Filter: return only results whose stored `modified` timestamp is on or before YYYY-MM-DD or RFC 3339 timestamp (inclusive). Documents with no modified date are excluded." },
-                        "boost_id": { "type": "string", "description": "Optional: boost results near this node (ID, filename, or title)" },
-                        "detail": { "type": "string", "description": "Result detail level: 'chunk' (default), 'snippet' (300 chars), 'full' (entire document), 'metadata' (metadata only, omitting content extracts), or 'ids' (IDs only)", "enum": ["chunk", "snippet", "full", "metadata", "ids"], "default": "chunk" },
-                        "ids_only": { "type": "boolean", "description": "When true, returns only the list of matching document IDs without fetching bodies or snippets (equivalent to detail='ids'). Default: false." },
-                        "max_bytes": { "type": "integer", "description": "Maximum byte length of body to return when detail='full' (default: 4000)" },
-                        "format": { "type": "string", "enum": ["markdown", "json"], "description": "Output format: 'markdown' (default) or structured 'json'" }
-                    },
-                    "required": ["query"]
-                }))
-                .unwrap(),
-            )
-            .with_title("Hybrid Semantic Search")
-            .with_annotations(ToolAnnotations::new().read_only(true)),
-            Tool::new(
-                "get_document",
-                "Read the contents or metadata of a specific PKB document. ONLY accepts short-form ID (e.g. task-xxx), filename stem, or title. Accepts `id` or batch `ids`.",
-                serde_json::from_value::<JsonObject>(serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "id": { "type": "string", "description": "Document ID, filename stem, title, or permalink (uses flexible resolution)" },
-                        "ids": { "type": "array", "items": { "type": "string" }, "description": "Batch read multiple document IDs (returns {items, not_found})" },
-                        "detail": { "type": "string", "enum": ["metadata", "summary", "full"], "description": "Result detail level: 'metadata', 'summary', or 'full' (default: full)" },
-                        "budget_ms": { "type": "integer", "description": "Optional: time budget in milliseconds for batch reads. Returns partial results and a `timed_out` list when exceeded." },
-                        "max_bytes": { "type": "integer", "description": "Optional: truncate the returned body to at most N bytes (UTF-8-safe). Default: 4000." },
-                        "metadata_only": { "type": "boolean", "description": "Optional: return only frontmatter and metadata, omitting the document body (default: false)." },
-                        "format": { "type": "string", "enum": ["markdown", "json"], "description": "Output format: 'markdown' (default) or structured 'json'." }
-                    }
-                }))
-                .unwrap(),
-            )
-            .with_title("Get Document Content")
-            .with_annotations(ToolAnnotations::new().read_only(true)),
-            Tool::new(
-                "list_documents",
-                "List indexed documents with optional filters. Good for browsing specific types, tags, or status groups with pagination. Supersedes search_by_tag and list_memories.",
-                serde_json::from_value::<JsonObject>(serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "tag": { "type": "string", "description": "Filter by single tag" },
-                        "tags": {
-                            "description": "Filter by one or more tags (comma-separated string or array of strings, all must match)",
-                            "anyOf": [
-                                { "type": "string" },
-                                { "type": "array", "items": { "type": "string" } }
-                            ]
-                        },
-                        "type": { "type": "string", "description": "Filter by type (e.g. 'memory', 'template', 'note')" },
-                        "status": { "type": "string", "description": "Filter by status" },
-                        "limit": { "type": "integer", "description": "Max results (default: all matching, capped at 1000 — use offset to page further)" },
-                        "offset": { "type": "integer", "description": "Skip first N results (default: 0)" },
-                        "budget_ms": { "type": "integer", "description": "Optional: time budget in milliseconds. Returns partial results and a `timed_out` list when exceeded." },
-                        "format": { "type": "string", "enum": ["markdown", "json"], "description": "Output format: 'markdown' (default) or structured 'json'." }
-                    }
-                }))
-                .unwrap(),
-            )
-            .with_title("List Documents")
-            .with_annotations(ToolAnnotations::new().read_only(true)),
-            Tool::new(
                 "top_n_by_metric",
                 "Return the top N nodes ranked by a specified centrality metric (pagerank, betweenness, degree), or full network metrics for a single node via 'id'. Supersedes get_network_metrics.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
@@ -141,179 +561,6 @@ impl PkbSearchServer {
             .with_title("Top N Nodes by Centrality Metric")
             .with_annotations(ToolAnnotations::new().read_only(true)),
             Tool::new(
-                "create_task",
-                "Create a new task markdown file with YAML frontmatter. `title` is required. `parent` is optional (omitted tasks are root-level tasks). `project` is optional — omitted tasks inherit the nearest ancestor's project. Supports the verbal contribution-weight scale via `contributes_to` and severity-based prioritization. Parent/child cycles are rejected at write time.",
-                serde_json::from_value::<JsonObject>(serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "title": { "type": "string", "description": "Task title (also accepts `task_title` as alias)" },
-                        "task_title": { "type": "string", "description": "Alias for title" },
-                        "id": { "type": "string", "description": "Task ID (auto-generated if omitted)" },
-                        "parent": { "type": "string", "description": "Parent task ID (optional; omitted tasks are root-level tasks)" },
-                        "intent": { "type": "integer", "description": "Intent band 0-4 (P0 Critical / P1 Active intent / P2 Active work / P3 Planned / P4 Backlog). Default when unset: P4 (Backlog). Agents may set this under Nic's standing delegation (2026-09-10: 'allow agents to set intent on my behalf') — it does not require him to direct this specific value. The band must reflect Nic's strategic context read across the graph, never the agent's own impression of its work, and must never be inherited or copied from a parent/sibling task. Leave unset when no band is warranted — that is curation-by-absence, not an omission to fix. See specs/ranking.md §2.1 and §4.6." },
-                        "tags": { "type": "array", "items": { "type": "string" }, "description": "Free-form tags for search and filtering" },
-                        "depends_on": { "type": "array", "items": { "type": "string" }, "description": "IDs of tasks that must complete before this one is unblocked" },
-                        "soft_depends_on": { "type": "array", "items": { "type": "string" }, "description": "IDs of tasks that this task soft-depends on (informational/advisory dependency)" },
-                        "assignee": { "type": "string", "description": "Who is responsible for this task" },
-                        "complexity": { "type": "string", "description": "Free-form complexity/size label (e.g. 'S', 'M', 'L'). For duration strings like '1d'/'2h', use effort instead." },
-                        "effort": { "type": "string", "description": "Effort duration string: '1d', '2h', '1w' (minimum '1h'). For size labels like 'S'/'M'/'L', use complexity instead." },
-                        "consequence": { "type": "string", "description": "Narrative description of what happens if this task is not done or fails." },
-                        "severity": { "type": "integer", "description": "Severity ladder (0-4) for target nodes. SEV4 is lexicographic." },
-                        "goal_type": { "type": "string", "description": "Goal classification: committed | aspirational | learning.", "enum": GOAL_TYPE_ENUM },
-                        "classification": { "type": "string", "description": "Optional content classification: bug | feature | spike | chore | refactor | docs | milestone | action." },
-                        "body": { "type": "string", "description": "Markdown body. Refer to other PKB files by wikilink (`[[id]]`) or PKB-root-relative path; a machine-specific path such as `~/brain/...` or `/home/nic/brain/...` is rejected with error_type `machine_specific_path`." },
-                        "stakeholder": { "type": "string", "description": "Who is waiting on this task (e.g. 'Jacob', 'funding-committee'). Drives waiting urgency in focus scoring." },
-                        "waiting_since": { "type": "string", "description": "When the stakeholder started waiting (ISO date, e.g. '2026-03-20'). Falls back to created date if omitted." },
-                        "due": { "type": "string", "description": "Due date (ISO date, e.g. '2026-06-01')" },
-                        "project": { "type": "string", "description": "Project routing slug, validated against polecat.yaml (slug or any registered alias; canonicalized on write). Optional — omitted tasks inherit the nearest ancestor's project. Builtins 'task' and 'adhoc-sessions' are always accepted." },
-                        "type": { "type": "string", "enum": ["task", "learn", "pr", "target"], "description": "Task type (default: 'task'). Also accepts: learn, pr, target. `target` is an out-of-tree strategic node (no parent required)." },
-                        "status": { "type": "string", "enum": ["inbox", "ready"], "description": "Task status. Real default when unset: 'inbox' (captured, untriaged). Creators legitimately set only 'inbox' or 'ready' — 'ready' means decomposed to a leaf with all hard deps resolved. The inbox→ready transition is auto-computed once a task graduates, so leaving it 'inbox' is fine. Do NOT set queued/in_progress/terminal statuses at create time. See TAXONOMY §Status Values and Transitions." },
-                        "allow_missing_parent": { "type": "boolean", "description": "Allow creating under a missing parent (logs warning). Default: false." },
-                        "force": { "type": "boolean", "description": "Allow creating under a closed (done/cancelled/archived) parent. Default: false." },
-                        "session_id": { "type": "string", "description": "Active session ID to record on the task. Falls back to $AOPS_SESSION_ID if omitted." },
-                        "issue_url": { "type": "string", "description": "External issue/ticket URL to link on the task" },
-                        "follow_up_tasks": { "type": "array", "items": { "type": "string" }, "description": "IDs of related follow-up tasks" },
-                        "release_summary": { "type": "string", "description": "Detailed technical summary, if creating this task as part of a release/handover" },
-                        "contributes_to": { "type": "array", "items": { "type": "object" }, "description": "Edges to target nodes this task contributes to, e.g. [{\"to\": \"target-id\", \"stated_weight\": \"expected\", \"multiplier\": 0.5}]. `stated_weight` accepts recognized verbal terms (certain, probable, expected, fifty-fifty, uncertain, improbable, impossible) or direct numeric float values. `multiplier` (alias `x`) is an optional float multiplier scaling the propagated weight (propagates x * weight). Supports `inherits_from` to copy fields from a prototype edge." },
-                        "links": { "type": "array", "items": { "type": "object" }, "description": "Consolidated flow links (pkb-flow-engine §3.1). Array of objects with 'to' or 'from', 'label' (serves|needs|part_of|supports|alternative|settles), optional 'quantum' (0.0..=1.0 or anchor word), optional 'probability' (0.0..=1.0 or anchor word), optional 'effect' (helps|harms), optional 'set_by' (nic|agent-proposed|migrated), optional 'justification'." },
-                        "worth": { "description": "Target worth in [-1.0, 1.0] or anchor word.", "anyOf": [{ "type": "number" }, { "type": "string" }] },
-                        "deadline_class": { "type": "string", "enum": ["fake", "soft", "hard"], "description": "Deadline class for dated nodes: fake | soft | hard (pkb-flow-engine §3.3)." }
-                    },
-                    "required": ["title"]
-                }))
-                .unwrap(),
-            )
-            .with_title("Create Task")
-            .with_annotations(ToolAnnotations::new().read_only(false)),
-            Tool::new(
-                "claim_task",
-                "Claim a task. On a `type: task` (or untyped) node, claims IN PLACE: sets \
-                 status: in_progress (+ optional assignee/session_id), no new node created. \
-                 On a `type: template` node, instantiates a datestamped copy \
-                 (<slug>-<YYYYMMDD>-<HHMM>-<host>.md) and returns it via get_task; the template \
-                 itself is left untouched. Use the template path for recurring workflows: \
-                 daily, reflect, handover, issue-sweep, etc.",
-                serde_json::from_value::<JsonObject>(serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "id": { "type": "string", "description": "Task ID (any type: task) or template ID (type: template)" },
-                        "assignee": { "type": "string", "description": "Who is claiming this (task-node path only, ignored for templates)." },
-                        "session_id": { "type": "string", "description": "Active session ID (task-node path only). Falls back to $AOPS_SESSION_ID if omitted." }
-                    },
-                    "required": ["id"]
-                }))
-                .unwrap(),
-            )
-            .with_title("Claim Template")
-            .with_annotations(ToolAnnotations::new().read_only(false)),
-            Tool::new(
-                "create",
-                "Generic document creation with automatic subdirectory routing (tasks/, projects/, goals/, notes/). Use when the specific specialized tool is not applicable.",
-                serde_json::from_value::<JsonObject>(serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "title": { "type": "string", "description": "Document title (required)" },
-                        "type": { "type": "string", "enum": ["task", "learn", "pr", "template", "target", "note", "knowledge", "memory", "insight", "observation", "contact", "document", "reference", "review", "case", "spec", "prototype", "index", "daily"], "description": "Document type (required): note, knowledge, memory, insight, observation, task, target, etc." },
-                        "id": { "type": "string", "description": "Document ID (auto-generated if omitted)" },
-                        "tags": { "type": "array", "items": { "type": "string" }, "description": "Free-form tags for search and filtering" },
-                        "body": { "type": "string", "description": "Markdown body. Refer to other PKB files by wikilink (`[[id]]`) or PKB-root-relative path; a machine-specific path such as `~/brain/...` or `/home/nic/brain/...` is rejected with error_type `machine_specific_path`." },
-                        "status": { "type": "string", "enum": ["inbox", "ready"], "description": "Document/task status. Real default when unset: 'inbox' (captured, untriaged). Creators legitimately set only 'inbox' or 'ready' — 'ready' means decomposed to a leaf with all hard deps resolved. The inbox→ready transition is auto-computed once a task graduates, so leaving it 'inbox' is fine. Do NOT set queued/in_progress/terminal statuses at create time. See TAXONOMY §Status Values and Transitions." },
-                        "intent": { "type": "integer", "description": "Intent band 0-4 (P0 Critical / P1 Active intent / P2 Active work / P3 Planned / P4 Backlog). Default when unset: P4 (Backlog). Agents may set this under Nic's standing delegation (2026-09-10: 'allow agents to set intent on my behalf') — it does not require him to direct this specific value. The band must reflect Nic's strategic context read across the graph, never the agent's own impression of its work, and must never be inherited or copied from a parent/sibling task. Leave unset when no band is warranted — that is curation-by-absence, not an omission to fix. See specs/ranking.md §2.1 and §4.6." },
-                        "parent": { "type": "string", "description": "Parent document ID" },
-                        "depends_on": { "type": "array", "items": { "type": "string" }, "description": "IDs of documents that must complete before this one is unblocked" },
-                        "soft_depends_on": { "type": "array", "items": { "type": "string" }, "description": "IDs of documents/tasks that this document soft-depends on" },
-                        "assignee": { "type": "string", "description": "Who is responsible for this document" },
-                        "complexity": { "type": "string", "description": "Free-form complexity/size label (e.g. 'S', 'M', 'L'). For duration strings like '1d'/'2h', use effort instead." },
-                        "effort": { "type": "string", "description": "Effort duration string: '1d', '2h', '1w' (minimum '1h'). For size labels like 'S'/'M'/'L', use complexity instead." },
-                        "consequence": { "type": "string", "description": "Narrative description of what happens if this task/doc is not done or fails." },
-                        "contributes_to": { "type": "array", "items": { "type": "object" }, "description": "Edges to target nodes this document contributes to, e.g. [{\"to\": \"target-id\", \"stated_weight\": \"expected\", \"multiplier\": 0.5}]. `stated_weight` accepts recognized verbal terms (certain, probable, expected, fifty-fifty, uncertain, improbable, impossible) or direct numeric float values. `multiplier` (alias `x`) is an optional float multiplier scaling the propagated weight (propagates x * weight)." },
-                        "source": { "type": "string", "description": "Source context" },
-                        "due": { "type": "string", "description": "Due date" },
-                        "confidence": { "type": "number", "description": "Confidence level (0.0 - 1.0)", "minimum": 0.0, "maximum": 1.0 },
-                        "supersedes": { "type": "string", "description": "ID of document this one replaces" },
-                        "severity": { "type": "integer", "description": "Severity ladder (0-4) for target nodes." },
-                        "goal_type": { "type": "string", "description": "Goal classification: committed | aspirational | learning.", "enum": GOAL_TYPE_ENUM },
-                        "dir": { "type": "string", "description": "Override subdirectory placement" },
-                        "stakeholder": { "type": "string", "description": "Who is waiting on this task (e.g. 'Jacob', 'funding-committee'). Drives waiting urgency in focus scoring." },
-                        "waiting_since": { "type": "string", "description": "When the stakeholder started waiting (ISO date, e.g. '2026-03-20'). Falls back to created date if omitted." },
-                        "links": { "type": "array", "items": { "type": "object" }, "description": "Consolidated flow links (pkb-flow-engine §3.1). Array of objects with 'to' or 'from', 'label' (serves|needs|part_of|supports|alternative|settles), optional 'quantum' (0.0..=1.0 or anchor word), optional 'probability' (0.0..=1.0 or anchor word), optional 'effect' (helps|harms), optional 'set_by' (nic|agent-proposed|migrated), optional 'justification'." },
-                        "worth": { "description": "Target worth in [-1.0, 1.0] or anchor word.", "anyOf": [{ "type": "number" }, { "type": "string" }] },
-                        "deadline_class": { "type": "string", "enum": ["fake", "soft", "hard"], "description": "Deadline class for dated nodes: fake | soft | hard (pkb-flow-engine §3.3)." }
-                    },
-                    "required": ["title", "type"]
-                }))
-                .unwrap(),
-            )
-            .with_title("Create Document")
-            .with_annotations(ToolAnnotations::new().read_only(false)),
-            Tool::new(
-                "append",
-                "Append timestamped content to an existing document by ID. Use for logging progress, adding references, or updating a 'log' section. Not idempotent. The write path is otherwise last-write-wins: pass `expected_modified` (the `modified` value from your last read of this document) to get a compare-and-swap guard — the call is rejected with error_type `stale_write` if the document changed since your read, instead of silently discarding the other writer's change.",
-                serde_json::from_value::<JsonObject>(serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "id": { "type": "string", "description": "Document ID (flexible resolution: ID, filename stem, or title)" },
-                        "content": { "type": "string", "description": "Content to append (will be timestamped). Refer to other PKB files by wikilink (`[[id]]`) or PKB-root-relative path; a machine-specific path such as `~/brain/...` or `/home/nic/brain/...` is rejected with error_type `machine_specific_path`." },
-                        "section": { "type": "string", "description": "Optional target section heading (e.g. 'Log', 'References'). Creates section if not found." },
-                        "expected_modified": { "type": "string", "description": "Optional compare-and-swap precondition: the `modified` frontmatter value you last read from this document. If the document's current `modified` no longer matches, the call fails with error_type `stale_write` instead of overwriting a concurrent change. Omit to keep unconditional (last-write-wins) behaviour." }
-                    },
-                    "required": ["id", "content"]
-                }))
-                .unwrap(),
-            )
-            .with_title("Append to Document")
-            .with_annotations(ToolAnnotations::new().read_only(false)),
-            Tool::new(
-                "update_body",
-                "Atomically rewrite the prose body of an existing document. Preserves YAML frontmatter and bumps `modified` timestamp by default. Use instead of `append` when you need full replacement rather than additive logging. The write path is otherwise last-write-wins: pass `expected_modified` (the `modified` value from your last read of this document) to get a compare-and-swap guard — the call is rejected with error_type `stale_write` if the document changed since your read, instead of silently discarding the other writer's change.",
-                serde_json::from_value::<JsonObject>(serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "id": { "type": "string", "minLength": 1, "description": "Document ID (flexible resolution: ID, filename stem, or title)" },
-                        "new_body": { "type": "string", "minLength": 1, "description": "New markdown body content (full replacement — not appended; cannot be empty). Refer to other PKB files by wikilink (`[[id]]`) or PKB-root-relative path; a machine-specific path such as `~/brain/...` or `/home/nic/brain/...` is rejected when newly introduced with error_type `machine_specific_path`." },
-                        "preserve_frontmatter": { "type": "boolean", "description": "Keep YAML frontmatter and bump modified timestamp (default: true). Set false only when replacing scratch documents with no meaningful frontmatter." },
-                        "expected_modified": { "type": "string", "description": "Optional compare-and-swap precondition: the `modified` frontmatter value you last read from this document. If the document's current `modified` no longer matches, the call fails with error_type `stale_write` instead of overwriting a concurrent change. Omit to keep unconditional (last-write-wins) behaviour." }
-                    },
-                    "required": ["id", "new_body"]
-                }))
-                .unwrap(),
-            )
-            .with_title("Rewrite Document Body")
-            .with_annotations(ToolAnnotations::new().read_only(false)),
-            Tool::new(
-                "edit_body",
-                "Apply one or more unified-diff hunks to the body of an existing document (Aider-compatible format). Preserves YAML frontmatter and updates modified timestamp by default. Supports fallback matching strategies (whitespace tolerance, relative indentation, context shrinking) when a hunk does not match verbatim. Use expected_modified to enforce a compare-and-swap (CAS) check against concurrent updates.",
-                serde_json::from_value::<JsonObject>(serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "id": { "type": "string", "description": "Document ID (flexible resolution: ID, filename stem, or title)" },
-                        "diff": { "type": "string", "description": "Unified-diff hunks to apply to the body (standard git-style hunk format or markdown ```diff block). Refer to other PKB files by wikilink (`[[id]]`) or PKB-root-relative path; a machine-specific path such as `~/brain/...` or `/home/nic/brain/...` on an added line is rejected with error_type `machine_specific_path`." },
-                        "preserve_frontmatter": { "type": "boolean", "description": "Keep YAML frontmatter and bump modified timestamp (default: true). Set false only when editing scratch documents with no meaningful frontmatter." },
-                        "dry_run": { "type": "boolean", "description": "If true, validates and previews the diff application without writing to disk (default: false)" },
-                        "expected_modified": { "type": "string", "description": "Optional compare-and-swap precondition: the `modified` frontmatter value you last read from this document. If the document's current `modified` no longer matches, the call fails with error_type `stale_write` instead of overwriting a concurrent change. Omit to keep unconditional (last-write-wins) behaviour." }
-                    },
-                    "required": ["id", "diff"]
-                }))
-                .unwrap(),
-            )
-            .with_title("Edit Document Body (Unified Diff)")
-            .with_annotations(ToolAnnotations::new().read_only(false)),
-            Tool::new(
-                "delete",
-                "Permanently delete a document by ID. Removes the file from disk and the vector store index. Use with caution.",
-                serde_json::from_value::<JsonObject>(serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "id": { "type": "string", "description": "Document ID (task ID, memory ID, filename stem, or title). Uses flexible resolution." },
-                        "type": { "type": "string", "description": "Optional type guard — if set, the call fails unless the resolved document's type matches. Pass 'memory' to restrict to memory-type documents (memory, note, insight, observation); any other value requires an exact (case-insensitive) node_type match." }
-                    },
-                    "required": ["id"]
-                }))
-                .unwrap(),
-            )
-            .with_title("Delete Document")
-            .with_annotations(ToolAnnotations::new().destructive(true)),
-            Tool::new(
                 "convert_document",
                 "Convert an existing document in place, keeping its ID: replace its frontmatter `type`, then move and rename the same file to `<dir>/<id>_<title-slug>.md` and reindex it. Use to turn a note or capture into a task (or any other retype) without creating a new file. The ID is written into frontmatter before the rename, so a document whose ID was only its filename stem keeps it. Converting to a task type sets a valid task status (`status`, else the existing status, else `inbox`). Re-running with the same arguments is a no-op. Set parent, project, and other fields afterwards with update_task.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
@@ -330,90 +577,6 @@ impl PkbSearchServer {
             )
             .with_title("Convert Document In Place")
             .with_annotations(ToolAnnotations::new().read_only(false).destructive(false)),
-            Tool::new(
-                "release_task",
-                "Release a task to a terminal or handoff status (done, review, blocked, cancelled, partial). Supersedes complete_task (use status='done'). Performs session handover by recording work history, linking PRs/issues, and tracking follow-up work. If 'id' is omitted, an ad-hoc session task is created (requires `project` parameter). Evidence-or-failure-reason contract: `summary` (or `completion_evidence`) is always required; releasing to done requires all acceptance checklist items in the task body to be ticked (- [x]); releasing to blocked/cancelled/review/partial additionally requires a non-empty `reason` (or `blocker`, for `blocked`) — a handback with neither is rejected. Tasks created before this requirement shipped release under the old, optional rules.",
-                serde_json::from_value::<JsonObject>(serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "id": { "type": "string", "description": "Task ID (flexible resolution: ID, filename stem, or title). If omitted, an ad-hoc task is created." },
-                        "project": { "type": "string", "description": "Project routing slug, validated against polecat.yaml (e.g. 'aops', 'mem'). Required when 'id' is omitted (ad-hoc task creation); optional when 'id' is provided." },
-                        "status": {
-                            "type": "string",
-                            "enum": ["done", "review", "cancelled", "partial"],
-                            "description": "Target status"
-                        },
-                        "summary": { "type": "string", "description": "What was done and outcome. 1-3 sentences minimum. Always required (or provide completion_evidence)." },
-                        "completion_evidence": { "type": "string", "description": "Alias for summary: what was done and outcome (required when status is done). Releasing as done requires all acceptance checklist items to be checked (- [x])." },
-                        "pr_url": { "type": "string", "description": "Pull request or commit URL" },
-                        "branch": { "type": "string", "description": "Git branch name (optional)" },
-                        "blocker": { "type": "string", "description": "What is blocking this task. Required (non-empty), together with `reason`, when status=blocked — at least one of the two must be given." },
-                        "reason": { "type": "string", "description": "Why the task didn't ship cleanly. Required (non-empty) when status is blocked/cancelled/review/partial (for status=blocked, `blocker` may be given instead)." },
-                        "session_id": { "type": "string", "description": "Active session ID. Falls back to $AOPS_SESSION_ID if omitted." },
-                        "issue_url": { "type": "string", "description": "External issue/ticket URL" },
-                        "follow_up_tasks": { "type": "array", "items": { "type": "string" }, "description": "IDs of new tasks created as follow-ups. Validated for existence." },
-                        "release_summary": { "type": "string", "description": "Detailed technical summary for the release. Warning if > 500 chars." },
-                        "recursive": { "type": "boolean", "description": "Cascade-close all open descendant tasks when releasing as done. Default: false." }
-                    },
-                    "required": ["status", "summary"]
-                }))
-                .unwrap(),
-            )
-            .with_title("Release Task")
-            .with_annotations(ToolAnnotations::new().read_only(false).idempotent(true)),
-            Tool::new(
-                "list_tasks",
-                "List tasks with smart filtering. Results are returned in `focus_score`-descending order by default (highest-focus first) across every path — default, ready — with a deterministic tie-break, so the top rows are the most important and repeated calls are stable; no re-sort is needed. Every row carries `status`. Done/cancelled tasks are hidden by default — pass `include_done=true` to include them (matches task_search convention). JSON output puts `focus_score` (composite ranking integer) at the top level as the primary sort key, combining intent, severity, deadline urgency, age/staleness, downstream weight, stakeholder waiting urgency, urgency (propagated/chain), and value of information (VoI). Component signals — criticality, urgency, downstream_weight, scope, uncertainty — are nested under `signals: {}` for filter/debug use. See specs/ranking.md. `status=` filters strictly on the stored frontmatter status field (never a computed set) — pass status='ready' to match nodes literally stored with that status.",
-                serde_json::from_value::<JsonObject>(serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "project": { "type": "string", "description": "Filter by project slug or any polecat.yaml alias (case-insensitive). Returns tasks whose project field (own or inherited from the nearest ancestor that set one) matches." },
-                        "status": {
-                            "anyOf": [
-                                { "type": "string" },
-                                { "type": "array", "items": { "type": "string" } }
-                            ],
-                            "description": "Filter by the node's stored frontmatter status value (exact match, case-insensitive) — never a computed set. Accepts a single status (e.g. 'ready'), a comma-separated list (e.g. 'ready,in_progress'), or an array of statuses (e.g. ['ready', 'in_progress']). One of: inbox, ready, queued, in_progress, review, paused, someday, partial, done, cancelled. 'ready' matches only nodes literally stored with status: ready (not a leaf/unblocked computation)."
-                        },
-                        "intent": { "type": "integer", "description": "Filter to tasks whose effective intent (own or any downstream task via blocks/parent) ≤ N. E.g. intent=0 returns every task that touches a P0, including its blockers." },
-                        "severity": { "type": "integer", "description": "Filter by exact severity" },
-                        "goal_type": { "type": "string", "description": "Filter by goal type" },
-                        "assignee": { "type": "string", "description": "Filter by assignee" },
-                        "type": { "type": "string", "description": "Filter by document type (e.g. 'task', 'target', 'learn', 'pr')" },
-                        "title_contains": { "type": "string", "description": "Filter by title substring (case-insensitive)" },
-                        "weight_gte": { "type": "integer", "description": "Filter to tasks with downstream weight ≥ N" },
-                        "gain_gte": { "type": "number", "description": "Filter to tasks with flow gain ≥ N" },
-                        "loss_averted_gte": { "type": "number", "description": "Filter to tasks with flow loss averted ≥ N" },
-                        "sort": {
-                            "type": "string",
-                            "enum": ["default", "gain", "loss_averted", "decision_value", "gain_per_effort", "loss_averted_per_effort", "due", "id"],
-                            "description": "Sort order: 'default' (display_cmp under flow ranking), or by 'gain', 'loss_averted', 'decision_value', 'gain_per_effort', 'loss_averted_per_effort', 'due', 'id'."
-                        },
-                        "tags": { "type": "array", "items": { "type": "string" }, "description": "Filter by tags. A task matches iff every requested tag is present in its frontmatter `tags` array (AND, case-insensitive)." },
-                        "has_superseded_by": { "type": "boolean", "description": "Filter by presence of a computed `superseded_by` reverse index (materialised from another node's `supersedes` edge, never hand-written). When true, returns only tasks some other node names via `supersedes`; when false, returns only tasks nothing supersedes. When this filter is active, returned rows (both markdown and JSON) include the `superseded_by` target id(s) as a list. Default: unset (no filter applied)." },
-                        "focus_score_gte": { "type": "integer", "description": "Filter to tasks whose composite focus_score is ≥ N." },
-                        "since": { "type": "string", "description": "Filter: return only tasks whose stored `modified` timestamp is on or after YYYY-MM-DD or RFC 3339 timestamp (inclusive). Date-only values compare UTC calendar date; timestamps compare exact UTC instants. Tasks with no modified date are excluded." },
-                        "before": { "type": "string", "description": "Filter: return only tasks whose stored `modified` timestamp is on or before YYYY-MM-DD or RFC 3339 timestamp (inclusive). Date-only values compare UTC calendar date; timestamps compare exact UTC instants. Tasks with no modified date are excluded." },
-                        "limit": { "type": "integer", "description": "Max results (default: 50)" },
-                        "include_subtasks": { "type": "boolean", "description": "Include sub-tasks (type=subtask) in results. Default: false — subtasks are hidden since they travel with their parent task." },
-                        "include_done": { "type": "boolean", "description": "Include done and cancelled tasks. Default: false (silently hides closed tasks so the list shows actionable work, which can cause state blindness if you aren't expecting it). Ignored when an explicit `status` filter is provided." },
-                        "budget_ms": { "type": "integer", "description": "Optional: time budget in milliseconds. Returns partial results and a `timed_out` list when exceeded." },
-                        "fields": {
-                            "description": "Optional: return only specific fields per task to reduce token usage. Comma-separated string or array of field names (e.g. ['id', 'title', 'status', 'focus_score', 'relationship_summary', 'body_excerpt']).",
-                            "anyOf": [
-                                { "type": "string" },
-                                { "type": "array", "items": { "type": "string" } }
-                            ]
-                        },
-                        "nested": { "type": "boolean", "description": "When true, returns nested tasks grouped by project and epic (metadata only) matching `pkb tasks`. Default: false." },
-                        "view": { "type": "string", "enum": ["flat", "tree"], "description": "View mode: 'flat' (default table/list) or 'tree' (hierarchical nested tree matching `pkb tasks`)." },
-                        "format": { "type": "string", "enum": ["markdown", "json", "tree", "ascii_tree", "nested_json", "json_tree"], "description": "Output format. 'markdown' returns a table (default); 'json' returns structured {total, showing, tasks[]}; 'tree' or 'ascii_tree' returns a hierarchical ASCII tree matching `pkb tasks`; 'nested_json' or 'json_tree' returns hierarchical JSON (brief metadata only). Default: 'markdown'." }
-                    }
-                }))
-                .unwrap(),
-            )
-            .with_title("List Tasks")
-            .with_annotations(ToolAnnotations::new().read_only(true)),
             Tool::new(
                 "nested_tasks",
                 "List tasks in a hierarchical tree view grouped by project and epic (metadata only), mirroring the `pkb tasks` CLI command. Supports ASCII tree or brief JSON output. Ideal for understanding work hierarchy and structure without heavy body text or signal payloads.",
@@ -461,146 +624,6 @@ impl PkbSearchServer {
             .with_title("Nested Tasks Tree")
             .with_annotations(ToolAnnotations::new().read_only(true)),
             Tool::new(
-                "get_task",
-                "Retrieve full details for a task, including metadata, body content, and graph relationship context (dependencies, blockers, children, subtasks). Accepts `id` or batch `ids`. Supports `detail`: metadata | summary | full and `max_bytes` (default: 4000). The returned JSON puts `focus_score` (composite ranking integer) at the top level as the primary importance metric, combining intent, severity, deadline urgency, age/staleness, downstream weight, stakeholder waiting urgency, urgency (propagated/chain), and value of information (VoI). Component signals — criticality, urgency, downstream_weight, scope, uncertainty — are nested under `signals: {}` for filter/debug use. See specs/ranking.md.",
-                serde_json::from_value::<JsonObject>(serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "id": { "type": "string", "description": "Task ID (e.g. 'framework-6b4325a1'). Also accepts filename stem or title." },
-                        "ids": { "type": "array", "items": { "type": "string" }, "description": "Batch read multiple task IDs (returns {items, not_found})" },
-                        "detail": { "type": "string", "enum": ["metadata", "summary", "full"], "description": "Result detail level: 'metadata' (metadata only), 'summary' (brief extract), or 'full' (full document body, default)" },
-                        "budget_ms": { "type": "integer", "description": "Optional: time budget in milliseconds for batch reads. Returns partial results and a `timed_out` list when exceeded." },
-                        "max_bytes": { "type": "integer", "description": "Optional: truncate the returned body to at most N bytes (UTF-8-safe). Default: 4000." },
-                        "metadata_only": { "type": "boolean", "description": "Optional: return only frontmatter metadata and signals, omitting the markdown body (default: false)." },
-                        "include_signals": { "type": "boolean", "description": "Include individual ranking component signals in response (default: true). Set to false to reduce token payload." },
-                        "include_routes": { "type": "boolean", "description": "Include route explanations and diagnostics in response under flow ranking (default: true). Set to false to reduce token payload." },
-                        "fields": {
-                            "description": "Optional: return only specific fields to reduce token payload. Comma-separated string or array of field names (e.g. ['id', 'title', 'status', 'parent']).",
-                            "anyOf": [
-                                { "type": "string" },
-                                { "type": "array", "items": { "type": "string" } }
-                            ]
-                        }
-                    }
-                }))
-                .unwrap(),
-            )
-            .with_title("Get Task Detail")
-            .with_annotations(ToolAnnotations::new().read_only(true)),
-            Tool::new(
-                "update_task",
-                "Patch metadata fields on an existing task. Pass fields either nested as `updates: {status: \"done\"}` or flat at the top level (e.g. status=\"done\"). Supports status, type, intent, severity and all update keys (title, status, type, intent, priority, tags, parent, depends_on, soft_depends_on, blocks, soft_blocks, assignee, complexity, effort, consequence, severity, goal_type, body, content, stakeholder, waiting_since, due, project, session_id, issue_url, follow_up_tasks, release_summary, released_at, contributes_to, supersedes, superseded_by, blocked, blocker, reason, completion_evidence, evidence, pr_url, _add_tags, _remove_tags, _add_depends_on, _remove_depends_on, classification, links, worth, deadline_class, branch, container, alias). For state transitions (done, review, blocked, cancelled, partial), prefer release_task — it also enforces the evidence-or-failure-reason contract (completion_evidence for done; reason/blocker for handback statuses) that this generic patch path does not. Setting status=\"done\" here still requires a non-empty `completion_evidence` field (in updates or top-level), unchanged. A caller-supplied `intent` (or legacy `priority`) is accepted under Nic's standing delegation to agents (2026-09-10: 'allow agents to set intent on my behalf') — set it from Nic's strategic context read across the graph, never the agent's own read of its own work's importance, and never inherited or copied from a parent/sibling task.",
-                serde_json::from_str::<JsonObject>(r#"{
-                    "type": "object",
-                    "properties": {
-                        "id": { "type": "string", "description": "Document ID (flexible resolution: ID, filename stem, title)" },
-                        "updates": { "type": "object", "description": "Optional nested form. JSON object of fields to update (null to remove a field). If omitted, any top-level fields other than id/updates are treated as fields to update." },
-                        "status": {
-                            "type": "string",
-                            "enum": ["inbox", "ready", "queued", "in_progress", "review", "done", "paused", "someday", "cancelled", "partial"],
-                            "description": "Task status transition"
-                        },
-                        "type": {
-                            "type": "string",
-                            "enum": ["task", "learn", "pr", "template", "target", "note", "knowledge", "memory", "insight", "observation", "contact", "document", "reference", "review", "case", "spec", "prototype", "index", "daily", "session-log", "audit-report"],
-                            "description": "Node type"
-                        },
-                        "intent": { "type": "integer", "description": "Intent band 0-4 (P0 Critical / P1 Active intent / P2 Active work / P3 Planned / P4 Backlog)" },
-                        "priority": { "type": "integer", "description": "Legacy alias for intent (0-4)" },
-                        "severity": { "type": "integer", "description": "Severity ladder (0-4) for target nodes" },
-                        "title": { "type": "string", "description": "Task title" },
-                        "tags": { "type": "array", "items": { "type": "string" }, "description": "Free-form tags" },
-                        "parent": { "type": "string", "description": "Parent task ID" },
-                        "depends_on": { "type": "array", "items": { "type": "string" }, "description": "Dependencies" },
-                        "soft_depends_on": { "type": "array", "items": { "type": "string" }, "description": "Soft dependencies" },
-                        "blocks": { "type": "array", "items": { "type": "string" }, "description": "Tasks blocked by this task" },
-                        "soft_blocks": { "type": "array", "items": { "type": "string" }, "description": "Tasks soft-blocked by this task" },
-                        "assignee": { "type": "string", "description": "Assigned agent or user" },
-                        "complexity": { "type": "string", "description": "Complexity label (e.g. S, M, L)" },
-                        "effort": { "type": "string", "description": "Effort duration string (e.g. 1d, 2h)" },
-                        "consequence": { "type": "string", "description": "Consequence narrative" },
-                        "goal_type": { "type": "string", "enum": ["committed", "aspirational", "learning"], "description": "Goal classification" },
-                        "body": { "type": "string", "description": "Task markdown body" },
-                        "content": { "type": "string", "description": "Alias for body" },
-                        "stakeholder": { "type": "string", "description": "Who is waiting on this task" },
-                        "waiting_since": { "type": "string", "description": "When stakeholder started waiting (ISO date)" },
-                        "due": { "type": "string", "description": "Due date (ISO date)" },
-                        "project": { "type": "string", "description": "Project slug" },
-                        "session_id": { "type": "string", "description": "Session ID" },
-                        "issue_url": { "type": "string", "description": "External issue URL" },
-                        "follow_up_tasks": { "type": "array", "items": { "type": "string" }, "description": "Follow-up task IDs" },
-                        "release_summary": { "type": "string", "description": "Summary of release" },
-                        "released_at": { "type": "string", "description": "Release timestamp" },
-                        "contributes_to": { "type": "array", "items": { "type": "object" }, "description": "Edges to targets" },
-                        "supersedes": { "type": "string", "description": "Task ID superseded by this task" },
-                        "superseded_by": { "type": "array", "items": { "type": "string" }, "description": "Tasks superseding this task" },
-                        "blocked": { "type": "boolean", "description": "Manual blocked flag" },
-                        "blocker": { "type": "string", "description": "Blocker explanation" },
-                        "reason": { "type": "string", "description": "Reason for cancellation or review" },
-                        "completion_evidence": { "type": "string", "description": "Required when setting status='done': describe what was done before completing this task" },
-                        "evidence": { "type": "string", "description": "Alias for completion_evidence" },
-                        "pr_url": { "type": "string", "description": "Pull request URL" },
-                        "_add_tags": { "type": "array", "items": { "type": "string" }, "description": "Tags to add incrementally" },
-                        "_remove_tags": { "type": "array", "items": { "type": "string" }, "description": "Tags to remove incrementally" },
-                        "_add_depends_on": { "type": "array", "items": { "type": "string" }, "description": "Dependencies to add incrementally" },
-                        "_remove_depends_on": { "type": "array", "items": { "type": "string" }, "description": "Dependencies to remove incrementally" },
-                        "classification": { "type": "string", "description": "Classification label" },
-                        "links": { "type": "array", "items": { "type": "object" }, "description": "Consolidated flow links (pkb-flow-engine §3.1)." },
-                        "worth": { "description": "Target worth in [-1.0, 1.0] or anchor word." },
-                        "deadline_class": { "type": "string", "enum": ["fake", "soft", "hard"], "description": "Deadline class for dated nodes: fake | soft | hard (pkb-flow-engine §3.3)." },
-                        "branch": { "type": "string", "description": "Git branch name" },
-                        "container": { "type": "string", "description": "Container name" },
-                        "alias": { "type": "string", "description": "Node alias" },
-                        "unparent": { "type": "boolean", "description": "Pass true to remove a task's parent" },
-                        "allow_missing_parent": { "type": "boolean", "description": "Allow setting a parent ID that does not yet exist in PKB (proceeds with warning)" },
-                        "force": { "type": "boolean", "description": "Allow reparenting under a closed parent task" },
-                        "recursive": { "type": "boolean", "description": "When setting status to done/cancelled/archived, cascade-close all open descendant tasks. Default: false (rejects if open children exist)." }
-                    },
-                    "required": ["id"]
-                }"#)
-                .unwrap(),
-            )
-            .with_title("Update Task")
-            .with_annotations(ToolAnnotations::new().idempotent(true)),
-            Tool::new(
-                "decompose_task",
-                "Split a large task into multiple subtasks in one operation. Supports relative sibling references (e.g. '$1') for dependencies. Subtasks inherit the parent's `project` field unless explicitly overridden. Use to structure a newly defined work package.",
-                serde_json::from_value::<JsonObject>(serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "parent_id": { "type": "string", "description": "Parent task ID to create subtasks under" },
-                        "subtasks": {
-                            "type": "array",
-                            "items": {
-                                "type": "object",
-                                "properties": {
-                                    "title": { "type": "string", "description": "Subtask title (required; must be unique among siblings for cross-referencing)" },
-                                    "id": { "type": "string", "description": "Optional custom task ID" },
-                                    "intent": { "type": "integer", "description": "Intent band 0-4 (P0 Critical .. P4 Backlog). Default when unset: P4 (Backlog). Agents may set this under Nic's standing delegation — from his strategic context read across the graph, never the agent's own view of the subtask's importance, and never copied from the parent or a sibling." },
-                                    "depends_on": { "type": "array", "items": { "type": "string" }, "description": "Dependency IDs. Supports positional sibling refs ('$1', '$2', ... 1-indexed into this subtasks array) and case-insensitive sibling title matches, in addition to existing task IDs." },
-                                    "tags": { "type": "array", "items": { "type": "string" }, "description": "Free-form tags for search and filtering" },
-                                    "assignee": { "type": "string", "description": "Who is responsible for this subtask" },
-                                    "complexity": { "type": "string", "description": "Free-form complexity/size label (e.g. 'S', 'M', 'L')" },
-                                    "body": { "type": "string", "description": "Markdown body. Refer to other PKB files by wikilink (`[[id]]`) or PKB-root-relative path; a machine-specific path such as `~/brain/...` or `/home/nic/brain/...` is rejected with error_type `machine_specific_path`." },
-                                    "stakeholder": { "type": "string", "description": "Who is waiting on this subtask. Drives waiting urgency in focus scoring." },
-                                    "waiting_since": { "type": "string", "description": "When the stakeholder started waiting (ISO date). Falls back to created date if omitted." },
-                                    "consequence": { "type": "string", "description": "Narrative description of what happens if this subtask is not done or fails" },
-                                    "severity": { "type": "integer", "description": "Severity ladder (0-4); only honored for type: target subtasks, otherwise reset to 0 with a warning" },
-                                    "goal_type": { "type": "string", "description": "Goal classification: committed | aspirational | learning" },
-                                    "project": { "type": "string", "description": "Override project field (defaults to parent's project)" }
-                                },
-                                "required": ["title"]
-                            },
-                            "description": "Array of subtask definitions"
-                        }
-                    },
-                    "required": ["parent_id", "subtasks"]
-                }))
-                .unwrap(),
-            )
-            .with_title("Decompose Task")
-            .with_annotations(ToolAnnotations::new().read_only(false)),
-            Tool::new(
                 "get_dependency_tree",
                 "Visualize the task dependency graph for a specific node. Upstream shows what the task depends on; downstream shows what it blocks; children lists child tasks (supersedes get_task_children).",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
@@ -634,7 +657,6 @@ impl PkbSearchServer {
             )
             .with_title("PKB Path Trace")
             .with_annotations(ToolAnnotations::new().read_only(true)),
-            // ── Batch Operations ──────────────────────────────────────────
             Tool::new(
                 "batch_update",
                 "Apply frontmatter updates to multiple tasks simultaneously. Supports complex filters (by parent, subtree, tags, age, etc.) or explicit ID lists. Always use _add_tags/_remove_tags for list fields.",
@@ -798,7 +820,6 @@ impl PkbSearchServer {
             )
             .with_title("Task Summary Statistics")
             .with_annotations(ToolAnnotations::new().read_only(true)),
-            // ── Phase 2: Deduplication & Restructuring ────────────────────
             Tool::new(
                 "find_duplicates",
                 "Identify potential duplicate tasks using both semantic and title similarity. Returns clusters with a suggested canonical task. Read-only.",
@@ -877,17 +898,6 @@ impl PkbSearchServer {
             .with_title("Tool Usage Stats")
             .with_annotations(ToolAnnotations::new().read_only(true)),
             Tool::new(
-                "status",
-                "Report server operational diagnostics and build identity: document count, last reindex timestamp and outcome, reindex/upsert queue depth, write locks / in-flight operations, and vector-store freshness.",
-                serde_json::from_value::<JsonObject>(serde_json::json!({
-                    "type": "object",
-                    "properties": {}
-                }))
-                .unwrap(),
-            )
-            .with_title("Server Status & Diagnostics")
-            .with_annotations(ToolAnnotations::new().read_only(true)),
-            Tool::new(
                 "refresh_graph",
                 "Synchronously rebuild the in-memory graph index from on-disk state. \
                  Refreshes parent→child relations, edges, and derived metrics without re-embedding. \
@@ -922,16 +932,15 @@ impl PkbSearchServer {
                 .unwrap(),
             )
             .with_title("Repair Orphaned Index Entries")
-            .with_annotations(ToolAnnotations::new().read_only(false)),
+            .with_annotations(ToolAnnotations::new().read_only(false))
         ];
-        for tool in &mut tools {
-            if tool.output_schema.is_none() {
-                tool.output_schema = Some(std::sync::Arc::new(
-                    serde_json::from_value(Self::output_schema_for_tool(&tool.name))
-                        .unwrap(),
-                ));
-            }
-        }
+        Self::attach_output_schemas(&mut tools);
+        tools
+    }
+
+    pub fn get_all_tools() -> Vec<Tool> {
+        let mut tools = Self::get_published_tools();
+        tools.extend(Self::get_retired_tools());
         tools
     }
 
@@ -940,8 +949,8 @@ impl PkbSearchServer {
             "get_consolidation_cluster" => serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "seed_id": { "type": "string", "description": "Seed node ID" },
-                    "nodes": { "type": "array", "description": "Related cluster nodes", "items": { "type": "object" } }
+                    "seed_id": { "type": "string" },
+                    "nodes": { "type": "array", "items": { "type": "object" } }
                 }
             }),
             "apply_consolidation_batch" | "batch_update" => serde_json::json!({
@@ -960,35 +969,35 @@ impl PkbSearchServer {
             "search" => serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "total": { "type": "integer", "description": "Total matching count" },
-                    "showing": { "type": "integer", "description": "Results returned in this payload" },
-                    "items": { "type": "array", "items": { "type": "object" }, "description": "Matching results" },
+                    "total": { "type": "integer" },
+                    "showing": { "type": "integer" },
+                    "items": { "type": "array", "items": { "type": "object" } },
                     "count": { "type": "integer" },
                     "results": { "type": "array", "items": { "type": "object" } },
-                    "ids": { "type": "array", "items": { "type": "string" }, "description": "Matching IDs when ids_only=true" }
+                    "ids": { "type": "array", "items": { "type": "string" } }
                 }
             }),
             "get_document" => serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "id": { "type": "string", "description": "Document ID" },
-                    "title": { "type": "string", "description": "Document title" },
-                    "frontmatter": { "type": "object", "description": "Frontmatter metadata" },
-                    "body": { "type": "string", "description": "Document body" },
-                    "content": { "type": "string", "description": "Alias for body" },
-                    "truncated": { "type": "boolean", "description": "Whether body was truncated" },
-                    "body_bytes": { "type": "integer", "description": "Total body size in bytes" },
-                    "items": { "type": "array", "items": { "type": "object" }, "description": "Batch read items" },
-                    "not_found": { "type": "array", "items": { "type": "string" }, "description": "IDs not found in batch read" },
-                    "timed_out": { "type": "array", "items": { "type": "string" }, "description": "IDs timed out in batch read" }
+                    "id": { "type": "string" },
+                    "title": { "type": "string" },
+                    "frontmatter": { "type": "object" },
+                    "body": { "type": "string" },
+                    "content": { "type": "string" },
+                    "truncated": { "type": "boolean" },
+                    "body_bytes": { "type": "integer" },
+                    "items": { "type": "array", "items": { "type": "object" } },
+                    "not_found": { "type": "array", "items": { "type": "string" } },
+                    "timed_out": { "type": "array", "items": { "type": "string" } }
                 }
             }),
             "list_documents" => serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "total": { "type": "integer", "description": "Total matching documents" },
-                    "showing": { "type": "integer", "description": "Number of documents returned" },
-                    "items": { "type": "array", "items": { "type": "object" }, "description": "Matching documents" },
+                    "total": { "type": "integer" },
+                    "showing": { "type": "integer" },
+                    "items": { "type": "array", "items": { "type": "object" } },
                     "documents": { "type": "array", "items": { "type": "object" } },
                     "timed_out": { "type": "array", "items": { "type": "string" } }
                 }
@@ -996,9 +1005,9 @@ impl PkbSearchServer {
             "top_n_by_metric" => serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "metric": { "type": "string", "description": "Centrality metric evaluated" },
-                    "count": { "type": "integer", "description": "Count of returned nodes" },
-                    "nodes": { "type": "array", "items": { "type": "object" }, "description": "Ranked nodes" },
+                    "metric": { "type": "string" },
+                    "count": { "type": "integer" },
+                    "nodes": { "type": "array", "items": { "type": "object" } },
                     "id": { "type": "string" },
                     "pagerank": { "type": "number" },
                     "betweenness": { "type": "number" },
@@ -1008,26 +1017,26 @@ impl PkbSearchServer {
             "create_task" => serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "id": { "type": "string", "description": "Created task ID" },
-                    "path": { "type": "string", "description": "File path" },
-                    "title": { "type": "string", "description": "Task title" },
-                    "project": { "type": "string", "description": "Project slug" },
-                    "status": { "type": "string", "description": "Task status" },
-                    "parent": { "type": "string", "description": "Parent task ID" },
-                    "message": { "type": "string", "description": "Result message" },
-                    "modified": { "type": "string", "description": "Modification timestamp" }
+                    "id": { "type": "string" },
+                    "path": { "type": "string" },
+                    "title": { "type": "string" },
+                    "project": { "type": "string" },
+                    "status": { "type": "string" },
+                    "parent": { "type": "string" },
+                    "message": { "type": "string" },
+                    "modified": { "type": "string" }
                 }
             }),
             "claim_task" => serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "id": { "type": "string", "description": "Task ID" },
-                    "title": { "type": "string", "description": "Task title" },
-                    "status": { "type": "string", "description": "Task status (in_progress)" },
-                    "assignee": { "type": "string", "description": "Claimant assignee" },
-                    "session_id": { "type": "string", "description": "Active session ID" },
-                    "modified": { "type": "string", "description": "Modification timestamp" },
-                    "message": { "type": "string", "description": "Result message" },
+                    "id": { "type": "string" },
+                    "title": { "type": "string" },
+                    "status": { "type": "string" },
+                    "assignee": { "type": "string" },
+                    "session_id": { "type": "string" },
+                    "modified": { "type": "string" },
+                    "message": { "type": "string" },
                     "frontmatter": { "type": "object" },
                     "body": { "type": "string" }
                 }
@@ -1035,216 +1044,216 @@ impl PkbSearchServer {
             "create" => serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "id": { "type": "string", "description": "Created document ID" },
-                    "path": { "type": "string", "description": "File path" },
-                    "title": { "type": "string", "description": "Document title" },
-                    "type": { "type": "string", "description": "Document type" },
-                    "status": { "type": "string", "description": "Document status" },
-                    "message": { "type": "string", "description": "Result message" },
-                    "modified": { "type": "string", "description": "Modification timestamp" }
+                    "id": { "type": "string" },
+                    "path": { "type": "string" },
+                    "title": { "type": "string" },
+                    "type": { "type": "string" },
+                    "status": { "type": "string" },
+                    "message": { "type": "string" },
+                    "modified": { "type": "string" }
                 }
             }),
             "append" => serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "id": { "type": "string", "description": "Target document ID" },
-                    "modified": { "type": "string", "description": "Updated modified timestamp" },
-                    "message": { "type": "string", "description": "Result message" },
-                    "appended_bytes": { "type": "integer", "description": "Bytes appended" }
+                    "id": { "type": "string" },
+                    "modified": { "type": "string" },
+                    "message": { "type": "string" },
+                    "appended_bytes": { "type": "integer" }
                 }
             }),
             "update_body" => serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "id": { "type": "string", "description": "Document ID" },
-                    "modified": { "type": "string", "description": "Updated modified timestamp" },
-                    "message": { "type": "string", "description": "Result message" },
-                    "bytes_written": { "type": "integer", "description": "Number of bytes written" }
+                    "id": { "type": "string" },
+                    "modified": { "type": "string" },
+                    "message": { "type": "string" },
+                    "bytes_written": { "type": "integer" }
                 }
             }),
             "edit_body" => serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "id": { "type": "string", "description": "Document ID" },
-                    "modified": { "type": "string", "description": "Updated modified timestamp" },
-                    "message": { "type": "string", "description": "Result message" },
-                    "applied_hunks": { "type": "integer", "description": "Count of successfully applied hunks" },
-                    "total_hunks": { "type": "integer", "description": "Total hunks in diff" },
-                    "dry_run": { "type": "boolean", "description": "Whether this was a dry run" }
+                    "id": { "type": "string" },
+                    "modified": { "type": "string" },
+                    "message": { "type": "string" },
+                    "applied_hunks": { "type": "integer" },
+                    "total_hunks": { "type": "integer" },
+                    "dry_run": { "type": "boolean" }
                 }
             }),
             "delete" => serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "id": { "type": "string", "description": "Deleted document ID" },
-                    "deleted": { "type": "boolean", "description": "Whether deletion succeeded" },
-                    "message": { "type": "string", "description": "Result message" }
+                    "id": { "type": "string" },
+                    "deleted": { "type": "boolean" },
+                    "message": { "type": "string" }
                 }
             }),
             "convert_document" => serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "id": { "type": "string", "description": "Document ID" },
-                    "title": { "type": "string", "description": "Document title" },
-                    "type": { "type": "string", "description": "New document type" },
-                    "status": { "type": "string", "description": "Document status" },
-                    "path": { "type": "string", "description": "New file path" },
-                    "old_path": { "type": "string", "description": "Previous file path" },
-                    "message": { "type": "string", "description": "Result message" },
-                    "modified": { "type": "string", "description": "Updated modified timestamp" }
+                    "id": { "type": "string" },
+                    "title": { "type": "string" },
+                    "type": { "type": "string" },
+                    "status": { "type": "string" },
+                    "path": { "type": "string" },
+                    "old_path": { "type": "string" },
+                    "message": { "type": "string" },
+                    "modified": { "type": "string" }
                 }
             }),
             "release_task" => serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "ok": { "type": "boolean", "description": "Success flag" },
-                    "id": { "type": "string", "description": "Released task ID" },
-                    "title": { "type": "string", "description": "Task title" },
-                    "status": { "type": "string", "description": "Terminal or handoff status" },
-                    "modified": { "type": "string", "description": "New modified timestamp" },
-                    "message": { "type": "string", "description": "Result summary message" },
-                    "created_id": { "type": "string", "description": "Created ad-hoc task ID if ID was omitted" },
-                    "neighborhood": { "type": "object", "description": "Post-write graph neighborhood" }
+                    "ok": { "type": "boolean" },
+                    "id": { "type": "string" },
+                    "title": { "type": "string" },
+                    "status": { "type": "string" },
+                    "modified": { "type": "string" },
+                    "message": { "type": "string" },
+                    "created_id": { "type": "string" },
+                    "neighborhood": { "type": "object" }
                 }
             }),
             "complete_task" => serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "ok": { "type": "boolean", "description": "Success flag" },
-                    "id": { "type": "string", "description": "Task ID" },
-                    "title": { "type": "string", "description": "Task title" },
-                    "status": { "type": "string", "description": "done" },
-                    "modified": { "type": "string", "description": "New modified timestamp" },
-                    "message": { "type": "string", "description": "Completion message" },
-                    "neighborhood": { "type": "object", "description": "Post-write graph neighborhood" }
+                    "ok": { "type": "boolean" },
+                    "id": { "type": "string" },
+                    "title": { "type": "string" },
+                    "status": { "type": "string" },
+                    "modified": { "type": "string" },
+                    "message": { "type": "string" },
+                    "neighborhood": { "type": "object" }
                 }
             }),
             "list_tasks" => serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "total": { "type": "integer", "description": "Total matching tasks" },
-                    "showing": { "type": "integer", "description": "Number of tasks returned" },
-                    "tasks": { "type": "array", "items": { "type": "object" }, "description": "Matching task summaries" },
-                    "items": { "type": "array", "items": { "type": "object" }, "description": "Alias for tasks" },
-                    "timed_out": { "type": "array", "items": { "type": "string" }, "description": "Task IDs timed out" }
+                    "total": { "type": "integer" },
+                    "showing": { "type": "integer" },
+                    "tasks": { "type": "array", "items": { "type": "object" } },
+                    "items": { "type": "array", "items": { "type": "object" } },
+                    "timed_out": { "type": "array", "items": { "type": "string" } }
                 }
             }),
             "nested_tasks" => serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "total": { "type": "integer", "description": "Total task count" },
-                    "showing": { "type": "integer", "description": "Number of tasks shown" },
-                    "projects": { "type": "object", "description": "Tasks grouped by project" },
+                    "total": { "type": "integer" },
+                    "showing": { "type": "integer" },
+                    "projects": { "type": "object" },
                     "tasks": { "type": "array", "items": { "type": "object" } },
                     "items": { "type": "array", "items": { "type": "object" } },
-                    "tree": { "type": "string", "description": "ASCII tree representation" }
+                    "tree": { "type": "string" }
                 }
             }),
             "get_task" => serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "id": { "type": "string", "description": "Task ID" },
-                    "title": { "type": "string", "description": "Task title" },
-                    "status": { "type": "string", "description": "Task status" },
-                    "project": { "type": "string", "description": "Project slug" },
-                    "classification": { "type": "string", "description": "Classification" },
-                    "frontmatter": { "type": "object", "description": "Full frontmatter object" },
-                    "depends_on": { "type": "array", "items": { "type": "object" }, "description": "Dependencies" },
-                    "blocks": { "type": "array", "items": { "type": "object" }, "description": "Blocked tasks" },
-                    "children": { "type": "array", "items": { "type": "object" }, "description": "Child tasks" },
-                    "subtasks": { "type": "array", "items": { "type": "object" }, "description": "Subtask nodes" },
-                    "parent": { "type": "object", "description": "Parent task summary" },
-                    "closes": { "type": "array", "items": { "type": "object" }, "description": "Closed targets" },
-                    "target_ancestors": { "type": "array", "items": { "type": "string" }, "description": "Target ancestors" },
-                    "goals": { "type": "array", "items": { "type": "object" }, "description": "Associated goals" },
-                    "contributes_to": { "type": "array", "items": { "type": "object" }, "description": "Contribution edges" },
-                    "contributed_by": { "type": "array", "items": { "type": "string" }, "description": "Contributing nodes" },
-                    "follow_up_tasks": { "type": "array", "items": { "type": "string" }, "description": "Follow-up tasks" },
-                    "focus_score": { "type": "integer", "description": "Composite priority integer" },
-                    "blocked": { "type": "boolean", "description": "Whether task is blocked" },
-                    "parse_warnings": { "type": "array", "items": { "type": "string" }, "description": "Frontmatter parse warnings" },
-                    "days_until_due": { "type": "integer", "description": "Days remaining until deadline" },
-                    "urgency_ratio": { "type": "number", "description": "Effort to deadline ratio" },
-                    "links_out": { "type": "array", "items": { "type": "object" }, "description": "Outgoing flow links" },
-                    "links_in": { "type": "array", "items": { "type": "object" }, "description": "Incoming flow links" },
-                    "flow": { "type": "object", "description": "Flow ranking details" },
-                    "display": { "type": "object", "description": "Display ranking information" },
-                    "truncated": { "type": "boolean", "description": "Whether body was truncated" },
-                    "body_bytes": { "type": "integer", "description": "Total body size in bytes" },
-                    "routes": { "type": "object", "description": "Routing details" },
-                    "explanation": { "type": "string", "description": "Routing explanation" },
-                    "body": { "type": "string", "description": "Task markdown body" },
-                    "signals": { "type": "object", "description": "Underlying component ranking signals" },
-                    "items": { "type": "array", "items": { "type": "object" }, "description": "Batch read items" },
-                    "not_found": { "type": "array", "items": { "type": "string" }, "description": "IDs not found in batch read" },
-                    "timed_out": { "type": "array", "items": { "type": "string" }, "description": "IDs timed out in batch read" }
+                    "id": { "type": "string" },
+                    "title": { "type": "string" },
+                    "status": { "type": "string" },
+                    "project": { "type": "string" },
+                    "classification": { "type": "string" },
+                    "frontmatter": { "type": "object" },
+                    "depends_on": { "type": "array", "items": { "type": "object" } },
+                    "blocks": { "type": "array", "items": { "type": "object" } },
+                    "children": { "type": "array", "items": { "type": "object" } },
+                    "subtasks": { "type": "array", "items": { "type": "object" } },
+                    "parent": { "type": "object" },
+                    "closes": { "type": "array", "items": { "type": "object" } },
+                    "target_ancestors": { "type": "array", "items": { "type": "string" } },
+                    "goals": { "type": "array", "items": { "type": "object" } },
+                    "contributes_to": { "type": "array", "items": { "type": "object" } },
+                    "contributed_by": { "type": "array", "items": { "type": "string" } },
+                    "follow_up_tasks": { "type": "array", "items": { "type": "string" } },
+                    "focus_score": { "type": "integer" },
+                    "blocked": { "type": "boolean" },
+                    "parse_warnings": { "type": "array", "items": { "type": "string" } },
+                    "days_until_due": { "type": "integer" },
+                    "urgency_ratio": { "type": "number" },
+                    "links_out": { "type": "array", "items": { "type": "object" } },
+                    "links_in": { "type": "array", "items": { "type": "object" } },
+                    "flow": { "type": "object" },
+                    "display": { "type": "object" },
+                    "truncated": { "type": "boolean" },
+                    "body_bytes": { "type": "integer" },
+                    "routes": { "type": "object" },
+                    "explanation": { "type": "string" },
+                    "body": { "type": "string" },
+                    "signals": { "type": "object" },
+                    "items": { "type": "array", "items": { "type": "object" } },
+                    "not_found": { "type": "array", "items": { "type": "string" } },
+                    "timed_out": { "type": "array", "items": { "type": "string" } }
                 }
             }),
             "update_task" => serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "id": { "type": "string", "description": "Updated task ID" },
-                    "title": { "type": "string", "description": "Task title" },
-                    "status": { "type": "string", "description": "Task status" },
-                    "modified": { "type": "string", "description": "New modified timestamp" },
-                    "message": { "type": "string", "description": "Update message" }
+                    "id": { "type": "string" },
+                    "title": { "type": "string" },
+                    "status": { "type": "string" },
+                    "modified": { "type": "string" },
+                    "message": { "type": "string" }
                 }
             }),
             "decompose_task" => serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "parent_id": { "type": "string", "description": "Parent task ID" },
-                    "subtasks": { "type": "array", "items": { "type": "object" }, "description": "Created subtasks" },
-                    "created_ids": { "type": "array", "items": { "type": "string" }, "description": "List of new subtask IDs" },
-                    "message": { "type": "string", "description": "Decomposition summary" }
+                    "parent_id": { "type": "string" },
+                    "subtasks": { "type": "array", "items": { "type": "object" } },
+                    "created_ids": { "type": "array", "items": { "type": "string" } },
+                    "message": { "type": "string" }
                 }
             }),
             "get_dependency_tree" => serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "id": { "type": "string", "description": "Root task ID" },
-                    "direction": { "type": "string", "description": "Tree direction" },
-                    "depth": { "type": "integer", "description": "Traversal depth" },
-                    "nodes": { "type": "array", "items": { "type": "object" }, "description": "Tree nodes" },
-                    "edges": { "type": "array", "items": { "type": "object" }, "description": "Tree edges" },
-                    "tree": { "type": "object", "description": "Hierarchical tree structure" }
+                    "id": { "type": "string" },
+                    "direction": { "type": "string" },
+                    "depth": { "type": "integer" },
+                    "nodes": { "type": "array", "items": { "type": "object" } },
+                    "edges": { "type": "array", "items": { "type": "object" } },
+                    "tree": { "type": "object" }
                 }
             }),
             "pkb_trace" => serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "from": { "type": "string", "description": "Source node ID" },
-                    "to": { "type": "string", "description": "Target node ID" },
-                    "paths": { "type": "array", "items": { "type": "object" }, "description": "Discovered paths" },
-                    "found": { "type": "boolean", "description": "Whether any path was found" }
+                    "from": { "type": "string" },
+                    "to": { "type": "string" },
+                    "paths": { "type": "array", "items": { "type": "object" } },
+                    "found": { "type": "boolean" }
                 }
             }),
             "detect_weight_divergence" => serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "divergences": { "type": "array", "items": { "type": "object" }, "description": "Divergence records" },
-                    "count": { "type": "integer", "description": "Number of divergences found" },
-                    "threshold_days": { "type": "integer", "description": "Threshold used in days" }
+                    "divergences": { "type": "array", "items": { "type": "object" } },
+                    "count": { "type": "integer" },
+                    "threshold_days": { "type": "integer" }
                 }
             }),
             "graph_excalidraw" => serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "type": { "type": "string", "description": "Excalidraw diagram type" },
-                    "version": { "type": "integer", "description": "Schema version" },
-                    "source": { "type": "string", "description": "Origin application" },
-                    "elements": { "type": "array", "items": { "type": "object" }, "description": "Canvas elements" },
-                    "appState": { "type": "object", "description": "Application state" },
-                    "files": { "type": "object", "description": "Embedded files" }
+                    "type": { "type": "string" },
+                    "version": { "type": "integer" },
+                    "source": { "type": "string" },
+                    "elements": { "type": "array", "items": { "type": "object" } },
+                    "appState": { "type": "object" },
+                    "files": { "type": "object" }
                 }
             }),
             "export_graph" => serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "format": { "type": "string", "description": "Export format" },
-                    "nodes": { "type": "array", "items": { "type": "object" }, "description": "Exported nodes" },
-                    "edges": { "type": "array", "items": { "type": "object" }, "description": "Exported edges" },
-                    "dot": { "type": "string", "description": "GraphViz DOT content" },
+                    "format": { "type": "string" },
+                    "nodes": { "type": "array", "items": { "type": "object" } },
+                    "edges": { "type": "array", "items": { "type": "object" } },
+                    "dot": { "type": "string" },
                     "ready": { "type": "array", "items": { "type": "string" } },
                     "blocked": { "type": "array", "items": { "type": "string" } },
                     "roots": { "type": "array", "items": { "type": "string" } },

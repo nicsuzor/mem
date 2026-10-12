@@ -1557,6 +1557,15 @@ impl PkbSearchServer {
         self.save_store();
     }
 
+    pub fn list_tools_result(&self) -> rmcp::model::ListToolsResult {
+        let tools = Self::get_published_tools();
+        let mut meta = rmcp::model::Meta::new();
+        meta.0.insert("ttlMs".to_string(), serde_json::json!(86_400_000));
+        let mut result = rmcp::model::ListToolsResult::with_all_items(tools);
+        result.meta = Some(meta);
+        result
+    }
+
     // =========================================================================
     // SEARCH & DOCUMENT TOOLS
     // =========================================================================
@@ -1918,8 +1927,7 @@ impl ServerHandler for PkbSearchServer {
         _request: Option<PaginatedRequestParams>,
         _context: rmcp::service::RequestContext<rmcp::service::RoleServer>,
     ) -> impl std::future::Future<Output = Result<ListToolsResult, McpError>> + Send + '_ {
-        let tools = Self::get_all_tools();
-        std::future::ready(Ok(ListToolsResult::with_all_items(tools)))
+        std::future::ready(Ok(self.list_tools_result()))
     }
 
     fn list_prompts(

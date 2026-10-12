@@ -716,10 +716,11 @@ fn test_http_tools_list_count() {
         .as_array()
         .expect("tools/list result missing 'tools' array");
 
-    // Should match the count documented in CORE.md
-    assert!(
-        tools.len() >= 30,
-        "expected at least 30 tools, got {}",
+    // Should match the 16 published primitives
+    assert_eq!(
+        tools.len(),
+        16,
+        "expected 16 published tools from tools/list, got {}",
         tools.len()
     );
 }
