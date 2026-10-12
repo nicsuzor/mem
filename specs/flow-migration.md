@@ -2,9 +2,10 @@
 id: flow-migration
 title: "Migrating the live graph to the flow rule"
 type: spec
-status: draft
+status: settled
 created: 2026-10-06
-task: epic_d1679d4b
+settled_at: 2026-10-12
+task: aops_bed11e87
 epic: aops_ee1257cb
 brief: spec_866ee53d
 depends_on: flow-rule
@@ -19,16 +20,16 @@ tags:
 
 **Home:** `specs/flow-migration.md` in the `nicsuzor/mem` repository, with its reference scripts in `specs/flow-migration/`. The migration tool it specifies belongs to the `pkb` binary in this repository. The data it changes lives in Nic's PKB repository (`nicsuzor/brain`, private).
 
-**Status: draft for Nic's decision.** This spec says how the live graph moves from today's ranking (`ranking.md`) to the flow rule and edge model (`flow-rule.md`) without losing what the graph knows. It specifies and does not implement. Its numbers come from the reference dry run in [`flow-migration/dryrun.py`](flow-migration/dryrun.py). That script is a checking aid, not the migration tool.
+**Status: settled (points 1–30 of spec_866ee53d).** This canonical specification defines the migration path from legacy ranking (`ranking.md`) to the settled flow rule and edge model (`flow-rule.md`). It governs the migration phases (R1–R8) and guarantees that migration is non-destructive, staged in shadow, and fully reversible until final cleanup. Its numbers come from the reference dry run in [`flow-migration/dryrun.py`](flow-migration/dryrun.py).
 
 Traceability tags:
 
-- **S1–S16, I1–I17:** settled points and invariants in the brief (`spec_866ee53d`).
-- **U1–U20:** user stories in `pkb-arch-framework`.
-- **FR §n, FR-Qn:** sections and questions of [`flow-rule.md`](flow-rule.md).
-- **T1–T6:** this task's own requirements (`epic_d1679d4b`, Acceptance), which the brief does not number: T1 every edge kind and field mapped, with live counts and defaults; T2 the pricing step; T3 what is lost and how it is reversed; T4 a dry run on the live graph; T5 the order of release; T6 in-flight tasks.
+- **S1–S30, I1–I17:** settled points and invariants in the brief (`spec_866ee53d`, Settled by Nic 2026-10-04 to 2026-10-12).
+- **U1–U20:** user stories in `kb_weighting_user_stories_test_cases` (calibration cases U1–U6) and `pkb-arch-framework` (formal weighting user stories U1–U20).
+- **FR §n, FR-Qn:** sections and settled decisions of [`flow-rule.md`](flow-rule.md).
+- **T1–T6:** this task's own requirements (`epic_d1679d4b`, Acceptance): T1 every edge kind and field mapped; T2 the pricing step; T3 what is lost and how it is reversed; T4 a dry run on the live graph; T5 the order of release; T6 in-flight tasks.
 - **M1–M16:** this spec's acceptance criteria (section 12).
-- **MQ1–MQ16:** this spec's questions for Nic (section 13).
+- **MQ1–MQ16:** this spec's settled questions (section 13).
 
 ---
 
@@ -36,9 +37,9 @@ Traceability tags:
 
 **What happens.** The move has four steps, and each one can be undone:
 
-1. **Add, don't replace.** The migration adds the new values (a `worth` on each target, a `quantum` on each link) next to the old fields. It deletes nothing. Today's ranking reads the graph exactly as before. The new ranking runs alongside in shadow.
-2. **Every target is priced.** One sitting covers 90 strategic nodes: 73 typed `target` and 17 old `goal` nodes the engine already reads as targets. Agents make educated price guesses for every target (7 carry a price today from `standing_weight` and are copied over; agents suggest values for the rest), and you review and confirm them.
-3. **Switch the ranking over.** This waits until you have compared the two rankings on real data. Switching back is one setting.
+1. **Add, don't replace.** The migration adds the new values (a `worth` on each target priced on an open-ended log scale per S26, a `quantum` and `probability` on each link per S2, S25) next to the old fields. It deletes nothing. Today's ranking reads the graph exactly as before. The new ranking runs alongside in shadow.
+2. **Every target is priced on the open log scale.** One sitting covers 90 strategic nodes: 73 typed `target` and 17 old `goal` nodes the engine already reads as targets. Agents make educated price guesses on the open-ended logarithmic scale (S14, S26; 7 carry a price today from `standing_weight` and are mapped over; agents suggest values for the rest), and you review and confirm them. Capital stocks (reputation, funding base) are wired as unpriced hub targets (S27).
+3. **Switch the ranking over.** This waits until you have compared the two rankings on real data. Switching back is one setting (`ranking: legacy | flow`).
 4. **Clean up.** Only after you say so, a second change deletes the old fields. This is the only step that cannot be undone, except from git history.
 
 **What it changes on today's graph** (live export, 6 October 2026, `dryrun.py`):
@@ -641,10 +642,9 @@ The questions are ordered by consequence. Where a question repeats one in `flow-
 15. **MQ15. Snapshot of today's order.** The ledger keeps today's `list_tasks` order for comparison. Should it also be kept after cleanup, as a record of what the old engine said?
 16. **MQ16. Links written between apply and the skills switch.** Should they be listed for densify (proposed), or should the skills switch ship in the same release as apply so that no such links exist?
 
-Questions from `flow-rule.md` that block a release step here:
+Questions from `flow-rule.md` that govern release steps here:
 
-- **Settled:** FR-Q1 (`part_of` default quantum 0.0), FR-Q2 (default quantum 0.0), FR-Q17 (targets priced for worth in itself).
-- **Before R6:** FR-Q3 (ordering), FR-Q8 (decision relabelling) and FR-Q18 (unclassed dates).
+- **Settled (points 1–30 of spec_866ee53d):** All FR-Q questions are settled: FR-Q1 (`part_of` default quantum 0.0, S19), FR-Q2 (default quantum 0.0, S7), FR-Q3 (plain sum of gain and loss averted for draw/ordering, S17, S29), FR-Q8 (decision children relabeled `alternative`, §6), FR-Q17 (targets priced for worth in itself, S18), FR-Q18 (unclassed dates treated as `fake`, S5). MQ questions are resolved accordingly for the R1–R8 migration.
 
 ---
 
