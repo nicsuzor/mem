@@ -294,7 +294,6 @@ impl std::fmt::Display for LinkLabel {
 }
 
 impl LinkLabel {
-
     #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Option<LinkLabel> {
         match s.trim().to_lowercase().as_str() {
@@ -1709,10 +1708,121 @@ pub fn deduplicate_vec(vec: &mut Vec<String>) {
 /// and "definition of done" sections.
 pub fn detect_acceptance_criteria(body: &str) -> bool {
     static AC_REGEX: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
-        regex::Regex::new(r"(?i)(acceptance criteria|done when|definition of done|## ac\r?\n)")
+        regex::Regex::new(r"(?i)(acceptance(?:\s+criteria)?|done when|definition of done|## ac\b)")
             .unwrap()
     });
     AC_REGEX.is_match(body)
+}
+
+/// Find unticked acceptance checklist items in a markdown document body.
+///
+/// Looks for an acceptance section (e.g. `## Acceptance`, `## Acceptance Criteria`,
+/// `## AC`, `## Definition of Done`, or a line starting with `Done when:`, `Acceptance criteria:`),
+/// and extracts all unticked checkboxes (`- [ ]`, `* [ ]`, `+ [ ]`, `1. [ ]`).
+/// Checkboxes outside the acceptance section (e.g. under `## Instructions` or `## Notes`)
+/// are ignored. If no acceptance section exists, returns an empty Vec.
+pub fn find_unticked_acceptance_items(body: &str) -> Vec<String> {
+    static CHECKBOX_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        regex::Regex::new(r"^\s*(?:[-*+]|\d+\.)\s*\[([ xX])\]\s*(.*)$").unwrap()
+    });
+
+    let mut unticked = Vec::new();
+    let mut in_acceptance = false;
+    let mut acceptance_heading_level = 0;
+    let mut current_item: Option<String> = None;
+
+    for line in body.lines() {
+        let trimmed = line.trim();
+
+        // Check for markdown heading: 1-6 '#'
+        if trimmed.starts_with('#') {
+            let hashes = trimmed.chars().take_while(|c| *c == '#').count();
+            if (1..=6).contains(&hashes) && trimmed[hashes..].starts_with(char::is_whitespace) {
+                let title = trimmed[hashes..].trim();
+                if is_acceptance_heading(title) {
+                    if let Some(item) = current_item.take() {
+                        unticked.push(item);
+                    }
+                    in_acceptance = true;
+                    acceptance_heading_level = hashes;
+                    continue;
+                } else if in_acceptance
+                    && (acceptance_heading_level == 0 || hashes <= acceptance_heading_level)
+                {
+                    // Encountered a heading of equal or higher level that is NOT an acceptance heading
+                    if let Some(item) = current_item.take() {
+                        unticked.push(item);
+                    }
+                    in_acceptance = false;
+                    acceptance_heading_level = 0;
+                }
+            }
+        }
+
+        // Also check for non-heading starters like "Done when:", "Acceptance criteria:"
+        if !in_acceptance {
+            let lower = trimmed.to_lowercase();
+            if lower.starts_with("done when:")
+                || lower.starts_with("acceptance criteria:")
+                || lower.starts_with("definition of done:")
+                || lower.starts_with("acceptance:")
+            {
+                in_acceptance = true;
+                acceptance_heading_level = 0;
+                continue;
+            }
+        }
+
+        if in_acceptance {
+            if let Some(caps) = CHECKBOX_RE.captures(line) {
+                if let Some(item) = current_item.take() {
+                    unticked.push(item);
+                }
+                let check_char = caps.get(1).map(|m| m.as_str()).unwrap_or(" ");
+                let item_text = caps.get(2).map(|m| m.as_str().trim()).unwrap_or("");
+                if check_char == " " {
+                    current_item = Some(if item_text.is_empty() {
+                        "(empty acceptance item)".to_string()
+                    } else {
+                        item_text.to_string()
+                    });
+                }
+            } else if let Some(ref mut item) = current_item {
+                // Continuation line of an unticked item:
+                // An indented, non-empty line that doesn't start a new list item or heading
+                if !trimmed.is_empty()
+                    && (line.starts_with("  ") || line.starts_with('\t'))
+                    && !trimmed.starts_with('#')
+                {
+                    item.push(' ');
+                    item.push_str(trimmed);
+                } else {
+                    unticked.push(current_item.take().unwrap());
+                }
+            }
+        }
+    }
+
+    if let Some(item) = current_item {
+        unticked.push(item);
+    }
+
+    unticked
+}
+
+fn is_acceptance_heading(title: &str) -> bool {
+    let t = title.trim().to_lowercase();
+    let cleaned = t.trim_end_matches(':').trim();
+    cleaned == "acceptance"
+        || cleaned == "acceptance criteria"
+        || cleaned == "definition of done"
+        || cleaned == "ac"
+        || cleaned.starts_with("acceptance criteria")
+        || cleaned.starts_with("acceptance:")
+        || cleaned.starts_with("acceptance ")
+        || cleaned.starts_with("ac:")
+        || cleaned.starts_with("ac ")
+        || cleaned.starts_with("definition of done")
 }
 
 // ===========================================================================
@@ -3438,5 +3548,45 @@ mod flow_schema_tests {
         assert_eq!(status_to_flow_state(Some("blocked")), FlowState::Open);
         assert_eq!(status_to_flow_state(Some("partial")), FlowState::Open);
         assert_eq!(status_to_flow_state(Some("review")), FlowState::Open);
+    }
+
+    #[test]
+    fn test_detect_and_find_unticked_acceptance_items() {
+        let body = r#"
+## Goal
+Fix something
+
+## Acceptance
+- [ ] First unticked item
+- [x] Ticked item
+- [ ] Second unticked item
+
+## Instructions
+- [ ] Don't count instruction checkboxes
+"#;
+        assert!(detect_acceptance_criteria(body));
+        let unticked = find_unticked_acceptance_items(body);
+        assert_eq!(
+            unticked,
+            vec!["First unticked item", "Second unticked item"]
+        );
+
+        // When all are ticked
+        let all_ticked = r#"
+## Acceptance Criteria
+- [x] First item
+- [X] Second item
+"#;
+        assert!(detect_acceptance_criteria(all_ticked));
+        assert!(find_unticked_acceptance_items(all_ticked).is_empty());
+
+        // When no acceptance section exists
+        let no_ac = r#"
+# Simple task
+Just prose and notes.
+- [ ] Checkbox in general notes
+"#;
+        assert!(!detect_acceptance_criteria(no_ac));
+        assert!(find_unticked_acceptance_items(no_ac).is_empty());
     }
 }
