@@ -33,7 +33,7 @@ Traceability tags used throughout:
 
 ## 0. Summary for Nic
 
-**What changes.** Two figures replace today's tuple of eleven terms: what you would fail to gain, and what loss you would fail to avert, if a piece of work were never done. They are never netted into one number. Targets are priced on an open-ended log scale: agents make educated price guesses and you review them (S14, S26). Every link says how much of the thing it points at the work delivers (its *quantum*) and how likely that is (its *probability*, default 1.00). Worth flows backwards along links from targets to work, chaining probabilities by multiplication along paths (S2, S25).
+**What changes.** Two figures replace today's tuple of eleven terms: what you would fail to gain, and what loss you would fail to avert, if a piece of work were never done. They are never netted into one number. Targets are priced on an open-ended log scale: prices set by agents are Nic's prices, with review applying only in place if a price looks off (S14, S26). Every link says how much of the thing it points at the work delivers (its *quantum*) and how likely that is (its *probability*, default 1.00). Worth flows backwards along links from targets to work, chaining probabilities by multiplication along paths (S2, S25).
 
 **The rule in one line.** A task is worth what you would lose if it were never done, assuming everything else gets done.
 
@@ -55,7 +55,7 @@ Traceability tags used throughout:
 1. Worths do not add up across tasks. Two prerequisites of a 1.0 target are each worth 1.0, so "the sum of open work" means nothing and the dashboard must not show it.
 2. Only 7 of your 26 targets are priced. Until the rest are, work for unpriced targets is worth zero, even work that today's ranking pushes up by severity, a stakeholder or a date. Example: `task_d5f610e6` is 9th today and 236th under this rule. A hard-deadline class brings it back to the top as its date nears, through the display rule, without touching its worth (section 7).
 3. Open decisions use one extra small rule, the value of finding out (section 6).
-4. You supply about 153 numbers before deadline classes: 19 target prices, 134 migrated link values to confirm (section 8). Parent links and default quantum are settled (Q1, Q2). Agents propose them in batches of fifty.
+4. 134 migrated link values to confirm before deadline classes (section 8; targets are priced directly by agents as Nic's prices per S14). Parent links and default quantum are settled (Q1, Q2). Agents propose link values in batches of fifty.
 
 **Settled design:** Section 15 documents all 31 architectural decisions settled by Nic (points 1–30 of `spec_866ee53d`). None is left open.
 
@@ -539,7 +539,7 @@ Under the settled open log scale:
 | Moderate / Standard | +0.15 | Moderate Operational Friction | −0.15 |
 | Low / Hygiene Maintenance | +0.05 | Minor Friction | −0.05 |
 
-**Elicitation and review.** Agents make educated initial price estimates on target nodes marked as `agent-proposed`, and Nic reviews and corrects them by feel (S14). Unpriced targets carry worth 0.0 and are never inferred; the linter reports them (U20).
+**Target pricing rule.** Prices (`worth` / `standing_weight`) set by agents are Nic's prices. There is no step where Nic calibrates or confirms them. Review applies only when Nic or an agent thinks a price looks off, and the price is revised in place (S14). Unpriced targets carry worth 0.0 and are never inferred; the linter reports them (U20).
 
 **Units.** Gain and loss averted are computed in the same units. One standard unit is the worth of a baseline Critical target (+1.00).
 
@@ -620,11 +620,10 @@ These counts include edges from done nodes, which the flow reads as realised.
 
 **Inputs Nic must supply:**
 
-- 19 unpriced targets;
-- 51 migrated `supports` quanta and 83 migrated `serves` words to confirm;
+- 51 migrated `supports` quanta and 83 migrated `serves` words to confirm (targets are priced directly by agents as Nic's prices per S14);
 - a deadline class for each open node with a `due` date (§7). Unclassed dates are read as `fake` until classed (Q18), so this is not needed on day one.
 
-That is 153 inputs before deadline classes: about three batches of fifty, the target prices first.
+That is 134 link inputs before deadline classes: about three batches of fifty.
 
 **Densify routine.** Agents propose values and Nic approves them in batches of fifty, ordered by how much worth the batch would move. The skills spec (`epic_80ce44ae`) owns this routine. This spec fixes only the contract: densify always writes `set_by: agent-proposed` explicitly and a `justification`; an agent-proposed link reads at 0.0 whatever its label (so an unapproved proposal moves no number; display still reads the label for blocking; C5, E17).
 
@@ -748,7 +747,7 @@ Of the 539 tasks, 235 carry worth.
 **What this shows.**
 
 - **The new order is a function of what is priced.** With 7 of 26 targets priced, obligations held up today by severity, stakeholder or date alone fall to zero. They reappear only through the cliff lane or once their targets are priced.
-- **Pricing comes first.** Pricing the 19 remaining targets is the first input this design needs (S14).
+- **Pricing comes first.** Pricing the 19 remaining targets is the first input this design needs, set directly by agents as Nic's prices (S14).
 
 ---
 

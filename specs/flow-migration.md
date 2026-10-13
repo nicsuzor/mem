@@ -38,7 +38,7 @@ Traceability tags:
 **What happens.** The move has four steps, and each one can be undone:
 
 1. **Add, don't replace.** The migration adds the new values (a `worth` on each target priced on an open-ended log scale per S26, a `quantum` and `probability` on each link per S2, S25) next to the old fields. It deletes nothing. Today's ranking reads the graph exactly as before. The new ranking runs alongside in shadow.
-2. **Every target is priced on the open log scale.** One sitting covers 90 strategic nodes: 73 typed `target` and 17 old `goal` nodes the engine already reads as targets. Agents make educated price guesses on the open-ended logarithmic scale (S14, S26; 7 carry a price today from `standing_weight` and are mapped over; agents suggest values for the rest), and you review and confirm them. Capital stocks (reputation, funding base) are wired as unpriced hub targets (S27).
+2. **Every target is priced on the open log scale.** 90 strategic nodes are priced: 73 typed `target` and 17 old `goal` nodes the engine already reads as targets. Agents set prices on the open-ended logarithmic scale (S14, S26; 7 carry a price today from `standing_weight` and are mapped over; agents set values for the rest). Prices set by agents are Nic's prices; there is no step where Nic calibrates or confirms them. Review applies only when Nic or an agent thinks a price looks off, and the price is revised in place. Capital stocks (reputation, funding base) are wired as unpriced hub targets (S27).
 3. **Switch the ranking over.** This waits until you have compared the two rankings on real data. Switching back is one setting (`ranking: legacy | flow`).
 4. **Clean up.** Only after you say so, a second change deletes the old fields. This is the only step that cannot be undone, except from git history.
 
@@ -96,7 +96,7 @@ Four repositories read or write these fields:
 **Target.** A path from today's graph to the new model with five properties:
 
 - **It loses nothing silently.** Every edge kind and field is mapped, with live counts. Each loss is listed (section 7), including the 24 status-less tasks read as done (:205).
-- **It puts target pricing first** (agents guess, Nic reviews; S14).
+- **It puts target pricing first** (agents set prices as Nic's prices; review applies only in place if a price looks off; S14).
 - **It can be undone** at every step but the last, and the last needs Nic's say-so.
 - **It is checked on live data** before anything changes (I13).
 - **The parts release in an order** in which no component reads a field before it exists, or loses one it still needs (section 9).
@@ -108,10 +108,10 @@ Four repositories read or write these fields:
 ```text
                  ┌──────────── reversible ─────────────────────────────────────────────┐
  live graph ──►  snapshot ──► dry run ──► pricing ──► apply (additive) ──► shadow ──► cutover ──► window ──► cleanup
- (brain repo)    export +     report    (Nic reviews) one commit in       both        one engine  legacy     second commit
-                 today's      (§8)         worth,     brain, ledger       rankings    setting     fields     deletes legacy
-                 order                     deadline   (§5)                computed    flips       kept       fields (MQ7)
-                                           classes                        (§9 R1)     (§9 R6)                ── one-way ──
+ (brain repo)    export +     report    (agents set   one commit in       both        one engine  legacy     second commit
+                 today's      (§8)       prices in    brain, ledger       rankings    setting     fields     deletes legacy
+                 order                   place) (§6)  (§5)                computed    flips       kept       fields (MQ7)
+                                                                          (§9 R1)     (§9 R6)                ── one-way ──
 ```
 
 - **The migration tool reads:**
@@ -188,16 +188,16 @@ The counts are taken over all nodes, with open nodes in brackets. The new maths 
 | Field | Live count | Fate at migration | Who reads it afterwards | Fate at cleanup |
 |---|---|---|---|---|
 | `standing_weight` | 7 (7) | copied to `worth` | nobody | deleted |
-| `worth` | 0 | 7 written by copy; the rest by Nic in the pricing step (§6) | the flow | kept |
+| `worth` | 0 | 7 written by copy; the rest by agents in the pricing step (§6) | the flow | kept |
 | `type: goal` | 17 nodes, read as `target` by the engine (`src/graph.rs:1014`, `:1369`) | unchanged | the flow, as targets | MQ2 |
-| `severity` | 20 (19), 2 of them SEV0 | unchanged | the pricing sheet as a prompt (FR §5.6) | FR-Q24 |
-| `goal_type` | 18 (17) | unchanged | the pricing sheet as a prompt | MQ7 |
+| `severity` | 20 (19), 2 of them SEV0 | unchanged | pricing prompt (FR §5.6) | FR-Q24 |
+| `goal_type` | 18 (17) | unchanged | pricing prompt | MQ7 |
 | `consequence` | 136 (70) | unchanged | agents and Nic | kept (prose) |
 | `intent` | 144 (71) | unchanged | display, if kept (FR-Q10) | FR-Q10 |
 | `stakeholder` | 41 (15) | unchanged | agent triage (FR §9) | FR-Q25 |
 | `waiting_since` | 25 (15) | unchanged | agent triage | FR-Q25 |
 | `due` | 20 (6) | unchanged | the cliff lane (FR §7) | kept |
-| `deadline_class` | 0 | not written; Nic classes the 6 open dates in the pricing sitting | the cliff lane | kept |
+| `deadline_class` | 0 | not written; classed when dates are reviewed; unclassed dates read as fake (FR-Q18) | the cliff lane | kept |
 | `effort` | 124 (61) | unchanged | benefit per effort, in display (FR §7) | kept |
 | `complexity` | 76 (47) | unchanged | nobody in ranking | kept |
 | `confidence` | 177 (19) | unchanged | nobody: edge probability replaces it (FR §9) | MQ7 |
@@ -337,26 +337,26 @@ The `pkb` binary gains one subcommand. Its interface is fixed here; its build be
 
 ## 6. The pricing step
 
-Agents make educated price guesses for every target and Nic reviews them (S14). They prepare the sheet with suggested prices and write what Nic approves.
+Prices (`worth` / `standing_weight`) set by agents are Nic's prices (S14). There is no step where Nic calibrates or confirms them. Review applies only when Nic or an agent thinks a price looks off, and the price is revised in place. Agents set prices on the open-ended logarithmic scale (S26) directly in target frontmatter.
 
 **Who is priced.** 90 strategic nodes:
 
 - 73 of `type: target`;
 - 17 of legacy `type: goal`, which the engine reads as targets (`src/graph.rs:1369`).
 
-7 carry `standing_weight` today and are copied over; for targets without a `standing_weight`, agents make educated price guesses. Nic reviews and confirms all 90 prices. The pricing sheet includes:
-- **`garage-69a576ed`**: typed `target`, priced 0.15 by Ida (2026-10-09) pending Nic's feel. It sits inside the work tree under a done epic, against `specs/pkb-type-taxonomy.md`, and serves `targ_4e2cc92a`. The sheet asks whether to price it in itself or retype it as an epic and leave it unpriced to pass worth through.
-- **The 17 legacy `type: goal` nodes (MQ2)**: goals carry no stakes under `specs/pkb-type-taxonomy.md`. The sheet asks whether Nic prices each as a target, merges it into an existing target, or retires it.
+7 carry `standing_weight` today and are copied over; for targets without a `standing_weight`, agents set prices directly. Prices set by agents are Nic's prices, with no calibration or confirmation step; review applies only in place when a price looks off. Targets to price include:
+- **`garage-69a576ed`**: typed `target`, priced 0.15 by Ida (2026-10-09). Prices set by agents are Nic's prices. It sits inside the work tree under a done epic, against `specs/pkb-type-taxonomy.md`, and serves `targ_4e2cc92a`. It can be priced in itself or retyped as an epic and left unpriced to pass worth through.
+- **The 17 legacy `type: goal` nodes (MQ2)**: goals carry no stakes under `specs/pkb-type-taxonomy.md`. Decided per MQ2 whether to price each as a target, merge it into an existing target, or retire it.
 
-**The sheet.** One row per target, ordered by **reach**: the number of open nodes that carry worth once it is priced (`dryrun.py` output, section 9). Pricing the top rows first moves the most work. Each row shows:
+**Pricing order.** Targets are ordered by **reach**: the number of open nodes that carry worth once it is priced (`dryrun.py` output, section 9). Pricing the top rows first moves the most work. Each row shows:
 
 - id and title;
-- the suggested price (copied from current `standing_weight` if present, or an agent's educated price guess);
+- the price (copied from current `standing_weight` if present, or set by agents);
 - `severity`, `goal_type` and `consequence`, as prompts only (FR §5.6);
 - its reach;
 - any outgoing links to other targets (the 19 target→target links identified in `dryrun.py` §9).
 
-**The Q17 rule (closing MQ14).** Worth passes between priced targets and adds along the chain. A target is priced for what it is worth in itself, never for what it feeds; a target valued only for what it feeds is left unpriced and passes worth through (S18). The pricing sheet asks that question per target and per target→target link, settling MQ14.
+**The Q17 rule (closing MQ14).** Worth passes between priced targets and adds along the chain. A target is priced for what it is worth in itself, never for what it feeds; a target valued only for what it feeds is left unpriced and passes worth through (S18). Agents evaluate that question per target and per target→target link, settling MQ14.
 
 Under Q1 settled (`part_of` quantum 0.0), reach reflects direct contribution paths (`serves`, `needs`, `supports`) rather than hierarchical parent grouping:
 
@@ -369,24 +369,26 @@ Under Q1 settled (`part_of` quantum 0.0), reach reflects direct contribution pat
 
 A target with reach 0 is still priced. Its price moves nothing until the densify routine values a link to it (FR §8, skills spec `epic_80ce44ae`). The four committed targets with reach 0 are the clearest case: today severity lifts their work, and after cutover nothing does until a link is valued. The cliff lane still catches hard deadlines (FR §7).
 
-**How Nic reviews.** For each row, Nic approves or adjusts the suggested price to one of:
+**Pricing doctrine and in-place revision.** Prices (`worth` / `standing_weight`) set by agents are Nic's prices. There is no step where Nic calibrates or confirms them. Review applies only when Nic or an agent thinks a price looks off, and the price is revised in place.
 
-- a positive anchor word (Critical, High, Substantial, Moderate, Low);
-- a negative anchor word (Catastrophic, Severe, Substantial, Moderate or Minor loss);
+Agents assign prices using the anchor scale (FR §5.6, FR-Q7):
+
+- a positive anchor word or value (Critical, High, Substantial, Moderate, Low);
+- a negative anchor word or value (Catastrophic, Severe, Substantial, Moderate or Minor loss);
 - "nothing" (worth 0);
 - for targets serving other targets: whether it has worth in itself or only passes worth through (Q17).
 
-The tool writes `worth` from the anchor table (FR §5.6, FR-Q7). If Nic says a target should go, that is recorded as a request and handled with MQ2 and §10, not written by the pricing tool. The sheet also asks two things:
+Agents write `worth` from the anchor table (FR §5.6, FR-Q7). If a target should go, that is recorded as a request and handled with MQ2 and §10. In addition:
 
-- **The six open dates.** Is each one fake, soft or hard? An unclassed date is read as fake (FR-Q18):
+- **The six open dates.** An unclassed date is read as `fake` (FR-Q18) until explicitly classed as `soft` or `hard`:
   - `proj-76fbc546`;
   - `task_1760e611`;
   - `task_d5f610e6`;
   - `brain_61467de3`;
-  - two further dated tasks, hashed in the fixture because their ids reveal a personal event. The pricing sheet is private and shows their real ids and titles.
-- **Outcomes to avoid.** Is there one Nic wants to price as a negative target, for example a restated `targ_safety` (FR §4.4)?
+  - two further dated tasks, hashed in the fixture because their ids reveal a personal event.
+- **Outcomes to avoid.** Negative targets can be priced directly (e.g. a restated `targ_safety`, FR §4.4).
 
-**Size.** Pricing is one sitting of at most 90 answers plus 6 date classes. By FR §8's count, it is the first of about four batches of fifty.
+**Size.** 90 strategic nodes are priced directly by agents in place. By FR §8's count, densifying links is the remaining work across batches of fifty.
 
 **Gate.** As proposed, cutover (§9, R6) refuses while any target lacks a `worth` (zero is allowed) and names those that lack one (MQ1). `pkb migrate flow --status` shows the count.
 
@@ -498,8 +500,7 @@ Under Q1 settled (`part_of` quantum 0.0), worth does not flow over parent edges.
 | R0 | — | Nic approves the six specs. He answers the questions that block: FR-Q1, FR-Q2, FR-Q22 / MQ3, MQ1, MQ2, MQ4 | assessment `epic_3c8110d9` done | — |
 | R1 | engine | **Dual read, shadow flow.** The engine parses the new keys and the map form of list entries (§5.1). It computes the flow beside the legacy ranking, and emits `gain`, `loss_averted`, `stake`, `decision_value` and `loop_extra` (FR §12) next to the legacy fields. The legacy ranking still sorts. The setting `ranking: legacy` is the default. The `pkb migrate flow` tool ships | R0 | release revert; no data written |
 | R2 | linter | Ships with graph-lint §5 severities (errors, warnings, style), legacy checks unchanged: unpriced targets, unvalued edges, invalid labels and signs, saturated loops, unclassed dates, references naming no node | R1 | config |
-| R3 | data | **Pricing sitting** (§6). Writes `worth` and `deadline_class` only | R1 (the engine reads `worth`) and R2 (the linter lists what is missing) | `--revert` on its own ledger |
-| R4 | data | **Apply.** `--dry-run`, then Nic reviews, then `--apply`, as one pull request in `nicsuzor/brain` that Nic merges (MQ8) | R3; the dry run regenerated on the day; linter clean of errors | `--revert` |
+| R4 | data | **Apply.** `--dry-run`, then Nic reviews, then `--apply`, as one pull request in `nicsuzor/brain` that Nic merges (MQ8) | R1 and R2; targets priced by agents in place (§6); the dry run regenerated on the day; linter clean of errors | `--revert` |
 | R4b | data | **Prototype hub conversion.** Convert epic `hdr_prospective_enquiries` into the first prototype hub: set `type: prototype`, `edge_template: {serves: {to: hdr_prospective_enquiries, quantum: 1.0}}` for instances; prototype carries `serves` to `research-supervision-1b44af33` at its existing `probable` link (quantum 0.85); no prototype node exists on the graph today (S20). Instances inherit class-level worth through this unpriced hub | R4 | revert frontmatter of `hdr_prospective_enquiries` |
 | R5 | skills | `/q`, `/decompose`, densify and the email placement write `quantum`, `probability` and `set_by` on new links, and `worth` on new targets. They stop writing `stated_weight`. Today the plugin's `skills/q/SKILL.md:19` and `skills/decompose/SKILL.md:25,30` name `depends_on` and `soft_depends_on` only. `--status` lists links added between R4 and R5 for the first densify batch (§5.5) | R4 | plugin release revert |
 | R5 | dashboard | Shows gain and loss averted side by side, and the route explanation, from the shadow fields. Legacy views stay, so Nic can compare | R1 (fields exist); R4 (values are real) | release revert |
@@ -637,8 +638,8 @@ The questions are ordered by consequence. Where a question repeats one in `flow-
 10. **MQ10. `retired` status.** Settled: `status: retired` maps to `done` in the flow adapter (engine E16).
 11. **MQ11. Calibration set.** Four of the six calibration cases describe a state that is no longer true (§8). Should a fresh set be drawn before cutover, so the comparison at R6 tests live cases?
 12. **MQ12. The one stored `children` entry** points at a legacy goal. Should the linter fix it unasked, or report it?
-13. **MQ13. Unrecognised words.** Six contribution links carry "medium" (3), "high" (2) or a blank (1). They are left unvalued for the first densify batch, as proposed. Or should you value them in the pricing sitting?
-14. **MQ14 (= FR-Q17). Targets serving targets.** Closed by the Q17 rule (S18): A target is priced for its worth in itself, never for what it feeds; a target valued only for what it feeds is left unpriced and passes worth through. The pricing sheet (§6) asks that question per target and per target→target link.
+13. **MQ13. Unrecognised words.** Six contribution links carry "medium" (3), "high" (2) or a blank (1). They are left unvalued for the first densify batch, as proposed.
+14. **MQ14 (= FR-Q17). Targets serving targets.** Closed by the Q17 rule (S18): A target is priced for its worth in itself, never for what it feeds; a target valued only for what it feeds is left unpriced and passes worth through. Agents evaluate that question per target and per target→target link (§6).
 15. **MQ15. Snapshot of today's order.** The ledger keeps today's `list_tasks` order for comparison. Should it also be kept after cleanup, as a record of what the old engine said?
 16. **MQ16. Links written between apply and the skills switch.** Should they be listed for densify (proposed), or should the skills switch ship in the same release as apply so that no such links exist?
 

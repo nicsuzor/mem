@@ -51,7 +51,7 @@ Traceability tags are as in `flow-rule.md`, plus two of this spec's own:
 **What the server will store.**
 
 - This spec owns the stored schema for edges and target worth (C1). During stages R1–R7 (shadow phase), storage is additive in place on today's keys (`depends_on`, `soft_depends_on`, `contributes_to`, `parent`), which accept both bare IDs and map entries `{to, quantum, probability, effect, set_by, justification}`. A consolidated single `links:` list is an R8 option for Nic (E1).
-- Each target gets a `worth:` on an open-ended continuous logarithmic scale $W_t \in \mathbb{R}$ (positive for aspirations, negative for anti-targets; baseline +1.0 for core targets, up to +10.0/+100.0+ for moonshots per S26). You set it.
+- Each target gets a `worth:` on an open-ended continuous logarithmic scale $W_t \in \mathbb{R}$ (positive for aspirations, negative for anti-targets; baseline +1.0 for core targets, up to +10.0/+100.0+ for moonshots per S26). Prices set by agents are Nic's prices (S14).
 - Each dated node gets a `deadline_class:` of fake, soft or hard.
 - Nothing else feeds the maths.
 
@@ -696,7 +696,7 @@ Each comes with the proposal this spec builds against if it is not answered. Set
 | Q9, Q26 | `CLIFF_BUFFER_DAYS` (3 days) and the cliff trigger | Settled (Points 9, 24, 26, §7) |
 | Q10 | whether `intent` stays as a filter and a column (stays stored only, dropped from maths) | Settled (Points 10, §3.4) |
 | Q12 | whether `gain_per_effort` is offered as a sort (display option only) | Settled (Point 12, §7.2) |
-| Q13 | who sets an opportunity `cancelled` or reprices it (agents propose, Nic approves per S14) | Settled (Point 13, §5.6) |
+| Q13 | who sets an opportunity `cancelled` or reprices it (agents set prices as Nic's prices; revised in place if off, per S14) | Settled (Point 13, §5.6) |
 | Q17 | whether worth passes between priced targets and adds (§5.1 copies the reference) | Settled (Point 17, §3.3) |
 | Q18 | reading an unclassed `due` as `fake` (R10) | Settled (Point 18, §3.3) |
 | Q20 | the baseline harms semantics in §5.1 (mirrored scale) | Settled (Point 20, §5.4) |
