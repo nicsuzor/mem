@@ -140,6 +140,10 @@ const baseMock: Record<string, any> = {
     One: 1,
     Two: 2,
   },
+  StatusBarAlignment: {
+    Left: 1,
+    Right: 2,
+  },
   workspace: {
     getConfiguration: (_section?: string) => ({
       get: (_key: string, defaultValue?: any) => defaultValue,
@@ -164,13 +168,26 @@ const baseMock: Record<string, any> = {
       options,
     }),
     showErrorMessage: async (_msg: string) => {},
-    showInformationMessage: async (_msg: string) => {},
+    showInformationMessage: async (_msg: string, ..._actions: any[]) => undefined,
+    createStatusBarItem: (_alignment?: any, _priority?: number) => ({
+      text: '',
+      tooltip: '',
+      command: '',
+      show: () => {},
+      hide: () => {},
+      dispose: () => {},
+    }),
   },
   commands: {
     registerCommand: (_command: string, _callback: (...args: any[]) => any) => ({
       dispose: () => {},
     }),
     executeCommand: async (_command: string, ..._args: any[]) => {},
+  },
+  env: {
+    clipboard: {
+      writeText: async (_text: string) => {},
+    },
   },
 };
 
