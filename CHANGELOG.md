@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.103](https://github.com/nicsuzor/mem/compare/mem-v0.3.102...mem-v0.3.103) (2026-10-13)
+
+
+### Features
+
+* **ranking:** remove is_human_gate and human gate paths from pkb server ([24ead57](https://github.com/nicsuzor/mem/commit/24ead571852adca86cdc2a9188385b277815435c))
+* **ranking:** remove is_human_gate and human gate paths from pkb server ([54e7e99](https://github.com/nicsuzor/mem/commit/54e7e99267fbbf2a95a87a1420e80e5ce2e8dc33))
+
 ## [0.3.102](https://github.com/nicsuzor/mem/compare/mem-v0.3.101...mem-v0.3.102) (2026-10-13)
 
 
