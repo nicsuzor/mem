@@ -416,7 +416,7 @@ pub enum FlowState {
 
 pub fn status_to_flow_state(status: Option<&str>) -> FlowState {
     match status.map(|s| s.trim().to_lowercase()) {
-        Some(s) if s == "cancelled" => FlowState::Gone,
+        Some(s) if s == "cancelled" || s == "failed" => FlowState::Gone,
         Some(s) if s == "done" || s == "retired" => FlowState::Done,
         None => FlowState::Done,
         Some(s) if s.is_empty() => FlowState::Done,
@@ -1240,7 +1240,7 @@ pub fn resolve_status_alias(status: &str) -> &str {
     match status {
         // Passthrough — canonical values
         "inbox" | "ready" | "queued" | "in_progress" | "review" | "done" | "paused" | "someday"
-        | "cancelled" | "partial" => status,
+        | "cancelled" | "partial" | "failed" => status,
 
         // Legacy "active" = in-flight / claimed work (per Nic 2026-06-27). The old
         // taxonomy collapsed ready/queued/in_progress into one "active" label, but
@@ -1415,7 +1415,7 @@ pub fn status_rank(status: &str) -> i32 {
         // `partial` is a stop-gate shape (worker paused at a seam with a live child),
         // so rank it like the other side states — entering or resuming it must not
         // trip the backwards-transition warning.
-        "paused" | "someday" | "cancelled" | "partial" => -1,
+        "paused" | "someday" | "cancelled" | "partial" | "failed" => -1,
         _ => 0,
     }
 }
@@ -1486,10 +1486,11 @@ pub const VALID_STATUSES: &[&str] = &[
     "someday",
     "cancelled",
     "partial",
+    "failed",
 ];
 
 /// Terminal statuses — no further work expected.
-pub const COMPLETED_STATUSES: &[&str] = &["done", "cancelled"];
+pub const COMPLETED_STATUSES: &[&str] = &["done", "cancelled", "failed"];
 
 /// Open work items — everything that is neither terminal nor blocked.
 /// Used for surfacing active work in dashboards and filters.
@@ -1512,19 +1513,22 @@ pub const ACTIVE_STATUSES: &[&str] = &[
 /// and `batch_update` (bulk path, `mem_84b21efc`) enforce against the same
 /// list so a bulk write cannot silently produce a terminal node with no
 /// record of why when the single-node path would have refused it.
-pub const FAILURE_HANDBACK_STATUSES: &[&str] = &["cancelled", "review", "partial"];
+pub const FAILURE_HANDBACK_STATUSES: &[&str] = &["cancelled", "review", "partial", "failed"];
 
 /// Returns true if the status represents a completed/finished state.
 pub fn is_completed(status: Option<&str>) -> bool {
     status
-        .map(|s| matches!(resolve_status_alias(s), "done" | "cancelled"))
+        .map(|s| matches!(resolve_status_alias(s), "done" | "cancelled" | "failed"))
         .unwrap_or(false)
 }
 
 /// Returns true when a status closes a node for hierarchy purposes.
 /// Done/cancelled/archived parents cannot receive new children without `force=true`.
 pub fn is_closed_for_hierarchy(status: Option<&str>) -> bool {
-    matches!(status, Some("done") | Some("cancelled") | Some("archived"))
+    matches!(
+        status,
+        Some("done") | Some("cancelled") | Some("failed") | Some("archived")
+    )
 }
 
 /// Returns the coarse status group (`"active"` or `"completed"`)

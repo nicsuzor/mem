@@ -146,7 +146,7 @@ impl PkbSearchServer {
             if !include_done {
                 if let Some(status) = node.status.as_deref() {
                     let s = status.to_ascii_lowercase();
-                    if s == "done" || s == "cancelled" || s == "canceled" {
+                    if s == "done" || s == "cancelled" || s == "canceled" || s == "failed" {
                         continue;
                     }
                 }

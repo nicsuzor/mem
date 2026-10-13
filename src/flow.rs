@@ -54,7 +54,7 @@ pub enum FlowState {
 /// Map frontmatter status to flow lifecycle state (C8 / R1).
 pub fn status_to_flow_state(status: Option<&str>) -> FlowState {
     match status {
-        Some("cancelled") => FlowState::Gone,
+        Some("cancelled") | Some("failed") => FlowState::Gone,
         Some("done") | Some("retired") | None => FlowState::Done,
         Some(_) => FlowState::Open,
     }

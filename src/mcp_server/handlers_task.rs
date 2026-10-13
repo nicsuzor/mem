@@ -1430,7 +1430,7 @@ impl PkbSearchServer {
             .map(|statuses| {
                 statuses.iter().any(|s| {
                     let canonical = crate::graph::resolve_status_alias(s);
-                    canonical == "done" || canonical == "cancelled"
+                    canonical == "done" || canonical == "cancelled" || canonical == "failed"
                 })
             })
             .unwrap_or(false);
@@ -1458,7 +1458,7 @@ impl PkbSearchServer {
                     .as_deref()
                     .map(|s| {
                         let canonical = crate::graph::resolve_status_alias(s);
-                        canonical != "done" && canonical != "cancelled"
+                        canonical != "done" && canonical != "cancelled" && canonical != "failed"
                     })
                     .unwrap_or(true)
             });
@@ -2644,7 +2644,7 @@ impl PkbSearchServer {
         tracing::debug!(target: "perf::update_task", phase = "TOTAL", elapsed_ms = t_total.elapsed().as_secs_f64() * 1000.0);
 
         // Soft warning if setting a terminal status via update_task instead of release_task
-        let terminal_statuses = ["done", "review", "blocked", "cancelled", "partial"];
+        let terminal_statuses = ["done", "review", "blocked", "cancelled", "partial", "failed"];
         let hint = updates
             .get("status")
             .and_then(|v| v.as_str())

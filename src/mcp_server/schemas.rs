@@ -179,7 +179,7 @@ impl PkbSearchServer {
                         "id": { "type": "string" },
                         "tags": { "type": "array", "items": { "type": "string" } },
                         "body": { "type": "string", "description": "Markdown body (wikilinks supported; host paths rejected)" },
-                        "status": { "type": "string", "enum": ["inbox", "ready"] },
+                        "status": { "type": "string", "enum": ["inbox", "ready", "failed"] },
                         "intent": { "type": "integer" },
                         "parent": { "type": "string" },
                         "depends_on": { "type": "array", "items": { "type": "string" } },
@@ -235,7 +235,7 @@ impl PkbSearchServer {
                         "due": { "type": "string" },
                         "project": { "type": "string" },
                         "type": { "type": "string", "enum": ["task", "learn", "pr", "target"] },
-                        "status": { "type": "string", "enum": ["inbox", "ready"] },
+                        "status": { "type": "string", "enum": ["inbox", "ready", "failed"] },
                         "allow_missing_parent": { "type": "boolean" },
                         "force": { "type": "boolean" },
                         "session_id": { "type": "string" },
@@ -263,7 +263,7 @@ impl PkbSearchServer {
                         "updates": { "type": "object" },
                         "status": {
                             "type": "string",
-                            "enum": ["inbox", "ready", "queued", "in_progress", "review", "done", "paused", "someday", "cancelled", "partial"]
+                            "enum": ["inbox", "ready", "queued", "in_progress", "review", "done", "paused", "someday", "cancelled", "partial", "failed"]
                         },
                         "type": {
                             "type": "string",
@@ -411,7 +411,7 @@ impl PkbSearchServer {
             .with_annotations(ToolAnnotations::new().read_only(false)),
             Tool::new(
                 "release_task",
-                "Release a task to a terminal or handoff status (done, review, blocked, cancelled, partial). Supersedes complete_task (use status='done'). Performs session handover by recording work history, linking PRs/issues, and tracking follow-up work. If 'id' is omitted, an ad-hoc session task is created (requires `project` parameter). Evidence-or-failure-reason contract: `summary` (or `completion_evidence`) is always required; releasing to done requires all acceptance checklist items in the task body to be ticked (- [x]); releasing to blocked/cancelled/review/partial additionally requires a non-empty `reason` (or `blocker`, for `blocked`) — a handback with neither is rejected. Tasks created before this requirement shipped release under the old, optional rules.",
+                "Release a task to a terminal or handoff status (done, review, blocked, cancelled, partial, failed). Supersedes complete_task (use status='done'). Performs session handover by recording work history, linking PRs/issues, and tracking follow-up work. If 'id' is omitted, an ad-hoc session task is created (requires `project` parameter). Evidence-or-failure-reason contract: `summary` (or `completion_evidence`) is always required; releasing to done requires all acceptance checklist items in the task body to be ticked (- [x]); releasing to blocked/cancelled/review/partial/failed additionally requires a non-empty `reason` (or `blocker`, for `blocked`) — a handback with neither is rejected. Tasks created before this requirement shipped release under the old, optional rules.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -419,7 +419,7 @@ impl PkbSearchServer {
                         "project": { "type": "string", "description": "Project routing slug, validated against polecat.yaml (e.g. 'aops', 'mem'). Required when 'id' is omitted (ad-hoc task creation); optional when 'id' is provided." },
                         "status": {
                             "type": "string",
-                            "enum": ["done", "review", "cancelled", "partial"],
+                            "enum": ["done", "review", "cancelled", "partial", "failed"],
                             "description": "Target status"
                         },
                         "summary": { "type": "string", "description": "What was done and outcome. 1-3 sentences minimum. Always required (or provide completion_evidence)." },
@@ -427,7 +427,7 @@ impl PkbSearchServer {
                         "pr_url": { "type": "string", "description": "Pull request or commit URL" },
                         "branch": { "type": "string", "description": "Git branch name (optional)" },
                         "blocker": { "type": "string", "description": "What is blocking this task. Required (non-empty), together with `reason`, when status=blocked — at least one of the two must be given." },
-                        "reason": { "type": "string", "description": "Why the task didn't ship cleanly. Required (non-empty) when status is blocked/cancelled/review/partial (for status=blocked, `blocker` may be given instead)." },
+                        "reason": { "type": "string", "description": "Why the task didn't ship cleanly. Required (non-empty) when status is blocked/cancelled/review/partial/failed (for status=blocked, `blocker` may be given instead)." },
                         "session_id": { "type": "string", "description": "Active session ID. Falls back to $AOPS_SESSION_ID if omitted." },
                         "issue_url": { "type": "string", "description": "External issue/ticket URL" },
                         "follow_up_tasks": { "type": "array", "items": { "type": "string" }, "description": "IDs of new tasks created as follow-ups. Validated for existence." },

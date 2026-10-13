@@ -39,7 +39,7 @@ enum TaskFilter {
     Ready,
     /// Tasks waiting on unfinished dependencies
     Blocked,
-    /// All open tasks (excludes done/cancelled)
+    /// All open tasks (excludes done/cancelled/failed)
     All,
 }
 
@@ -358,7 +358,7 @@ enum Commands {
         /// Task ID
         id: String,
 
-        /// Status (inbox, ready, queued, in_progress, review, blocked, paused, someday, done, cancelled, partial)
+        /// Status (inbox, ready, queued, in_progress, review, blocked, paused, someday, done, cancelled, partial, failed)
         #[arg(short, long)]
         status: Option<String>,
 
