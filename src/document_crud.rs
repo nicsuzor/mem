@@ -1795,63 +1795,25 @@ pub fn update_document(path: &Path, updates: HashMap<String, serde_json::Value>)
         // Validate scalar lengths for all frontmatter fields
         validate_scalar_lengths(key, value, max_frontmatter_scalar_len())?;
 
-        // Validation for updated fields
-        match key.as_str() {
-            "blocked" => {
-                anyhow::bail!("'blocked' is a reserved computed keyword and cannot be set manually. Use 'depends_on' to add hard dependencies.");
-            }
-            "superseded_by" => {
-                anyhow::bail!("'superseded_by' is a reserved computed keyword and cannot be set manually — it is derived from other nodes' 'supersedes' edges. Set 'supersedes' on the superseding node instead.");
-            }
-            "status" => {
-                if let Some(s) = value.as_str() {
-                    if !crate::graph::is_valid_status(s) {
-                        anyhow::bail!("Invalid status: {}", s);
-                    }
+        // Validation for updated fields (mem_07e63c6c)
+        validate_update_field(key, value).map_err(|e| anyhow::anyhow!("{e}"))?;
 
-                    // Check for backwards transition
-                    if let Some(old_status) = fm.get("status").and_then(|v| v.as_str()) {
-                        let old_rank = crate::graph::status_rank(old_status);
-                        let new_rank = crate::graph::status_rank(s);
-                        if new_rank >= 0 && old_rank >= 0 && new_rank < old_rank {
-                            // Backwards transition — we allow it but maybe we should log?
-                            // The task says "flagged (warn, not block)".
-                            // In this context, we don't have a good way to "warn" without blocking
-                            // unless we use a logger.
-                            tracing::warn!(
-                                "Backwards status transition detected: {} -> {}",
-                                old_status,
-                                s
-                            );
-                        }
-                    }
-                }
-            }
-            "type" => {
-                if let Some(t) = value.as_str() {
-                    if !crate::graph::is_valid_node_type(t) {
-                        anyhow::bail!("Invalid node type: {}", t);
-                    }
-                }
-            }
-            "intent" | "priority" => {
-                if let Some(p) = value.as_i64() {
-                    if !crate::graph::is_valid_intent(p as i32) {
-                        anyhow::bail!("Invalid intent: {}. Must be between 0 and 4.", p);
-                    }
-                }
-            }
-            "effort" => {
-                if let Some(e) = value.as_str() {
-                    if !crate::graph::is_valid_effort(e) {
-                        anyhow::bail!(
-                            "Invalid effort: {}. Expected duration like '1d', '2h', '1w' (minimum '1h'). For size labels like 'S', 'M', 'L', use 'complexity' instead.",
-                            e
+        if key == "status" {
+            if let Some(s) = value.as_str() {
+                // Check for backwards transition
+                if let Some(old_status) = fm.get("status").and_then(|v| v.as_str()) {
+                    let old_rank = crate::graph::status_rank(old_status);
+                    let new_rank = crate::graph::status_rank(s);
+                    if new_rank >= 0 && old_rank >= 0 && new_rank < old_rank {
+                        // Backwards transition — we allow it but log a warning.
+                        tracing::warn!(
+                            "Backwards status transition detected: {} -> {}",
+                            old_status,
+                            s
                         );
                     }
                 }
             }
-            _ => {}
         }
 
         if value.is_null() {
@@ -1870,7 +1832,11 @@ pub fn update_document(path: &Path, updates: HashMap<String, serde_json::Value>)
                 other => vec![other.clone()],
             };
             let resolved = materialise_edge_inheritance(&pkb_root, edges);
-            fm.insert(key.clone(), serde_json::Value::Array(resolved));
+            if resolved.is_empty() {
+                fm.remove(key);
+            } else {
+                fm.insert(key.clone(), serde_json::Value::Array(resolved));
+            }
         } else {
             fm.insert(key.clone(), value.clone());
         }
@@ -7497,6 +7463,184 @@ pub fn validate_update_keys(
         Ok(())
     } else {
         Err(unknown)
+    }
+}
+
+/// Validate the format of a single field update. Shared by `update_task`, `batch_update`,
+/// and `update_document` (mem_07e63c6c).
+pub fn validate_update_field(key: &str, value: &serde_json::Value) -> Result<(), String> {
+    if key == "blocked" {
+        return Err("'blocked' is a reserved computed keyword and cannot be set manually. Use 'depends_on' to add hard dependencies.".to_string());
+    }
+    if key == "superseded_by" {
+        return Err("'superseded_by' is a reserved computed keyword and cannot be set manually — it is derived from other nodes' 'supersedes' edges. Set 'supersedes' on the superseding node instead.".to_string());
+    }
+    if value.is_null() {
+        if key == "title" {
+            return Err("title cannot be null or empty; task must have a title".to_string());
+        }
+        return Ok(());
+    }
+
+    match key {
+        "title" => {
+            if let Some(s) = value.as_str() {
+                if s.trim().is_empty() {
+                    return Err("title cannot be empty".to_string());
+                }
+                Ok(())
+            } else {
+                Err(format!("title must be a non-empty string; got {value}"))
+            }
+        }
+        "status" => {
+            if let Some(s) = value.as_str() {
+                if !crate::graph::is_valid_status(s) {
+                    return Err(format!(
+                        "Invalid status \"{s}\". Must be one of: {}.",
+                        crate::graph::VALID_STATUSES.join(", ")
+                    ));
+                }
+                Ok(())
+            } else {
+                Err(format!(
+                    "status must be a string (one of: {}); got {value}",
+                    crate::graph::VALID_STATUSES.join(", ")
+                ))
+            }
+        }
+        "type" => {
+            if let Some(t) = value.as_str() {
+                if !crate::graph::is_valid_node_type(t) {
+                    return Err(format!(
+                        "Invalid document type \"{t}\". Must be one of: {}.",
+                        crate::graph::VALID_NODE_TYPES.join(", ")
+                    ));
+                }
+                Ok(())
+            } else {
+                Err(format!(
+                    "type must be a string (one of: {}); got {value}",
+                    crate::graph::VALID_NODE_TYPES.join(", ")
+                ))
+            }
+        }
+        "intent" | "priority" => {
+            if let Some(p) = value.as_i64() {
+                if !crate::graph::is_valid_intent(p as i32) {
+                    return Err(format!("Invalid intent: {p}. Must be between 0 and 4."));
+                }
+                Ok(())
+            } else {
+                Err(format!("{key} must be an integer between 0 and 4; got {value}"))
+            }
+        }
+        "severity" => {
+            if value.is_i64() {
+                Ok(())
+            } else {
+                Err(format!("severity must be an integer; got {value}"))
+            }
+        }
+        "effort" => {
+            if let Some(e) = value.as_str() {
+                if !crate::graph::is_valid_effort(e) {
+                    return Err(format!(
+                        "Invalid effort: {e}. Expected duration string like '1d', '2h', '1w' (minimum '1h'). For size labels like 'S', 'M', 'L', use 'complexity' instead."
+                    ));
+                }
+                Ok(())
+            } else {
+                Err(format!(
+                    "effort must be a string duration like '1d', '2h', '1w'; got {value}"
+                ))
+            }
+        }
+        "goal_type" => {
+            if let Some(gt) = value.as_str() {
+                if !matches!(gt, "committed" | "aspirational" | "learning") {
+                    return Err(format!(
+                        "Invalid goal_type \"{gt}\". Must be one of: committed, aspirational, learning."
+                    ));
+                }
+                Ok(())
+            } else {
+                Err(format!(
+                    "goal_type must be a string in {{committed, aspirational, learning}}; got {value}"
+                ))
+            }
+        }
+        "tags" | "_add_tags" | "_remove_tags" => {
+            if let Some(arr) = value.as_array() {
+                for (i, item) in arr.iter().enumerate() {
+                    if !item.is_string() {
+                        return Err(format!("{key}[{i}] must be a string; got {item}"));
+                    }
+                }
+                Ok(())
+            } else {
+                Err(format!("{key} must be an array of strings; got {value}"))
+            }
+        }
+        "contributes_to" => crate::graph::validate_contributes_to_value(value),
+        "links" => crate::graph::validate_links_value(value),
+        "worth" => crate::graph::validate_worth_value(value),
+        "deadline_class" => crate::graph::validate_deadline_class_value(value),
+        "parent" => {
+            if value.is_string() {
+                Ok(())
+            } else {
+                Err(format!("parent must be a string or null; got {value}"))
+            }
+        }
+        "depends_on" | "soft_depends_on" | "blocks" | "soft_blocks" | "_add_depends_on"
+        | "_remove_depends_on" | "supersedes" | "follow_up_tasks" => {
+            if let Some(arr) = value.as_array() {
+                for (i, item) in arr.iter().enumerate() {
+                    if item.is_string() {
+                        continue;
+                    }
+                    if let Some(obj) = item.as_object() {
+                        if obj.contains_key("to") || obj.contains_key("id") || obj.contains_key("target") {
+                            continue;
+                        }
+                    }
+                    return Err(format!("{key}[{i}] must be a string ID; got {item}"));
+                }
+                Ok(())
+            } else if value.is_string() {
+                Ok(())
+            } else {
+                Err(format!(
+                    "{key} must be an array of strings or a string; got {value}"
+                ))
+            }
+        }
+        "assignee" | "complexity" | "consequence" | "body" | "content" | "stakeholder"
+        | "waiting_since" | "due" | "project" | "session_id" | "issue_url" | "release_summary"
+        | "released_at" | "blocker" | "reason" | "completion_evidence" | "evidence" | "pr_url"
+        | "classification" | "branch" | "container" => {
+            if value.is_string() {
+                Ok(())
+            } else {
+                Err(format!("{key} must be a string; got {value}"))
+            }
+        }
+        "alias" => {
+            if value.is_string() {
+                Ok(())
+            } else if let Some(arr) = value.as_array() {
+                for (i, item) in arr.iter().enumerate() {
+                    if !item.is_string() {
+                        return Err(format!("alias[{i}] must be a string; got {item}"));
+                    }
+                }
+                Ok(())
+            } else {
+                Err(format!("alias must be a string or array of strings; got {value}"))
+            }
+        }
+        _ => Ok(()),
     }
 }
 

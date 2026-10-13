@@ -259,6 +259,13 @@ impl PkbSearchServer {
                 data: None,
             })?;
         }
+        if let Some(ct_val) = args.get("contributes_to") {
+            crate::graph::validate_contributes_to_value(ct_val).map_err(|e| McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from(e),
+                data: None,
+            })?;
+        }
 
         let fields = crate::document_crud::TaskFields {
             title: title.to_string(),
@@ -2277,22 +2284,8 @@ impl PkbSearchServer {
             });
         }
 
-        if let Some(links_val) = updates.get("links") {
-            crate::graph::validate_links_value(links_val).map_err(|e| McpError {
-                code: ErrorCode::INVALID_PARAMS,
-                message: Cow::from(e),
-                data: None,
-            })?;
-        }
-        if let Some(worth_val) = updates.get("worth") {
-            crate::graph::validate_worth_value(worth_val).map_err(|e| McpError {
-                code: ErrorCode::INVALID_PARAMS,
-                message: Cow::from(e),
-                data: None,
-            })?;
-        }
-        if let Some(dc_val) = updates.get("deadline_class") {
-            crate::graph::validate_deadline_class_value(dc_val).map_err(|e| McpError {
+        for (k, v) in &updates {
+            crate::document_crud::validate_update_field(k, v).map_err(|e| McpError {
                 code: ErrorCode::INVALID_PARAMS,
                 message: Cow::from(e),
                 data: None,
