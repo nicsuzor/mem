@@ -62,7 +62,7 @@ impl PkbSearchServer {
             .with_annotations(ToolAnnotations::new().read_only(true)),
             Tool::new(
                 "get_task",
-                "Retrieve full task details, metadata, body, and graph context. Top-level focus_score combines intent, severity, deadline urgency, age staleness, downstream weight, stakeholder waiting urgency, urgency, and VoI. Signals nested under signals: {}.",
+                "Retrieve full task details, metadata, body, and graph context. Top-level focus_score combines intent, severity, deadline urgency, age staleness, downstream weight, urgency, and VoI. Signals nested under signals: {}.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -113,7 +113,7 @@ impl PkbSearchServer {
             .with_annotations(ToolAnnotations::new().read_only(true)),
             Tool::new(
                 "list_tasks",
-                "List tasks with smart filtering in focus_score-descending order. Top-level focus_score combines intent, severity, deadline urgency, age staleness, downstream weight, stakeholder waiting urgency, urgency, and VoI. Signals nested under signals: {}.",
+                "List tasks with smart filtering in focus_score-descending order. Top-level focus_score combines intent, severity, deadline urgency, age staleness, downstream weight, urgency, and VoI. Signals nested under signals: {}.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
