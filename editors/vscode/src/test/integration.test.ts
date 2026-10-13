@@ -92,8 +92,8 @@ It must be shown in hover preview and opened in a new tab.
     const pkbBin = path.resolve(__dirname, '../../../../target/debug/pkb');
     assert.ok(fs.existsSync(pkbBin), `pkb binary must exist at ${pkbBin}`);
 
-    // Spawn pkb lsp
-    pkbProc = spawn(pkbBin, ['lsp', '--root', tmpDir], {
+    // Spawn pkb lsp (passing --stdio as vscode-languageclient does)
+    pkbProc = spawn(pkbBin, ['lsp', '--root', tmpDir, '--stdio'], {
       stdio: ['pipe', 'pipe', 'inherit'],
     });
     reader = new LspReader(pkbProc.stdout);
