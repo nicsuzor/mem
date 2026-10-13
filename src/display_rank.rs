@@ -197,6 +197,7 @@ pub struct DisplayItem {
     pub due: Option<NaiveDate>,
     pub effort_days: i64,
     pub display: Option<TaskDisplay>,
+    pub uncertainty: Option<f64>,
 }
 
 impl DisplayItem {
@@ -226,7 +227,13 @@ impl DisplayItem {
             due,
             effort_days,
             display: None,
+            uncertainty: None,
         }
+    }
+
+    pub fn with_uncertainty(mut self, uncertainty: f64) -> Self {
+        self.uncertainty = Some(uncertainty);
+        self
     }
 
     /// Whether this node carries non-zero figures from flow computation.
@@ -523,6 +530,7 @@ pub struct DisplayTask {
     pub deadline_class: Option<DeadlineClass>,
     pub effort_days: i64,
     pub flow: Option<FlowOutput>,
+    pub uncertainty: f64,
 }
 
 impl DisplayTask {
@@ -546,6 +554,7 @@ impl DisplayTask {
             }),
             effort_days: eff,
             flow: flow.cloned(),
+            uncertainty: node.uncertainty,
         }
     }
 
@@ -559,6 +568,7 @@ impl DisplayTask {
             today,
             buffer_days,
         )
+        .with_uncertainty(self.uncertainty)
     }
 }
 
@@ -749,4 +759,222 @@ pub fn compute_task_summary(items: &[DisplayItem], ready_ids: &HashSet<String>) 
         }
     }
     summary
+}
+
+// ── Do-Next Draw (S29, R19) ──────────────────────────────────────────────────
+
+/// Default base exploitation rate for the Do-Next Draw (Point 29, S29).
+pub const DEFAULT_EXPLOITATION_RATE: f64 = 0.85;
+
+/// Baseline exploration floor ensuring non-zero exploration probability for every open item.
+pub const MIN_EXPLORATION_WEIGHT: f64 = 0.01;
+
+/// Configuration for the Do-Next Draw sampling policy.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct DrawConfig {
+    /// Base exploitation rate in [0.0, 1.0].
+    /// Higher values focus on highest-surplus commitments; lower values explore uncertain bets.
+    pub exploitation_rate: f64,
+    /// Whether to place cliff lane items strictly first before drawing (default: true).
+    pub cliff_first: bool,
+}
+
+impl Default for DrawConfig {
+    fn default() -> Self {
+        Self {
+            exploitation_rate: DEFAULT_EXPLOITATION_RATE,
+            cliff_first: true,
+        }
+    }
+}
+
+impl DrawConfig {
+    pub fn new(exploitation_rate: f64) -> Self {
+        Self {
+            exploitation_rate: exploitation_rate.clamp(0.0, 1.0),
+            cliff_first: true,
+        }
+    }
+
+    pub fn with_cliff_first(mut self, cliff_first: bool) -> Self {
+        self.cliff_first = cliff_first;
+        self
+    }
+}
+
+/// Compute the exact probability distribution over candidate items under the sampling policy (S29, R19).
+///
+/// Combines:
+/// - Exploitation distribution proportional to expected surplus:
+///   `S_u = max(0.0, gain + loss_averted)`
+/// - Exploration distribution weighted by uncertainty and value of information (EVPI):
+///   `U_u = decision_value + uncertainty + MIN_EXPLORATION_WEIGHT`
+/// - Final probability:
+///   `P(u) = r * P_exploit(u) + (1 - r) * P_explore(u)`
+///   where `r` is the configured exploitation rate.
+///
+/// Returns a list of `(item_id, probability)` pairs summing to 1.0 (empty if `items` is empty).
+pub fn compute_draw_distribution(
+    items: &[DisplayItem],
+    config: &DrawConfig,
+) -> Vec<(String, f64)> {
+    if items.is_empty() {
+        return Vec::new();
+    }
+    let n = items.len() as f64;
+    let r = config.exploitation_rate.clamp(0.0, 1.0);
+
+    // Compute exploitation weights: S_u = max(0.0, gain + loss_averted)
+    let exploit_weights: Vec<f64> = items
+        .iter()
+        .map(|item| {
+            let sum = item.gain.unwrap_or(0.0) + item.loss_averted.unwrap_or(0.0);
+            sum.max(0.0)
+        })
+        .collect();
+    let total_exploit: f64 = exploit_weights.iter().sum();
+
+    // Compute exploration weights: U_u = decision_value + uncertainty + MIN_EXPLORATION_WEIGHT
+    let explore_weights: Vec<f64> = items
+        .iter()
+        .map(|item| {
+            let dec = item.decision_value.unwrap_or(0.0).max(0.0);
+            let uncert = item.uncertainty.unwrap_or(0.0).max(0.0);
+            dec + uncert + MIN_EXPLORATION_WEIGHT
+        })
+        .collect();
+    let total_explore: f64 = explore_weights.iter().sum();
+
+    let unrounded: Vec<f64> = items
+        .iter()
+        .enumerate()
+        .map(|(i, _)| {
+            let p_exploit = if total_exploit > 0.0 {
+                exploit_weights[i] / total_exploit
+            } else {
+                1.0 / n
+            };
+
+            let p_explore = if total_explore > 0.0 {
+                explore_weights[i] / total_explore
+            } else {
+                1.0 / n
+            };
+
+            r * p_exploit + (1.0 - r) * p_explore
+        })
+        .collect();
+
+    let sum_p: f64 = unrounded.iter().sum();
+    items
+        .iter()
+        .zip(unrounded.iter())
+        .map(|(item, &p)| {
+            let norm_p = if sum_p > 0.0 { p / sum_p } else { 1.0 / n };
+            (item.id.clone(), clean_num(norm_p))
+        })
+        .collect()
+}
+
+/// Sample one item from candidate items according to the Do-Next Draw distribution (S29).
+pub fn do_next_draw_one<R: rand::Rng + ?Sized>(
+    items: &[DisplayItem],
+    config: &DrawConfig,
+    rng: &mut R,
+) -> Option<DisplayItem> {
+    if items.is_empty() {
+        return None;
+    }
+    // If cliff_first is requested and any item is on cliff, pick the earliest due cliff item
+    if config.cliff_first {
+        let cliff_items: Vec<&DisplayItem> = items.iter().filter(|i| i.on_cliff).collect();
+        if let Some(first_cliff) = cliff_items
+            .into_iter()
+            .min_by(|a, b| match (a.due, b.due) {
+                (Some(da), Some(db)) => da.cmp(&db),
+                (Some(_), None) => Ordering::Less,
+                (None, Some(_)) => Ordering::Greater,
+                (None, None) => Ordering::Equal,
+            })
+        {
+            return Some(first_cliff.clone());
+        }
+    }
+
+    let dist = compute_draw_distribution(items, config);
+    let sample_p: f64 = rng.random_range(0.0..1.0);
+    let mut cum = 0.0;
+    for (i, (_id, p)) in dist.iter().enumerate() {
+        cum += p;
+        if sample_p <= cum || i == items.len() - 1 {
+            return Some(items[i].clone());
+        }
+    }
+    items.first().cloned()
+}
+
+/// Sample an ordered do-next recommendation list without replacement (S29, R19).
+///
+/// Cliff lane items appear first (ordered by due ascending).
+/// Remaining slots are sampled without replacement according to the draw distribution.
+pub fn do_next_draw_sample<R: rand::Rng + ?Sized>(
+    items: &[DisplayItem],
+    config: &DrawConfig,
+    count: usize,
+    rng: &mut R,
+) -> Vec<DisplayItem> {
+    if items.is_empty() || count == 0 {
+        return Vec::new();
+    }
+
+    let mut result = Vec::with_capacity(count.min(items.len()));
+    let mut remaining = items.to_vec();
+
+    // 1. Cliff lane first if configured
+    if config.cliff_first {
+        let mut cliff_items: Vec<DisplayItem> = Vec::new();
+        remaining.retain(|item| {
+            if item.on_cliff {
+                cliff_items.push(item.clone());
+                false
+            } else {
+                true
+            }
+        });
+        cliff_items.sort_by(|a, b| match (a.due, b.due) {
+            (Some(da), Some(db)) => da.cmp(&db),
+            (Some(_), None) => Ordering::Less,
+            (None, Some(_)) => Ordering::Greater,
+            (None, None) => Ordering::Equal,
+        });
+        for c in cliff_items {
+            result.push(c);
+            if result.len() == count {
+                return result;
+            }
+        }
+    }
+
+    // 2. Sample iteratively without replacement
+    let no_cliff_config = DrawConfig {
+        exploitation_rate: config.exploitation_rate,
+        cliff_first: false,
+    };
+
+    while result.len() < count && !remaining.is_empty() {
+        let dist = compute_draw_distribution(&remaining, &no_cliff_config);
+        let sample_p: f64 = rng.random_range(0.0..1.0);
+        let mut cum = 0.0;
+        let mut chosen_idx = remaining.len() - 1;
+        for (i, (_id, p)) in dist.iter().enumerate() {
+            cum += p;
+            if sample_p <= cum {
+                chosen_idx = i;
+                break;
+            }
+        }
+        result.push(remaining.swap_remove(chosen_idx));
+    }
+
+    result
 }

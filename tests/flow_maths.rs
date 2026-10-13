@@ -494,6 +494,25 @@ fn test_flow_inv12_routes_explain() {
     assert!((loop_extra - 0.0263).abs() < 1e-4);
 }
 
+/// T-I13 (I13 / A13): calibration cases on real fixture (U1–U6).
+#[test]
+fn test_flow_inv13_calibration_cases_live_fixture() {
+    let (input, _) = load_fixture(Some(PART_OF_QUANTUM));
+    let outputs = compute_flow(&input);
+
+    // Case 2: unlinked leaves carry 0.0 on the live fixture
+    assert_eq!(clean_num(outputs["academic-b738bdc7"].gain.unwrap_or(0.0)), 0.0);
+
+    // Case 4: admin-3e02c20b carries 0.0 (unlinked to priced targets under part_of 0.0)
+    assert_eq!(clean_num(outputs["admin-3e02c20b"].gain.unwrap_or(0.0)), 0.0);
+
+    // Case 6: proj-76fbc546 carries 0.95 direct contribution to priced targets
+    let p_gain = outputs["proj-76fbc546"].gain.unwrap_or(0.0);
+    assert_eq!(clean_num(p_gain), 0.95);
+    let p_loss = outputs["proj-76fbc546"].loss_averted.unwrap_or(0.0);
+    assert_eq!(clean_num(p_loss), 0.0);
+}
+
 /// T-I14 (I14 / A14): negative target symmetry.
 #[test]
 fn test_flow_inv14_negative_target_symmetry() {

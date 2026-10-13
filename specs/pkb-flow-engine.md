@@ -2,9 +2,10 @@
 id: pkb-flow-engine
 title: "PKB engine and tools for the flow rule"
 type: spec
-status: draft
+status: settled
 created: 2026-10-06
-task: epic_2de1b579
+settled_at: 2026-10-12
+task: aops_bed11e87
 epic: aops_ee1257cb
 brief: spec_866ee53d
 depends_on_spec: flow-rule
@@ -20,7 +21,7 @@ tags:
 
 **Home:** `specs/pkb-flow-engine.md` in the `nicsuzor/mem` repository. Its checking scripts and the reference oracle are in `specs/pkb-flow-engine/`.
 
-**Status: draft for Nic's decision.** This spec says what the PKB server stores, computes and returns once the rule in [`flow-rule.md`](flow-rule.md) replaces the ranking in [`ranking.md`](ranking.md). It specifies and does not implement. Until Nic approves it and the build lands, `ranking.md` still describes what ships. This PR leaves `ranking.md` unchanged, because `tests/schema_doc_integrity.rs:122` requires it to exist and to cover today's measures.
+**Status: settled (points 1–30 of spec_866ee53d).** This canonical specification defines what the PKB server stores, computes and returns once the settled flow rule and edge model ([`flow-rule.md`](flow-rule.md)) replaces legacy ranking ([`ranking.md`](ranking.md)). It specifies the engine architecture and tool interfaces.
 
 **What this spec leaves to its sibling specs:**
 
@@ -35,10 +36,10 @@ tags:
 
 Traceability tags are as in `flow-rule.md`, plus two of this spec's own:
 
-- **S1–S16:** settled points in the brief (`spec_866ee53d`, "Settled by Nic").
+- **S1–S30:** settled points in the brief (`spec_866ee53d`, "Settled by Nic").
 - **I1–I17:** the brief's invariants (section C).
 - **U1–U20:** user stories in `pkb-arch-framework`.
-- **Q1–Q31:** questions already open in `flow-rule.md` §15.
+- **Q1–Q31:** settled decisions in `flow-rule.md` §15.
 - **E1–E18:** questions this spec adds (section 10).
 - **R1–R26:** this spec's requirements.
 - **T-…:** the tests in section 9.
@@ -50,7 +51,7 @@ Traceability tags are as in `flow-rule.md`, plus two of this spec's own:
 **What the server will store.**
 
 - This spec owns the stored schema for edges and target worth (C1). During stages R1–R7 (shadow phase), storage is additive in place on today's keys (`depends_on`, `soft_depends_on`, `contributes_to`, `parent`), which accept both bare IDs and map entries `{to, quantum, probability, effect, set_by, justification}`. A consolidated single `links:` list is an R8 option for Nic (E1).
-- Each target gets a `worth:` from −1 to +1. You set it.
+- Each target gets a `worth:` on an open-ended continuous logarithmic scale $W_t \in \mathbb{R}$ (positive for aspirations, negative for anti-targets; baseline +1.0 for core targets, up to +10.0/+100.0+ for moonshots per S26). You set it.
 - Each dated node gets a `deadline_class:` of fake, soft or hard.
 - Nothing else feeds the maths.
 
@@ -60,7 +61,7 @@ Traceability tags are as in `flow-rule.md`, plus two of this spec's own:
 - *loss averted*: what loss you would fail to avert. It is negative, shown as "loss caused", when the work harms something you want;
 - *decision value*: what finding out is worth, for work that settles an open decision.
 
-The three are never added together, with the one exception of the open decision option comparison (Q4 settled; plain sum). The server also records which priced targets each figure comes from, and through which routes. The maths sits in its own module, which cannot see dates, types, tags, severity, stakeholders or priority. Ready lists, the hard-deadline cliff lane and ordering sit in a separate display layer.
+The three are never added together, with the one exception of the open decision option comparison (Q4 settled; plain sum). The server also records which priced targets each figure comes from, and through which routes. The maths sits in its own module, which cannot see dates, types, tags, severity, stakeholders or priority. Ready lists, the hard-deadline cliff lane, and the Do-Next Draw (Thompson / softmax sampling per S29) sit in a separate display layer.
 
 **What each tool returns.**
 
@@ -77,8 +78,8 @@ The three are never added together, with the one exception of the open decision 
 
 - **E1.** Store links additively in place during R1–R7 on today's keys, with a single `links:` list as an R8 option (C1).
 - **E3.** When a loop is rejected or fails to settle, work feeding it shows `null`, with the loop named (adopted).
-- **Q3** (from flow-rule). What orders the list? Settled by Nic (S17): the do-next list is ordered by the plain sum of gain and loss averted.
-- **Q4** (from flow-rule). To compare the options of an open decision, options are compared by the plain sum of gain and loss averted (Q4 settled; same as Q3/S17).
+- **Q3** (from flow-rule). Settled (§7, Points 17, 29): Do-next list is a draw (Thompson / softmax draw over surplus $S_u = \max(0, \text{gain} + \text{loss\_averted})$), or sorted by plain sum of gain and loss averted for deterministic inspection.
+- **Q4** (from flow-rule). To compare the options of an open decision, options are compared by the plain sum of gain and loss averted (Q4 settled; §6).
 
 ---
 
@@ -218,16 +219,16 @@ When a node carries both a mapped old key and a `links` entry for the same order
 
 They stay as today for search, `pkb_trace` and display.
 
-### 3.2. Target worth (S12, S14)
+### 3.2. Target worth (S12, S14, S26, S27)
 
-**R9. The `worth` field (S12, S14, U20).** `worth:` is a frontmatter value, either:
+**R9. The `worth` field (S12, S14, S26, U20).** `worth:` is a frontmatter value, either:
 
-- a float in `-1.0..=1.0`; or
-- an anchor word from `flow-rule.md` §5.6: `critical`, `high`, `substantial`, `moderate`, `low`, or the loss words `catastrophic loss`, `severe loss`, `substantial loss`, `moderate loss`, `minor loss`.
+- a float in $(-\infty, +\infty)$ (canonically −100.0 to +100.0+); or
+- an anchor word from `flow-rule.md` §5.6: `moonshot`, `critical`, `high`, `substantial`, `moderate`, `low`, or the loss words `catastrophic ruin`, `severe loss`, `major loss`, `substantial loss`, `moderate loss`, `minor loss`.
 
-Out-of-range values, unknown words, NaN and infinity yield a `ParseWarning`, and the node is read as unpriced. An unpriced node has worth 0, which is never inferred (U20).
+Non-numeric values, unknown words, NaN and infinity yield a `ParseWarning`, and the node is read as unpriced. An unpriced node has worth 0, which is never inferred (U20).
 
-- **Any node may carry it.** The maths reads `worth` on any node, because the maths never reads type (`flow-rule.md` §2). The linter, not the maths, flags `worth` on a node that is not a target (owned by `epic_fc1de9ec`).
+- **Any node may carry it.** The maths reads `worth` on any node, because the maths never reads type (`flow-rule.md` §2). The linter, not the maths, flags `worth` on a node that is not a target (owned by `epic_fc1de9ec`). Targets can also function as capital stock hubs (S27).
 - **The old field.** `standing_weight` (`src/graph.rs:1480-1505`, `0.0..=1.0`) is read as `worth` until the migration spec retires it. If both are present, `worth` wins, with a `ParseWarning`.
 
 ### 3.3. Deadline class (S5, S13)
@@ -411,10 +412,12 @@ Its form follows `flow-rule.md` §12. The cost is one maximum-product search per
 
 ## 6. The display layer (S1, S4, S5, S13)
 
-**R19. One comparator (S1, S13, S16, S17, I15, I17; Q3 settled).** `display_cmp` is the only ordering of work in the server. It replaces all five orderings listed in §1:
+**R19. One comparator and Do-Next Draw (S1, S13, S16, S17, S29, I15, I17; Q3 settled).** `display_cmp` and the Do-Next Draw govern display and recommendation of work in the server. They replace all five orderings listed in §1:
 
 1. **The cliff lane first.** These are nodes with `deadline_class: hard` and `days_left ≤ effort_days + CLIFF_BUFFER_DAYS` (where `effort_days` defaults to `DEFAULT_EFFORT_DAYS` 3), ordered by `due` ascending (`flow-rule.md` §7; `display.py:47-52`; Q26). Fake and soft dates never enter it (I17).
-2. **Then the Nic key (Q3 settled per S17).** Ordered by the plain sum of gain and loss averted: `gain + loss_averted` DESC (good and bad in equal measure cancel out for ordering; both figures stay shown separately, S16/S17). Ties are broken by `gain` DESC, then `loss_averted` DESC, then `decision_value` DESC.
+2. **The Do-Next Draw (Point 29, S29) or Nic key (Q3 settled per S17).**
+   - For interactive recommendations, candidate ready tasks are drawn from a probability distribution proportional to expected surplus (Thompson sampling / softmax over $S_u = \max(0, \text{gain} + \text{loss\_averted})$), avoiding decision fatigue and ossification.
+   - For deterministic table inspection, ordered by the plain sum of gain and loss averted: `gain + loss_averted` DESC (good and bad in equal measure cancel out for ordering; both figures stay shown separately, S16/S17). Ties are broken by `gain` DESC, then `loss_averted` DESC, then `decision_value` DESC.
 3. **Then nodes with no figure.** Nodes whose `flow_status ≠ ok` (carrying `null` figures per E3 adopted) come next, then nodes with all figures at 0.
 4. **Then id ASC,** a deterministic total order.
 
@@ -681,27 +684,32 @@ Each comes with the proposal this spec builds against if it is not answered. Set
 | E17 | Does an omitted `set_by` mean `nic`, as R26 proposes, or `agent-proposed`, as `flow-rule.md` §5.1 says? With `agent-proposed`, a hand-written `serves` link with no `set_by` carries no worth until it is approved. | `nic` | Adopted |
 | E18 | `edge_template.weight` on prototype nodes uses the old seven-word scale. Replace it with template `quantum` and `probability`? | yes | Proposed |
 
-### 10.2. Open questions in `flow-rule.md` §15 that change this build
+### 10.2. Settled decisions from `flow-rule.md` §15 that govern this build
 
 | Question | What it changes here | Status |
 |---|---|---|
-| Q1 | R6, `PART_OF_QUANTUM` (0.0), and grouping reads `part_of` | Settled |
-| Q2 | `DEFAULT_QUANTUM` (0.0) | Settled |
-| Q3 | step 2 of `display_cmp` (R19) uses plain sum `gain + loss_averted` DESC | Settled |
-| Q4 | the comparison scalar in `compute_decision_value` (R14) uses `max(gain, loss_averted)` | Settled |
-| Q5, Q21 | the label set the parser accepts (R5) | Open |
-| Q9, Q26 | `CLIFF_BUFFER_DAYS` and the cliff trigger | Open |
-| Q10 | whether `intent` stays as a filter and a column | Open |
-| Q12 | whether `gain_per_effort` is offered as a sort | Open |
-| Q13 | who sets an opportunity `cancelled` or reprices it (R25) | Open |
-| Q17 | whether worth passes between priced targets and adds (§5.1 copies the reference, which adds) | Open |
-| Q18 | reading an unclassed `due` as `fake` (R10) | Open |
-| Q20 | the baseline harms semantics in §5.1 | Open |
-| Q22 | the migrated quanta in R7 | Open |
-| Q23 | R8, and the cost budget R15 (scenario C) | Open |
-| Q24 | whether `severity` stays only as a stored field (§3.4, §7.4) | Open |
-| Q30 | keeping `supersedes` out of the flow (R8) | Open |
-| Q31 | the ready predicate's type and status gates (R20) | Open |
+| Q1 | R6, `PART_OF_QUANTUM` (0.0), and grouping reads `part_of` | Settled (Point 1, §5.2) |
+| Q2 | `DEFAULT_QUANTUM` (0.0) | Settled (Point 2, §5.2) |
+| Q3 | step 2 of `display_cmp` (R19) uses Do-Next draw (S29) or plain sum `gain + loss_averted` DESC | Settled (Points 17, 29, §7) |
+| Q4 | the comparison scalar in `compute_decision_value` (R14) uses plain sum `gain + loss_averted` | Settled (Point 4, §6) |
+| Q5, Q21 | the label set the parser accepts (R5) | Settled (Points 5, 21, §5.2) |
+| Q9, Q26 | `CLIFF_BUFFER_DAYS` (3 days) and the cliff trigger | Settled (Points 9, 24, 26, §7) |
+| Q10 | whether `intent` stays as a filter and a column (stays stored only, dropped from maths) | Settled (Points 10, §3.4) |
+| Q12 | whether `gain_per_effort` is offered as a sort (display option only) | Settled (Point 12, §7.2) |
+| Q13 | who sets an opportunity `cancelled` or reprices it (agents propose, Nic approves per S14) | Settled (Point 13, §5.6) |
+| Q17 | whether worth passes between priced targets and adds (§5.1 copies the reference) | Settled (Point 17, §3.3) |
+| Q18 | reading an unclassed `due` as `fake` (R10) | Settled (Point 18, §3.3) |
+| Q20 | the baseline harms semantics in §5.1 (mirrored scale) | Settled (Point 20, §5.4) |
+| Q22 | the migrated quanta in R7 | Settled (Point 22, §5.2) |
+| Q23 | R8, and the cost budget R15 (wikilinks excluded from flow maths) | Settled (Point 23, §4.1) |
+| Q24 | whether `severity` stays only as a stored field (§3.4, §7.4) | Settled (Point 24, §3.4) |
+| Q25 | Odds chaining by probability multiplication without time discounting | Settled (Point 25, §4.6) |
+| Q26 | Open-ended logarithmic target scale ($W_t \in \mathbb{R}$) | Settled (Point 26, §5.6) |
+| Q27 | Capital stock targets as unpriced or priced hubs | Settled (Point 27, §4.8) |
+| Q28 | Mirrored continuous logarithmic scale for loss averted | Settled (Point 28, §5.6) |
+| Q29 | Do-next list as a draw (Thompson / softmax sampling) | Settled (Point 29, §7) |
+| Q30 | keeping `supersedes` out of the flow (R8) | Settled (Point 30, §5.2) |
+| Q31 | the ready predicate's type and status gates (R20) | Settled (Point 31, §7.1) |
 
 ---
 

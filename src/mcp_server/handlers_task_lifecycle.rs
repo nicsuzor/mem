@@ -539,16 +539,27 @@ impl PkbSearchServer {
             Self::build_mutation_neighborhood(&graph, &node_id, cascade_closed)
         };
 
+        let (node_title, node_modified) = {
+            let graph = self.graph.read();
+            (
+                graph.resolve(id).map(|n| n.label.clone()),
+                graph.resolve(id).and_then(|n| n.modified.clone()),
+            )
+        };
+        let new_modified = node_modified.unwrap_or_else(|| chrono::Utc::now().to_rfc3339());
+        let title_to_use = node_title.as_deref().unwrap_or(&label);
+
         let response = serde_json::json!({
             "ok": true,
             "id": id,
+            "title": title_to_use,
             "status": "done",
-            "message": format!("Completed: {} (`{}`)", label, id),
+            "modified": new_modified,
+            "message": format!("Completed: {} (`{}`)", title_to_use, id),
             "neighborhood": neighborhood,
         });
-        Ok(CallToolResult::success(vec![Content::text(
-            serde_json::to_string_pretty(&response).unwrap_or_default(),
-        )]))
+        let text = serde_json::to_string_pretty(&response).unwrap_or_default();
+        Ok(Self::structured_result(text, response))
     }
 
     /// M3: Semantic attach — search open epics for a confident topic match.
@@ -1032,6 +1043,31 @@ impl PkbSearchServer {
         let node_id = node.id.clone();
         drop(graph);
 
+        // academicOps#2747: release to done requires all acceptance criteria checkboxes to be ticked.
+        if status == "done" {
+            let doc = crate::pkb::parse_file_relative(&abs_path, &self.pkb_root)
+                .or_else(|| crate::pkb::parse_file(&abs_path));
+            if let Some(doc) = doc {
+                let unticked = crate::graph::find_unticked_acceptance_items(&doc.body);
+                if !unticked.is_empty() {
+                    let items_list: Vec<String> = unticked
+                        .iter()
+                        .map(|item| format!("  - [ ] {item}"))
+                        .collect();
+                    return Err(McpError {
+                        code: ErrorCode::INVALID_PARAMS,
+                        message: Cow::from(format!(
+                            "Cannot release task \"{id}\" as \"done\": {} unticked acceptance item(s) remain:\n{}\n\n\
+                             All acceptance items must be verified and checked (- [x]) before releasing as done.",
+                            unticked.len(),
+                            items_list.join("\n")
+                        )),
+                        data: None,
+                    });
+                }
+            }
+        }
+
         // Cascade-close open descendants when recursive=true. Batch the
         // graph patches into a single write lock + one reclassify, and queue
         // re-embeds for the background worker, so 100 descendants don't cost
@@ -1274,19 +1310,25 @@ impl PkbSearchServer {
             Self::build_mutation_neighborhood(&graph, &node_id, cascade_closed)
         };
 
+        let node_modified = {
+            let graph = self.graph.read();
+            graph.resolve(id).and_then(|n| n.modified.clone())
+        };
+        let new_modified = node_modified.unwrap_or_else(|| chrono::Utc::now().to_rfc3339());
         let mut json = serde_json::json!({
             "ok": true,
             "id": id,
+            "title": label,
             "status": status,
+            "modified": new_modified,
             "message": response_text,
             "neighborhood": neighborhood,
         });
         if let Some(nid) = created_id {
             json["created_id"] = serde_json::json!(nid);
         }
-        Ok(CallToolResult::success(vec![Content::text(
-            serde_json::to_string_pretty(&json).unwrap_or_default(),
-        )]))
+        let text = serde_json::to_string_pretty(&json).unwrap_or_default();
+        Ok(Self::structured_result(text, json))
     }
 
     // =========================================================================

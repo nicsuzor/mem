@@ -1112,6 +1112,7 @@ impl VectorStore {
         use opentelemetry::trace::Tracer;
         let span = tracer.start("search_hybrid");
         let _guard = opentelemetry::trace::mark_span_as_active(span);
+        let start = std::time::Instant::now();
 
         let fetch_limit = (limit * 3).max(20);
         let vector_results = self.search(
@@ -1138,6 +1139,7 @@ impl VectorStore {
         }
 
         fused.truncate(limit);
+        crate::otel::call_metrics::CallMetrics::record_hybrid_search_duration(start.elapsed());
         fused
     }
 

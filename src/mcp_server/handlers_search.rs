@@ -213,9 +213,16 @@ impl PkbSearchServer {
         }
 
         if count == 0 {
-            return Ok(CallToolResult::success(vec![Content::text(
-                "No tasks found matching query.",
-            )]));
+            let zero = serde_json::json!({
+                "total": 0,
+                "showing": 0,
+                "items": [],
+                "tasks": [],
+            });
+            return Ok(Self::structured_result(
+                "No tasks found matching query.".to_string(),
+                zero,
+            ));
         }
 
         Ok(CallToolResult::success(vec![Content::text(format!(
@@ -330,6 +337,11 @@ impl PkbSearchServer {
             .get("detail")
             .and_then(|v| v.as_str())
             .unwrap_or("chunk");
+        let ids_only = args
+            .get("ids_only")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+            || detail.eq_ignore_ascii_case("ids");
         let actionable_only = args
             .get("actionable_only")
             .and_then(|v| v.as_bool())
@@ -446,9 +458,55 @@ impl PkbSearchServer {
         scored.truncate(limit);
 
         if scored.is_empty() {
-            return Ok(CallToolResult::success(vec![Content::text(
-                "No results found.",
-            )]));
+            let zero = serde_json::json!({
+                "total": 0,
+                "showing": 0,
+                "items": [],
+                "count": 0,
+                "results": [],
+            });
+            return Ok(Self::structured_result("No results found.".to_string(), zero));
+        }
+
+        if ids_only {
+            let id_list: Vec<String> = scored
+                .iter()
+                .map(|(r, _)| {
+                    let node = graph.get_node(&r.id);
+                    node.map(|n| n.task_id.as_deref().unwrap_or(&n.id))
+                        .unwrap_or(&r.id)
+                        .to_string()
+                })
+                .collect();
+
+            let payload = serde_json::json!({
+                "query": query,
+                "total": id_list.len(),
+                "showing": id_list.len(),
+                "count": id_list.len(),
+                "ids": id_list.clone(),
+                "items": id_list,
+            });
+
+            if format.eq_ignore_ascii_case("json") {
+                let json_str = serde_json::to_string_pretty(&payload).unwrap_or_default();
+                return Ok(Self::structured_result(json_str, payload));
+            }
+
+            let mut output = format!(
+                "**Found {} results for:** \"{}\"{}\n\n",
+                id_list.len(),
+                query,
+                if boost_id.is_some() {
+                    " (with graph proximity boost)"
+                } else {
+                    ""
+                }
+            );
+            for id in &id_list {
+                output.push_str(&format!("- `{}`\n", id));
+            }
+            return Ok(Self::structured_result(output, payload));
         }
 
         if format.eq_ignore_ascii_case("json") {
@@ -492,11 +550,14 @@ impl PkbSearchServer {
 
             let payload = serde_json::json!({
                 "query": query,
+                "total": json_results.len(),
+                "showing": json_results.len(),
                 "count": json_results.len(),
+                "items": json_results.clone(),
                 "results": json_results,
             });
             let json_str = serde_json::to_string_pretty(&payload).unwrap_or_default();
-            return Ok(CallToolResult::success(vec![Content::text(json_str)]));
+            return Ok(Self::structured_result(json_str, payload));
         }
 
         let mut output = format!(
@@ -575,7 +636,21 @@ impl PkbSearchServer {
             output.push('\n');
         }
 
-        Ok(CallToolResult::success(vec![Content::text(output)]))
+        let payload = serde_json::json!({
+            "query": query,
+            "total": scored.len(),
+            "showing": scored.len(),
+            "count": scored.len(),
+            "items": scored.iter().map(|(r, score)| {
+                serde_json::json!({
+                    "id": r.id,
+                    "title": r.title,
+                    "score": score,
+                    "tags": r.tags,
+                })
+            }).collect::<Vec<_>>(),
+        });
+        Ok(Self::structured_result(output, payload))
     }
 
     pub(crate) fn handle_pkb_trace(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
@@ -874,10 +949,16 @@ impl PkbSearchServer {
         matching.truncate(limit);
 
         if matching.is_empty() {
-            return Ok(CallToolResult::success(vec![Content::text(format!(
-                "No documents found with tags: {}",
-                tags.join(", ")
-            ))]));
+            let zero = serde_json::json!({
+                "total": 0,
+                "showing": 0,
+                "items": [],
+                "documents": [],
+            });
+            return Ok(Self::structured_result(
+                format!("No documents found with tags: {}", tags.join(", ")),
+                zero,
+            ));
         }
 
         let total = matching.len();

@@ -2,6 +2,7 @@ use opentelemetry_otlp::WithExportConfig;
 pub mod config;
 pub mod session_registry;
 pub mod client_context;
+pub mod call_metrics;
 
 use opentelemetry::{global, KeyValue};
 use opentelemetry_sdk::{
@@ -24,8 +25,9 @@ pub fn init_telemetry() -> Option<TracerProvider> {
         .build_span_exporter()
         .ok()?;
 
+    let service_name = config.project_name.clone().unwrap_or_else(|| "mem-mcp".to_string());
     let mut resource_attrs = vec![
-        KeyValue::new("service.name", "mem-mcp"),
+        KeyValue::new("service.name", service_name),
     ];
 
     if let Some(project) = config.project_name {

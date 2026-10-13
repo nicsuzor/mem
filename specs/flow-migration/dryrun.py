@@ -80,6 +80,42 @@ def word_quantum(word: str) -> float | None:
         return None
 
 
+PROBABILITY_WORDS = {
+    "certain": 1.00,
+    "probable": 0.85,
+    "expected": 0.75,
+    "fifty-fifty": 0.50,
+    "fifty_fifty": 0.50,
+    "fifty fifty": 0.50,
+    "uncertain": 0.25,
+    "improbable": 0.15,
+    "impossible": 0.00,
+}
+
+
+def extract_odds(ct: dict, fm: dict) -> float:
+    """Extract probability from ct.probability, ct.justification, or body ## Odds."""
+    if "probability" in ct and isinstance(ct["probability"], (int, float)):
+        return float(ct["probability"])
+    just = ct.get("justification")
+    if isinstance(just, str):
+        import re
+        m = re.search(r'\bodds:\s*([a-zA-Z_-]+)', just, re.IGNORECASE)
+        if m:
+            w = m.group(1).lower().strip(".,;")
+            if w in PROBABILITY_WORDS:
+                return PROBABILITY_WORDS[w]
+    body = fm.get("body")
+    if isinstance(body, str):
+        import re
+        m = re.search(r'(?m)^#{1,3}\s+Odds\s*\n\s*([a-zA-Z_-]+)', body, re.IGNORECASE)
+        if m:
+            w = m.group(1).lower().strip(".,;")
+            if w in PROBABILITY_WORDS:
+                return PROBABILITY_WORDS[w]
+    return 1.0
+
+
 # ── The transform (spec section 5) ──────────────────────────────────────────
 
 def apply(fm: dict, ids: set, snapshot: set | None = None) -> tuple[dict, list]:
@@ -110,8 +146,9 @@ def apply(fm: dict, ids: set, snapshot: set | None = None) -> tuple[dict, list]:
         if q is None and not has_m:
             continue  # empty or unrecognised word, no multiplier: left unvalued, listed for densify
         q = min(m if q is None else q * m, 1.0) if has_m else q  # as flow.stated_weight
+        prob = extract_odds(ct, fm)
         before = copy.deepcopy(ct)
-        ct.update({"quantum": q, "probability": 1.0, "set_by": "migrated"})
+        ct.update({"quantum": q, "probability": prob, "set_by": "migrated"})
         ledger.append((f"contributes_to[{i}]", before, copy.deepcopy(ct)))
     return out, ledger
 

@@ -2,8 +2,9 @@
 id: ranking
 title: "PKB Ranking & Prioritisation Specification"
 type: spec
-status: approved
+status: settled
 created: 2026-08-25
+settled_at: 2026-10-12
 pinned_commit: 9336a166f6bf5c40987503ce56f98eadc59cf859
 tags:
   - ranking
@@ -16,7 +17,7 @@ tags:
 
 # PKB Ranking & Prioritisation Specification
 
-This document is the canonical specification for task prioritisation, focus scoring, graph centrality metrics, and queue ordering in `mem`. It describes the ranking machinery **as it actually ships at commit `9336a166f6bf5c40987503ce56f98eadc59cf859`**.
+This document is the canonical specification for task prioritisation, focus scoring, graph centrality metrics, and queue ordering in `mem`. It describes the legacy ranking machinery **as it actually ships at commit `9336a166f6bf5c40987503ce56f98eadc59cf859`**, retained during the migration shadow phase (R1–R7) while the product-grade successor flow rule is settled in [`specs/flow-rule.md`](flow-rule.md) (Epic `aops_ee1257cb`).
 
 Per `.agents/CORE.md`, this specification documents approved current state only.
 
