@@ -1138,7 +1138,7 @@ fn check_frontmatter(
     let status_str = fm.get("status").and_then(|v| v.as_str());
     let is_open_node = !matches!(
         status_str,
-        Some("done") | Some("retired") | Some("cancelled") | Some("completed")
+        Some("done") | Some("retired") | Some("cancelled") | Some("completed") | Some("failed")
     );
 
     // 5.8: flow-legacy-field

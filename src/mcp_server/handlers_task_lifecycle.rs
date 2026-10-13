@@ -604,7 +604,7 @@ impl PkbSearchServer {
                 .unwrap_or("inbox")
                 .to_ascii_lowercase();
             let canonical_status = crate::graph::resolve_status_alias(&status_raw);
-            if matches!(canonical_status, "done" | "cancelled") {
+            if matches!(canonical_status, "done" | "cancelled" | "failed") {
                 continue;
             }
             if !candidate.id.is_empty() {
@@ -864,25 +864,26 @@ impl PkbSearchServer {
             .ok_or_else(|| McpError {
                 code: ErrorCode::INVALID_PARAMS,
                 message: Cow::from(
-                    "Missing required parameter: status. Must be one of: done, review, blocked, cancelled, partial.",
+                    "Missing required parameter: status. Must be one of: done, review, blocked, cancelled, partial, failed.",
                 ),
                 data: None,
             })?;
 
         // Validate status enum with helpful suggestions
-        let valid_statuses = ["done", "review", "blocked", "cancelled", "partial"];
+        let valid_statuses = ["done", "review", "blocked", "cancelled", "partial", "failed"];
         if !valid_statuses.contains(&status) {
             let suggestion = match status {
                 "complete" | "completed" | "merge_ready" | "merge-ready" => {
                     " Did you mean \"done\"?"
                 }
                 "cancel" => " Did you mean \"cancelled\"?",
+                "fail" | "failure" => " Did you mean \"failed\"?",
                 _ => "",
             };
             return Err(McpError {
                 code: ErrorCode::INVALID_PARAMS,
                 message: Cow::from(format!(
-                    "Invalid status \"{status}\". Must be one of: done, review, blocked, cancelled, partial.{suggestion}\n\
+                    "Invalid status \"{status}\". Must be one of: done, review, blocked, cancelled, partial, failed.{suggestion}\n\
                      For non-terminal updates (intent, tags, assignee), use update_task instead."
                 )),
                 data: None,
@@ -965,7 +966,7 @@ impl PkbSearchServer {
 
         // Check task is not already terminal
         let current_status = node.status.as_deref().unwrap_or("inbox");
-        if current_status == "done" || current_status == "cancelled" {
+        if current_status == "done" || current_status == "cancelled" || current_status == "failed" {
             return Err(McpError {
                 code: ErrorCode::INVALID_PARAMS,
                 message: Cow::from(format!(
@@ -1285,7 +1286,7 @@ impl PkbSearchServer {
 
         // Build response with soft warnings
         let mut warnings = Vec::new();
-        if (status == "cancelled" || status == "review")
+        if (status == "cancelled" || status == "review" || status == "failed")
             && reason.is_none_or(|r| r.trim().is_empty())
         {
             warnings.push("WARNING: No reason provided. Future you will want to know why.");

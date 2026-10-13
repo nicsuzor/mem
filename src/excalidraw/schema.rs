@@ -67,7 +67,7 @@ impl ElementColorStyle {
 pub fn is_excluded_status(status: Option<&str>) -> bool {
     matches!(
         status.map(|s| s.to_lowercase()).as_deref(),
-        Some("someday") | Some("cancelled") | Some("abandoned")
+        Some("someday") | Some("cancelled") | Some("abandoned") | Some("failed")
     )
 }
 
@@ -235,7 +235,7 @@ pub fn node_color_style(status: Option<&str>, node_type: Option<&str>) -> Elemen
         "done" | "completed" | "released" => {
             ElementColorStyle::new("#ededed", "#adb5bd", "solid", "solid", 60)
         }
-        "cancelled" | "abandoned" | "someday" => {
+        "cancelled" | "abandoned" | "someday" | "failed" => {
             ElementColorStyle::new("#faecec", "#fa5252", "dashed", "solid", 60)
         }
         _ => ElementColorStyle::new("#efe8f5", "#862e9c", "dashed", "solid", 100), // inbox / draft

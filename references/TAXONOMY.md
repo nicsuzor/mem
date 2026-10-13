@@ -213,6 +213,7 @@ The tree hierarchy is a **spanning tree** of the underlying dependency graph. It
 | `paused`      | Intentionally stopped with intent to resume — work was in-flight but deferred    |
 | `someday`     | Parked idea — may never be worked; differs from `inbox` by explicit deferral     |
 | `cancelled`   | Will not be done — decision made to drop                                         |
+| `failed`      | Attempted and will not be completed — terminal failure, distinct from `cancelled` (no longer wanted) and `done` |
 
 **Default is `inbox`**: Every new node starts as `inbox` regardless of how it was created.
 
@@ -226,7 +227,7 @@ The tree hierarchy is a **spanning tree** of the underlying dependency graph. It
 
 Framework reporting distinguishes between the **broad view** of all open work and the **narrow view** of what can be started right now:
 
-- **Actionable**: Any task that is not in a terminal state (`done`, `cancelled`, `someday`). This encompasses the entire working set: `inbox`, `ready`, `queued`, `in_progress`, `review`, and `paused`. Most high-level dashboards (like the `/daily` note) report actionable counts.
+- **Actionable**: Any task that is not in a terminal state (`done`, `cancelled`, `failed`, `someday`). This encompasses the entire working set: `inbox`, `ready`, `queued`, `in_progress`, `review`, and `paused`. Most high-level dashboards (like the `/daily` note) report actionable counts.
 - **Ready**: A subset of actionable work. Strictly limited to leaf tasks that are fully decomposed and have zero unmet dependencies. Tasks in `in_progress` or `review` are actionable but are **not** ready (as they are already claimed or awaiting feedback). Execution-oriented views (like `pkb tasks ready`) focus on this narrow subset.
 
 ---
