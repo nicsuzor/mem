@@ -737,6 +737,131 @@ pub fn validate_deadline_class_value(val: &serde_json::Value) -> Result<(), Stri
     }
 }
 
+/// Write-time validation for `contributes_to` entries (mem_07e63c6c).
+pub fn validate_contributes_to_value(val: &serde_json::Value) -> Result<(), String> {
+    if val.is_null() {
+        return Ok(());
+    }
+    let arr = val
+        .as_array()
+        .ok_or_else(|| format!("contributes_to must be an array of objects; got {val}"))?;
+    for (i, entry) in arr.iter().enumerate() {
+        let obj = entry
+            .as_object()
+            .ok_or_else(|| format!("contributes_to[{i}] must be an object; got {entry}"))?;
+        let to_val = obj.get("to").or_else(|| obj.get("target"));
+        match to_val {
+            Some(serde_json::Value::String(s)) => {
+                let trimmed = s.trim();
+                if trimmed.is_empty() {
+                    return Err(format!("contributes_to[{i}] target ID cannot be empty"));
+                }
+            }
+            Some(other) => {
+                return Err(format!(
+                    "contributes_to[{i}] 'to' or 'target' must be a non-empty string; got {other}"
+                ));
+            }
+            None => {
+                return Err(format!(
+                    "contributes_to[{i}] must have 'to' or 'target' target ID; got {entry}"
+                ));
+            }
+        }
+
+        if let Some(w_val) = obj.get("stated_weight").or_else(|| obj.get("weight")) {
+            match w_val {
+                serde_json::Value::String(s) => {
+                    let trimmed = s.trim();
+                    if !trimmed.is_empty()
+                        && !ContributesTo::is_recognized_weight(&trimmed.to_lowercase())
+                    {
+                        return Err(format!(
+                            "contributes_to[{i}].weight \"{trimmed}\" is not a recognized weight term or float"
+                        ));
+                    }
+                }
+                serde_json::Value::Number(_) => {}
+                other => {
+                    return Err(format!(
+                        "contributes_to[{i}].weight must be a string or number; got {other}"
+                    ));
+                }
+            }
+        }
+        if let Some(why_val) = obj.get("justification").or_else(|| obj.get("why")) {
+            if !why_val.is_string() {
+                return Err(format!(
+                    "contributes_to[{i}].justification must be a string; got {why_val}"
+                ));
+            }
+        }
+        if let Some(m_val) = obj.get("multiplier").or_else(|| obj.get("x")) {
+            if !m_val.is_number() {
+                return Err(format!(
+                    "contributes_to[{i}].multiplier must be a number; got {m_val}"
+                ));
+            }
+        }
+        if let Some(cw_val) = obj.get("current_weight") {
+            if !cw_val.is_number() {
+                return Err(format!(
+                    "contributes_to[{i}].current_weight must be a number; got {cw_val}"
+                ));
+            }
+        }
+        if let Some(ih_val) = obj.get("inherits_from") {
+            if !ih_val.is_string() {
+                return Err(format!(
+                    "contributes_to[{i}].inherits_from must be a string; got {ih_val}"
+                ));
+            }
+        }
+        if let Some(bh_val) = obj.get("brier_history") {
+            let bh_arr = bh_val.as_array().ok_or_else(|| {
+                format!("contributes_to[{i}].brier_history must be an array of numbers; got {bh_val}")
+            })?;
+            for (j, b) in bh_arr.iter().enumerate() {
+                if !b.is_number() {
+                    return Err(format!(
+                        "contributes_to[{i}].brier_history[{j}] must be a number; got {b}"
+                    ));
+                }
+            }
+        }
+        if let Some(li_val) = obj.get("last_interacted") {
+            if !li_val.is_string() {
+                return Err(format!(
+                    "contributes_to[{i}].last_interacted must be a string; got {li_val}"
+                ));
+            }
+        }
+        if let Some(af_val) = obj.get("anomaly_flag") {
+            if !af_val.is_boolean() {
+                return Err(format!(
+                    "contributes_to[{i}].anomaly_flag must be a boolean; got {af_val}"
+                ));
+            }
+        }
+        if let Some(q_val) = obj.get("quantum") {
+            if let Err(e) = parse_quantum_word_or_float(q_val) {
+                return Err(format!("contributes_to[{i}].quantum: {e}"));
+            }
+        }
+        if let Some(sb_val) = obj.get("set_by") {
+            let s = sb_val
+                .as_str()
+                .ok_or_else(|| format!("contributes_to[{i}].set_by must be a string"))?;
+            if !matches!(s, "nic" | "agent-proposed" | "migrated") {
+                return Err(format!(
+                    "contributes_to[{i}].set_by \"{s}\" not in {{nic, agent-proposed, migrated}}"
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
 /// A contribution relationship from one node to another (strategic priority).
 ///
 /// Implements the Birnbaum importance model where weights are Renooij-Witteman

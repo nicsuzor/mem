@@ -81,77 +81,14 @@ pub fn batch_update(
                 }
             }
 
-            // Early validation of update fields
+            // Early validation of update fields (mem_07e63c6c)
             for (key, value) in m {
-                match key.as_str() {
-                    "status" => {
-                        // Status validation is deferred to per-node loop
-                        // since non-task nodes can have arbitrary statuses.
-                    }
-                    "type" => {
-                        if let Some(t) = value.as_str() {
-                            if !crate::graph::is_valid_node_type(t) {
-                                summary.errors.push(TaskError {
-                                    id: "".to_string(),
-                                    error: format!("Invalid document type: {}", t),
-                                });
-                                return summary;
-                            }
-                        }
-                    }
-                    "intent" | "priority" => {
-                        if let Some(p) = value.as_i64() {
-                            if !crate::graph::is_valid_intent(p as i32) {
-                                summary.errors.push(TaskError {
-                                    id: "".to_string(),
-                                    error: format!(
-                                        "Invalid intent: {}. Must be between 0 and 4.",
-                                        p
-                                    ),
-                                });
-                                return summary;
-                            }
-                        }
-                    }
-                    "effort" => {
-                        if let Some(e) = value.as_str() {
-                            if !crate::graph::is_valid_effort(e) {
-                                summary.errors.push(TaskError {
-                                    id: "".to_string(),
-                                    error: format!("Invalid effort: {}. Expected duration string like '1d', '2h', '1w' (minimum '1h'). For size labels like 'S', 'M', 'L', use 'complexity' instead.", e),
-                                });
-                                return summary;
-                            }
-                        }
-                    }
-                    "links" => {
-                        if let Err(e) = crate::graph::validate_links_value(value) {
-                            summary.errors.push(TaskError {
-                                id: "".to_string(),
-                                error: e,
-                            });
-                            return summary;
-                        }
-                    }
-                    "worth" => {
-                        if let Err(e) = crate::graph::validate_worth_value(value) {
-                            summary.errors.push(TaskError {
-                                id: "".to_string(),
-                                error: e,
-                            });
-                            return summary;
-                        }
-                    }
-                    "deadline_class" => {
-                        if let Err(e) = crate::graph::validate_deadline_class_value(value) {
-                            summary.errors.push(TaskError {
-                                id: "".to_string(),
-                                error: e,
-                            });
-                            return summary;
-                        }
-                    }
-                    _ => {}
+                if let Err(e) = crate::document_crud::validate_update_field(key, value) {
+                    summary.errors.push(TaskError {
+                        id: "".to_string(),
+                        error: e,
+                    });
+                    return summary;
                 }
             }
             m
