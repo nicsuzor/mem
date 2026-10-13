@@ -21,9 +21,14 @@ use std::sync::Arc;
     about = "PKB — semantic search, task management, and MCP server for your knowledge base"
 )]
 struct Cli {
-    /// Path to the PKB root directory
-    #[arg(long, global = true, default_value_t = default_pkb_root())]
-    pkb_root: String,
+    /// Path to the PKB root directory (formerly --pkb-root, which is deprecated)
+    #[arg(
+        long = "root",
+        visible_alias = "pkb-root",
+        global = true,
+        default_value_t = default_pkb_root()
+    )]
+    root: String,
 
     /// Path to the persistent vector database file
     #[arg(long, global = true, default_value_t = default_db_path())]
@@ -599,10 +604,6 @@ enum Commands {
 
     /// Start the PKB Language Server Protocol (LSP) server on stdio (for VS Code, etc.)
     Lsp {
-        /// Optional path to the PKB root directory (overrides global --pkb-root)
-        #[arg(long)]
-        root: Option<PathBuf>,
-
         /// Accept --stdio flag passed automatically by LSP clients (VS Code, etc.)
         #[arg(long)]
         stdio: bool,
@@ -1052,6 +1053,9 @@ fn print_staleness_warning(pkb_root: &std::path::Path, missing_id: &str) {
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
+    if std::env::args().any(|arg| arg == "--pkb-root" || arg.starts_with("--pkb-root=")) {
+        eprintln!("warning: --pkb-root is deprecated, please use --root instead");
+    }
     let command = cli.command.unwrap_or(Commands::Focus { limit: 20 });
     let is_protocol_server = matches!(command, Commands::Mcp { .. } | Commands::Lsp { .. });
 
@@ -1094,15 +1098,10 @@ async fn main() -> Result<()> {
             .init();
     }
 
-    let pkb_root = if !cli.pkb_root.is_empty() {
-        PathBuf::from(mem::document_crud::expand_env_vars(&cli.pkb_root))
+    let pkb_root = if !cli.root.is_empty() {
+        PathBuf::from(mem::document_crud::expand_env_vars(&cli.root))
     } else if let Ok(aca) = std::env::var("ACA_DATA") {
         PathBuf::from(mem::document_crud::expand_env_vars(&aca))
-    } else if let Commands::Lsp {
-        root: Some(ref r), ..
-    } = command
-    {
-        r.clone()
     } else if matches!(command, Commands::Lsp { .. }) {
         std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
     } else {
@@ -3543,8 +3542,8 @@ async fn main() -> Result<()> {
             println!();
         }
 
-        Commands::Lsp { root, .. } => {
-            let lsp_root = root.unwrap_or(pkb_root);
+        Commands::Lsp { .. } => {
+            let lsp_root = pkb_root;
             eprintln!("🔍 PKB LSP Server starting over stdio...");
             eprintln!("   PKB root: {}", lsp_root.display());
             let server = mem::lsp::LspServer::new(lsp_root);
@@ -3626,8 +3625,8 @@ async fn main() -> Result<()> {
             if http {
                 // HTTP/SSE mode
                 use rmcp::transport::streamable_http_server::{
-                    StreamableHttpServerConfig, StreamableHttpService,
-                    session::local::LocalSessionManager,
+                    session::local::LocalSessionManager, StreamableHttpServerConfig,
+                    StreamableHttpService,
                 };
 
                 let ct = tokio_util::sync::CancellationToken::new();
