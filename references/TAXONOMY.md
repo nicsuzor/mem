@@ -207,7 +207,7 @@ The tree hierarchy is a **spanning tree** of the underlying dependency graph. It
 | `ready`       | Decomposed to leaf tasks with all hard dependencies resolved                     |
 | `queued`      | User has promoted this task for agent dispatch, by hand or by asking for the work |
 | `in_progress` | Claimed by an agent or human — actively being worked                             |
-| `review`      | Awaiting human review — either mid-flight attention or post-PR changes requested |
+| `review`      | Worker asking for help from the agent that next picks it up — mid-flight handback or escalation |
 | `partial`     | Worker legitimately stopped at a scope seam — draft PR plus a live follow-up task. Not merge-ready, not done; the follow-up child carries the remainder |
 | `done`        | Complete — no further action required                                            |
 | `paused`      | Intentionally stopped with intent to resume — work was in-flight but deferred    |

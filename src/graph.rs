@@ -1465,7 +1465,7 @@ pub fn parse_effort_days(effort: &str) -> Option<i64> {
 /// - **ready**: decomposed with dependencies resolved (auto-computed)
 /// - **queued**: human-gated — available for agent dispatch (manual promotion)
 /// - **in_progress**: claimed and actively being worked
-/// - **review**: awaiting human review (mid-flight or post-PR)
+/// - **review**: worker asking for help from the agent that next picks it up
 /// - **done**: completed successfully
 /// - **blocked**: waiting on an unresolved external dependency
 /// - **paused**: intentionally stopped mid-flight with intent to resume
@@ -3095,53 +3095,6 @@ impl GraphNode {
     /// Flow state of this node (open | done | gone) mapped from status (§2, C8).
     pub fn flow_state(&self) -> FlowState {
         status_to_flow_state(self.status.as_deref())
-    }
-
-    /// Returns true if this node represents a structurally-identified human gate
-    /// (e.g. awaiting human decision, review, approval, or sign-off).
-    ///
-    /// Structurally identified from:
-    /// - `status == "review"` (task parked awaiting human review)
-    /// - tags indicating human gating (`human-approval`, `decision`, `sign-off`, `signoff`,
-    ///   `one-way-door`, `wf-human-approval`)
-    /// - title/label conventions with boundary delimiters (`DECISION:`, `DECISION (`, `SIGN-OFF:`, `Sign-off - `, `Sign-off:`)
-    pub fn is_human_gate(&self) -> bool {
-        if let Some(ref s) = self.status {
-            if s.eq_ignore_ascii_case("review") {
-                return true;
-            }
-        }
-        for tag in &self.tags {
-            let t = tag.as_str();
-            if t.eq_ignore_ascii_case("human-approval")
-                || t.eq_ignore_ascii_case("decision")
-                || t.eq_ignore_ascii_case("sign-off")
-                || t.eq_ignore_ascii_case("signoff")
-                || t.eq_ignore_ascii_case("one-way-door")
-                || t.eq_ignore_ascii_case("wf-human-approval")
-            {
-                return true;
-            }
-        }
-        const GATE_PREFIXES: &[&str] = &[
-            "decision:",
-            "decision (",
-            "decision - ",
-            "sign-off:",
-            "sign-off - ",
-            "sign-off (",
-            "signoff:",
-            "signoff - ",
-            "signoff (",
-        ];
-        for prefix in GATE_PREFIXES {
-            if self.label.len() >= prefix.len()
-                && self.label.as_bytes()[..prefix.len()].eq_ignore_ascii_case(prefix.as_bytes())
-            {
-                return true;
-            }
-        }
-        false
     }
 }
 

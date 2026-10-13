@@ -1211,35 +1211,18 @@ impl GraphStore {
     }
 
     /// Focus picks under the flow engine (§7.3, `pkb focus`):
-    /// the cliff lane, then the head of display_cmp over ready work and human gates.
+    /// the cliff lane, then the head of display_cmp over ready work.
     pub fn flow_focus_picks(
         &self,
         max: usize,
         today: chrono::NaiveDate,
         buffer_days: i64,
     ) -> (Vec<String>, Vec<String>) {
-        let completed_statuses = crate::graph::COMPLETED_STATUSES;
         let mut candidate_map: HashMap<String, &GraphNode> = HashMap::new();
 
         for id in &self.ready {
             if let Some(node) = self.nodes.get(id) {
                 candidate_map.insert(node.id.clone(), node);
-            }
-        }
-
-        for node in self.nodes.values() {
-            if node.is_human_gate()
-                && !completed_statuses.contains(&node.status.as_deref().unwrap_or(""))
-            {
-                let is_review = node
-                    .status
-                    .as_deref()
-                    .map(|s| s.eq_ignore_ascii_case("review"))
-                    .unwrap_or(false);
-                let is_unblocked = !self.is_blocked(&node.id);
-                if is_review || is_unblocked {
-                    candidate_map.insert(node.id.clone(), node);
-                }
             }
         }
 
@@ -2254,8 +2237,7 @@ impl GraphStore {
                 // ranking engine already reads for other terms (never a new
                 // field, never a tag someone has to remember to apply):
                 //   - nothing depends on it (`downstream_weight == 0`);
-                //   - nobody is named as waiting and it is not a structurally
-                //     identified human gate (`stakeholder`, `is_human_gate()`);
+                //   - nobody is named as waiting (`stakeholder`);
                 //   - no severity propagates to it from any target via
                 //     `contributes_to`/`blocks`/`children` (`urgency` stays at
                 //     the no-propagation floor even though `f(slack) == 10.0`
@@ -2294,7 +2276,6 @@ impl GraphStore {
 
                     let has_real_stakes = node.downstream_weight > 0.0
                         || node.stakeholder.is_some()
-                        || node.is_human_gate()
                         || node.urgency > COURTESY_URGENCY_CEILING
                         || intent_val < 2;
 
@@ -2412,7 +2393,7 @@ impl GraphStore {
         }
     }
 
-    /// Compute focus picks: top ready tasks and active human gates ranked by pre-computed focus_score.
+    /// Compute focus picks: top ready tasks ranked by pre-computed focus_score.
     /// Status-independent surfacing (spec §3.1): imminent deadlines (urgency >= 10000)
     /// appear regardless of status — in_progress and blocked tasks are included.
     pub fn focus_picks(&self, max: usize) -> Vec<String> {
@@ -2420,30 +2401,12 @@ impl GraphStore {
 
         // Collect candidates for focus picks:
         // - All ready tasks (from self.ready)
-        // - All active human gate tasks (non-completed tasks where is_human_gate() is true)
         let mut candidates: Vec<&GraphNode> = Vec::new();
         let mut candidate_ids: std::collections::HashSet<&str> = std::collections::HashSet::new();
 
         for id in &self.ready {
             if let Some(node) = self.nodes.get(id) {
                 if !node.affordable_loss_filtered && candidate_ids.insert(node.id.as_str()) {
-                    candidates.push(node);
-                }
-            }
-        }
-
-        for node in self.nodes.values() {
-            if node.is_human_gate()
-                && !completed_statuses.contains(&node.status.as_deref().unwrap_or(""))
-                && !node.affordable_loss_filtered
-            {
-                let is_review = node
-                    .status
-                    .as_deref()
-                    .map(|s| s.eq_ignore_ascii_case("review"))
-                    .unwrap_or(false);
-                let is_unblocked = !self.is_blocked(&node.id);
-                if (is_review || is_unblocked) && candidate_ids.insert(node.id.as_str()) {
                     candidates.push(node);
                 }
             }
@@ -2480,7 +2443,7 @@ impl GraphStore {
             }
         }
 
-        // 2. Fill remaining slots with top-scored candidates (ready tasks and human gates).
+        // 2. Fill remaining slots with top-scored candidates (ready tasks).
         for node in candidates {
             if result.len() >= max {
                 break;
@@ -7450,7 +7413,7 @@ mod tests {
             .format("%Y-%m-%d")
             .to_string();
 
-        // A: `status: review` (is_human_gate() == true), NO stakeholder.
+        // A: `status: review`, NO stakeholder.
         let mut a = GraphNode::default();
         a.status = Some("review".to_string());
         a.waiting_since = Some(d10_ago.clone());
@@ -7586,17 +7549,14 @@ mod tests {
     }
 
     /// Task aops_fd5283aa, superseded by ruling (Nic, 2026-09-11,
-    /// mem_537e44a9 "Verdict: stakeholder_waiting / human gate"): a
-    /// structurally-identified human gate (awaiting human decision / review
-    /// / sign-off) with NO named `stakeholder` earns no waiting-urgency
+    /// mem_537e44a9 "Verdict: stakeholder_waiting"): a
+    /// task with NO named `stakeholder` earns no waiting-urgency
     /// bonus — nobody is actually waiting on it. Only a real `stakeholder`
-    /// field triggers the 2000-8000 band; `is_human_gate()` alone no longer
-    /// does (it still gates the courtesy-decay mechanism and `focus_picks`
-    /// surfacing, both unaffected here). Ordinary tasks created by working
+    /// field triggers the 2000-8000 band. Ordinary tasks created by working
     /// agents must likewise not earn this bonus, so both groups now land in
     /// the same place — pure age-staleness.
     #[test]
-    fn test_human_gate_ranking_and_anti_gaming() {
+    fn test_gate_tag_ranking_and_anti_gaming() {
         use crate::graph::GraphNode;
         use chrono::Utc;
 
@@ -7689,21 +7649,19 @@ mod tests {
             "reference node with stakeholder: Nic scores only staleness (14)"
         );
 
-        // AC1 (superseded): structurally-identified human gates WITHOUT a named
-        // stakeholder now score only age staleness (14) — the same as an
-        // ordinary task. `is_human_gate()` alone no longer earns the waiting
-        // band; a real `stakeholder` is required (compare score_3d6 above).
+        // AC1 (superseded): tasks WITHOUT a named stakeholder now score only age staleness (14) —
+        // the same as an ordinary task. A real `stakeholder` is required (compare score_3d6 above).
         assert_eq!(
             score_72b, 14,
-            "task_72b7886e (human gate, no stakeholder) must score only staleness (14)"
+            "task_72b7886e (no stakeholder) must score only staleness (14)"
         );
         assert_eq!(
             score_21d, 14,
-            "task_21d3ece0 (human gate, no stakeholder) must score only staleness (14)"
+            "task_21d3ece0 (no stakeholder) must score only staleness (14)"
         );
         assert_eq!(
             score_ee2, 14,
-            "aops_ee205f8f (human gate, no stakeholder) must score only staleness (14)"
+            "aops_ee205f8f (no stakeholder) must score only staleness (14)"
         );
 
         // AC2: Normal task created by working agent earns only age staleness (14 points), cannot game waiting urgency
@@ -7714,17 +7672,16 @@ mod tests {
     }
 
     /// Task aops_fd5283aa AC3 & AC4:
-    /// AC3: A `review`-status human gate appears on `focus_picks` (and `pkb focus`).
-    /// AC4: Human gates in `review` status do NOT become claimable via `ready_tasks()`.
+    /// Focus picks exclude review status tasks; ready_tasks excludes review status tasks.
     #[test]
-    fn test_human_gate_focus_picks_surfacing_and_claimability() {
+    fn test_review_status_excluded_from_focus_picks_and_ready_tasks() {
         let docs = vec![
             make_doc_with_fields(
-                "tasks/human-gate.md",
+                "tasks/review-task.md",
                 "DECISION (Nic): push the rtk worker image",
                 "task",
                 "review",
-                "human-gate-1",
+                "review-task-1",
                 None,
                 &[],
                 Some("Nic"),
@@ -7744,29 +7701,22 @@ mod tests {
         ];
         let graph = GraphStore::build(&docs, Path::new("/tmp/test-pkb"));
 
-        // AC3: focus_picks must surface the review human gate
+        // Focus picks must not surface the review task
         let picks = graph.focus_picks(10);
         assert!(
-            picks.contains(&"human-gate-1".to_string()),
-            "review-status human gate must appear in focus_picks"
+            !picks.contains(&"review-task-1".to_string()),
+            "review-status task MUST NOT appear in focus_picks"
         );
         assert!(
             picks.contains(&"claimable-work-1".to_string()),
             "ready task must appear in focus_picks"
         );
-        // Ordering (superseded, mem_537e44a9 "Verdict: stakeholder_waiting /
-        // human gate"): this human gate carries no `stakeholder`, so it no
-        // longer earns an elevated waiting-urgency score purely from
-        // `is_human_gate()` — both nodes score 0 and neither outranks the
-        // other on that basis. `is_human_gate()` still drives *presence* in
-        // focus_picks and *exclusion* from ready_tasks() (AC3/AC4 below),
-        // which is what this test otherwise verifies.
 
-        // AC4: ready_tasks() must strictly exclude the review-status human gate (staying non-claimable by polecats)
+        // ready_tasks() must strictly exclude the review-status task (staying non-claimable by polecats)
         let ready_ids: Vec<&str> = graph.ready_tasks().iter().map(|n| n.id.as_str()).collect();
         assert!(
-            !ready_ids.contains(&"human-gate-1"),
-            "review-status human gate MUST NOT be in ready_tasks() (not claimable by polecats)"
+            !ready_ids.contains(&"review-task-1"),
+            "review-status task MUST NOT be in ready_tasks() (not claimable by polecats)"
         );
         assert!(
             ready_ids.contains(&"claimable-work-1"),
@@ -7775,79 +7725,7 @@ mod tests {
     }
 
     #[test]
-    fn test_human_gate_false_positive_prevention() {
-        let mut fp1 = GraphNode::default();
-        fp1.label = "Decision tree refactor".to_string();
-        fp1.status = Some("ready".to_string());
-        fp1.tags = vec!["refactor".to_string(), "ml".to_string()];
-        assert!(
-            !fp1.is_human_gate(),
-            "bare prefix 'Decision ' without boundary delimiter must not match"
-        );
-
-        let mut fp2 = GraphNode::default();
-        fp2.label = "Signoff process documentation".to_string();
-        fp2.status = Some("inbox".to_string());
-        fp2.tags = vec!["docs".to_string()];
-        assert!(
-            !fp2.is_human_gate(),
-            "bare prefix 'Signoff ' without boundary delimiter must not match"
-        );
-
-        let mut fp3 = GraphNode::default();
-        fp3.label = "Update parser documentation".to_string();
-        fp3.assignee = Some("nic".to_string());
-        fp3.status = Some("ready".to_string());
-        fp3.tags = vec!["docs".to_string()];
-        assert!(
-            !fp3.is_human_gate(),
-            "personal handle in assignee without structural gate marker must not match"
-        );
-
-        // Valid structured prefixes
-        let mut g1 = GraphNode::default();
-        g1.label = "DECISION: choose database engine".to_string();
-        assert!(g1.is_human_gate(), "'DECISION:' must match");
-
-        let mut g2 = GraphNode::default();
-        g2.label = "DECISION (Team): architecture choice".to_string();
-        assert!(g2.is_human_gate(), "'DECISION (' must match");
-
-        let mut g3 = GraphNode::default();
-        g3.label = "SIGN-OFF: release v2.0".to_string();
-        assert!(g3.is_human_gate(), "'SIGN-OFF:' must match");
-
-        let mut g4 = GraphNode::default();
-        g4.label = "Sign-off - migration checklist".to_string();
-        assert!(g4.is_human_gate(), "'Sign-off - ' must match");
-
-        let mut g5 = GraphNode::default();
-        g5.label = "Signoff: production rollout".to_string();
-        assert!(g5.is_human_gate(), "'Signoff:' must match");
-
-        // Valid structural tags
-        let structural_tags = [
-            "human-approval",
-            "decision",
-            "sign-off",
-            "signoff",
-            "one-way-door",
-            "wf-human-approval",
-        ];
-        for tag in &structural_tags {
-            let mut gn = GraphNode::default();
-            gn.label = "Regular task".to_string();
-            gn.tags = vec![tag.to_string()];
-            assert!(
-                gn.is_human_gate(),
-                "structural tag '{}' must classify as human gate",
-                tag
-            );
-        }
-    }
-
-    #[test]
-    fn test_blocked_human_gate_excluded_from_focus_picks() {
+    fn test_blocked_task_excluded_from_focus_picks() {
         let docs = vec![
             make_doc_with_fields(
                 "tasks/prereq.md",
@@ -7861,11 +7739,11 @@ mod tests {
                 &[],
             ),
             make_doc_with_fields(
-                "tasks/blocked-gate.md",
+                "tasks/blocked-task.md",
                 "DECISION: deploy to cluster",
                 "task",
-                "queued",
-                "blocked-gate-1",
+                "ready",
+                "blocked-task-1",
                 None,
                 &["prereq-1"],
                 None,
@@ -7886,20 +7764,20 @@ mod tests {
         let graph = GraphStore::build(&docs, Path::new("/tmp/test-pkb"));
 
         assert!(
-            graph.is_blocked("blocked-gate-1"),
-            "gate with unfinished prerequisite must be classified as blocked"
+            graph.is_blocked("blocked-task-1"),
+            "task with unfinished prerequisite must be classified as blocked"
         );
         let picks = graph.focus_picks(10);
         assert!(
-            !picks.contains(&"blocked-gate-1".to_string()),
-            "blocked human gate with unfinished dependency MUST NOT appear in focus_picks"
+            !picks.contains(&"blocked-task-1".to_string()),
+            "blocked task with unfinished dependency MUST NOT appear in focus_picks"
         );
         assert!(
             picks.contains(&"ready-work-1".to_string()),
             "unblocked ready work MUST appear in focus_picks"
         );
 
-        // When prerequisite finishes, the human gate is unblocked and surfaces
+        // When prerequisite finishes, the task is unblocked and surfaces
         let docs_resolved = vec![
             make_doc_with_fields(
                 "tasks/prereq.md",
@@ -7913,11 +7791,11 @@ mod tests {
                 &[],
             ),
             make_doc_with_fields(
-                "tasks/blocked-gate.md",
+                "tasks/blocked-task.md",
                 "DECISION: deploy to cluster",
                 "task",
-                "queued",
-                "blocked-gate-1",
+                "ready",
+                "blocked-task-1",
                 None,
                 &["prereq-1"],
                 None,
@@ -7926,13 +7804,13 @@ mod tests {
         ];
         let graph_resolved = GraphStore::build(&docs_resolved, Path::new("/tmp/test-pkb"));
         assert!(
-            !graph_resolved.is_blocked("blocked-gate-1"),
-            "gate with completed dependency is unblocked"
+            !graph_resolved.is_blocked("blocked-task-1"),
+            "task with completed dependency is unblocked"
         );
         let picks_resolved = graph_resolved.focus_picks(10);
         assert!(
-            picks_resolved.contains(&"blocked-gate-1".to_string()),
-            "unblocked human gate MUST now surface in focus_picks"
+            picks_resolved.contains(&"blocked-task-1".to_string()),
+            "unblocked ready task MUST now surface in focus_picks"
         );
     }
 
@@ -12028,7 +11906,7 @@ mod tests {
 
     /// Build a structurally-inert overdue node carrying only a
     /// `value_lineage` baseline: no downstream weight, no
-    /// stakeholder/human-gate, no propagated urgency, default (P4) intent —
+    /// stakeholder, no propagated urgency, default (P4) intent —
     /// i.e. a task the courtesy-decay gate should treat as carrying no real
     /// stakes. `days_overdue` is relative to `Utc::now()` so the test stays
     /// deterministic regardless of when it runs.
@@ -12149,17 +12027,39 @@ mod tests {
     }
 
     #[test]
-    fn test_courtesy_decay_escape_via_human_gate() {
-        // `status == "review"` makes `is_human_gate()` true (a structurally
-        // identified human decision gate) — decay must not apply even though
-        // no explicit `stakeholder` name is set.
-        let mut n = inert_overdue_node_with_value("t-gate", 81, 4000.0);
-        n.status = Some("review".to_string());
-
-        let mut nodes = vec![n];
-        GraphStore::compute_focus_scores(&mut nodes);
-        let tuple = nodes[0].focus_tuple.as_ref().unwrap();
-        assert_eq!(tuple.cost_of_delay, 77756, "human gate escapes decay");
+    fn test_courtesy_decay_no_escape_via_review_status_gate_tags_or_title_prefixes() {
+        // status == "review", gate tags, and title prefixes do NOT escape decay:
+        // without real stakes, cost_of_delay decays from 77756 to 32765 at 81 days overdue.
+        for n in [
+            {
+                let mut n = inert_overdue_node_with_value("t-review", 81, 4000.0);
+                n.status = Some("review".to_string());
+                n
+            },
+            {
+                let mut n = inert_overdue_node_with_value("t-tag-decision", 81, 4000.0);
+                n.tags = vec!["decision".to_string(), "human-approval".to_string()];
+                n
+            },
+            {
+                let mut n = inert_overdue_node_with_value("t-prefix-decision", 81, 4000.0);
+                n.label = "DECISION: choose database engine".to_string();
+                n
+            },
+            {
+                let mut n = inert_overdue_node_with_value("t-prefix-signoff", 81, 4000.0);
+                n.label = "SIGN-OFF: release v2.0".to_string();
+                n
+            },
+        ] {
+            let mut nodes = vec![n];
+            GraphStore::compute_focus_scores(&mut nodes);
+            let tuple = nodes[0].focus_tuple.as_ref().unwrap();
+            assert_eq!(
+                tuple.cost_of_delay, 32765,
+                "review status, gate tags, and title prefixes must not escape decay"
+            );
+        }
     }
 
     #[test]

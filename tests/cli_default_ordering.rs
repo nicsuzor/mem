@@ -102,7 +102,9 @@ fn ordered_ids_with_env(
         .env("AOPS_OFFLINE", "1")
         .env("ACA_DATA", dir.to_string_lossy().as_ref())
         .env_remove("PKB_RANKING")
-        .env_remove("AOPS_RANKING");
+        .env_remove("AOPS_RANKING")
+        .env_remove("AOPS_SESSIONS")
+        .env_remove("AOPS_POLECAT_CONFIG");
     for (k, v) in envs {
         cmd.env(k, v);
     }
@@ -151,6 +153,8 @@ fn ordered_tree_ids(dir: &std::path::Path, extra: &[&str]) -> Vec<String> {
         .env("ACA_DATA", dir.to_string_lossy().as_ref())
         .env_remove("PKB_RANKING")
         .env_remove("AOPS_RANKING")
+        .env_remove("AOPS_SESSIONS")
+        .env_remove("AOPS_POLECAT_CONFIG")
         .kill_on_parent_death()
         .output()
         .expect("run pkb tasks tree");
@@ -194,7 +198,9 @@ fn ordered_focus_ids_with_env(
         .env("AOPS_OFFLINE", "1")
         .env("ACA_DATA", dir.to_string_lossy().as_ref())
         .env_remove("PKB_RANKING")
-        .env_remove("AOPS_RANKING");
+        .env_remove("AOPS_RANKING")
+        .env_remove("AOPS_SESSIONS")
+        .env_remove("AOPS_POLECAT_CONFIG");
     for (k, v) in envs {
         cmd.env(k, v);
     }

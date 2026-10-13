@@ -92,7 +92,7 @@ flowchart LR
 
 ```
 inbox → ready → queued → in_progress → done (work complete and verified)
-                                     → review (needs human attention)
+                                     → review (worker asking for help from the agent that next picks it up)
                                      → blocked (external dependency)
                                      → cancelled (abandoned)
                                      → partial (draft PR + live follow-up task)

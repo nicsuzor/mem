@@ -89,7 +89,7 @@ Ranking is produced by the explicit 3-component tuple `FocusTuple`:
 | 3. deadline_pressure_mult. | 1 + 2*sqrt(ratio) on value_points; see §2.3       | 1.0 – ∞ (decays) |
 | 4. age_staleness_bonus     | If pri >= 2: min(days_since_created, 200)         | 0 – 200          |
 | 5. downstream_weight × 10  | (downstream_weight * 10.0) as i64                 | 0 – ~53 (obs)    |
-| 6. stakeholder/human gate  | Removed (§2.6; informational only)                 | 0                |
+| 6. stakeholder waiting     | Removed (§2.6; informational only)                 | 0                |
 | 7. urgency_term            | round(node.urgency); added unmultiplied           | 0 – 10,000+      |
 | 8. voi_term                | round(node.voi_value) (leaf nodes only); unmult.  | 0 – 5,000        |
 | 9. affordable_loss         | Non-compensatory filter zeroing unaffordable tasks| Bool filter      |
@@ -164,7 +164,6 @@ Without this term, an overdue `due` date presses harder without limit, forever, 
   ```
   has_real_stakes = downstream_weight > 0.0
       OR stakeholder.is_some()
-      OR is_human_gate()
       OR urgency > 50.0          // no severity propagated to it (§4.3): while
                                   // overdue f(slack) == 10.0 for every node, so
                                   // urgency ≈ 10 × propagated_S_lex; 50 sits
