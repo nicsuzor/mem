@@ -192,6 +192,9 @@ impl PkbSearchServer {
                 "release_summary",
                 "contributes_to",
                 "classification",
+                "links",
+                "worth",
+                "deadline_class",
                 "allow_missing_parent",
                 "force",
             ];
@@ -201,7 +204,7 @@ impl PkbSearchServer {
                 .copied()
                 .filter(|k| !KNOWN_KEYS.contains(k))
                 .collect();
-            tracing::info!(
+            tracing::debug!(
                 target: "pkb::create_task",
                 title = %title,
                 received_keys = ?received,
@@ -233,6 +236,28 @@ impl PkbSearchServer {
 
         if let Some(body) = args.get("body").and_then(|v| v.as_str()) {
             self.reject_machine_paths(body, None)?;
+        }
+
+        if let Some(links_val) = args.get("links") {
+            crate::graph::validate_links_value(links_val).map_err(|e| McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from(e),
+                data: None,
+            })?;
+        }
+        if let Some(worth_val) = args.get("worth") {
+            crate::graph::validate_worth_value(worth_val).map_err(|e| McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from(e),
+                data: None,
+            })?;
+        }
+        if let Some(dc_val) = args.get("deadline_class") {
+            crate::graph::validate_deadline_class_value(dc_val).map_err(|e| McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from(e),
+                data: None,
+            })?;
         }
 
         let fields = crate::document_crud::TaskFields {
@@ -338,6 +363,16 @@ impl PkbSearchServer {
                 .and_then(|v| v.as_array())
                 .cloned()
                 .unwrap_or_default(),
+            links: args
+                .get("links")
+                .and_then(|v| v.as_array())
+                .cloned()
+                .unwrap_or_default(),
+            worth: args.get("worth").cloned(),
+            deadline_class: args
+                .get("deadline_class")
+                .and_then(|v| v.as_str())
+                .map(String::from),
             classification: args
                 .get("classification")
                 .and_then(|v| v.as_str())
@@ -576,6 +611,63 @@ impl PkbSearchServer {
     /// in-place claim. See `mem_e8f3aa17` / `task_9d568b1b`.
     pub(crate) fn handle_get_task(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
         self.ensure_graph_fresh();
+
+        if let Some(id_array) = args.get("ids").and_then(|v| v.as_array()) {
+            let mut items = Vec::new();
+            let mut not_found = Vec::new();
+            let mut timed_out = Vec::new();
+            let budget_ms = args.get("budget_ms").and_then(|v| v.as_u64());
+            let start = std::time::Instant::now();
+
+            for (idx, id_val) in id_array.iter().enumerate() {
+                let id_str = id_val.as_str().unwrap_or_default();
+                if let Some(b) = budget_ms {
+                    if start.elapsed().as_millis() as u64 >= b {
+                        for rem in &id_array[idx..] {
+                            let s = rem.as_str().unwrap_or_default();
+                            timed_out.push(serde_json::json!(s));
+                        }
+                        break;
+                    }
+                }
+                let mut single_args = args.clone();
+                if let Some(obj) = single_args.as_object_mut() {
+                    obj.remove("ids");
+                    obj.insert("id".to_string(), serde_json::json!(id_str));
+                    if !obj.contains_key("detail") {
+                        obj.insert("detail".to_string(), serde_json::json!("summary"));
+                    }
+                }
+                match self.handle_get_task_single(&single_args) {
+                    Ok(res) => {
+                        if let Some(val) = res.structured_content {
+                            items.push(val);
+                        } else if let Some(first) = res.content.first().and_then(|c| c.raw.as_text()) {
+                            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&first.text) {
+                                items.push(v);
+                            }
+                        }
+                    }
+                    Err(_) => {
+                        not_found.push(serde_json::json!(id_str));
+                    }
+                }
+            }
+            let mut res_obj = serde_json::json!({
+                "items": items,
+                "not_found": not_found,
+            });
+            if budget_ms.is_some() || !timed_out.is_empty() {
+                res_obj["timed_out"] = serde_json::json!(timed_out);
+            }
+            let text = serde_json::to_string_pretty(&res_obj).unwrap_or_default();
+            return Ok(Self::structured_result(text, res_obj));
+        }
+
+        self.handle_get_task_single(args)
+    }
+
+    pub(crate) fn handle_get_task_single(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
         let id = args
             .get("id")
             .and_then(|v| v.as_str())
@@ -770,11 +862,20 @@ impl PkbSearchServer {
             body
         };
 
+        let detail = args.get("detail").and_then(|v| v.as_str());
         let max_bytes = args
             .get("max_bytes")
             .and_then(|v| v.as_u64())
-            .map(|v| v as usize);
-        let body = Self::truncate_body(body, max_bytes);
+            .map(|v| v as usize)
+            .or(Some(4000));
+        let (body, truncated, total_bytes) = if detail == Some("summary") {
+            let limit = max_bytes.unwrap_or(300).min(300);
+            let (exc, was_cut) = Self::excerpt_body(&body, limit);
+            let total = body.len();
+            (exc, was_cut, total)
+        } else {
+            Self::truncate_body_with_info(body, max_bytes)
+        };
 
         // Compute deadline metadata
         let today = chrono::Utc::now().date_naive();
@@ -830,13 +931,37 @@ impl PkbSearchServer {
             .get("include_signals")
             .and_then(|v| v.as_bool())
             .unwrap_or(true);
+        let include_routes = args
+            .get("include_routes")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true);
         let metadata_only = args
             .get("metadata_only")
             .and_then(|v| v.as_bool())
-            .unwrap_or(false);
+            .unwrap_or(false)
+            || detail == Some("metadata");
+
+        let buffer_days = crate::display_rank::DISPLAY_CLIFF_BUFFER_DAYS;
+        let eff = crate::display_rank::resolve_effort_days(node.effort.as_deref());
+        let mapped_deadline_class = node.deadline_class.map(|dc| match dc {
+            crate::graph::DeadlineClass::Fake => crate::display_rank::DeadlineClass::Fake,
+            crate::graph::DeadlineClass::Soft => crate::display_rank::DeadlineClass::Soft,
+            crate::graph::DeadlineClass::Hard => crate::display_rank::DeadlineClass::Hard,
+        });
+        let due_date = node.due.as_deref().and_then(crate::display_rank::parse_due_date);
+        let display = crate::display_rank::TaskDisplay::new(
+            node.classification.as_deref() == Some("ready"),
+            graph.is_blocked(&node.id),
+            due_date,
+            mapped_deadline_class,
+            eff,
+            today,
+            buffer_days,
+        );
 
         let mut result = serde_json::json!({
             "id": node.task_id.as_deref().unwrap_or(&node.id),
+            "title": node.label,
             "status": node.status,
             "project": node.project,
             "classification": node.classification,
@@ -852,30 +977,50 @@ impl PkbSearchServer {
             "contributes_to": contributes_to,
             "contributed_by": node.contributed_by,
             "follow_up_tasks": node.follow_up_tasks,
-            "intent": node.intent.unwrap_or(4),
-            "effective_intent": node.effective_intent.unwrap_or(node.intent.unwrap_or(4)),
             "focus_score": node.focus_score,
             "blocked": graph.is_blocked(&node.id),
-            "stakeholder_exposure": node.stakeholder_exposure,
-            "stakeholder": node.stakeholder,
-            "waiting_since": node.waiting_since,
-            "due": node.due,
-            "effort": node.effort,
-            "consequence": node.consequence,
-            "severity": node.severity,
-            "goal_type": node.goal_type,
-            "standing_weight": node.standing_weight,
-            "edge_template": node.edge_template,
             "parse_warnings": node.parse_warnings,
             "days_until_due": days_until_due,
             "urgency_ratio": urgency_ratio,
+            "links_out": graph.links_out(&node.id),
+            "links_in": graph.links_in(&node.id),
+            "flow": node.flow,
+            "display": display,
+            "truncated": truncated,
+            "body_bytes": total_bytes,
         });
+
+        if include_routes {
+            if let Some((routes, truncated, explanation)) = graph.routes_for_node(&node.id) {
+                let routes_map: std::collections::BTreeMap<String, Vec<crate::flow::Route>> = routes
+                    .into_iter()
+                    .map(|(t, tr)| (t, tr.routes))
+                    .collect();
+                result["routes"] = serde_json::to_value(&routes_map).unwrap_or(serde_json::json!({}));
+                result["routes_truncated"] = serde_json::json!(truncated);
+                result["explanation"] = serde_json::json!(explanation);
+            } else {
+                result["routes"] = serde_json::json!({});
+                result["routes_truncated"] = serde_json::json!(false);
+                result["explanation"] = serde_json::json!("");
+            }
+        }
 
         if !metadata_only {
             result["body"] = serde_json::json!(body);
         }
 
-        if include_signals {
+        if graph.ranking_mode() == crate::polecat_config::RankingMode::Flow {
+            if let Some(map) = result.as_object_mut() {
+                map.remove("focus_score");
+                map.remove("effective_intent");
+                map.remove("stakeholder_exposure");
+                map.remove("target_ancestors");
+                map.remove("urgency_ratio");
+                map.remove("standing_weight");
+                map.remove("signals");
+            }
+        } else if include_signals {
             result["signals"] = serde_json::json!({
                 "criticality": node.criticality,
                 "urgency": node.urgency,
@@ -897,8 +1042,10 @@ impl PkbSearchServer {
             }
         }
 
+        Self::prune_null_and_empty(&mut result);
+
         let json = serde_json::to_string_pretty(&result).unwrap_or_default();
-        Ok(CallToolResult::success(vec![Content::text(json)]))
+        Ok(Self::structured_result(json, result))
     }
 
     // =========================================================================
@@ -986,12 +1133,22 @@ impl PkbSearchServer {
                 .map(|(dep_id, depth)| {
                     let dep_node = graph.resolve(dep_id);
                     let label = dep_node.map(|n| n.label.as_str()).unwrap_or("?");
-                    let status = dep_node.and_then(|n| n.status.as_deref()).unwrap_or("?");
+                    let (status, gain, loss_averted) = if let Some(n) = dep_node {
+                        (
+                            n.status.as_deref().unwrap_or("?"),
+                            n.flow.as_ref().and_then(|f| f.gain),
+                            n.flow.as_ref().and_then(|f| f.loss_averted),
+                        )
+                    } else {
+                        ("?", None, None)
+                    };
                     serde_json::json!({
                         "id": dep_id,
                         "depth": depth,
                         "title": label,
                         "status": status,
+                        "gain": gain,
+                        "loss_averted": loss_averted,
                     })
                 })
                 .collect();
@@ -1188,6 +1345,13 @@ impl PkbSearchServer {
         let title_contains = args.get("title_contains").and_then(|v| v.as_str());
         let complexity = args.get("complexity").and_then(|v| v.as_str());
         let weight_gte = args.get("weight_gte").and_then(|v| v.as_i64());
+        let gain_gte = args.get("gain_gte").and_then(|v| v.as_f64());
+        let loss_averted_gte = args.get("loss_averted_gte").and_then(|v| v.as_f64());
+        let task_sort = args
+            .get("sort")
+            .and_then(|v| v.as_str())
+            .and_then(crate::display_rank::TaskSort::from_str_loose)
+            .unwrap_or(crate::display_rank::TaskSort::Default);
         let project = args.get("project").and_then(|v| v.as_str());
         let focus_score_gte = args.get("focus_score_gte").and_then(|v| v.as_i64());
         let tags: Vec<String> = args
@@ -1220,7 +1384,11 @@ impl PkbSearchServer {
         let format = args
             .get("format")
             .and_then(|v| v.as_str())
-            .unwrap_or("markdown");
+            .unwrap_or(if args.get("fields").is_some() || args.get("budget_ms").is_some() {
+                "json"
+            } else {
+                "markdown"
+            });
         let fields_filter: Option<HashSet<String>> = args.get("fields").and_then(|v| {
             if let Some(arr) = v.as_array() {
                 Some(
@@ -1238,10 +1406,10 @@ impl PkbSearchServer {
             }
         });
 
-        // Computed before taking the graph read lock below: list_staleness_signal
-        // takes its own read lock internally, and parking_lot's RwLock is not
-        // safe to read-lock reentrantly on the same thread (aops_fb137646 AC2).
-        let staleness = self.list_staleness_signal();
+        // Before taking the graph read lock below: ensure_graph_fresh takes its
+        // own locks internally, and parking_lot's RwLock is not safe to
+        // read-lock reentrantly on the same thread (aops_fb137646 AC2).
+        self.ensure_graph_fresh();
 
         let graph = self.graph.read();
 
@@ -1297,7 +1465,21 @@ impl PkbSearchServer {
         }
 
         if let Some(pri) = intent {
-            tasks.retain(|t| t.effective_intent.unwrap_or(4) <= pri);
+            if graph.ranking_mode() == crate::polecat_config::RankingMode::Flow {
+                tasks.retain(|t| t.intent.unwrap_or(4) <= pri);
+            } else {
+                tasks.retain(|t| t.effective_intent.unwrap_or(4) <= pri);
+            }
+        }
+        if let Some(min_gain) = gain_gte {
+            tasks.retain(|t| {
+                t.flow.as_ref().and_then(|f| f.gain).unwrap_or(0.0) >= min_gain
+            });
+        }
+        if let Some(min_loss) = loss_averted_gte {
+            tasks.retain(|t| {
+                t.flow.as_ref().and_then(|f| f.loss_averted).unwrap_or(0.0) >= min_loss
+            });
         }
         if let Some(sev) = severity {
             tasks.retain(|t| t.severity == Some(sev));
@@ -1415,15 +1597,13 @@ impl PkbSearchServer {
             } else {
                 "No tasks found matching filters."
             };
-            let label = match staleness {
-                Some((disk_count, index_count)) => format!(
-                    "{label}\n\nWARNING: the in-memory index ({index_count} nodes) disagrees \
-                     with disk ({disk_count} files) — this empty result may be wrong. \
-                     Call refresh_graph and retry before trusting it."
-                ),
-                None => label.to_string(),
-            };
-            return Ok(CallToolResult::success(vec![Content::text(label)]));
+            let zero = serde_json::json!({
+                "total": 0,
+                "showing": 0,
+                "items": [],
+                "tasks": [],
+            });
+            return Ok(Self::structured_result(label.to_string(), zero));
         }
 
         // Default ordering (AC1/AC6): focus_score DESC with a deterministic
@@ -1432,7 +1612,15 @@ impl PkbSearchServer {
         // the top-`limit` rows are the highest-focus tasks, and applied to every
         // path (default / ready / blocked / filtered) since they all funnel into
         // `tasks`. Shares the same comparator as the CLI `list` default for parity.
-        GraphStore::sort_by_focus(&mut tasks);
+        let today = chrono::Utc::now().date_naive();
+        let buffer_days = crate::display_rank::DISPLAY_CLIFF_BUFFER_DAYS;
+        if graph.ranking_mode() == crate::polecat_config::RankingMode::Flow
+            || task_sort != crate::display_rank::TaskSort::Default
+        {
+            GraphStore::sort_by_display_with_sort(&mut tasks, task_sort, today, buffer_days);
+        } else {
+            GraphStore::sort_by_focus(&mut tasks);
+        }
 
         let total = tasks.len();
         tasks.truncate(limit);
@@ -1480,23 +1668,11 @@ impl PkbSearchServer {
                     }
                 }
             }
-            let mut result = serde_json::json!({
+            let result = serde_json::json!({
                 "total": total,
                 "showing": tasks.len(),
                 "tasks": tasks_val,
             });
-            if let Some((disk_count, index_count)) = staleness {
-                if let Some(obj) = result.as_object_mut() {
-                    obj.insert(
-                        "index_warning".to_string(),
-                        serde_json::json!({
-                            "message": "the in-memory index disagrees with disk; results above may under- or over-count. Call refresh_graph and retry.",
-                            "disk_file_count": disk_count,
-                            "index_node_count": index_count,
-                        }),
-                    );
-                }
-            }
             return Ok(CallToolResult::success(vec![Content::text(
                 serde_json::to_string_pretty(&result).unwrap_or_default(),
             )]));
@@ -1512,22 +1688,76 @@ impl PkbSearchServer {
                 format!("\n\n  {} tasks", total)
             };
             out.push_str(&count_label);
-            if let Some((disk_count, index_count)) = staleness {
-                out.push_str(&format!(
-                    "\n\nWARNING: the in-memory index ({index_count} nodes) disagrees \
-                     with disk ({disk_count} files) — results above may under- or over-count. \
-                     Call refresh_graph and retry."
-                ));
-            }
             return Ok(CallToolResult::success(vec![Content::text(out)]));
         }
 
         // JSON output mode
         if format.eq_ignore_ascii_case("json") {
-            let json_tasks: Vec<serde_json::Value> = tasks
-                .iter()
-                .map(|t| {
-                    let mut obj = serde_json::json!({
+            let budget_ms = args.get("budget_ms").and_then(|v| v.as_u64());
+            let start_time = std::time::Instant::now();
+            let mut timed_out: Vec<String> = Vec::new();
+
+            let wants_body_excerpt = fields_filter
+                .as_ref()
+                .map(|f| f.contains("body_excerpt") || f.contains("excerpt"))
+                .unwrap_or(false);
+            let wants_rel_summary = fields_filter
+                .as_ref()
+                .map(|f| f.contains("relationship_summary"))
+                .unwrap_or(true);
+
+            let mut json_tasks: Vec<serde_json::Value> = Vec::new();
+            for (idx, t) in tasks.iter().enumerate() {
+                if let Some(b) = budget_ms {
+                    if start_time.elapsed().as_millis() as u64 >= b {
+                        for rem in &tasks[idx..] {
+                            let rem_id = rem.task_id.as_deref().unwrap_or(&rem.id);
+                            timed_out.push(rem_id.to_string());
+                        }
+                        break;
+                    }
+                }
+
+                let mut obj = if graph.ranking_mode() == crate::polecat_config::RankingMode::Flow {
+                    let flow = t.flow.as_ref();
+                    let eff = crate::display_rank::resolve_effort_days(t.effort.as_deref());
+                    let mapped_deadline_class = t.deadline_class.map(|dc| match dc {
+                        crate::graph::DeadlineClass::Fake => crate::display_rank::DeadlineClass::Fake,
+                        crate::graph::DeadlineClass::Soft => crate::display_rank::DeadlineClass::Soft,
+                        crate::graph::DeadlineClass::Hard => crate::display_rank::DeadlineClass::Hard,
+                    });
+                    let due_date = t.due.as_deref().and_then(crate::display_rank::parse_due_date);
+                    let on_cliff = crate::display_rank::is_on_cliff(due_date, mapped_deadline_class, eff, today, buffer_days);
+                    serde_json::json!({
+                        "id": t.task_id.as_deref().unwrap_or(&t.id),
+                        "title": t.label,
+                        "status": t.status.as_deref().unwrap_or("unknown"),
+                        "gain": flow.and_then(|f| f.gain),
+                        "loss_averted": flow.and_then(|f| f.loss_averted),
+                        "decision_value": flow.and_then(|f| f.decision_value),
+                        "flow_status": flow.map(|f| f.flow_status).unwrap_or(crate::flow::FlowStatus::Ok),
+                        "ready": t.classification.as_deref() == Some("ready"),
+                        "blocked": graph.is_blocked(&t.id),
+                        "on_cliff": on_cliff,
+                        "due": t.due,
+                        "deadline_class": t.deadline_class,
+                        "effort": t.effort,
+                        "classification": t.classification,
+                        "intent": t.intent.unwrap_or(4),
+                        "project": t.project,
+                        "assignee": t.assignee,
+                        "modified": t.modified,
+                        "tags": t.tags,
+                        "parent": t.parent,
+                        "depends_on": t.depends_on,
+                        "node_type": t.node_type,
+                        "consequence": t.consequence,
+                        "severity": t.severity,
+                        "goal_type": t.goal_type,
+                        "edge_template": t.edge_template,
+                    })
+                } else {
+                    serde_json::json!({
                         "id": t.task_id.as_deref().unwrap_or(&t.id),
                         "title": t.label,
                         "status": t.status.as_deref().unwrap_or("unknown"),
@@ -1562,49 +1792,95 @@ impl PkbSearchServer {
                         "severity": t.severity,
                         "goal_type": t.goal_type,
                         "edge_template": t.edge_template,
+                    })
+                };
+
+                if wants_rel_summary {
+                    let resolve_ref = |rid: &str| -> serde_json::Value {
+                        if let Some(n) = graph.resolve(rid) {
+                            serde_json::json!({
+                                "id": n.id,
+                                "title": n.label,
+                                "status": n.status,
+                            })
+                        } else {
+                            serde_json::json!({ "id": rid })
+                        }
+                    };
+                    let rel_summary = serde_json::json!({
+                        "parent": t.parent.as_ref().map(|p| resolve_ref(p)),
+                        "depends_on": t.depends_on.iter().map(|d| resolve_ref(d)).collect::<Vec<_>>(),
+                        "blocks": t.blocks.iter().map(|b| resolve_ref(b)).collect::<Vec<_>>(),
+                        "children": t.children.iter().map(|c| resolve_ref(c)).collect::<Vec<_>>(),
+                        "subtasks": t.subtasks.iter().map(|s| resolve_ref(s)).collect::<Vec<_>>(),
+                        "blocked": graph.is_blocked(&t.id),
                     });
-                    if has_superseded_by.is_some() {
-                        if let Some(map) = obj.as_object_mut() {
-                            map.insert(
-                                "superseded_by".to_string(),
-                                serde_json::Value::Array(
-                                    t.superseded_by
-                                        .iter()
-                                        .cloned()
-                                        .map(serde_json::Value::String)
-                                        .collect(),
-                                ),
-                            );
-                        }
+                    if let Some(map) = obj.as_object_mut() {
+                        map.insert("relationship_summary".to_string(), rel_summary);
                     }
-                    if let Some(ref filter) = fields_filter {
-                        if let Some(map) = obj.as_object_mut() {
-                            map.retain(|k, _| filter.contains(k));
+                }
+
+                if wants_body_excerpt {
+                    let excerpt = if let Ok(abs_path) = self.abs_path_for_node(t, Some(&graph)) {
+                        if abs_path.is_file() {
+                            if let Ok(content) = std::fs::read_to_string(&abs_path) {
+                                let matter = gray_matter::Matter::<gray_matter::engine::YAML>::new();
+                                let parsed = matter.parse(&content);
+                                let body_text = parsed.content.trim();
+                                let mut chars = body_text.chars();
+                                let exc: String = chars.by_ref().take(300).collect();
+                                if chars.next().is_some() {
+                                    format!("{exc}...")
+                                } else {
+                                    exc
+                                }
+                            } else {
+                                String::new()
+                            }
+                        } else {
+                            String::new()
                         }
+                    } else {
+                        String::new()
+                    };
+                    if let Some(map) = obj.as_object_mut() {
+                        map.insert("body_excerpt".to_string(), serde_json::json!(excerpt));
                     }
-                    obj
-                })
-                .collect();
+                }
+
+                if has_superseded_by.is_some() {
+                    if let Some(map) = obj.as_object_mut() {
+                        map.insert(
+                            "superseded_by".to_string(),
+                            serde_json::Value::Array(
+                                t.superseded_by
+                                    .iter()
+                                    .cloned()
+                                    .map(serde_json::Value::String)
+                                    .collect(),
+                            ),
+                        );
+                    }
+                }
+                if let Some(ref filter) = fields_filter {
+                    if let Some(map) = obj.as_object_mut() {
+                        map.retain(|k, _| filter.contains(k));
+                    }
+                }
+                json_tasks.push(obj);
+            }
+
             let mut result = serde_json::json!({
                 "total": total,
-                "showing": tasks.len(),
+                "showing": json_tasks.len(),
+                "items": json_tasks.clone(),
                 "tasks": json_tasks,
             });
-            if let Some((disk_count, index_count)) = staleness {
-                if let Some(obj) = result.as_object_mut() {
-                    obj.insert(
-                        "index_warning".to_string(),
-                        serde_json::json!({
-                            "message": "the in-memory index disagrees with disk; results above may under- or over-count. Call refresh_graph and retry.",
-                            "disk_file_count": disk_count,
-                            "index_node_count": index_count,
-                        }),
-                    );
-                }
+            if budget_ms.is_some() || !timed_out.is_empty() {
+                result["timed_out"] = serde_json::json!(timed_out);
             }
-            return Ok(CallToolResult::success(vec![Content::text(
-                serde_json::to_string_pretty(&result).unwrap_or_default(),
-            )]));
+            let text = serde_json::to_string_pretty(&result).unwrap_or_default();
+            return Ok(Self::structured_result(text, result));
         }
 
         let output = if is_blocked {
@@ -1639,102 +1915,209 @@ impl PkbSearchServer {
             }
             out
         } else if is_ready {
-            // Ready view: table with Weight column, sorted by focus_score (default).
-            let mut out = format!(
-                "**{total} ready tasks** (showing {}, sorted by focus_score)\n\n",
-                tasks.len()
-            );
-            let today = chrono::Utc::now().date_naive();
-            if has_superseded_by.is_some() {
-                out.push_str("| # | ID | Status | Pri | Weight | Crit | Urg | Due | Superseded By | Title |\n|---|---|---|---|---|---|---|---|---|---|\n");
-            } else {
-                out.push_str("| # | ID | Status | Pri | Weight | Crit | Urg | Due | Title |\n|---|---|---|---|---|---|---|---|---|\n");
-            }
-            for (i, t) in tasks.iter().enumerate() {
-                let id = t.task_id.as_deref().unwrap_or(&t.id);
-                let weight = if t.downstream_weight > 0.0 {
-                    format!(
-                        "{:.1}{}",
-                        t.downstream_weight,
-                        if t.stakeholder_exposure { "!" } else { "" }
-                    )
-                } else {
-                    "-".to_string()
-                };
-                let crit = if t.criticality > 0.0 {
-                    format!("{:.2}", t.criticality)
-                } else {
-                    "-".to_string()
-                };
-                let urg = if t.urgency > 0.0 {
-                    if t.urgency >= 10000.0 {
-                        "SEV4".to_string()
-                    } else if t.urgency >= 100.0 {
-                        format!("{:.0}", t.urgency)
-                    } else {
-                        format!("{:.1}", t.urgency)
-                    }
-                } else {
-                    "-".to_string()
-                };
-                let due_str = t
-                    .due
-                    .as_deref()
-                    .map(|due| {
-                        let len = std::cmp::min(10, due.len());
-                        chrono::NaiveDate::parse_from_str(
-                            &due[..due.floor_char_boundary(len)],
-                            "%Y-%m-%d",
-                        )
-                        .ok()
-                        .map(|due_date| {
-                            let d = (due_date - today).num_days();
-                            if d < 0 {
-                                format!("{}d overdue", -d)
-                            } else if d == 0 {
-                                "today".to_string()
-                            } else {
-                                format!("{}d", d)
-                            }
-                        })
-                        .unwrap_or_else(|| due[..due.floor_char_boundary(len)].to_string())
-                    })
-                    .unwrap_or_else(|| "-".to_string());
+            if graph.ranking_mode() == crate::polecat_config::RankingMode::Flow {
+                let mut out = format!(
+                    "**{total} ready tasks** (showing {}, sorted by display_cmp)\n\n",
+                    tasks.len()
+                );
+                let today = chrono::Utc::now().date_naive();
+                let buffer_days = crate::display_rank::DISPLAY_CLIFF_BUFFER_DAYS;
                 if has_superseded_by.is_some() {
-                    let superseded_str = if t.superseded_by.is_empty() {
-                        "-".to_string()
-                    } else {
-                        t.superseded_by.join(", ")
-                    };
-                    out.push_str(&format!(
-                        "| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |\n",
-                        i + 1,
-                        id,
-                        t.status.as_deref().unwrap_or("-"),
-                        t.intent.unwrap_or(4),
-                        weight,
-                        crit,
-                        urg,
-                        due_str,
-                        superseded_str,
-                        t.label
-                    ));
+                    out.push_str("| # | ID | Status | Pri | Gain | Loss Averted | Decision | Due | Cliff | Superseded By | Title |\n|---|---|---|---|---|---|---|---|---|---|---|\n");
                 } else {
-                    out.push_str(&format!(
-                        "| {} | {} | {} | {} | {} | {} | {} | {} | {} |\n",
-                        i + 1,
-                        id,
-                        t.status.as_deref().unwrap_or("-"),
-                        t.intent.unwrap_or(4),
-                        weight,
-                        crit,
-                        urg,
-                        due_str,
-                        t.label
-                    ));
+                    out.push_str("| # | ID | Status | Pri | Gain | Loss Averted | Decision | Due | Cliff | Title |\n|---|---|---|---|---|---|---|---|---|---|\n");
                 }
+                for (i, t) in tasks.iter().enumerate() {
+                    let id = t.task_id.as_deref().unwrap_or(&t.id);
+                    let flow = t.flow.as_ref();
+                    let gain_str = flow
+                        .and_then(|f| f.gain)
+                        .map(|v| format!("{:.2}", v))
+                        .unwrap_or_else(|| "-".to_string());
+                    let loss_str = flow
+                        .and_then(|f| f.loss_averted)
+                        .map(|v| format!("{:.2}", v))
+                        .unwrap_or_else(|| "-".to_string());
+                    let dec_str = flow
+                        .and_then(|f| f.decision_value)
+                        .map(|v| format!("{:.2}", v))
+                        .unwrap_or_else(|| "-".to_string());
+
+                    let eff = crate::display_rank::resolve_effort_days(t.effort.as_deref());
+                    let mapped_deadline_class = t.deadline_class.map(|dc| match dc {
+                        crate::graph::DeadlineClass::Fake => crate::display_rank::DeadlineClass::Fake,
+                        crate::graph::DeadlineClass::Soft => crate::display_rank::DeadlineClass::Soft,
+                        crate::graph::DeadlineClass::Hard => crate::display_rank::DeadlineClass::Hard,
+                    });
+                    let due_date = t.due.as_deref().and_then(crate::display_rank::parse_due_date);
+                    let on_cliff = crate::display_rank::is_on_cliff(due_date, mapped_deadline_class, eff, today, buffer_days);
+                    let cliff_str = if on_cliff { "yes" } else { "-" };
+
+                    let due_str = t
+                        .due
+                        .as_deref()
+                        .map(|due| {
+                            let len = std::cmp::min(10, due.len());
+                            let class_suffix = match t.deadline_class {
+                                Some(crate::graph::DeadlineClass::Hard) => " (hard)",
+                                Some(crate::graph::DeadlineClass::Soft) => " (soft)",
+                                Some(crate::graph::DeadlineClass::Fake) => " (fake)",
+                                None => "",
+                            };
+                            chrono::NaiveDate::parse_from_str(
+                                &due[..due.floor_char_boundary(len)],
+                                "%Y-%m-%d",
+                            )
+                            .ok()
+                            .map(|due_date| {
+                                let d = (due_date - today).num_days();
+                                if d < 0 {
+                                    format!("{}d overdue{}", -d, class_suffix)
+                                } else if d == 0 {
+                                    format!("today{}", class_suffix)
+                                } else {
+                                    format!("{}d{}", d, class_suffix)
+                                }
+                            })
+                            .unwrap_or_else(|| format!("{}{}", &due[..due.floor_char_boundary(len)], class_suffix))
+                        })
+                        .unwrap_or_else(|| "-".to_string());
+
+                    if has_superseded_by.is_some() {
+                        let superseded_str = if t.superseded_by.is_empty() {
+                            "-".to_string()
+                        } else {
+                            t.superseded_by.join(", ")
+                        };
+                        out.push_str(&format!(
+                            "| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |\n",
+                            i + 1,
+                            id,
+                            t.status.as_deref().unwrap_or("-"),
+                            t.intent.unwrap_or(4),
+                            gain_str,
+                            loss_str,
+                            dec_str,
+                            due_str,
+                            cliff_str,
+                            superseded_str,
+                            t.label
+                        ));
+                    } else {
+                        out.push_str(&format!(
+                            "| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |\n",
+                            i + 1,
+                            id,
+                            t.status.as_deref().unwrap_or("-"),
+                            t.intent.unwrap_or(4),
+                            gain_str,
+                            loss_str,
+                            dec_str,
+                            due_str,
+                            cliff_str,
+                            t.label
+                        ));
+                    }
+                }
+                out
+            } else {
+                // Ready view: table with Weight column, sorted by focus_score (default).
+                let mut out = format!(
+                    "**{total} ready tasks** (showing {}, sorted by focus_score)\n\n",
+                    tasks.len()
+                );
+                let today = chrono::Utc::now().date_naive();
+                if has_superseded_by.is_some() {
+                    out.push_str("| # | ID | Status | Pri | Weight | Crit | Urg | Due | Superseded By | Title |\n|---|---|---|---|---|---|---|---|---|---|\n");
+                } else {
+                    out.push_str("| # | ID | Status | Pri | Weight | Crit | Urg | Due | Title |\n|---|---|---|---|---|---|---|---|---|\n");
+                }
+                for (i, t) in tasks.iter().enumerate() {
+                    let id = t.task_id.as_deref().unwrap_or(&t.id);
+                    let weight = if t.downstream_weight > 0.0 {
+                        format!(
+                            "{:.1}{}",
+                            t.downstream_weight,
+                            if t.stakeholder_exposure { "!" } else { "" }
+                        )
+                    } else {
+                        "-".to_string()
+                    };
+                    let crit = if t.criticality > 0.0 {
+                        format!("{:.2}", t.criticality)
+                    } else {
+                        "-".to_string()
+                    };
+                    let urg = if t.urgency > 0.0 {
+                        if t.urgency >= 10000.0 {
+                            "SEV4".to_string()
+                        } else if t.urgency >= 100.0 {
+                            format!("{:.0}", t.urgency)
+                        } else {
+                            format!("{:.1}", t.urgency)
+                        }
+                    } else {
+                        "-".to_string()
+                    };
+                    let due_str = t
+                        .due
+                        .as_deref()
+                        .map(|due| {
+                            let len = std::cmp::min(10, due.len());
+                            chrono::NaiveDate::parse_from_str(
+                                &due[..due.floor_char_boundary(len)],
+                                "%Y-%m-%d",
+                            )
+                            .ok()
+                            .map(|due_date| {
+                                let d = (due_date - today).num_days();
+                                if d < 0 {
+                                    format!("{}d overdue", -d)
+                                } else if d == 0 {
+                                    "today".to_string()
+                                } else {
+                                    format!("{}d", d)
+                                }
+                            })
+                            .unwrap_or_else(|| due[..due.floor_char_boundary(len)].to_string())
+                        })
+                        .unwrap_or_else(|| "-".to_string());
+                    if has_superseded_by.is_some() {
+                        let superseded_str = if t.superseded_by.is_empty() {
+                            "-".to_string()
+                        } else {
+                            t.superseded_by.join(", ")
+                        };
+                        out.push_str(&format!(
+                            "| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |\n",
+                            i + 1,
+                            id,
+                            t.status.as_deref().unwrap_or("-"),
+                            t.intent.unwrap_or(4),
+                            weight,
+                            crit,
+                            urg,
+                            due_str,
+                            superseded_str,
+                            t.label
+                        ));
+                    } else {
+                        out.push_str(&format!(
+                            "| {} | {} | {} | {} | {} | {} | {} | {} | {} |\n",
+                            i + 1,
+                            id,
+                            t.status.as_deref().unwrap_or("-"),
+                            t.intent.unwrap_or(4),
+                            weight,
+                            crit,
+                            urg,
+                            due_str,
+                            t.label
+                        ));
+                    }
+                }
+                out
             }
-            out
         } else {
             // Default view: standard table
             let mut out = if has_superseded_by.is_some() {
@@ -1781,16 +2164,18 @@ impl PkbSearchServer {
             out
         };
 
-        let output = match staleness {
-            Some((disk_count, index_count)) => format!(
-                "WARNING: the in-memory index ({index_count} nodes) disagrees with disk \
-                 ({disk_count} files) — this list may be missing or misreporting tasks. \
-                 Call refresh_graph and retry before trusting it.\n\n{output}"
-            ),
-            None => output,
-        };
-
-        Ok(CallToolResult::success(vec![Content::text(output)]))
+        let payload = serde_json::json!({
+            "total": total,
+            "showing": tasks.len(),
+            "items": tasks.iter().map(|t| {
+                serde_json::json!({
+                    "id": t.task_id.as_deref().unwrap_or(&t.id),
+                    "title": t.label,
+                    "status": t.status,
+                })
+            }).collect::<Vec<_>>(),
+        });
+        Ok(Self::structured_result(output, payload))
     }
 
     pub(crate) fn handle_update_task(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
@@ -1890,6 +2275,28 @@ impl PkbSearchServer {
                 )),
                 data: None,
             });
+        }
+
+        if let Some(links_val) = updates.get("links") {
+            crate::graph::validate_links_value(links_val).map_err(|e| McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from(e),
+                data: None,
+            })?;
+        }
+        if let Some(worth_val) = updates.get("worth") {
+            crate::graph::validate_worth_value(worth_val).map_err(|e| McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from(e),
+                data: None,
+            })?;
+        }
+        if let Some(dc_val) = updates.get("deadline_class") {
+            crate::graph::validate_deadline_class_value(dc_val).map_err(|e| McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from(e),
+                data: None,
+            })?;
         }
 
         if updates.is_empty() {
@@ -2155,9 +2562,31 @@ impl PkbSearchServer {
         };
 
         if update_map.is_empty() {
-            return Ok(CallToolResult::success(vec![Content::text(format!(
-                "Task {id} unchanged (no modifications)"
-            ))]));
+            let (node_title, node_status, node_modified) = {
+                let graph = self.graph.read();
+                if let Some(node) = graph.resolve(id) {
+                    (
+                        Some(node.label.clone()),
+                        node.status.clone(),
+                        node.modified.clone(),
+                    )
+                } else {
+                    (None, None, None)
+                }
+            };
+            let mut summary_obj = serde_json::json!({
+                "id": id,
+                "modified": node_modified.unwrap_or_else(|| chrono::Utc::now().to_rfc3339()),
+                "message": format!("Task {id} unchanged (no modifications)"),
+            });
+            if let Some(t) = node_title {
+                summary_obj["title"] = serde_json::json!(t);
+            }
+            if let Some(s) = node_status {
+                summary_obj["status"] = serde_json::json!(s);
+            }
+            let msg = format!("Task {id} unchanged (no modifications)");
+            return Ok(Self::structured_result(msg, summary_obj));
         }
 
         // Per-phase timing for write-path perf investigation (task-a4dcc039).
@@ -2228,9 +2657,32 @@ impl PkbSearchServer {
             })
             .unwrap_or_default();
 
-        Ok(CallToolResult::success(vec![Content::text(format!(
-            "Task updated: `{id}`{hint}"
-        ))]))
+        let (node_title, node_status, node_modified) = {
+            let graph = self.graph.read();
+            if let Some(node) = graph.resolve(id) {
+                (
+                    Some(node.label.clone()),
+                    node.status.clone(),
+                    node.modified.clone(),
+                )
+            } else {
+                (None, None, None)
+            }
+        };
+        let new_modified = node_modified.unwrap_or_else(|| chrono::Utc::now().to_rfc3339());
+        let mut summary_obj = serde_json::json!({
+            "id": id,
+            "modified": new_modified,
+            "message": format!("Task updated: `{id}`{hint}"),
+        });
+        if let Some(t) = node_title {
+            summary_obj["title"] = serde_json::json!(t);
+        }
+        if let Some(s) = node_status {
+            summary_obj["status"] = serde_json::json!(s);
+        }
+        let msg = format!("Task updated: `{id}`{hint}");
+        Ok(Self::structured_result(msg, summary_obj))
     }
 
     // =========================================================================
@@ -2279,11 +2731,9 @@ impl PkbSearchServer {
                 .and_then(|reg| reg.resolve(p))
         });
 
-        // Computed before the graph read lock below — see list_staleness_signal's
-        // docs on parking_lot RwLock reentrancy (aops_fb137646 AC2). A reconcile
-        // sweep leans on these counts as ground truth, so this surface gets the
-        // same signal as list_tasks.
-        let staleness = self.list_staleness_signal();
+        // Before the graph read lock below — see ensure_graph_fresh's use in
+        // list_tasks on parking_lot RwLock reentrancy (aops_fb137646 AC2).
+        self.ensure_graph_fresh();
 
         let graph = self.graph.read();
         let ready = graph.ready_tasks();
@@ -2363,9 +2813,50 @@ impl PkbSearchServer {
             }
         }
 
-        let mut summary = serde_json::json!({
+        let buffer_days = crate::display_rank::DISPLAY_CLIFF_BUFFER_DAYS;
+        let mut on_cliff: usize = 0;
+        let mut carrying_worth: usize = 0;
+        let mut at_zero: usize = 0;
+        let mut flow_status_error: usize = 0;
+
+        for task in &all_tasks {
+            let eff = crate::display_rank::resolve_effort_days(task.effort.as_deref());
+            let mapped_deadline_class = task.deadline_class.map(|dc| match dc {
+                crate::graph::DeadlineClass::Fake => crate::display_rank::DeadlineClass::Fake,
+                crate::graph::DeadlineClass::Soft => crate::display_rank::DeadlineClass::Soft,
+                crate::graph::DeadlineClass::Hard => crate::display_rank::DeadlineClass::Hard,
+            });
+            let due_date = task.due.as_deref().and_then(crate::display_rank::parse_due_date);
+            if crate::display_rank::is_on_cliff(due_date, mapped_deadline_class, eff, today, buffer_days) {
+                on_cliff += 1;
+            }
+
+            if let Some(ref flow) = task.flow {
+                if flow.flow_status != crate::flow::FlowStatus::Ok {
+                    flow_status_error += 1;
+                } else {
+                    let g = flow.gain.unwrap_or(0.0);
+                    let l = flow.loss_averted.unwrap_or(0.0);
+                    if g > 0.0 || l > 0.0 {
+                        carrying_worth += 1;
+                    } else {
+                        at_zero += 1;
+                    }
+                }
+            } else if task.worth.is_some() {
+                carrying_worth += 1;
+            } else {
+                at_zero += 1;
+            }
+        }
+
+        let summary = serde_json::json!({
             "ready": ready.len(),
             "blocked": blocked.len(),
+            "on_cliff": on_cliff,
+            "carrying_worth": carrying_worth,
+            "at_zero": at_zero,
+            "flow_status_error": flow_status_error,
             "by_intent": {
                 "p0": by_intent.get(&0).copied().unwrap_or(0),
                 "p1": by_intent.get(&1).copied().unwrap_or(0),
@@ -2378,18 +2869,6 @@ impl PkbSearchServer {
                 "due_this_week": due_this_week,
             }
         });
-        if let Some((disk_count, index_count)) = staleness {
-            if let Some(obj) = summary.as_object_mut() {
-                obj.insert(
-                    "index_warning".to_string(),
-                    serde_json::json!({
-                        "message": "the in-memory index disagrees with disk; these counts may be wrong. Call refresh_graph and retry.",
-                        "disk_file_count": disk_count,
-                        "index_node_count": index_count,
-                    }),
-                );
-            }
-        }
 
         Ok(CallToolResult::success(vec![Content::text(
             serde_json::to_string_pretty(&summary).unwrap_or_default(),

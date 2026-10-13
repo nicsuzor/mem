@@ -1,0 +1,657 @@
+use std::collections::HashSet;
+use std::fs;
+use std::path::Path;
+use std::process::Command;
+
+use mem::flow_migration::{
+    apply_flow_migration, cleanup_flow_migration, patch_file_text, revert_file_content,
+    revert_flow_migration, status_flow_migration, PROTOTYPE_HUB_ID, SUPPORTS_QUANTUM,
+};
+use tempfile::tempdir;
+
+fn init_git_repo(path: &Path) {
+    Command::new("git")
+        .arg("-C")
+        .arg(path)
+        .arg("init")
+        .status()
+        .unwrap();
+    Command::new("git")
+        .arg("-C")
+        .arg(path)
+        .arg("config")
+        .arg("user.name")
+        .arg("Test")
+        .status()
+        .unwrap();
+    Command::new("git")
+        .arg("-C")
+        .arg(path)
+        .arg("config")
+        .arg("user.email")
+        .arg("test@example.com")
+        .status()
+        .unwrap();
+}
+
+fn commit_all(path: &Path, msg: &str) {
+    Command::new("git")
+        .arg("-C")
+        .arg(path)
+        .arg("add")
+        .arg("-A")
+        .status()
+        .unwrap();
+    Command::new("git")
+        .arg("-C")
+        .arg(path)
+        .arg("commit")
+        .arg("-m")
+        .arg(msg)
+        .status()
+        .unwrap();
+}
+
+#[test]
+fn test_m3_git_diff_empty_after_revert() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+    init_git_repo(root);
+
+    // Target file
+    let target_content = r#"---
+id: targ-1
+title: Strategic Target
+type: target
+standing_weight: 0.35
+status: ready
+---
+
+Target body.
+"#;
+    fs::write(root.join("target.md"), target_content).unwrap();
+
+    // Task with soft_depends_on and contributes_to
+    let task_content = r#"---
+id: task-1
+title: Task One
+type: task
+status: ready
+soft_depends_on:
+- targ-1
+contributes_to:
+- stated_weight: probable
+  to: targ-1
+---
+
+Task body.
+"#;
+    fs::write(root.join("task.md"), task_content).unwrap();
+
+    // Prototype hub candidate
+    let hub_content = format!(
+        r#"---
+id: {PROTOTYPE_HUB_ID}
+title: Respond to prospective PhD students
+type: epic
+status: ready
+contributes_to:
+- stated_weight: probable
+  to: targ-1
+---
+
+Hub body.
+"#
+    );
+    fs::write(root.join("hub.md"), hub_content).unwrap();
+
+    commit_all(root, "Initial snapshot");
+
+    let snapshot_head = Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .arg("rev-parse")
+        .arg("HEAD")
+        .output()
+        .unwrap();
+    let snapshot_sha = String::from_utf8_lossy(&snapshot_head.stdout).trim().to_string();
+
+    // Apply migration
+    let ledger = apply_flow_migration(root).expect("apply failed");
+    assert_eq!(ledger.report.changed_nodes, 3);
+    assert!(!ledger.rows.is_empty());
+
+    // Verify target has worth
+    let new_target = fs::read_to_string(root.join("target.md")).unwrap();
+    assert!(new_target.contains("worth: 0.35"));
+    assert!(new_target.contains("standing_weight: 0.35"));
+
+    // Verify task has migrated links
+    let new_task = fs::read_to_string(root.join("task.md")).unwrap();
+    assert!(new_task.contains(&format!("quantum: {SUPPORTS_QUANTUM}")));
+    assert!(new_task.contains("set_by: migrated"));
+    assert!(new_task.contains("quantum: 0.85"));
+
+    // Verify hub has prototype type and edge_template
+    let new_hub = fs::read_to_string(root.join("hub.md")).unwrap();
+    assert!(new_hub.contains("type: prototype"));
+    assert!(new_hub.contains("edge_template:"));
+
+    // Revert migration using ledger
+    let ledger_path = root
+        .join(".agents")
+        .join("migrations")
+        .join(format!("{}.json", ledger.migration));
+    assert!(ledger_path.exists());
+
+    let revert_rep = revert_flow_migration(root, &ledger_path).expect("revert failed");
+    assert_eq!(revert_rep.files_reverted, 3);
+    assert!(revert_rep.drifted_rows.is_empty());
+    assert!(revert_rep.ledger_removed);
+
+    // M3 Criterion: git diff against snapshot_sha MUST BE EMPTY!
+    let diff_out = Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .arg("diff")
+        .arg(&snapshot_sha)
+        .output()
+        .unwrap();
+    assert!(diff_out.status.success());
+    let diff_str = String::from_utf8_lossy(&diff_out.stdout);
+    assert!(
+        diff_str.trim().is_empty(),
+        "git diff against snapshot must be completely empty! Diff was:\n{diff_str}"
+    );
+
+    // Byte-identical checks
+    assert_eq!(fs::read_to_string(root.join("target.md")).unwrap(), target_content);
+    assert_eq!(fs::read_to_string(root.join("task.md")).unwrap(), task_content);
+    let original_hub = format!(
+        r#"---
+id: {PROTOTYPE_HUB_ID}
+title: Respond to prospective PhD students
+type: epic
+status: ready
+contributes_to:
+- stated_weight: probable
+  to: targ-1
+---
+
+Hub body.
+"#
+    );
+    assert_eq!(fs::read_to_string(root.join("hub.md")).unwrap(), original_hub);
+}
+
+#[test]
+fn test_m4_second_apply_writes_nothing() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+    init_git_repo(root);
+
+    let target_content = r#"---
+id: targ-1
+title: Target
+type: target
+standing_weight: 0.5
+---
+
+Body.
+"#;
+    fs::write(root.join("target.md"), target_content).unwrap();
+    commit_all(root, "Initial snapshot");
+
+    let ledger1 = apply_flow_migration(root).unwrap();
+    assert_eq!(ledger1.report.changed_nodes, 1);
+
+    // Second apply on clean tree should write nothing
+    let ledger2 = apply_flow_migration(root).unwrap();
+    assert_eq!(ledger2.report.changed_nodes, 0);
+    assert_eq!(ledger2.rows.len(), 0);
+}
+
+#[test]
+fn test_m14_cleanup_refuses_without_confirm() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+    init_git_repo(root);
+
+    let target_content = r#"---
+id: targ-1
+title: Target
+type: target
+standing_weight: 0.5
+---
+
+Body.
+"#;
+    fs::write(root.join("target.md"), target_content).unwrap();
+    commit_all(root, "Initial");
+
+    let ledger = apply_flow_migration(root).unwrap();
+    let ledger_path = root
+        .join(".agents")
+        .join("migrations")
+        .join(format!("{}.json", ledger.migration));
+
+    // Cleanup without confirm should fail
+    let res = cleanup_flow_migration(root, &ledger_path, false);
+    assert!(res.is_err());
+    assert!(res.unwrap_err().to_string().contains("--confirm"));
+
+    // Cleanup with confirm should succeed and delete standing_weight
+    let rep = cleanup_flow_migration(root, &ledger_path, true).unwrap();
+    assert_eq!(rep.files_cleaned, 1);
+    let cleaned_content = fs::read_to_string(root.join("target.md")).unwrap();
+    assert!(!cleaned_content.contains("standing_weight:"));
+    assert!(cleaned_content.contains("worth: 0.5"));
+}
+
+#[test]
+fn test_m15_status_and_drift_detection() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+    init_git_repo(root);
+
+    let task_content = r#"---
+id: task-1
+title: Task One
+type: task
+soft_depends_on:
+- targ-1
+---
+
+Body.
+"#;
+    fs::write(root.join("task.md"), task_content).unwrap();
+
+    let target_content = r#"---
+id: targ-1
+title: Target
+type: target
+---
+
+Body.
+"#;
+    fs::write(root.join("target.md"), target_content).unwrap();
+    commit_all(root, "Initial");
+
+    let ledger = apply_flow_migration(root).unwrap();
+
+    // Check status before drift
+    let st = status_flow_migration(root, None).unwrap();
+    assert!(st.migration_applied);
+    assert_eq!(st.drifted_rows.len(), 0);
+
+    // Edit the migrated line in task.md to simulate drift (e.g. quantum changed to 0.7)
+    let modified = fs::read_to_string(root.join("task.md"))
+        .unwrap()
+        .replace("quantum: 0.3", "quantum: 0.7");
+    fs::write(root.join("task.md"), modified).unwrap();
+
+    // Check status after drift
+    let st2 = status_flow_migration(root, None).unwrap();
+    assert_eq!(st2.drifted_rows.len(), 1);
+    assert_eq!(st2.drifted_rows[0].key_path, "soft_depends_on[0]");
+
+    // Revert skips the drifted row
+    let ledger_path = root
+        .join(".agents")
+        .join("migrations")
+        .join(format!("{}.json", ledger.migration));
+    let rep = revert_flow_migration(root, &ledger_path).unwrap();
+    assert_eq!(rep.drifted_rows.len(), 1);
+    assert_eq!(rep.files_reverted, 0);
+
+    // The file still contains quantum: 0.7
+    let post_revert = fs::read_to_string(root.join("task.md")).unwrap();
+    assert!(post_revert.contains("quantum: 0.7"));
+}
+
+#[test]
+fn test_patch_file_text_unit() {
+    let content = r#"---
+id: my-node
+title: My Node
+type: task
+standing_weight: 0.6
+soft_depends_on:
+- dep-1
+contributes_to:
+- stated_weight: Expected
+  to: targ-1
+---
+
+## Body Content
+Preserved exactly.
+"#;
+
+    let mut known = HashSet::new();
+    known.insert("dep-1".to_string());
+    known.insert("targ-1".to_string());
+
+    let fm_val = serde_json::json!({
+        "id": "my-node",
+        "standing_weight": 0.6,
+        "soft_depends_on": ["dep-1"],
+        "contributes_to": [{
+            "stated_weight": "Expected",
+            "to": "targ-1"
+        }]
+    });
+
+    let (patched, rows) = patch_file_text(content, "my-node", &fm_val, "my-node.md", &known);
+    assert_eq!(rows.len(), 3);
+    assert!(patched.contains("worth: 0.6"));
+    assert!(patched.contains("quantum: 0.3"));
+    assert!(patched.contains("quantum: 0.75"));
+    assert!(patched.contains("## Body Content\nPreserved exactly."));
+
+    let (reverted, drift) = revert_file_content(&patched, &rows);
+    assert!(drift.is_empty());
+    assert_eq!(reverted, content);
+}
+
+#[test]
+fn test_target_alias_migrated_and_reverted() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+    init_git_repo(root);
+
+    let target_content = r#"---
+id: targ-1
+title: Strategic Target
+type: target
+standing_weight: 0.5
+status: ready
+---
+
+Target body.
+"#;
+    fs::write(root.join("target.md"), target_content).unwrap();
+
+    let task_content = r#"---
+id: task-1
+title: Task with legacy target
+type: task
+status: ready
+contributes_to:
+- stated_weight: expected
+  target: targ-1
+---
+
+Task body.
+"#;
+    fs::write(root.join("task.md"), task_content).unwrap();
+    commit_all(root, "Initial snapshot");
+
+    let ledger = apply_flow_migration(root).expect("apply failed");
+    assert_eq!(ledger.report.changed_nodes, 2);
+    let new_task = fs::read_to_string(root.join("task.md")).unwrap();
+    assert!(
+        new_task.contains("quantum: 0.75"),
+        "Expected quantum: 0.75 in task.md, got:\n{new_task}"
+    );
+    assert!(new_task.contains("set_by: migrated"));
+    assert!(new_task.contains("target: targ-1"));
+
+    let ledger_path = root
+        .join(".agents")
+        .join("migrations")
+        .join(format!("{}.json", ledger.migration));
+    let revert_rep = revert_flow_migration(root, &ledger_path).expect("revert failed");
+    assert_eq!(revert_rep.files_reverted, 2);
+    assert_eq!(fs::read_to_string(root.join("task.md")).unwrap(), task_content);
+}
+
+#[test]
+fn test_export_graph_excludes_ghost_destinations() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+
+    let task_content = r#"---
+id: task-1
+title: Task 1
+type: task
+status: ready
+contributes_to:
+- stated_weight: expected
+  to: ghost-target-123
+soft_depends_on:
+- ghost-dep-456
+---
+
+Task body.
+"#;
+    fs::write(root.join("task.md"), task_content).unwrap();
+
+    let gs = mem::graph_store::GraphStore::build_from_directory(root);
+    let json_str = gs.output_json().expect("output_json failed");
+    let json: serde_json::Value = serde_json::from_str(&json_str).unwrap();
+
+    let nodes = json.get("nodes").and_then(|v| v.as_array()).unwrap();
+    let node_ids: HashSet<&str> = nodes
+        .iter()
+        .filter_map(|n| n.get("id").and_then(|v| v.as_str()))
+        .collect();
+
+    assert!(
+        !node_ids.contains("ghost-target-123"),
+        "Exported nodes must NOT include ghost-target-123, but got ids: {:?}",
+        node_ids
+    );
+    assert!(
+        !node_ids.contains("ghost-dep-456"),
+        "Exported nodes must NOT include ghost-dep-456, but got ids: {:?}",
+        node_ids
+    );
+
+    let edges = json.get("edges").and_then(|v| v.as_array()).unwrap();
+    let edge_targets: HashSet<&str> = edges
+        .iter()
+        .filter_map(|e| e.get("target").and_then(|v| v.as_str()))
+        .collect();
+
+    assert!(
+        !edge_targets.contains("ghost-target-123"),
+        "Exported edges must NOT include edge to ghost-target-123"
+    );
+    assert!(
+        !edge_targets.contains("ghost-dep-456"),
+        "Exported edges must NOT include edge to ghost-dep-456"
+    );
+}
+
+#[test]
+fn test_ghost_destinations_not_migrated() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+    init_git_repo(root);
+
+    let target_content = r#"---
+id: targ-1
+title: Real Target
+type: target
+standing_weight: 0.5
+status: ready
+---
+
+Target body.
+"#;
+    fs::write(root.join("target.md"), target_content).unwrap();
+
+    let task_content = r#"---
+id: task-1
+title: Task with ghost and real references
+type: task
+status: ready
+contributes_to:
+- stated_weight: expected
+  to: ghost-target-123
+- stated_weight: expected
+  to: targ-1
+soft_depends_on:
+- ghost-dep-456
+- targ-1
+---
+
+Task body.
+"#;
+    fs::write(root.join("task.md"), task_content).unwrap();
+    commit_all(root, "Initial snapshot");
+
+    let ledger = apply_flow_migration(root).expect("apply failed");
+    let new_task = fs::read_to_string(root.join("task.md")).unwrap();
+
+    // targ-1 is real, so its edges must be migrated
+    assert!(
+        new_task.contains("to: targ-1") && new_task.contains("quantum: 0.75"),
+        "Real target targ-1 contributes_to must be migrated:\n{new_task}"
+    );
+    assert!(
+        new_task.contains("to: targ-1") && new_task.contains("quantum: 0.3"),
+        "Real target targ-1 soft_depends_on must be migrated:\n{new_task}"
+    );
+
+    // ghost destinations must NOT be migrated per specs/flow-migration.md:153 and M13
+    assert!(
+        !new_task.contains("to: ghost-target-123\n  quantum:")
+            && !new_task.contains("to: ghost-target-123\n  probability:"),
+        "Ghost contributes_to must not be migrated:\n{new_task}"
+    );
+    assert!(
+        new_task.contains("- ghost-dep-456\n"),
+        "Ghost soft_depends_on must remain bare string:\n{new_task}"
+    );
+
+    // Only 3 rows on 2 nodes (worth on target, contributes_to to targ-1, soft_depends_on to targ-1)
+    assert_eq!(ledger.report.total_rows, 3);
+}
+
+#[test]
+fn test_word_probability_scale() {
+    use mem::flow_migration::word_probability;
+
+    assert_eq!(word_probability("certain"), Some(1.00));
+    assert_eq!(word_probability("almost certain"), Some(1.00));
+    assert_eq!(word_probability("probable"), Some(0.85));
+    assert_eq!(word_probability("very probable"), Some(0.85));
+    assert_eq!(word_probability("expected"), Some(0.75));
+    assert_eq!(word_probability("likely"), Some(0.75));
+    assert_eq!(word_probability("fifty-fifty"), Some(0.50));
+    assert_eq!(word_probability("fifty_fifty"), Some(0.50));
+    assert_eq!(word_probability("fifty fifty"), Some(0.50));
+    assert_eq!(word_probability("uncertain"), Some(0.25));
+    assert_eq!(word_probability("improbable"), Some(0.15));
+    assert_eq!(word_probability("impossible"), Some(0.00));
+    assert_eq!(word_probability("none"), Some(0.00));
+    assert_eq!(word_probability("0.42"), Some(0.42));
+    assert_eq!(word_probability("bogus_word"), None);
+}
+
+#[test]
+fn test_extract_prose_odds_unit() {
+    use mem::flow_migration::extract_prose_odds;
+
+    // From justification
+    let just1 = "Odds: improbable. No success rate is published.";
+    assert_eq!(extract_prose_odds(Some(just1), None), 0.15);
+
+    let just2 = "University labs in round... Odds: uncertain.";
+    assert_eq!(extract_prose_odds(Some(just2), None), 0.25);
+
+    // From body ## Odds
+    let body1 = "## Summary\n\nSome text.\n\n## Odds\n\nImprobable. No success rate.\n";
+    assert_eq!(extract_prose_odds(None, Some(body1)), 0.15);
+
+    let body2 = "## Details\n\nSome text.\n\n## Odds\n\nUncertain. A pool of USD 10M.\n";
+    assert_eq!(extract_prose_odds(None, Some(body2)), 0.25);
+
+    // Fallback to 1.0 when absent
+    assert_eq!(extract_prose_odds(None, None), 1.0);
+    assert_eq!(
+        extract_prose_odds(Some("No odds mentioned here"), Some("Plain body without odds")),
+        1.0
+    );
+}
+
+#[test]
+fn test_prose_odds_migrated_onto_edge() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+    init_git_repo(root);
+
+    let target_content = r#"---
+id: targ-funding
+title: Research Outside Money
+type: target
+standing_weight: 0.85
+status: ready
+---
+
+Strategic target for external grant funding.
+"#;
+    fs::write(root.join("target.md"), target_content).unwrap();
+
+    let task_content = r#"---
+id: task-grant-app
+title: Apply for SFF Grant
+type: task
+status: ready
+contributes_to:
+- justification: "University labs in the round received support. Odds: improbable. No success rate published."
+  stated_weight: fifty-fifty
+  to: targ-funding
+---
+
+## Summary
+Grant application task.
+
+## Odds
+
+Improbable. No success rate is published and applicant is first-time.
+"#;
+    fs::write(root.join("task.md"), task_content).unwrap();
+    commit_all(root, "Initial snapshot");
+
+    let ledger = apply_flow_migration(root).expect("apply failed");
+    assert_eq!(ledger.report.changed_nodes, 2);
+
+    let new_target = fs::read_to_string(root.join("target.md")).unwrap();
+    assert!(new_target.contains("worth: 0.85"));
+
+    let new_task = fs::read_to_string(root.join("task.md")).unwrap();
+    // quantum from fifty-fifty -> 0.5
+    assert!(new_task.contains("quantum: 0.5"));
+    // probability extracted from prose odds "improbable" -> 0.15
+    assert!(
+        new_task.contains("probability: 0.15"),
+        "Expected probability: 0.15 from prose odds, got:\n{new_task}"
+    );
+    assert!(new_task.contains("set_by: migrated"));
+    // Markdown body preserved untouched
+    assert!(new_task.contains("## Odds\n\nImprobable. No success rate is published and applicant is first-time."));
+
+    // Verify revert cleanly restores byte-identical content
+    let ledger_path = root
+        .join(".agents")
+        .join("migrations")
+        .join(format!("{}.json", ledger.migration));
+    let rep = revert_flow_migration(root, &ledger_path).expect("revert failed");
+    assert_eq!(rep.files_reverted, 2);
+    assert_eq!(fs::read_to_string(root.join("target.md")).unwrap(), target_content);
+    assert_eq!(fs::read_to_string(root.join("task.md")).unwrap(), task_content);
+}
+
+#[test]
+fn test_generate_dry_run_report_runs() {
+    let dir = tempdir().unwrap();
+    let root = dir.path();
+    let report = mem::flow_migration::generate_dry_run_report(root).unwrap();
+    assert!(report.contains("## 1. Edge kinds"));
+    assert!(report.contains("## 3. Writes the migration makes"));
+    assert!(report.contains("## 5. Flow on the migrated graph"));
+    assert!(report.contains("## 6. Calibration cases"));
+}
+

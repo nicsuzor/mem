@@ -106,8 +106,7 @@ fn create_test_pkb() -> (tempfile::TempDir, PathBuf, PathBuf) {
 
     // Seed a sample task so task/graph queries return non-empty data if inspected
     let sample_task = "---\nid: task-test-01\ntitle: Sample Integration Task\ntype: task\nstatus: ready\npriority: 2\n---\n\nSample test body.";
-    std::fs::write(pkb_root.join("tasks").join("task-test-01.md"), sample_task)
-        .expect("write sample task");
+    std::fs::write(pkb_root.join("tasks").join("task-test-01.md"), sample_task).expect("write sample task");
 
     let db_path = pkb_root.join("test_vectors.bin");
     (temp_dir, pkb_root, db_path)
@@ -248,9 +247,7 @@ fn spawn_http_mcp(mut cmd: Command) -> (Child, u16) {
         let mut line = String::new();
         let mut sent = false;
         while let Ok(bytes) = reader.read_line(&mut line) {
-            if bytes == 0 {
-                break;
-            }
+            if bytes == 0 { break; }
             stderr_lines_clone.lock().unwrap().push(line.clone());
             if !sent {
                 if let Some(idx) = line.find("Starting MCP HTTP/SSE server on http://") {
@@ -719,10 +716,11 @@ fn test_http_tools_list_count() {
         .as_array()
         .expect("tools/list result missing 'tools' array");
 
-    // Should match the count documented in CORE.md
-    assert!(
-        tools.len() >= 30,
-        "expected at least 30 tools, got {}",
+    // Should match the 16 published primitives
+    assert_eq!(
+        tools.len(),
+        16,
+        "expected 16 published tools from tools/list, got {}",
         tools.len()
     );
 }
@@ -841,8 +839,7 @@ fn test_http_seeded_search_returns_seeded_doc() {
     // meaningfully without it.
     let pkb_root_str = pkb_root.to_string_lossy().to_string();
     let db_path_str = db_path.to_string_lossy().to_string();
-    let reindex = Command::new(pkb_binary())
-        .env_remove("PKB_MCP_URL")
+    let reindex = Command::new(pkb_binary()).env_remove("PKB_MCP_URL")
         .args([
             "--pkb-root",
             &pkb_root_str,
@@ -927,6 +924,8 @@ fn test_http_seeded_search_returns_seeded_doc() {
             json!({"query": unique_phrase, "limit": 5}),
         )
     })();
+
+
 
     child.kill().ok();
     child.wait().ok();
@@ -1094,3 +1093,376 @@ fn test_grandchild_server_dies_when_harness_is_sigkilled() {
 fn test_grandchild_server_dies_when_harness_is_sigkilled() {
     unreachable!("ignored on non-Linux platforms — see #[ignore] reason");
 }
+
+#[test]
+fn test_http2_listener_serves_requests_with_keepalive() {
+    let server = HttpServer::start();
+    let port = server.port;
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("build runtime");
+
+    rt.block_on(async move {
+        let client = reqwest::Client::builder()
+            .http2_prior_knowledge()
+            .pool_idle_timeout(Duration::from_secs(30))
+            .build()
+            .expect("build client");
+
+        let url = format!("http://127.0.0.1:{port}/mcp");
+
+        // Request 1: Initialize session over HTTP/2
+        let init_req = initialize_request(1);
+        let resp1 = client
+            .post(&url)
+            .header("Content-Type", "application/json")
+            .header("Accept", "application/json, text/event-stream")
+            .body(init_req)
+            .send()
+            .await
+            .expect("failed to send initialize request");
+
+        assert_eq!(
+            resp1.version(),
+            reqwest::Version::HTTP_2,
+            "Expected HTTP/2 protocol, got {:?}",
+            resp1.version()
+        );
+        assert_eq!(resp1.status(), reqwest::StatusCode::OK);
+
+        let session_id = resp1
+            .headers()
+            .get("mcp-session-id")
+            .expect("missing mcp-session-id header")
+            .to_str()
+            .expect("valid ascii session id")
+            .to_string();
+
+        // Drain the first response bytes
+        let _ = resp1.bytes().await;
+
+        // Request 2: Send initialized notification over the same keep-alive HTTP/2 connection
+        let notif_req = jsonrpc_notification("notifications/initialized");
+        let resp2 = client
+            .post(&url)
+            .header("Content-Type", "application/json")
+            .header("Accept", "application/json, text/event-stream")
+            .header("Mcp-Session-Id", &session_id)
+            .body(notif_req)
+            .send()
+            .await
+            .expect("failed to send notification");
+
+        assert_eq!(
+            resp2.version(),
+            reqwest::Version::HTTP_2,
+            "Expected HTTP/2 protocol on reused connection, got {:?}",
+            resp2.version()
+        );
+        assert!(resp2.status().is_success());
+
+        // Request 3: Tool call over the same keep-alive HTTP/2 connection
+        let tool_req = tool_call_request(2, "pkb_status", json!({}));
+        let resp3 = client
+            .post(&url)
+            .header("Content-Type", "application/json")
+            .header("Accept", "application/json, text/event-stream")
+            .header("Mcp-Session-Id", &session_id)
+            .body(tool_req)
+            .send()
+            .await
+            .expect("failed to send tool call");
+
+        assert_eq!(
+            resp3.version(),
+            reqwest::Version::HTTP_2,
+            "Expected HTTP/2 protocol on 3rd request, got {:?}",
+            resp3.version()
+        );
+        assert_eq!(resp3.status(), reqwest::StatusCode::OK);
+
+        let body3 = resp3.text().await.expect("read response body");
+        assert!(
+            body3.contains("\"name\": \"mem\"") || body3.contains("\"name\":\"mem\""),
+            "Expected tool response to contain name 'mem', got: {body3}"
+        );
+        assert!(
+            body3.contains("\"version\": \"0.3.101\"") || body3.contains("\"version\":\"0.3.101\""),
+            "Expected tool response to contain version '0.3.101', got: {body3}"
+        );
+    });
+}
+
+#[test]
+fn test_http2_concurrent_multiplexed_tool_calls() {
+    let server = HttpServer::start();
+    let port = server.port;
+
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(4)
+        .enable_all()
+        .build()
+        .expect("build multi-thread runtime");
+
+    rt.block_on(async move {
+        let client = reqwest::Client::builder()
+            .http2_prior_knowledge()
+            .pool_idle_timeout(Duration::from_secs(30))
+            .build()
+            .expect("build client");
+
+        let url = format!("http://127.0.0.1:{port}/mcp");
+
+        // Initialize session over HTTP/2
+        let init_resp = client
+            .post(&url)
+            .header("Content-Type", "application/json")
+            .header("Accept", "application/json, text/event-stream")
+            .body(initialize_request(1))
+            .send()
+            .await
+            .expect("init send");
+        assert_eq!(init_resp.version(), reqwest::Version::HTTP_2);
+        assert_eq!(init_resp.status(), reqwest::StatusCode::OK);
+
+        let session_id = init_resp
+            .headers()
+            .get("mcp-session-id")
+            .expect("session id")
+            .to_str()
+            .unwrap()
+            .to_string();
+        let _ = init_resp.bytes().await;
+
+        // Notification
+        let notif_resp = client
+            .post(&url)
+            .header("Content-Type", "application/json")
+            .header("Accept", "application/json, text/event-stream")
+            .header("Mcp-Session-Id", &session_id)
+            .body(jsonrpc_notification("notifications/initialized"))
+            .send()
+            .await
+            .expect("notif send");
+        assert!(notif_resp.status().is_success());
+
+        // Spawn 10 concurrent requests multiplexed over the same HTTP/2 connection
+        let mut tasks = Vec::new();
+        for i in 0..10 {
+            let client = client.clone();
+            let url = url.clone();
+            let session_id = session_id.clone();
+            tasks.push(tokio::spawn(async move {
+                let req = match i % 4 {
+                    0 => tool_call_request(100 + i, "pkb_status", json!({})),
+                    1 => tool_call_request(100 + i, "pkb_get_task", json!({"id": "task-test-01"})),
+                    2 => tool_call_request(100 + i, "pkb_list_tasks", json!({"limit": 5})),
+                    _ => tool_call_request(100 + i, "pkb_search", json!({"query": "Sample"})),
+                };
+
+                let resp = client
+                    .post(&url)
+                    .header("Content-Type", "application/json")
+                    .header("Accept", "application/json, text/event-stream")
+                    .header("Mcp-Session-Id", &session_id)
+                    .body(req)
+                    .send()
+                    .await
+                    .expect("concurrent req failed");
+
+                assert_eq!(
+                    resp.version(),
+                    reqwest::Version::HTTP_2,
+                    "Task {i} did not use HTTP/2"
+                );
+                assert_eq!(resp.status(), reqwest::StatusCode::OK);
+                let text = resp.text().await.expect("read text");
+                assert!(
+                    text.contains("\"result\"") || text.contains("\"structuredContent\""),
+                    "Task {i} missing result payload: {text}"
+                );
+            }));
+        }
+
+        for (i, t) in tasks.into_iter().enumerate() {
+            t.await.unwrap_or_else(|e| panic!("Task {i} panicked: {e}"));
+        }
+    });
+}
+
+#[test]
+fn test_phases_1_to_3_concurrency_and_contracts() {
+    let server = HttpServer::start();
+    let port = server.port;
+
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(4)
+        .enable_all()
+        .build()
+        .expect("build runtime");
+
+    rt.block_on(async move {
+        let client = reqwest::Client::builder()
+            .http2_prior_knowledge()
+            .pool_idle_timeout(Duration::from_secs(30))
+            .build()
+            .expect("build client");
+
+        let url = format!("http://127.0.0.1:{port}/mcp");
+
+        // Initialize session over HTTP/2
+        let init_resp = client
+            .post(&url)
+            .header("Content-Type", "application/json")
+            .header("Accept", "application/json, text/event-stream")
+            .body(initialize_request(1))
+            .send()
+            .await
+            .expect("init send");
+        assert_eq!(init_resp.version(), reqwest::Version::HTTP_2);
+
+        let session_id = init_resp
+            .headers()
+            .get("mcp-session-id")
+            .expect("session id")
+            .to_str()
+            .unwrap()
+            .to_string();
+        let _ = init_resp.bytes().await;
+
+        let notif_resp = client
+            .post(&url)
+            .header("Content-Type", "application/json")
+            .header("Accept", "application/json, text/event-stream")
+            .header("Mcp-Session-Id", &session_id)
+            .body(jsonrpc_notification("notifications/initialized"))
+            .send()
+            .await
+            .expect("notif send");
+        assert!(notif_resp.status().is_success());
+
+        // ── Phase 3 Contract: 16 tools, outputSchema, ttlMs ──
+        let list_resp = client
+            .post(&url)
+            .header("Content-Type", "application/json")
+            .header("Accept", "application/json, text/event-stream")
+            .header("Mcp-Session-Id", &session_id)
+            .body(tools_list_request(2))
+            .send()
+            .await
+            .expect("tools list send");
+        assert_eq!(list_resp.status(), reqwest::StatusCode::OK);
+        let list_text = list_resp.text().await.unwrap();
+        let list_json: Value = serde_json::from_str(
+            list_text
+                .lines()
+                .find(|l| l.starts_with("data: {"))
+                .map(|l| &l[6..])
+                .unwrap_or(&list_text),
+        )
+        .expect("parse list json");
+
+        let tools = list_json["result"]["tools"].as_array().expect("tools array");
+        assert_eq!(tools.len(), 16, "Phase 3 contract: exactly 16 published tools");
+        assert_eq!(
+            list_json["result"]["_meta"]["ttlMs"].as_u64(),
+            Some(86_400_000),
+            "Phase 3 contract: 24h ttlMs"
+        );
+        for t in tools {
+            assert!(
+                t.get("outputSchema").is_some(),
+                "Phase 1 & 3 contract: tool {} missing outputSchema",
+                t["name"]
+            );
+        }
+
+        // ── Phase 1 Contract: Zero-match sentinel ──
+        let zero_search_resp = client
+            .post(&url)
+            .header("Content-Type", "application/json")
+            .header("Accept", "application/json, text/event-stream")
+            .header("Mcp-Session-Id", &session_id)
+            .body(tool_call_request(3, "pkb_search", json!({"query": "nonexistent_term_xyz_123"})))
+            .send()
+            .await
+            .unwrap();
+        let zero_text = zero_search_resp.text().await.unwrap();
+        assert!(
+            zero_text.contains("\"total\":0") || zero_text.contains("\"total\": 0"),
+            "Phase 1 contract: zero matches return structured total:0. Got:\n{zero_text}"
+        );
+
+        // ── Phase 1 Contract: Batch reads with items and not_found ──
+        let batch_resp = client
+            .post(&url)
+            .header("Content-Type", "application/json")
+            .header("Accept", "application/json, text/event-stream")
+            .header("Mcp-Session-Id", &session_id)
+            .body(tool_call_request(4, "pkb_get_task", json!({"ids": ["task-test-01", "missing-task-id"]})))
+            .send()
+            .await
+            .unwrap();
+        let batch_text = batch_resp.text().await.unwrap();
+        assert!(
+            batch_text.contains("\"items\"") && batch_text.contains("\"not_found\""),
+            "Phase 1 contract: batch read returns items and not_found. Got:\n{batch_text}"
+        );
+        assert!(
+            batch_text.contains("missing-task-id"),
+            "Phase 1 contract: not_found contains missing id"
+        );
+
+        // ── Phase 2 Contract: List projections and budget_ms ──
+        let proj_resp = client
+            .post(&url)
+            .header("Content-Type", "application/json")
+            .header("Accept", "application/json, text/event-stream")
+            .header("Mcp-Session-Id", &session_id)
+            .body(tool_call_request(5, "pkb_list_tasks", json!({
+                "fields": ["body_excerpt", "relationship_summary"],
+                "budget_ms": 5000
+            })))
+            .send()
+            .await
+            .unwrap();
+        let proj_text = proj_resp.text().await.unwrap();
+        assert!(
+            proj_text.contains("\"timed_out\""),
+            "Phase 2 contract: budget_ms response returns timed_out field. Got:\n{proj_text}"
+        );
+
+        // ── Phase 3 Contract: Retired tool shims under concurrency ──
+        let retired_tools = vec!["get_stats", "refresh_graph", "task_summary"];
+        let mut shim_handles = Vec::new();
+        for (idx, tool_name) in retired_tools.into_iter().enumerate() {
+            let client = client.clone();
+            let url = url.clone();
+            let session_id = session_id.clone();
+            shim_handles.push(tokio::spawn(async move {
+                let resp = client
+                    .post(&url)
+                    .header("Content-Type", "application/json")
+                    .header("Accept", "application/json, text/event-stream")
+                    .header("Mcp-Session-Id", &session_id)
+                    .body(tool_call_request(200 + idx as u64, tool_name, json!({})))
+                    .send()
+                    .await
+                    .expect("shim request send");
+                assert_eq!(resp.status(), reqwest::StatusCode::OK);
+                let text = resp.text().await.unwrap();
+                assert!(
+                    !text.contains("Method not found"),
+                    "Shim for {tool_name} failed: {text}"
+                );
+            }));
+        }
+
+        for h in shim_handles {
+            h.await.unwrap();
+        }
+    });
+}
+

@@ -58,8 +58,7 @@ impl LspServer {
     }
 
     pub fn handle_did_open(&mut self, params: DidOpenTextDocumentParams) {
-        self.documents
-            .insert(params.text_document.uri, params.text_document.text);
+        self.documents.insert(params.text_document.uri, params.text_document.text);
     }
 
     pub fn handle_did_change(&mut self, params: DidChangeTextDocumentParams) {
@@ -89,11 +88,7 @@ impl LspServer {
     }
 
     /// Find a reference at the given line and character position.
-    pub fn find_reference_at_position(
-        text: &str,
-        line_idx: u32,
-        char_idx: u32,
-    ) -> Option<ReferenceSpan> {
+    pub fn find_reference_at_position(text: &str, line_idx: u32, char_idx: u32) -> Option<ReferenceSpan> {
         let lines: Vec<&str> = text.lines().collect();
         let line = lines.get(line_idx as usize)?;
 
@@ -111,14 +106,8 @@ impl LspServer {
                     target,
                     alias,
                     range: Range {
-                        start: Position {
-                            line: line_idx,
-                            character: start,
-                        },
-                        end: Position {
-                            line: line_idx,
-                            character: end,
-                        },
+                        start: Position { line: line_idx, character: start },
+                        end: Position { line: line_idx, character: end },
                     },
                 });
             }
@@ -139,14 +128,8 @@ impl LspServer {
                         target: target_raw.to_string(),
                         alias: Some(label),
                         range: Range {
-                            start: Position {
-                                line: line_idx,
-                                character: start,
-                            },
-                            end: Position {
-                                line: line_idx,
-                                character: end,
-                            },
+                            start: Position { line: line_idx, character: start },
+                            end: Position { line: line_idx, character: end },
                         },
                     });
                 }
@@ -171,14 +154,8 @@ impl LspServer {
                 target: word,
                 alias: None,
                 range: Range {
-                    start: Position {
-                        line: line_idx,
-                        character: start as u32,
-                    },
-                    end: Position {
-                        line: line_idx,
-                        character: (end + 1) as u32,
-                    },
+                    start: Position { line: line_idx, character: start as u32 },
+                    end: Position { line: line_idx, character: (end + 1) as u32 },
                 },
             });
         }
@@ -223,14 +200,7 @@ impl LspServer {
         }
 
         if !node.tags.is_empty() {
-            lines.push(format!(
-                "**Tags:** {}",
-                node.tags
-                    .iter()
-                    .map(|t| format!("`#{}`", t))
-                    .collect::<Vec<_>>()
-                    .join(" ")
-            ));
+            lines.push(format!("**Tags:** {}", node.tags.iter().map(|t| format!("`#{}`", t)).collect::<Vec<_>>().join(" ")));
             lines.push(String::new());
         }
 
@@ -244,7 +214,10 @@ impl LspServer {
             let body_trimmed = doc.body.trim();
             if !body_trimmed.is_empty() {
                 lines.push("---\n".to_string());
-                let body_preview: Vec<&str> = body_trimmed.lines().take(12).collect();
+                let body_preview: Vec<&str> = body_trimmed
+                    .lines()
+                    .take(12)
+                    .collect();
                 lines.push(body_preview.join("\n"));
                 if body_trimmed.lines().count() > 12 {
                     lines.push("\n_..._".to_string());
@@ -281,10 +254,7 @@ impl LspServer {
     }
 
     /// Handle textDocument/definition request.
-    pub fn handle_definition(
-        &self,
-        params: &GotoDefinitionParams,
-    ) -> Option<GotoDefinitionResponse> {
+    pub fn handle_definition(&self, params: &GotoDefinitionParams) -> Option<GotoDefinitionResponse> {
         let uri = &params.text_document_position_params.text_document.uri;
         let pos = params.text_document_position_params.position;
         let content = self.get_document_content(uri)?;
@@ -308,25 +278,18 @@ impl LspServer {
         };
 
         let mut links = Vec::new();
+        
         for (line_idx, line) in content.lines().enumerate() {
             // Find wikilinks
             for cap in WIKILINK_RE.captures_iter(line) {
                 if let (Some(full), Some(target_match)) = (cap.get(0), cap.get(1)) {
                     let target = target_match.as_str().trim();
                     if let Some((node, abs_path)) = self.resolve_node(target) {
-                        if let Ok(target_uri) =
-                            Uri::from_str(&format!("file://{}", abs_path.to_string_lossy()))
-                        {
+                        if let Ok(target_uri) = Uri::from_str(&format!("file://{}", abs_path.to_string_lossy())) {
                             links.push(DocumentLink {
                                 range: Range {
-                                    start: Position {
-                                        line: line_idx as u32,
-                                        character: full.start() as u32,
-                                    },
-                                    end: Position {
-                                        line: line_idx as u32,
-                                        character: full.end() as u32,
-                                    },
+                                    start: Position { line: line_idx as u32, character: full.start() as u32 },
+                                    end: Position { line: line_idx as u32, character: full.end() as u32 },
                                 },
                                 target: Some(target_uri),
                                 tooltip: Some(format!("Open {}: {}", node.id, node.label)),
@@ -344,7 +307,9 @@ impl LspServer {
     /// Run the LSP server over an arbitrary lsp-server Connection (memory or stdio).
     pub fn run_connection(mut self, connection: lsp_server::Connection) -> anyhow::Result<()> {
         let server_capabilities = serde_json::to_value(&ServerCapabilities {
-            text_document_sync: Some(TextDocumentSyncCapability::Kind(TextDocumentSyncKind::FULL)),
+            text_document_sync: Some(TextDocumentSyncCapability::Kind(
+                TextDocumentSyncKind::FULL,
+            )),
             hover_provider: Some(HoverProviderCapability::Simple(true)),
             definition_provider: Some(OneOf::Left(true)),
             document_link_provider: Some(DocumentLinkOptions {
@@ -368,59 +333,46 @@ impl LspServer {
                             let params: HoverParams = serde_json::from_value(req.params)?;
                             let result = self.handle_hover(&params);
                             let resp = lsp_server::Response::new_ok(req.id, result);
-                            connection
-                                .sender
-                                .send(lsp_server::Message::Response(resp))?;
+                            connection.sender.send(lsp_server::Message::Response(resp))?;
                         }
                         "textDocument/definition" => {
                             let params: GotoDefinitionParams = serde_json::from_value(req.params)?;
                             let result = self.handle_definition(&params);
                             let resp = lsp_server::Response::new_ok(req.id, result);
-                            connection
-                                .sender
-                                .send(lsp_server::Message::Response(resp))?;
+                            connection.sender.send(lsp_server::Message::Response(resp))?;
                         }
                         "textDocument/documentLink" => {
                             let params: DocumentLinkParams = serde_json::from_value(req.params)?;
                             let result = self.handle_document_link(&params);
                             let resp = lsp_server::Response::new_ok(req.id, result);
-                            connection
-                                .sender
-                                .send(lsp_server::Message::Response(resp))?;
+                            connection.sender.send(lsp_server::Message::Response(resp))?;
                         }
                         _ => {
-                            let resp =
-                                lsp_server::Response::new_ok(req.id, serde_json::Value::Null);
-                            connection
-                                .sender
-                                .send(lsp_server::Message::Response(resp))?;
+                            let resp = lsp_server::Response::new_ok(req.id, serde_json::Value::Null);
+                            connection.sender.send(lsp_server::Message::Response(resp))?;
                         }
                     }
                 }
-                lsp_server::Message::Notification(not) => match not.method.as_str() {
-                    "textDocument/didOpen" => {
-                        if let Ok(params) =
-                            serde_json::from_value::<DidOpenTextDocumentParams>(not.params)
-                        {
-                            self.handle_did_open(params);
+                lsp_server::Message::Notification(not) => {
+                    match not.method.as_str() {
+                        "textDocument/didOpen" => {
+                            if let Ok(params) = serde_json::from_value::<DidOpenTextDocumentParams>(not.params) {
+                                self.handle_did_open(params);
+                            }
                         }
-                    }
-                    "textDocument/didChange" => {
-                        if let Ok(params) =
-                            serde_json::from_value::<DidChangeTextDocumentParams>(not.params)
-                        {
-                            self.handle_did_change(params);
+                        "textDocument/didChange" => {
+                            if let Ok(params) = serde_json::from_value::<DidChangeTextDocumentParams>(not.params) {
+                                self.handle_did_change(params);
+                            }
                         }
-                    }
-                    "textDocument/didClose" => {
-                        if let Ok(params) =
-                            serde_json::from_value::<DidCloseTextDocumentParams>(not.params)
-                        {
-                            self.handle_did_close(params);
+                        "textDocument/didClose" => {
+                            if let Ok(params) = serde_json::from_value::<DidCloseTextDocumentParams>(not.params) {
+                                self.handle_did_close(params);
+                            }
                         }
+                        _ => {}
                     }
-                    _ => {}
-                },
+                }
                 lsp_server::Message::Response(_) => {}
             }
         }

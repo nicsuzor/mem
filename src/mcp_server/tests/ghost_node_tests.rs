@@ -102,10 +102,7 @@ fn test_ghost_node_write_paths_reject_before_io() {
         }))
         .unwrap_err();
     let msg = err.message.to_string();
-    assert!(
-        msg.contains("ghost node"),
-        "append must reject ghost node: {msg}"
-    );
+    assert!(msg.contains("ghost node"), "append must reject ghost node: {msg}");
 
     // 2. update_task
     let err = server
@@ -115,10 +112,7 @@ fn test_ghost_node_write_paths_reject_before_io() {
         }))
         .unwrap_err();
     let msg = err.message.to_string();
-    assert!(
-        msg.contains("ghost node"),
-        "update_task must reject ghost node: {msg}"
-    );
+    assert!(msg.contains("ghost node"), "update_task must reject ghost node: {msg}");
 
     // 3. update_body
     let err = server
@@ -128,10 +122,7 @@ fn test_ghost_node_write_paths_reject_before_io() {
         }))
         .unwrap_err();
     let msg = err.message.to_string();
-    assert!(
-        msg.contains("ghost node"),
-        "update_body must reject ghost node: {msg}"
-    );
+    assert!(msg.contains("ghost node"), "update_body must reject ghost node: {msg}");
 
     // 4. edit_body
     let err = server
@@ -141,10 +132,7 @@ fn test_ghost_node_write_paths_reject_before_io() {
         }))
         .unwrap_err();
     let msg = err.message.to_string();
-    assert!(
-        msg.contains("ghost node"),
-        "edit_body must reject ghost node: {msg}"
-    );
+    assert!(msg.contains("ghost node"), "edit_body must reject ghost node: {msg}");
 
     // 5. delete
     let err = server
@@ -153,10 +141,7 @@ fn test_ghost_node_write_paths_reject_before_io() {
         }))
         .unwrap_err();
     let msg = err.message.to_string();
-    assert!(
-        msg.contains("ghost node"),
-        "delete must reject ghost node: {msg}"
-    );
+    assert!(msg.contains("ghost node"), "delete must reject ghost node: {msg}");
 }
 
 #[test]

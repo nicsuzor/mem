@@ -20,9 +20,7 @@ fn run_bin_env(args: &[&str], envs: &[(&str, &str)]) -> (i32, String, String) {
     for (k, v) in envs {
         cmd.env(k, v);
     }
-    let output = cmd
-        .output()
-        .expect("Failed to execute pkb-excalidraw binary");
+    let output = cmd.output().expect("Failed to execute pkb-excalidraw binary");
     let code = output.status.code().unwrap_or(-1);
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
@@ -90,93 +88,26 @@ fn test_man_page_help_structure_and_coverage() {
 
     // Verify every subcommand appears in the help
     let all_subcommands = [
-        "summary",
-        "map",
-        "style",
-        "check",
-        "diff",
-        "struct-diff",
-        "lib",
-        "item",
-        "nodes",
-        "edges",
-        "arrows",
-        "inspect",
-        "get",
-        "add-node",
-        "update-node",
-        "add-text",
-        "connect",
-        "set-text",
-        "fit",
-        "move-elem",
-        "delete-elem",
-        "batch",
-        "theme",
-        "overlap",
-        "arrows-check",
-        "describe",
-        "screenshot",
-        "arrange",
-        "align",
-        "distribute",
-        "group",
-        "ungroup",
-        "lock",
-        "unlock",
-        "duplicate",
-        "update",
-        "query",
-        "apply",
-        "export",
-        "import",
-        "snapshot",
-        "clear",
+        "summary", "map", "style", "check", "diff", "struct-diff", "lib", "item",
+        "nodes", "edges", "arrows", "inspect", "get", "add-node", "update-node", "add-text",
+        "connect", "set-text", "fit", "move-elem", "delete-elem", "batch",
+        "theme", "overlap", "arrows-check",
+        "describe", "screenshot", "arrange", "align", "distribute", "group",
+        "ungroup", "lock", "unlock", "duplicate", "update", "query", "apply",
+        "export", "import", "snapshot", "clear",
     ];
     for cmd in all_subcommands {
-        assert!(
-            stdout.contains(cmd),
-            "Help output missing subcommand: {cmd}"
-        );
+        assert!(stdout.contains(cmd), "Help output missing subcommand: {cmd}");
     }
 
     // Verify every flag appears in the help
     let all_flags = [
-        "--type",
-        "--text",
-        "--at",
-        "--size",
-        "--role",
-        "--color",
-        "--id",
-        "--angle",
-        "--roughness",
-        "--fill-style",
-        "--preset",
-        "--font-size",
-        "--from",
-        "--to",
-        "--label",
-        "--curved",
-        "--stroke-style",
-        "--by",
-        "--cascade-arrows",
-        "--set",
-        "--bbox",
-        "--filter",
-        "--filter-json",
-        "--out",
-        "--format",
-        "--no-background",
-        "--ids",
-        "--group",
-        "--offset",
-        "--after",
-        "--replace",
-        "--yes",
-        "--all",
-        "--help",
-        "--no-color",
+        "--type", "--text", "--at", "--size", "--role", "--color", "--id",
+        "--angle", "--roughness", "--fill-style", "--preset", "--font-size",
+        "--from", "--to", "--label", "--curved", "--stroke-style", "--by",
+        "--cascade-arrows", "--set", "--bbox", "--filter", "--filter-json",
+        "--out", "--format", "--no-background", "--ids", "--group", "--offset",
+        "--after", "--replace", "--yes", "--all", "--help", "--no-color",
     ];
     for flag in all_flags {
         assert!(stdout.contains(flag), "Help output missing flag: {flag}");
@@ -225,34 +156,22 @@ fn test_help_color_handling() {
     // Piped output must be plain text (no ANSI escape sequences)
     let (code, stdout, _stderr) = run_bin(&["--help"]);
     assert_eq!(code, 0);
-    assert!(
-        !stdout.contains("\x1b["),
-        "Piped output should NOT contain ANSI escapes"
-    );
+    assert!(!stdout.contains("\x1b["), "Piped output should NOT contain ANSI escapes");
 
     // NO_COLOR=1 must be plain text
     let (code, stdout, _stderr) = run_bin_env(&["--help"], &[("NO_COLOR", "1")]);
     assert_eq!(code, 0);
-    assert!(
-        !stdout.contains("\x1b["),
-        "NO_COLOR=1 output should NOT contain ANSI escapes"
-    );
+    assert!(!stdout.contains("\x1b["), "NO_COLOR=1 output should NOT contain ANSI escapes");
 
     // --no-color flag must be plain text
     let (code, stdout, _stderr) = run_bin(&["--no-color", "--help"]);
     assert_eq!(code, 0);
-    assert!(
-        !stdout.contains("\x1b["),
-        "--no-color output should NOT contain ANSI escapes"
-    );
+    assert!(!stdout.contains("\x1b["), "--no-color output should NOT contain ANSI escapes");
 
     // --color=always must emit ANSI escapes
     let (code, stdout, _stderr) = run_bin(&["--color=always", "--help"]);
     assert_eq!(code, 0);
-    assert!(
-        stdout.contains("\x1b["),
-        "--color=always output SHOULD contain ANSI escapes"
-    );
+    assert!(stdout.contains("\x1b["), "--color=always output SHOULD contain ANSI escapes");
 }
 
 #[test]
@@ -419,10 +338,7 @@ fn test_map_mode_with_arrow_labels_task_3bff27d4() {
     assert_eq!(lines.len(), 5);
 
     // 1. r1 rectangle with label
-    assert_eq!(
-        lines[0],
-        "r1\trectangle\t10,20\t100x50\t#ffc9c9\tBox Label / Subtext"
-    );
+    assert_eq!(lines[0], "r1\trectangle\t10,20\t100x50\t#ffc9c9\tBox Label / Subtext");
     // 2. a1 arrow with label (BUG FIX: task_3bff27d4)
     assert_eq!(lines[1], "a1\tarrow\tr1 -> r2\tFlow / Transition");
     // 3. a2 arrow without label
@@ -640,9 +556,7 @@ fn test_check_mode_all_failure_cases() {
     assert!(stdout.contains("dangling_arr.startBinding -> missing element ghost1"));
     assert!(stdout.contains("dangling_arr.endBinding -> missing element ghost2"));
     assert!(stdout.contains("text t_orphan_container bound to missing container ghost_box"));
-    assert!(
-        stdout.contains("container r_no_backref lacks boundElements backref to text t_no_backref")
-    );
+    assert!(stdout.contains("container r_no_backref lacks boundElements backref to text t_no_backref"));
     assert!(stdout.contains("r_dangling_bound.boundElements -> missing element ghost_bound"));
     assert!(stdout.contains("t_orphan_container: text and originalText disagree in content"));
 }
@@ -671,11 +585,7 @@ fn test_diff_mode() {
     let file2 = NamedTempFile::new().unwrap();
     fs::write(file2.path(), sample2).unwrap();
 
-    let (code, stdout, _) = run_bin(&[
-        file1.path().to_str().unwrap(),
-        "diff",
-        file2.path().to_str().unwrap(),
-    ]);
+    let (code, stdout, _) = run_bin(&[file1.path().to_str().unwrap(), "diff", file2.path().to_str().unwrap()]);
     assert_eq!(code, 0);
 
     assert!(stdout.contains("Summary Diff: 3 elements -> 3 elements (delta: +0)"));
@@ -764,12 +674,10 @@ fn test_lib_and_item_mode() {
     assert!(stdout.contains("#1\tDatabase Node\t1 els\t60x60\tellipse"));
 
     // item command by name
-    let (code2, stdout2, stderr2) =
-        run_bin(&[path, "item", "Server", "--after", "a5", "--at", "500,600"]);
+    let (code2, stdout2, stderr2) = run_bin(&[path, "item", "Server", "--after", "a5", "--at", "500,600"]);
     assert_eq!(code2, 0, "stderr: {}", stderr2);
 
-    let parsed: serde_json::Value =
-        serde_json::from_str(&stdout2).expect("Output should be valid JSON");
+    let parsed: serde_json::Value = serde_json::from_str(&stdout2).expect("Output should be valid JSON");
     let arr = parsed.as_array().expect("Output should be array");
     assert_eq!(arr.len(), 2);
 
@@ -778,7 +686,7 @@ fn test_lib_and_item_mode() {
     assert_eq!(r["type"], "rectangle");
     assert_eq!(r["x"], 500.0);
     assert_eq!(r["y"], 600.0);
-    assert_eq!(r["index"], "a500");
+    assert_eq!(r["index"], "a6");
     assert_eq!(r["version"], 1);
     assert_eq!(r["isDeleted"], false);
     let r_id = r["id"].as_str().unwrap();
@@ -789,7 +697,7 @@ fn test_lib_and_item_mode() {
     assert_eq!(t["type"], "text");
     assert_eq!(t["x"], 510.0);
     assert_eq!(t["y"], 610.0);
-    assert_eq!(t["index"], "a501");
+    assert_eq!(t["index"], "a7");
     assert_eq!(t["text"], "Server");
     assert_eq!(t["containerId"], r_id); // Remapped containerId!
 
@@ -805,11 +713,16 @@ fn test_lib_and_item_mode() {
     assert_eq!(r_group.len(), 21);
 
     // item command by #1
-    let (code3, stdout3, _) = run_bin(&[path, "item", "#1", "--after", "b0"]);
+    let (code3, stdout3, _) = run_bin(&[path, "item", "#1", "--after", "az"]);
     assert_eq!(code3, 0);
     let parsed3: serde_json::Value = serde_json::from_str(&stdout3).unwrap();
     assert_eq!(parsed3.as_array().unwrap().len(), 1);
-    assert_eq!(parsed3[0]["index"], "b000");
+    assert_eq!(parsed3[0]["index"], "b00");
+
+    // An --after key with no readable integer part is rejected.
+    let (code4, _, stderr4) = run_bin(&[path, "item", "#1", "--after", "b0"]);
+    assert_eq!(code4, 1);
+    assert!(stderr4.contains("cannot mint indices after \"b0\""), "stderr: {stderr4}");
 }
 
 // ============================================================================
@@ -988,18 +901,15 @@ fn test_struct_diff_mode() {
     assert_eq!(code, 0, "stderr: {}", stderr);
 
     // Added node
-    assert!(stdout
-        .contains(r#"+ node [node_cache] type="rectangle" label="Redis Cache" role="success""#));
+    assert!(stdout.contains(r#"+ node [node_cache] type="rectangle" label="Redis Cache" role="success""#));
     // Removed node
     assert!(stdout.contains(r#"- node [node_old] type="rectangle" label="Deprecated Service""#));
     // Relabeled node
-    assert!(stdout
-        .contains(r#"~ node [node_auth] relabeled: "Auth Service" -> "Authentication Gateway""#));
+    assert!(stdout.contains(r#"~ node [node_auth] relabeled: "Auth Service" -> "Authentication Gateway""#));
     // Role changed node
     assert!(stdout.contains(r#"~ node [node_auth] role: "emphasis" -> "info""#));
     // Retargeted edge
-    assert!(stdout
-        .contains("~ edge [edge_auth_db] retargeted: node_auth->node_db -> node_auth->node_cache"));
+    assert!(stdout.contains("~ edge [edge_auth_db] retargeted: node_auth->node_db -> node_auth->node_cache"));
     // Relabeled edge
     assert!(stdout.contains(r#"~ edge [edge_auth_db] relabeled: "queries" -> "reads from""#));
 }
@@ -1795,10 +1705,7 @@ fn test_regression_vulnerability_1_cascade_delete_labeled_arrow() {
     assert_eq!(surviving_ids, vec!["node2", "text2"]);
 
     // node2's boundElements must NOT contain arrow1 anymore
-    let node2_bound = els[0]
-        .get("boundElements")
-        .and_then(|v| v.as_array())
-        .unwrap();
+    let node2_bound = els[0].get("boundElements").and_then(|v| v.as_array()).unwrap();
     assert_eq!(node2_bound.len(), 1);
     assert_eq!(node2_bound[0]["id"], "text2");
 
@@ -2272,8 +2179,7 @@ fn test_regression_vulnerability_5_theme_apply_cascades_to_bound_text_and_contai
     let path = file.path().to_str().unwrap();
 
     // 1. Apply theme to box1 by ID -> styles both box1 and txt1
-    let (code1, stdout1, stderr1) =
-        run_bin(&[path, "theme", "apply", "retro-terminal", "--id", "box1"]);
+    let (code1, stdout1, stderr1) = run_bin(&[path, "theme", "apply", "retro-terminal", "--id", "box1"]);
     assert_eq!(code1, 0, "stderr: {}", stderr1);
     assert!(stdout1.contains("OK: applied theme 'retro-terminal' to 2 elements"));
 
@@ -2299,8 +2205,7 @@ fn test_regression_vulnerability_5_theme_apply_cascades_to_bound_text_and_contai
     assert_eq!(box2["strokeColor"], "#000000");
 
     // 2. Apply theme to arrow1 by ID -> styles both arrow1 and arr_lbl
-    let (code2, stdout2, _) =
-        run_bin(&[path, "theme", "apply", "retro-terminal", "--id", "arrow1"]);
+    let (code2, stdout2, _) = run_bin(&[path, "theme", "apply", "retro-terminal", "--id", "arrow1"]);
     assert_eq!(code2, 0);
     assert!(stdout2.contains("OK: applied theme 'retro-terminal' to 2 elements"));
 
@@ -2569,13 +2474,7 @@ fn test_update_mode() {
     let path = file.path().to_str().unwrap();
 
     // 1. Update visual properties
-    let (code1, stdout1, stderr1) = run_bin(&[
-        path,
-        "update",
-        "box1",
-        "--set",
-        "{\"backgroundColor\": \"#ffcc00\", \"roughness\": 2}",
-    ]);
+    let (code1, stdout1, stderr1) = run_bin(&[path, "update", "box1", "--set", "{\"backgroundColor\": \"#ffcc00\", \"roughness\": 2}"]);
     assert_eq!(code1, 0, "stderr: {}", stderr1);
     assert!(stdout1.contains("OK: updated element box1"));
 
@@ -2585,13 +2484,7 @@ fn test_update_mode() {
     assert_eq!(doc1["elements"][0]["roughness"], 2);
 
     // 2. Update text via update command on container
-    let (code2, _stdout2, stderr2) = run_bin(&[
-        path,
-        "update",
-        "box1",
-        "--set",
-        "{\"text\": \"Updated Content\"}",
-    ]);
+    let (code2, _stdout2, stderr2) = run_bin(&[path, "update", "box1", "--set", "{\"text\": \"Updated Content\"}"]);
     assert_eq!(code2, 0, "stderr: {}", stderr2);
 
     let content2 = fs::read_to_string(path).unwrap();
@@ -2646,8 +2539,7 @@ fn test_arrange_align_and_distribute() {
     let path = file.path().to_str().unwrap();
 
     // 1. Align left for b1 and b2
-    let (code1, stdout1, stderr1) =
-        run_bin(&[path, "arrange", "align", "--ids", "b1,b2", "--to", "left"]);
+    let (code1, stdout1, stderr1) = run_bin(&[path, "arrange", "align", "--ids", "b1,b2", "--to", "left"]);
     assert_eq!(code1, 0, "stderr: {}", stderr1);
     assert!(stdout1.contains("OK: aligned 2 elements to left"));
 
@@ -2659,15 +2551,7 @@ fn test_arrange_align_and_distribute() {
     assert_eq!(b2_x, 100.0);
 
     // 2. Distribute horizontally across b1, b2, b3
-    let (code2, stdout2, stderr2) = run_bin(&[
-        path,
-        "arrange",
-        "distribute",
-        "--ids",
-        "b1,b2,b3",
-        "--to",
-        "horizontal",
-    ]);
+    let (code2, stdout2, stderr2) = run_bin(&[path, "arrange", "distribute", "--ids", "b1,b2,b3", "--to", "horizontal"]);
     assert_eq!(code2, 0, "stderr: {}", stderr2);
     assert!(stdout2.contains("OK: distributed 3 elements horizontal"));
 
@@ -2731,32 +2615,21 @@ fn test_arrange_group_ungroup_lock_duplicate() {
     // 2. Lock b1
     let (code_lock, _, _) = run_bin(&[path, "arrange", "lock", "--ids", "b1"]);
     assert_eq!(code_lock, 0);
-    let doc_locked: serde_json::Value =
-        serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap();
+    let doc_locked: serde_json::Value = serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap();
     assert_eq!(doc_locked["elements"][0]["locked"], true);
 
     // 3. Unlock b1
     let (code_unlock, _, _) = run_bin(&[path, "arrange", "unlock", "--ids", "b1"]);
     assert_eq!(code_unlock, 0);
-    let doc_unlocked: serde_json::Value =
-        serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap();
+    let doc_unlocked: serde_json::Value = serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap();
     assert_eq!(doc_unlocked["elements"][0]["locked"], false);
 
     // 4. Duplicate b1 with offset 40, 60
-    let (code_dup, stdout_dup, _) = run_bin(&[
-        path,
-        "arrange",
-        "duplicate",
-        "--ids",
-        "b1",
-        "--offset",
-        "40,60",
-    ]);
+    let (code_dup, stdout_dup, _) = run_bin(&[path, "arrange", "duplicate", "--ids", "b1", "--offset", "40,60"]);
     assert_eq!(code_dup, 0);
     assert!(stdout_dup.contains("OK: duplicated 1 elements"));
 
-    let doc_dup: serde_json::Value =
-        serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap();
+    let doc_dup: serde_json::Value = serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap();
     assert_eq!(doc_dup["elements"].as_array().unwrap().len(), 3);
     let dup_elem = &doc_dup["elements"][2];
     assert_ne!(dup_elem["id"], "b1");
@@ -2764,8 +2637,7 @@ fn test_arrange_group_ungroup_lock_duplicate() {
     assert_eq!(dup_elem["y"], 160.0);
 
     // 5. Ungroup b1 and b2
-    let (code_ungroup, stdout_ungroup, _) =
-        run_bin(&[path, "arrange", "ungroup", "--ids", "b1,b2"]);
+    let (code_ungroup, stdout_ungroup, _) = run_bin(&[path, "arrange", "ungroup", "--ids", "b1,b2"]);
     assert_eq!(code_ungroup, 0);
     assert!(stdout_ungroup.contains("OK: ungrouped 2 elements"));
 
@@ -2838,28 +2710,14 @@ fn test_apply_transactional_patch() {
     let doc: serde_json::Value = serde_json::from_str(&content).unwrap();
 
     // Check old1 updated
-    let old1 = doc["elements"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|e| e["id"] == "old1")
-        .unwrap();
+    let old1 = doc["elements"].as_array().unwrap().iter().find(|e| e["id"] == "old1").unwrap();
     assert_eq!(old1["backgroundColor"], "#ffd43b");
 
     // Check del1 deleted
-    assert!(doc["elements"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .all(|e| e["id"] != "del1" || e["isDeleted"] == true));
+    assert!(doc["elements"].as_array().unwrap().iter().all(|e| e["id"] != "del1" || e["isDeleted"] == true));
 
     // Check created diamond
-    let diamond = doc["elements"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|e| e["type"] == "diamond")
-        .unwrap();
+    let diamond = doc["elements"].as_array().unwrap().iter().find(|e| e["type"] == "diamond").unwrap();
     assert_eq!(diamond["x"], 300.0);
     assert_eq!(diamond["y"], 100.0);
 
@@ -2924,8 +2782,7 @@ Starting text ^t1
     assert_eq!(code_chk1, 0, "check failed: {}", stdout_chk1);
 
     // 2. Set text on obsidian file
-    let (code_set, stdout_set, stderr_set) =
-        run_bin(&[path, "set-text", "b1", "Obsidian Synced Text"]);
+    let (code_set, stdout_set, stderr_set) = run_bin(&[path, "set-text", "b1", "Obsidian Synced Text"]);
     assert_eq!(code_set, 0, "stderr: {}", stderr_set);
     assert!(stdout_set.contains("OK: updated text for b1"));
 
@@ -2937,16 +2794,7 @@ Starting text ^t1
     assert!(content.contains("Obsidian Synced Text ^t1"));
 
     // 3. Add node on obsidian file
-    let (code_add, stdout_add, stderr_add) = run_bin(&[
-        path,
-        "add-node",
-        "--type",
-        "ellipse",
-        "--text",
-        "Vault Note",
-        "--at",
-        "300,100",
-    ]);
+    let (code_add, stdout_add, stderr_add) = run_bin(&[path, "add-node", "--type", "ellipse", "--text", "Vault Note", "--at", "300,100"]);
     assert_eq!(code_add, 0, "stderr: {}", stderr_add);
     assert!(stdout_add.contains("OK: created node"));
 
@@ -2982,8 +2830,7 @@ fn test_snapshot_save_list_restore() {
     let path = path_buf.to_str().unwrap();
 
     // 1. Save snapshot
-    let (code_save, stdout_save, stderr_save) =
-        run_bin(&[path, "snapshot", "save", "initial_state"]);
+    let (code_save, stdout_save, stderr_save) = run_bin(&[path, "snapshot", "save", "initial_state"]);
     assert_eq!(code_save, 0, "stderr: {}", stderr_save);
     assert!(stdout_save.contains("OK: saved snapshot 'initial_state'"));
 
@@ -2997,18 +2844,15 @@ fn test_snapshot_save_list_restore() {
     assert_eq!(code_clear, 0);
     assert!(stdout_clear.contains("OK: cleared canvas"));
 
-    let doc_cleared: serde_json::Value =
-        serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap();
+    let doc_cleared: serde_json::Value = serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap();
     assert_eq!(doc_cleared["elements"].as_array().unwrap().len(), 0);
 
     // 4. Restore snapshot
-    let (code_rest, stdout_rest, stderr_rest) =
-        run_bin(&[path, "snapshot", "restore", "initial_state"]);
+    let (code_rest, stdout_rest, stderr_rest) = run_bin(&[path, "snapshot", "restore", "initial_state"]);
     assert_eq!(code_rest, 0, "stderr: {}", stderr_rest);
     assert!(stdout_rest.contains("OK: restored snapshot 'initial_state' (1 elements)"));
 
-    let doc_restored: serde_json::Value =
-        serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap();
+    let doc_restored: serde_json::Value = serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap();
     assert_eq!(doc_restored["elements"].as_array().unwrap().len(), 1);
     assert_eq!(doc_restored["elements"][0]["id"], "b1");
 }
@@ -3047,6 +2891,474 @@ fn test_clear_canvas_protection() {
 
     let doc: serde_json::Value = serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap();
     assert_eq!(doc["elements"].as_array().unwrap().len(), 0);
+}
+
+
+fn stroke_style_canvas() -> NamedTempFile {
+    let sample = r##"{
+        "type": "excalidraw",
+        "version": 2,
+        "elements": [
+            {
+                "id": "b1",
+                "type": "rectangle",
+                "x": 100,
+                "y": 100,
+                "width": 100,
+                "height": 50,
+                "strokeStyle": "solid",
+                "index": "a0",
+                "isDeleted": false
+            }
+        ]
+    }"##;
+    let file = NamedTempFile::new().unwrap();
+    fs::write(file.path(), sample).unwrap();
+    file
+}
+
+fn stroke_style_of(path: &str, id: &str) -> String {
+    let doc: serde_json::Value = serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap();
+    let el = doc["elements"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["id"] == id)
+        .unwrap_or_else(|| panic!("element {id} not found"));
+    el["strokeStyle"].as_str().unwrap().to_string()
+}
+
+fn assert_check_passes(path: &str) {
+    let (code, stdout, stderr) = run_bin(&[path, "check"]);
+    assert_eq!(code, 0, "check failed: stdout={stdout} stderr={stderr}");
+    println!("check: {}", stdout.trim());
+}
+
+#[test]
+fn test_add_node_stroke_style_mem_41d61d9c() {
+    for style in ["solid", "dashed", "dotted"] {
+        let file = stroke_style_canvas();
+        let path = file.path().to_str().unwrap();
+        let id = format!("node_{style}");
+        let (code, stdout, stderr) =
+            run_bin(&[path, "add-node", "--text", "Styled", "--id", &id, "--stroke-style", style]);
+        assert_eq!(code, 0, "stdout={stdout} stderr={stderr}");
+        assert_eq!(stroke_style_of(path, &id), style);
+        assert_check_passes(path);
+    }
+
+    let file = stroke_style_canvas();
+    let path = file.path().to_str().unwrap();
+    let (code, _, stderr) = run_bin(&[path, "add-node", "--text", "Bad", "--stroke-style", "wavy"]);
+    assert_eq!(code, 1);
+    assert!(stderr.contains("invalid stroke style"), "stderr={stderr}");
+}
+
+#[test]
+fn test_update_node_stroke_style_mem_41d61d9c() {
+    for style in ["dashed", "dotted", "solid"] {
+        let file = stroke_style_canvas();
+        let path = file.path().to_str().unwrap();
+        if style == "solid" {
+            fs::write(path, fs::read_to_string(path).unwrap().replace("\"solid\"", "\"dashed\"")).unwrap();
+        }
+        let (code, stdout, stderr) =
+            run_bin(&[path, "update-node", "--id", "b1", "--stroke-style", style]);
+        assert_eq!(code, 0, "stdout={stdout} stderr={stderr}");
+        assert_eq!(stroke_style_of(path, "b1"), style);
+        assert_check_passes(path);
+    }
+
+    let file = stroke_style_canvas();
+    let path = file.path().to_str().unwrap();
+    let (code, _, stderr) = run_bin(&[path, "update-node", "--id", "b1", "--stroke-style", "wavy"]);
+    assert_eq!(code, 1);
+    assert!(stderr.contains("invalid stroke style"), "stderr={stderr}");
+    assert_eq!(stroke_style_of(path, "b1"), "solid");
+}
+
+#[test]
+fn test_set_stroke_style_mem_41d61d9c() {
+    for style in ["dashed", "dotted", "solid"] {
+        let file = stroke_style_canvas();
+        let path = file.path().to_str().unwrap();
+        if style == "solid" {
+            fs::write(path, fs::read_to_string(path).unwrap().replace("\"solid\"", "\"dotted\"")).unwrap();
+        }
+        let (code, stdout, stderr) = run_bin(&[path, "set-stroke-style", "b1", style]);
+        assert_eq!(code, 0, "stdout={stdout} stderr={stderr}");
+        assert!(stdout.contains(&format!("OK: set strokeStyle of b1 to {style}")), "stdout={stdout}");
+        assert_eq!(stroke_style_of(path, "b1"), style);
+        assert_check_passes(path);
+    }
+
+    // Command-first ordering works too
+    let file = stroke_style_canvas();
+    let path = file.path().to_str().unwrap();
+    let (code, _, stderr) = run_bin(&["set-stroke-style", path, "b1", "dashed"]);
+    assert_eq!(code, 0, "stderr={stderr}");
+    assert_eq!(stroke_style_of(path, "b1"), "dashed");
+
+    // Invalid style is rejected and the file is untouched
+    let file = stroke_style_canvas();
+    let path = file.path().to_str().unwrap();
+    let before = fs::read_to_string(path).unwrap();
+    let (code, _, stderr) = run_bin(&[path, "set-stroke-style", "b1", "wavy"]);
+    assert_eq!(code, 1);
+    assert!(stderr.contains("invalid stroke style"), "stderr={stderr}");
+    assert_eq!(fs::read_to_string(path).unwrap(), before);
+
+    // Unknown element is rejected
+    let (code, _, stderr) = run_bin(&[path, "set-stroke-style", "nope", "dashed"]);
+    assert_eq!(code, 1);
+    assert!(stderr.contains("not found"), "stderr={stderr}");
+
+    // Missing arguments are rejected
+    let (code, _, stderr) = run_bin(&[path, "set-stroke-style", "b1"]);
+    assert_eq!(code, 1);
+    assert!(stderr.contains("set-stroke-style requires"), "stderr={stderr}");
+}
+
+#[test]
+fn test_stroke_style_help_mem_41d61d9c() {
+    let (code, stdout, _) = run_bin(&["--help"]);
+    assert_eq!(code, 0);
+    assert!(stdout.contains("set-stroke-style"), "man page missing set-stroke-style");
+
+    let (code, stdout, _) = run_bin(&["help", "set-stroke-style"]);
+    assert_eq!(code, 0, "help set-stroke-style failed");
+    assert!(stdout.contains("pkb-excalidraw set-stroke-style"));
+    assert!(stdout.contains("solid, dashed, dotted"));
+
+    for cmd in ["add-node", "update-node"] {
+        let (code, stdout, _) = run_bin(&["help", cmd]);
+        assert_eq!(code, 0);
+        assert!(stdout.contains("--stroke-style"), "help {cmd} missing --stroke-style");
+    }
+}
+
+#[test]
+fn test_batch_apply_stroke_style_mem_41d61d9c() {
+    let initial = r##"{
+        "type": "excalidraw",
+        "version": 2,
+        "elements": []
+    }"##;
+    let file = NamedTempFile::new().unwrap();
+    fs::write(file.path(), initial).unwrap();
+    let path = file.path().to_str().unwrap();
+
+    let batch_json = r##"[
+        {
+            "action": "add-node",
+            "type": "rectangle",
+            "text": "Solid",
+            "at": [100, 100],
+            "id": "node_solid",
+            "stroke_style": "solid"
+        },
+        {
+            "action": "add-node",
+            "type": "rectangle",
+            "text": "Dashed",
+            "at": [300, 100],
+            "id": "node_dashed",
+            "strokeStyle": "dashed"
+        },
+        {
+            "action": "add-node",
+            "type": "rectangle",
+            "text": "Dotted",
+            "at": [500, 100],
+            "id": "node_dotted"
+        },
+        {
+            "action": "update-node",
+            "id": "node_dotted",
+            "stroke_style": "dotted"
+        }
+    ]"##;
+
+    let (code, _stdout, stderr) = run_bin_stdin(&[path, "batch", "-"], batch_json);
+    assert_eq!(code, 0, "stderr: {}", stderr);
+    
+    assert_eq!(stroke_style_of(path, "node_solid"), "solid");
+    assert_eq!(stroke_style_of(path, "node_dashed"), "dashed");
+    assert_eq!(stroke_style_of(path, "node_dotted"), "dotted");
+
+    // Invalid style in batch aborts transaction
+    let invalid_batch = r##"[
+        {
+            "action": "add-node",
+            "type": "rectangle",
+            "text": "Bad",
+            "at": [100, 100],
+            "id": "bad",
+            "stroke_style": "wavy"
+        }
+    ]"##;
+    let (code, _, stderr) = run_bin_stdin(&[path, "batch", "-"], invalid_batch);
+    assert_eq!(code, 1);
+    assert!(stderr.contains("invalid stroke style"), "stderr={stderr}");
+
+    // Apply create with strokeStyle
+    let apply_json = r##"{
+        "create": [
+            {
+                "id": "added_by_apply",
+                "type": "rectangle",
+                "text": "Applied",
+                "at": [100, 300],
+                "strokeStyle": "dashed"
+            }
+        ]
+    }"##;
+    let (code, _, stderr) = run_bin_stdin(&[path, "apply", "-"], apply_json);
+    assert_eq!(code, 0, "stderr: {}", stderr);
+    assert_eq!(stroke_style_of(path, "added_by_apply"), "dashed");
+
+    // Invalid style in apply
+    let invalid_apply = r##"{
+        "create": [
+            {
+                "id": "bad_apply",
+                "type": "rectangle",
+                "text": "Bad Apply",
+                "at": [100, 500],
+                "strokeStyle": "zigzag"
+            }
+        ]
+    }"##;
+    let (code, _, stderr) = run_bin_stdin(&[path, "apply", "-"], invalid_apply);
+    assert_eq!(code, 1);
+    assert!(stderr.contains("invalid stroke style"), "stderr={stderr}");
+}
+
+// ============================================================================
+// Arrow endpoint trimming (connect) and fractional index minting
+// ============================================================================
+
+const BINDING_GAP: f64 = 5.0;
+
+fn write_scene(elements: serde_json::Value) -> NamedTempFile {
+    let doc = serde_json::json!({ "type": "excalidraw", "version": 2, "elements": elements });
+    let file = NamedTempFile::new().unwrap();
+    fs::write(file.path(), serde_json::to_string_pretty(&doc).unwrap()).unwrap();
+    file
+}
+
+fn shape(id: &str, kind: &str, x: f64, y: f64, w: f64, h: f64, index: &str) -> serde_json::Value {
+    serde_json::json!({
+        "id": id, "type": kind, "x": x, "y": y, "width": w, "height": h,
+        "angle": 0, "index": index, "isDeleted": false, "boundElements": null
+    })
+}
+
+fn read_elements(path: &str) -> Vec<serde_json::Value> {
+    let doc: serde_json::Value = serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap();
+    doc["elements"].as_array().unwrap().clone()
+}
+
+/// Absolute start and end points of the single arrow in the scene.
+fn arrow_endpoints(path: &str) -> ((f64, f64), (f64, f64), serde_json::Value) {
+    let els = read_elements(path);
+    let arrow = els.iter().find(|e| e["type"] == "arrow").expect("arrow").clone();
+    let x = arrow["x"].as_f64().unwrap();
+    let y = arrow["y"].as_f64().unwrap();
+    let pts = arrow["points"].as_array().unwrap();
+    let p0 = (x + pts[0][0].as_f64().unwrap(), y + pts[0][1].as_f64().unwrap());
+    let last = &pts[pts.len() - 1];
+    let p1 = (x + last[0].as_f64().unwrap(), y + last[1].as_f64().unwrap());
+    (p0, p1, arrow)
+}
+
+fn assert_close(actual: (f64, f64), expected: (f64, f64), what: &str) {
+    assert!(
+        (actual.0 - expected.0).abs() < 1e-6 && (actual.1 - expected.1).abs() < 1e-6,
+        "{what}: expected {expected:?}, got {actual:?}"
+    );
+}
+
+fn assert_binding(arrow: &serde_json::Value, key: &str, id: &str) {
+    assert_eq!(arrow[key]["elementId"], id, "{key}");
+    assert_eq!(arrow[key]["focus"].as_f64(), Some(0.0), "{key}.focus");
+    assert_eq!(arrow[key]["gap"].as_f64(), Some(BINDING_GAP), "{key}.gap");
+}
+
+#[test]
+fn test_connect_trims_endpoints_to_rectangle_boundary() {
+    // Centres at (80,30) and (480,230). The centre line leaves n1 through its
+    // bottom edge (y=60) and enters n2 through its top edge (y=200).
+    let file = write_scene(serde_json::json!([
+        shape("n1", "rectangle", 0.0, 0.0, 160.0, 60.0, "a0"),
+        shape("n2", "rectangle", 400.0, 200.0, 160.0, 60.0, "a1"),
+    ]));
+    let path = file.path().to_str().unwrap();
+    let (code, _, stderr) = run_bin(&[path, "connect", "--from", "n1", "--to", "n2"]);
+    assert_eq!(code, 0, "stderr: {stderr}");
+
+    let (start, end, arrow) = arrow_endpoints(path);
+    assert_close(start, (150.0, 65.0), "start lands gap outside n1's bottom edge");
+    assert_close(end, (410.0, 195.0), "end lands gap outside n2's top edge");
+    assert_close(
+        (arrow["width"].as_f64().unwrap(), arrow["height"].as_f64().unwrap()),
+        (260.0, 130.0),
+        "arrow width/height span the trimmed segment",
+    );
+    assert_binding(&arrow, "startBinding", "n1");
+    assert_binding(&arrow, "endBinding", "n2");
+}
+
+#[test]
+fn test_connect_trims_endpoints_to_ellipse_and_diamond_boundary() {
+    let file = write_scene(serde_json::json!([
+        shape("e1", "ellipse", 0.0, 0.0, 100.0, 60.0, "a0"),
+        shape("d1", "diamond", 300.0, 0.0, 100.0, 60.0, "a1"),
+    ]));
+    let path = file.path().to_str().unwrap();
+
+    // Horizontal: ellipse right vertex (100,30) + gap; diamond left vertex (300,30) - gap.
+    let (code, _, stderr) = run_bin(&[path, "connect", "--from", "e1", "--to", "d1"]);
+    assert_eq!(code, 0, "stderr: {stderr}");
+    let (start, end, arrow) = arrow_endpoints(path);
+    assert_close(start, (105.0, 30.0), "ellipse start");
+    assert_close(end, (295.0, 30.0), "diamond end");
+    assert_binding(&arrow, "startBinding", "e1");
+    assert_binding(&arrow, "endBinding", "d1");
+
+    // Diagonal ellipse -> ellipse connection.
+    let file2 = write_scene(serde_json::json!([
+        shape("e1", "ellipse", 0.0, 0.0, 100.0, 60.0, "a0"),
+        shape("e2", "ellipse", 400.0, 300.0, 100.0, 60.0, "a1"),
+    ]));
+    let path2 = file2.path().to_str().unwrap();
+    let (code, _, stderr) = run_bin(&[path2, "connect", "--from", "e1", "--to", "e2"]);
+    assert_eq!(code, 0, "stderr: {stderr}");
+    let (start, end, _) = arrow_endpoints(path2);
+    // Each endpoint lies on its ellipse grown by the gap, on the centre line.
+    let on_grown_ellipse = |p: (f64, f64), c: (f64, f64)| {
+        let a = 50.0 + BINDING_GAP;
+        let b = 30.0 + BINDING_GAP;
+        ((p.0 - c.0) / a).powi(2) + ((p.1 - c.1) / b).powi(2)
+    };
+    assert!((on_grown_ellipse(start, (50.0, 30.0)) - 1.0).abs() < 1e-9, "start {start:?}");
+    assert!((on_grown_ellipse(end, (450.0, 330.0)) - 1.0).abs() < 1e-9, "end {end:?}");
+    let cross = (start.0 - 50.0) * (330.0 - 30.0) - (start.1 - 30.0) * (450.0 - 50.0);
+    assert!(cross.abs() < 1e-6, "start is on the centre line");
+
+    // Vertical: from the diamond's top vertex (50,300) up to the ellipse's bottom (50,60).
+    let file3 = write_scene(serde_json::json!([
+        shape("e1", "ellipse", 0.0, 0.0, 100.0, 60.0, "a0"),
+        shape("d2", "diamond", 0.0, 300.0, 100.0, 60.0, "a1"),
+    ]));
+    let path3 = file3.path().to_str().unwrap();
+    let (code, _, stderr) = run_bin(&[path3, "connect", "--from", "d2", "--to", "e1"]);
+    assert_eq!(code, 0, "stderr: {stderr}");
+    let (start, end, _) = arrow_endpoints(path3);
+    assert_close(start, (50.0, 295.0), "diamond top vertex - gap");
+    assert_close(end, (50.0, 65.0), "ellipse bottom vertex + gap");
+}
+
+/// Mirror of fractional-indexing's `validateOrderKey` for the base-62 alphabet.
+fn is_valid_order_key(key: &str) -> bool {
+    let b = key.as_bytes();
+    let Some(&head) = b.first() else { return false };
+    let int_len = match head {
+        b'a'..=b'z' => (head - b'a') as usize + 2,
+        b'A'..=b'Z' => (b'Z' - head) as usize + 2,
+        _ => return false,
+    };
+    if b.len() < int_len || key == format!("A{}", "0".repeat(26)) {
+        return false;
+    }
+    if !b.iter().all(|c| c.is_ascii_alphanumeric()) {
+        return false;
+    }
+    b.len() == int_len || *b.last().unwrap() != b'0'
+}
+
+fn assert_indices_valid_and_compact(path: &str, max_len: usize) {
+    let els = read_elements(path);
+    let idx: Vec<String> = els.iter().map(|e| e["index"].as_str().unwrap().to_string()).collect();
+    for k in &idx {
+        assert!(is_valid_order_key(k), "invalid fractional index {k:?} in {idx:?}");
+        assert!(k.len() <= max_len, "index {k:?} longer than {max_len} in {idx:?}");
+    }
+    assert!(idx.windows(2).all(|w| w[0] < w[1]), "indices not strictly increasing: {idx:?}");
+}
+
+#[test]
+fn test_add_node_and_connect_mint_compact_valid_indices() {
+    let file = write_scene(serde_json::json!([]));
+    let path = file.path().to_str().unwrap();
+    for i in 0..20 {
+        let id = format!("n{i}");
+        let at = format!("{},0", i * 200);
+        let (code, _, stderr) =
+            run_bin(&[path, "add-node", "--type", "rectangle", "--text", "Node", "--id", &id, "--at", &at]);
+        assert_eq!(code, 0, "stderr: {stderr}");
+        if i > 0 {
+            let prev = format!("n{}", i - 1);
+            let (code, _, stderr) =
+                run_bin(&[path, "connect", "--from", &prev, "--to", &id, "--label", "next"]);
+            assert_eq!(code, 0, "stderr: {stderr}");
+        }
+    }
+    // 20 nodes x 2 + 19 labelled arrows x 2 = 78 keys: a1..az, b00..b0G.
+    assert_eq!(read_elements(path).len(), 78);
+    assert_indices_valid_and_compact(path, 3);
+    let (code, stdout, _) = run_bin(&[path, "check"]);
+    assert_eq!(code, 0, "check: {stdout}");
+}
+
+#[test]
+fn test_check_reports_invalid_and_non_monotonic_index_keys() {
+    // Keys the old minter produced: trailing-zero fractional parts.
+    let bad_format = write_scene(serde_json::json!([
+        shape("r1", "rectangle", 0.0, 0.0, 10.0, 10.0, "a0"),
+        shape("r2", "rectangle", 20.0, 0.0, 10.0, 10.0, "a000"),
+        shape("r3", "rectangle", 40.0, 0.0, 10.0, 10.0, "a00100"),
+    ]));
+    let (code, stdout, _) = run_bin(&[bad_format.path().to_str().unwrap(), "check"]);
+    assert_eq!(code, 1, "check must fail on malformed keys: {stdout}");
+    assert!(stdout.contains("invalid fractional index"), "stdout: {stdout}");
+    assert!(stdout.contains("a000") && stdout.contains("a00100"), "stdout: {stdout}");
+    assert!(!stdout.contains("r1"), "a0 is valid and must not be reported: {stdout}");
+
+    let bad_head = write_scene(serde_json::json!([
+        shape("r1", "rectangle", 0.0, 0.0, 10.0, 10.0, "0"),
+        shape("r2", "rectangle", 20.0, 0.0, 10.0, 10.0, "b0"),
+    ]));
+    let (code, stdout, _) = run_bin(&[bad_head.path().to_str().unwrap(), "check"]);
+    assert_eq!(code, 1, "stdout: {stdout}");
+    assert!(stdout.contains("invalid fractional index"), "stdout: {stdout}");
+
+    let out_of_order = write_scene(serde_json::json!([
+        shape("r1", "rectangle", 0.0, 0.0, 10.0, 10.0, "a2"),
+        shape("r2", "rectangle", 20.0, 0.0, 10.0, 10.0, "a1"),
+    ]));
+    let (code, stdout, _) = run_bin(&[out_of_order.path().to_str().unwrap(), "check"]);
+    assert_eq!(code, 1, "stdout: {stdout}");
+    assert!(stdout.contains("not sorted by index"), "stdout: {stdout}");
+}
+
+#[test]
+fn test_mutation_repairs_legacy_invalid_index_keys() {
+    let file = write_scene(serde_json::json!([
+        shape("r1", "rectangle", 0.0, 0.0, 100.0, 50.0, "a0"),
+        shape("r2", "rectangle", 200.0, 0.0, 100.0, 50.0, "a000"),
+        shape("r3", "rectangle", 400.0, 0.0, 100.0, 50.0, "a00100"),
+        shape("r4", "rectangle", 600.0, 0.0, 100.0, 50.0, "a0010100"),
+    ]));
+    let path = file.path().to_str().unwrap();
+    let (code, _, stderr) = run_bin(&[path, "add-node", "--text", "New", "--id", "n5", "--at", "800,0"]);
+    assert_eq!(code, 0, "stderr: {stderr}");
+    let ids: Vec<String> =
+        read_elements(path).iter().map(|e| e["id"].as_str().unwrap().to_string()).collect();
+    assert_eq!(&ids[..4], &["r1", "r2", "r3", "r4"], "z-order preserved");
+    assert_indices_valid_and_compact(path, 4);
+    let (code, stdout, _) = run_bin(&[path, "check"]);
+    assert_eq!(code, 0, "check: {stdout}");
 }
 
 const LABEL_ONLY_SAMPLE: &str = r##"{
@@ -3150,279 +3462,5 @@ fn test_nodes_default_output_unchanged_task_1e1c963d() {
 fn test_nodes_help_documents_label_only_task_1e1c963d() {
     let (code, stdout, _stderr) = run_bin(&["help", "nodes"]);
     assert_eq!(code, 0);
-    assert!(
-        stdout.contains("--label-only"),
-        "help nodes output:\n{stdout}"
-    );
-}
-fn stroke_style_canvas() -> NamedTempFile {
-    let sample = r##"{
-        "type": "excalidraw",
-        "version": 2,
-        "elements": [
-            {
-                "id": "b1",
-                "type": "rectangle",
-                "x": 100,
-                "y": 100,
-                "width": 100,
-                "height": 50,
-                "strokeStyle": "solid",
-                "index": "a0",
-                "isDeleted": false
-            }
-        ]
-    }"##;
-    let file = NamedTempFile::new().unwrap();
-    fs::write(file.path(), sample).unwrap();
-    file
-}
-
-fn stroke_style_of(path: &str, id: &str) -> String {
-    let doc: serde_json::Value = serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap();
-    let el = doc["elements"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|e| e["id"] == id)
-        .unwrap_or_else(|| panic!("element {id} not found"));
-    el["strokeStyle"].as_str().unwrap().to_string()
-}
-
-fn assert_check_passes(path: &str) {
-    let (code, stdout, stderr) = run_bin(&[path, "check"]);
-    assert_eq!(code, 0, "check failed: stdout={stdout} stderr={stderr}");
-    println!("check: {}", stdout.trim());
-}
-
-#[test]
-fn test_add_node_stroke_style_mem_41d61d9c() {
-    for style in ["solid", "dashed", "dotted"] {
-        let file = stroke_style_canvas();
-        let path = file.path().to_str().unwrap();
-        let id = format!("node_{style}");
-        let (code, stdout, stderr) = run_bin(&[
-            path,
-            "add-node",
-            "--text",
-            "Styled",
-            "--id",
-            &id,
-            "--stroke-style",
-            style,
-        ]);
-        assert_eq!(code, 0, "stdout={stdout} stderr={stderr}");
-        assert_eq!(stroke_style_of(path, &id), style);
-        assert_check_passes(path);
-    }
-
-    let file = stroke_style_canvas();
-    let path = file.path().to_str().unwrap();
-    let (code, _, stderr) = run_bin(&[path, "add-node", "--text", "Bad", "--stroke-style", "wavy"]);
-    assert_eq!(code, 1);
-    assert!(stderr.contains("invalid stroke style"), "stderr={stderr}");
-}
-
-#[test]
-fn test_update_node_stroke_style_mem_41d61d9c() {
-    for style in ["dashed", "dotted", "solid"] {
-        let file = stroke_style_canvas();
-        let path = file.path().to_str().unwrap();
-        if style == "solid" {
-            fs::write(
-                path,
-                fs::read_to_string(path)
-                    .unwrap()
-                    .replace("\"solid\"", "\"dashed\""),
-            )
-            .unwrap();
-        }
-        let (code, stdout, stderr) =
-            run_bin(&[path, "update-node", "--id", "b1", "--stroke-style", style]);
-        assert_eq!(code, 0, "stdout={stdout} stderr={stderr}");
-        assert_eq!(stroke_style_of(path, "b1"), style);
-        assert_check_passes(path);
-    }
-
-    let file = stroke_style_canvas();
-    let path = file.path().to_str().unwrap();
-    let (code, _, stderr) = run_bin(&[path, "update-node", "--id", "b1", "--stroke-style", "wavy"]);
-    assert_eq!(code, 1);
-    assert!(stderr.contains("invalid stroke style"), "stderr={stderr}");
-    assert_eq!(stroke_style_of(path, "b1"), "solid");
-}
-
-#[test]
-fn test_set_stroke_style_mem_41d61d9c() {
-    for style in ["dashed", "dotted", "solid"] {
-        let file = stroke_style_canvas();
-        let path = file.path().to_str().unwrap();
-        if style == "solid" {
-            fs::write(
-                path,
-                fs::read_to_string(path)
-                    .unwrap()
-                    .replace("\"solid\"", "\"dotted\""),
-            )
-            .unwrap();
-        }
-        let (code, stdout, stderr) = run_bin(&[path, "set-stroke-style", "b1", style]);
-        assert_eq!(code, 0, "stdout={stdout} stderr={stderr}");
-        assert!(
-            stdout.contains(&format!("OK: set strokeStyle of b1 to {style}")),
-            "stdout={stdout}"
-        );
-        assert_eq!(stroke_style_of(path, "b1"), style);
-        assert_check_passes(path);
-    }
-
-    // Command-first ordering works too
-    let file = stroke_style_canvas();
-    let path = file.path().to_str().unwrap();
-    let (code, _, stderr) = run_bin(&["set-stroke-style", path, "b1", "dashed"]);
-    assert_eq!(code, 0, "stderr={stderr}");
-    assert_eq!(stroke_style_of(path, "b1"), "dashed");
-
-    // Invalid style is rejected and the file is untouched
-    let file = stroke_style_canvas();
-    let path = file.path().to_str().unwrap();
-    let before = fs::read_to_string(path).unwrap();
-    let (code, _, stderr) = run_bin(&[path, "set-stroke-style", "b1", "wavy"]);
-    assert_eq!(code, 1);
-    assert!(stderr.contains("invalid stroke style"), "stderr={stderr}");
-    assert_eq!(fs::read_to_string(path).unwrap(), before);
-
-    // Unknown element is rejected
-    let (code, _, stderr) = run_bin(&[path, "set-stroke-style", "nope", "dashed"]);
-    assert_eq!(code, 1);
-    assert!(stderr.contains("not found"), "stderr={stderr}");
-
-    // Missing arguments are rejected
-    let (code, _, stderr) = run_bin(&[path, "set-stroke-style", "b1"]);
-    assert_eq!(code, 1);
-    assert!(
-        stderr.contains("set-stroke-style requires"),
-        "stderr={stderr}"
-    );
-}
-
-#[test]
-fn test_stroke_style_help_mem_41d61d9c() {
-    let (code, stdout, _) = run_bin(&["--help"]);
-    assert_eq!(code, 0);
-    assert!(
-        stdout.contains("set-stroke-style"),
-        "man page missing set-stroke-style"
-    );
-
-    let (code, stdout, _) = run_bin(&["help", "set-stroke-style"]);
-    assert_eq!(code, 0, "help set-stroke-style failed");
-    assert!(stdout.contains("pkb-excalidraw set-stroke-style"));
-    assert!(stdout.contains("solid, dashed, dotted"));
-
-    for cmd in ["add-node", "update-node"] {
-        let (code, stdout, _) = run_bin(&["help", cmd]);
-        assert_eq!(code, 0);
-        assert!(
-            stdout.contains("--stroke-style"),
-            "help {cmd} missing --stroke-style"
-        );
-    }
-}
-
-#[test]
-fn test_batch_apply_stroke_style_mem_41d61d9c() {
-    let initial = r##"{
-        "type": "excalidraw",
-        "version": 2,
-        "elements": []
-    }"##;
-    let file = NamedTempFile::new().unwrap();
-    fs::write(file.path(), initial).unwrap();
-    let path = file.path().to_str().unwrap();
-
-    let batch_json = r##"[
-        {
-            "action": "add-node",
-            "type": "rectangle",
-            "text": "Solid",
-            "at": [100, 100],
-            "id": "node_solid",
-            "stroke_style": "solid"
-        },
-        {
-            "action": "add-node",
-            "type": "rectangle",
-            "text": "Dashed",
-            "at": [300, 100],
-            "id": "node_dashed",
-            "strokeStyle": "dashed"
-        },
-        {
-            "action": "add-node",
-            "type": "rectangle",
-            "text": "Dotted",
-            "at": [500, 100],
-            "id": "node_dotted"
-        },
-        {
-            "action": "update-node",
-            "id": "node_dotted",
-            "stroke_style": "dotted"
-        }
-    ]"##;
-
-    let (code, _stdout, stderr) = run_bin_stdin(&[path, "batch", "-"], batch_json);
-    assert_eq!(code, 0, "stderr: {}", stderr);
-
-    assert_eq!(stroke_style_of(path, "node_solid"), "solid");
-    assert_eq!(stroke_style_of(path, "node_dashed"), "dashed");
-    assert_eq!(stroke_style_of(path, "node_dotted"), "dotted");
-
-    // Invalid style in batch aborts transaction
-    let invalid_batch = r##"[
-        {
-            "action": "add-node",
-            "type": "rectangle",
-            "text": "Bad",
-            "at": [100, 100],
-            "id": "bad",
-            "stroke_style": "wavy"
-        }
-    ]"##;
-    let (code, _, stderr) = run_bin_stdin(&[path, "batch", "-"], invalid_batch);
-    assert_eq!(code, 1);
-    assert!(stderr.contains("invalid stroke style"), "stderr={stderr}");
-
-    // Apply create with strokeStyle
-    let apply_json = r##"{
-        "create": [
-            {
-                "id": "added_by_apply",
-                "type": "rectangle",
-                "text": "Applied",
-                "at": [100, 300],
-                "strokeStyle": "dashed"
-            }
-        ]
-    }"##;
-    let (code, _, stderr) = run_bin_stdin(&[path, "apply", "-"], apply_json);
-    assert_eq!(code, 0, "stderr: {}", stderr);
-    assert_eq!(stroke_style_of(path, "added_by_apply"), "dashed");
-
-    // Invalid style in apply
-    let invalid_apply = r##"{
-        "create": [
-            {
-                "id": "bad_apply",
-                "type": "rectangle",
-                "text": "Bad Apply",
-                "at": [100, 500],
-                "strokeStyle": "zigzag"
-            }
-        ]
-    }"##;
-    let (code, _, stderr) = run_bin_stdin(&[path, "apply", "-"], invalid_apply);
-    assert_eq!(code, 1);
-    assert!(stderr.contains("invalid stroke style"), "stderr={stderr}");
+    assert!(stdout.contains("--label-only"), "help nodes output:\n{stdout}");
 }

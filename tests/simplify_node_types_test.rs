@@ -265,6 +265,8 @@ fn test_bounded_float_weights_and_multiplier_reject_nan_inf() {
         brier_history: vec![],
         last_interacted: None,
         anomaly_flag: false,
+        quantum: None,
+        set_by: None,
     };
     assert_eq!(c_nan.numeric_weight(), 0.0);
 
@@ -279,6 +281,8 @@ fn test_bounded_float_weights_and_multiplier_reject_nan_inf() {
         brier_history: vec![],
         last_interacted: None,
         anomaly_flag: false,
+        quantum: None,
+        set_by: None,
     };
     assert_eq!(c_inf.numeric_weight(), 0.0);
 
@@ -293,6 +297,8 @@ fn test_bounded_float_weights_and_multiplier_reject_nan_inf() {
         brier_history: vec![],
         last_interacted: None,
         anomaly_flag: false,
+        quantum: None,
+        set_by: None,
     };
     assert_eq!(c_neg_mult.numeric_weight(), 0.5);
 
@@ -307,6 +313,8 @@ fn test_bounded_float_weights_and_multiplier_reject_nan_inf() {
         brier_history: vec![],
         last_interacted: None,
         anomaly_flag: false,
+        quantum: None,
+        set_by: None,
     };
     assert_eq!(c_nan_mult.numeric_weight(), 0.5);
 }

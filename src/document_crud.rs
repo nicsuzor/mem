@@ -69,6 +69,9 @@ pub struct DocumentFields {
     pub stakeholder: Option<String>,
     pub waiting_since: Option<String>,
     pub contributes_to: Vec<serde_json::Value>,
+    pub links: Vec<serde_json::Value>,
+    pub worth: Option<serde_json::Value>,
+    pub deadline_class: Option<String>,
     /// Override subdirectory placement (e.g. "notes", "projects")
     pub dir: Option<String>,
 }
@@ -101,6 +104,9 @@ pub struct TaskFields {
     pub follow_up_tasks: Vec<String>,
     pub release_summary: Option<String>,
     pub contributes_to: Vec<serde_json::Value>,
+    pub links: Vec<serde_json::Value>,
+    pub worth: Option<serde_json::Value>,
+    pub deadline_class: Option<String>,
     pub classification: Option<String>,
     /// Override subdirectory placement
     pub dir: Option<String>,
@@ -136,6 +142,21 @@ pub struct MemoryFields {
 /// - `task|bug|epic|feature` → `tasks/`
 /// - `goal` → `goals/`
 /// - Everything else → `notes/`
+/// ID prefix for a document type: a fixed short form for common types,
+/// otherwise the first four bytes floored to a char boundary.
+fn type_prefix(doc_type: &str) -> &str {
+    match doc_type {
+        "task" | "epic" => "task",
+        "target" | "goal" | "capability" => "targ",
+        "memory" => "mem",
+        "note" => "note",
+        "knowledge" => "kb",
+        "insight" => "ins",
+        "observation" => "obs",
+        other => &other[..other.floor_char_boundary(4)],
+    }
+}
+
 pub fn create_document(root: &Path, fields: DocumentFields) -> Result<PathBuf> {
     if let Some(ref dir) = fields.dir {
         if !is_safe_relative_path(dir) {
@@ -215,40 +236,48 @@ pub fn create_document(root: &Path, fields: DocumentFields) -> Result<PathBuf> {
             );
         }
     }
+    if !fields.links.is_empty() {
+        let links_val = serde_json::Value::Array(fields.links.clone());
+        crate::graph::validate_links_value(&links_val).map_err(|e| anyhow::anyhow!("{e}"))?;
+    }
+    if let Some(ref w) = fields.worth {
+        crate::graph::validate_worth_value(w).map_err(|e| anyhow::anyhow!("{e}"))?;
+    }
+    if let Some(ref dc) = fields.deadline_class {
+        let dc_val = serde_json::Value::String(dc.clone());
+        crate::graph::validate_deadline_class_value(&dc_val).map_err(|e| anyhow::anyhow!("{e}"))?;
+    }
 
-    let type_prefix = match fields.doc_type.as_str() {
-        "task" | "epic" => "task",
-        "target" | "goal" | "capability" => "targ",
-        "memory" => "mem",
-        "note" => "note",
-        "knowledge" => "kb",
-        "insight" => "ins",
-        "observation" => "obs",
-        other => &other[..other.len().min(4)],
-    };
+    let type_prefix = type_prefix(&fields.doc_type);
+
+    let is_daily =
+        fields.doc_type == "daily" || fields.id.as_deref().map(is_daily_id).unwrap_or(false);
 
     let (id, filename) = match fields.id {
         Some(explicit_id) => {
             // Explicit ID: sanitize to prevent path traversal, preserving
             // the caller's separator convention (see sanitize_explicit_id).
             let safe_id = sanitize_explicit_id(&explicit_id);
-            let filename = generate_filename(&safe_id, &fields.title);
+            let filename = generate_filename(&safe_id, &fields.title)?;
             (safe_id, filename)
         }
         None => {
             // Use project as prefix when available, otherwise type-based prefix
             let prefix = type_prefix;
             let id = generate_id(prefix);
-            let filename = generate_filename(&id, &fields.title);
+            let filename = generate_filename(&id, &fields.title)?;
             (id, filename)
         }
     };
 
     // Determine subdirectory
-    let subdir = fields
-        .dir
-        .map(|d| expand_env_vars(&d))
-        .unwrap_or_else(|| default_subdir_for_type(&fields.doc_type).to_string());
+    let subdir = fields.dir.map(|d| expand_env_vars(&d)).unwrap_or_else(|| {
+        if is_daily {
+            "daily".to_string()
+        } else {
+            default_subdir_for_type(&fields.doc_type).to_string()
+        }
+    });
 
     let dir = root.join(&subdir);
     if !dir.is_dir() {
@@ -277,7 +306,7 @@ pub fn create_document(root: &Path, fields: DocumentFields) -> Result<PathBuf> {
     // Alias and permalink
     let slug = title_to_snake_case(&fields.title);
     fm.push_str("alias:\n");
-    if slug.is_empty() {
+    if is_daily || slug.is_empty() {
         fm.push_str(&format!("  - \"{}\"\n", id));
     } else {
         fm.push_str(&format!("  - \"{}_{}\"\n", id, slug));
@@ -388,6 +417,28 @@ pub fn create_document(root: &Path, fields: DocumentFields) -> Result<PathBuf> {
                 }
             }
         }
+    }
+
+    if !fields.links.is_empty() {
+        if let Ok(yaml) = serde_yaml::to_string(&fields.links) {
+            fm.push_str("links:\n");
+            for line in yaml.trim_start_matches("---\n").lines() {
+                if !line.is_empty() {
+                    fm.push_str(&format!("  {}\n", line));
+                }
+            }
+        }
+    }
+
+    if let Some(ref w) = fields.worth {
+        if let Ok(yaml) = serde_yaml::to_string(w) {
+            let s = yaml.trim_start_matches("---\n").trim();
+            fm.push_str(&format!("worth: {}\n", s));
+        }
+    }
+
+    if let Some(ref dc) = fields.deadline_class {
+        fm.push_str(&format!("deadline_class: {}\n", dc));
     }
 
     fm.push_str("---\n\n");
@@ -628,6 +679,17 @@ pub fn create_task(root: &Path, fields: TaskFields) -> Result<PathBuf> {
             );
         }
     }
+    if !fields.links.is_empty() {
+        let links_val = serde_json::Value::Array(fields.links.clone());
+        crate::graph::validate_links_value(&links_val).map_err(|e| anyhow::anyhow!("{e}"))?;
+    }
+    if let Some(ref w) = fields.worth {
+        crate::graph::validate_worth_value(w).map_err(|e| anyhow::anyhow!("{e}"))?;
+    }
+    if let Some(ref dc) = fields.deadline_class {
+        let dc_val = serde_json::Value::String(dc.clone());
+        crate::graph::validate_deadline_class_value(&dc_val).map_err(|e| anyhow::anyhow!("{e}"))?;
+    }
 
     // Validate + canonicalize the project slug against polecat.yaml before it
     // is used anywhere (ID prefix, frontmatter). Builtin slugs (`task`,
@@ -647,7 +709,7 @@ pub fn create_task(root: &Path, fields: TaskFields) -> Result<PathBuf> {
             // Explicit ID: sanitize to prevent path traversal, preserving
             // the caller's separator convention (see sanitize_explicit_id).
             let safe_id = sanitize_explicit_id(&explicit_id);
-            let filename = generate_filename(&safe_id, &fields.title);
+            let filename = generate_filename(&safe_id, &fields.title)?;
             (safe_id, filename)
         }
         None => {
@@ -661,7 +723,7 @@ pub fn create_task(root: &Path, fields: TaskFields) -> Result<PathBuf> {
             // frontmatter `type:` field, not the ID prefix.
             let prefix = project.as_deref().unwrap_or("task");
             let id = generate_id(prefix);
-            let filename = generate_filename(&id, &fields.title);
+            let filename = generate_filename(&id, &fields.title)?;
             (id, filename)
         }
     };
@@ -843,6 +905,28 @@ pub fn create_task(root: &Path, fields: TaskFields) -> Result<PathBuf> {
                 }
             }
         }
+    }
+
+    if !fields.links.is_empty() {
+        if let Ok(yaml) = serde_yaml::to_string(&fields.links) {
+            fm.push_str("links:\n");
+            for line in yaml.trim_start_matches("---\n").lines() {
+                if !line.is_empty() {
+                    fm.push_str(&format!("  {}\n", line));
+                }
+            }
+        }
+    }
+
+    if let Some(ref w) = fields.worth {
+        if let Ok(yaml) = serde_yaml::to_string(w) {
+            let s = yaml.trim_start_matches("---\n").trim();
+            fm.push_str(&format!("worth: {}\n", s));
+        }
+    }
+
+    if let Some(ref dc) = fields.deadline_class {
+        fm.push_str(&format!("deadline_class: {}\n", dc));
     }
 
     fm.push_str("---\n\n");
@@ -1166,12 +1250,12 @@ pub fn create_memory(root: &Path, fields: MemoryFields) -> Result<PathBuf> {
     let (id, filename) = match fields.id {
         Some(explicit_id) => {
             let safe_id = sanitize_explicit_id(&explicit_id);
-            let filename = generate_filename(&safe_id, &fields.title);
+            let filename = generate_filename(&safe_id, &fields.title)?;
             (safe_id, filename)
         }
         None => {
             let id = generate_id("mem");
-            let filename = generate_filename(&id, &fields.title);
+            let filename = generate_filename(&id, &fields.title)?;
             (id, filename)
         }
     };
@@ -1591,6 +1675,16 @@ fn first_duplicate_top_level_key(raw: &str) -> Option<String> {
 pub fn update_document(path: &Path, updates: HashMap<String, serde_json::Value>) -> Result<()> {
     if updates.is_empty() {
         return Ok(());
+    }
+
+    if let Some(links_val) = updates.get("links") {
+        crate::graph::validate_links_value(links_val).map_err(|e| anyhow::anyhow!("{e}"))?;
+    }
+    if let Some(worth_val) = updates.get("worth") {
+        crate::graph::validate_worth_value(worth_val).map_err(|e| anyhow::anyhow!("{e}"))?;
+    }
+    if let Some(dc_val) = updates.get("deadline_class") {
+        crate::graph::validate_deadline_class_value(dc_val).map_err(|e| anyhow::anyhow!("{e}"))?;
     }
 
     use gray_matter::engine::YAML;
@@ -2017,7 +2111,7 @@ pub fn git_commit_paths(repo_root: &Path, paths: &[&Path], message: &str) -> Res
             String::from_utf8_lossy(&commit_out.stderr)
         );
     } else {
-        tracing::info!("git commit succeeded: {}", message);
+        tracing::debug!("git commit succeeded: {}", message);
     }
 
     Ok(())
@@ -3237,6 +3331,7 @@ pub fn default_subdir_for_type(doc_type: &str) -> &'static str {
         "task" | "epic" | "learn" => "tasks",
         "target" | "goal" | "capability" => "targets",
         "memory" => "memories",
+        "daily" => "daily",
         _ => "notes",
     }
 }
@@ -3329,7 +3424,8 @@ pub fn convert_document(
         .map(String::from)
         .unwrap_or_else(|| default_subdir_for_type(new_type).to_string());
     let target_dir = root.join(&subdir);
-    let new_path = target_dir.join(generate_filename(&sanitize_explicit_id(id), title));
+    let filename = generate_filename(&sanitize_explicit_id(id), title)?;
+    let new_path = target_dir.join(filename);
     let moved = new_path != abs_path;
     if moved && new_path.exists() {
         anyhow::bail!("Target file already exists: {}", new_path.display());
@@ -3694,11 +3790,11 @@ fn slugify(title: &str) -> String {
         .join("-")
 }
 
-/// Maximum number of characters in the slug portion of a filename.
-///
-/// Keeps generated filenames short enough to be comfortable on any filesystem
-/// and readable in directory listings. IDs are excluded — only the title-derived
-/// slug is capped.
+/// Maximum allowed character length for a PKB filename (including the `.md` extension).
+/// Keeps filenames short and descriptive, preventing run-on titles from ballooning filenames.
+pub const MAX_FILENAME_LEN: usize = 80;
+
+/// Deprecated alias for backwards compatibility.
 pub const MAX_FILENAME_SLUG_LEN: usize = 80;
 
 /// Validate a path is relative and safe from traversal.
@@ -3748,15 +3844,39 @@ pub fn truncate_snake_slug(slug: &str, max_len: usize) -> &str {
     truncated.trim_end_matches('_')
 }
 
+/// Check if an ID matches the daily note naming convention: `YYYYMMDD-daily` (e.g. `20261009-daily`).
+pub fn is_daily_id(id: &str) -> bool {
+    static RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let re = RE.get_or_init(|| regex::Regex::new(r"^\d{8}-daily$").unwrap());
+    re.is_match(id)
+}
+
 /// Helper to generate a unified prefix-based filename.
-pub fn generate_filename(prefix: &str, title: &str) -> String {
-    let slug = title_to_snake_case(title);
-    let slug = truncate_snake_slug(&slug, MAX_FILENAME_SLUG_LEN);
-    if slug.is_empty() {
+///
+/// Returns an error if the resulting filename exceeds [`MAX_FILENAME_LEN`] characters.
+pub fn generate_filename(prefix: &str, title: &str) -> Result<String> {
+    let filename = if is_daily_id(prefix) {
         format!("{}.md", prefix)
     } else {
-        format!("{}_{}.md", prefix, slug)
+        let slug = title_to_snake_case(title);
+        if slug.is_empty() {
+            format!("{}.md", prefix)
+        } else {
+            format!("{}_{}.md", prefix, slug)
+        }
+    };
+
+    let len = filename.chars().count();
+    if len > MAX_FILENAME_LEN {
+        anyhow::bail!(
+            "Filename '{}' is too long ({} characters). Limit is {} characters.",
+            filename,
+            len,
+            MAX_FILENAME_LEN
+        );
     }
+
+    Ok(filename)
 }
 
 /// Truncate a slug to `max_len` characters, trimming trailing hyphens.
@@ -3789,6 +3909,14 @@ mod tests {
     fn write_md(dir: &Path, name: &str, frontmatter: &str) {
         let path = dir.join(name);
         fs::write(&path, format!("---\n{}---\n\n# Body\n", frontmatter)).unwrap();
+    }
+
+    #[test]
+    fn test_type_prefix_multibyte_type_does_not_panic() {
+        // #686: byte 4 of "café" is inside 'é' (bytes 3..5).
+        assert_eq!(type_prefix("café"), "caf");
+        assert_eq!(type_prefix("project"), "proj");
+        assert_eq!(type_prefix("task"), "task");
     }
 
     #[test]
@@ -4116,27 +4244,108 @@ mod tests {
     }
 
     #[test]
-    fn create_task_long_title_produces_short_filename() {
+    fn create_task_over_limit_filename_rejected_and_writes_nothing() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
         write_test_polecat_yaml(root, &["aops", "mem"]);
-        fs::create_dir_all(root.join("tasks")).unwrap();
+        let tasks_dir = root.join("tasks");
+        fs::create_dir_all(&tasks_dir).unwrap();
 
-        let long_title = "word ".repeat(30).trim().to_string(); // ~150 chars
+        // Title that produces an over-limit filename (> 80 chars)
+        let long_title = "This is a very long task title that exceeds the tight filename length limit for tasks in the PKB";
         let fields = TaskFields {
-            title: long_title,
+            title: long_title.to_string(),
             parent: Some("parent-001".to_string()),
             project: Some("aops".to_string()),
             ..Default::default()
         };
-        let path = create_task(root, fields).unwrap();
-        let stem = path.file_stem().unwrap().to_string_lossy();
-        // ID (~14) + dash + slug (≤80) = ≤95 chars
+        let err = create_task(root, fields)
+            .expect_err("creating a task with an over-limit filename must be rejected");
+        let msg = err.to_string();
         assert!(
-            stem.len() <= 100,
-            "filename stem must be ≤100 chars for long titles, got {} chars: {stem}",
-            stem.len()
+            msg.contains("80") && msg.contains("characters"),
+            "error message must state the limit and length, got: {msg}"
         );
+        let count = fs::read_dir(&tasks_dir).unwrap().count();
+        assert_eq!(
+            count, 0,
+            "no files must be written on over-limit filename failure"
+        );
+    }
+
+    #[test]
+    fn create_task_short_filename_succeeds() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        write_test_polecat_yaml(root, &["aops", "mem"]);
+        let tasks_dir = root.join("tasks");
+        fs::create_dir_all(&tasks_dir).unwrap();
+
+        let fields = TaskFields {
+            title: "Short descriptive title".to_string(),
+            parent: Some("parent-001".to_string()),
+            project: Some("aops".to_string()),
+            ..Default::default()
+        };
+        let path =
+            create_task(root, fields).expect("creating a task with short filename must succeed");
+        assert!(path.exists());
+        let filename = path.file_name().unwrap().to_string_lossy();
+        assert!(
+            filename.chars().count() <= 80,
+            "filename must be <= 80 chars, got {}: {filename}",
+            filename.chars().count()
+        );
+    }
+
+    #[test]
+    fn convert_document_over_limit_filename_rejected_and_writes_nothing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        write_test_polecat_yaml(root, &["aops", "mem"]);
+        let notes_dir = root.join("notes");
+        fs::create_dir_all(&notes_dir).unwrap();
+        let old_path = notes_dir.join("note-001.md");
+        fs::write(
+            &old_path,
+            "---\nid: note-001\ntitle: Short note\ntype: note\n---\nBody\n",
+        )
+        .unwrap();
+        let original_content = fs::read_to_string(&old_path).unwrap();
+
+        let long_title = "This is an extremely long title for a document that exceeds the tight filename length limit";
+        let err = convert_document(
+            root,
+            &old_path,
+            "note-001",
+            long_title,
+            "task",
+            None,
+            Some("inbox"),
+        )
+        .expect_err("converting with an over-limit filename must be rejected");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("80") && msg.contains("characters"),
+            "error message must state the limit and length, got: {msg}"
+        );
+        assert!(
+            old_path.exists(),
+            "original source file must remain untouched"
+        );
+        assert_eq!(
+            fs::read_to_string(&old_path).unwrap(),
+            original_content,
+            "original content must not change"
+        );
+        let tasks_dir = root.join("tasks");
+        if tasks_dir.exists() {
+            assert_eq!(
+                fs::read_dir(&tasks_dir).unwrap().count(),
+                0,
+                "no target file must be written"
+            );
+        }
     }
 
     #[test]
@@ -6545,7 +6754,7 @@ Clean new body without duplicates\n";
             max_frontmatter_scalar_len(),
             DEFAULT_MAX_FRONTMATTER_SCALAR_LEN
         );
-        let inside = with_max_frontmatter_scalar_len(42, || max_frontmatter_scalar_len());
+        let inside = with_max_frontmatter_scalar_len(42, max_frontmatter_scalar_len);
         assert_eq!(inside, 42);
         assert_eq!(
             max_frontmatter_scalar_len(),
@@ -7264,6 +7473,12 @@ pub const UPDATE_KNOWN_KEYS: &[&str] = &[
     "_add_depends_on",
     "_remove_depends_on",
     "classification",
+    "links",
+    "worth",
+    "deadline_class",
+    "branch",
+    "container",
+    "alias",
 ];
 
 /// Reject any key not on [`UPDATE_KNOWN_KEYS`]. Shared by `update_task` and
@@ -7495,10 +7710,29 @@ mod additional_tests {
     #[test]
     fn test_generate_filename() {
         assert_eq!(
-            generate_filename("task-123", "Hello World"),
+            generate_filename("task-123", "Hello World").unwrap(),
             "task-123_hello_world.md"
         );
-        assert_eq!(generate_filename("task-123", "   "), "task-123.md");
-        assert_eq!(generate_filename("task-123", "a b"), "task-123_a_b.md");
+        assert_eq!(generate_filename("task-123", "   ").unwrap(), "task-123.md");
+        assert_eq!(
+            generate_filename("task-123", "a b").unwrap(),
+            "task-123_a_b.md"
+        );
+        assert_eq!(
+            generate_filename("20261009-daily", "20261009-daily-Friday").unwrap(),
+            "20261009-daily.md"
+        );
+        let long_title = "word ".repeat(25);
+        let err = generate_filename("task-123", &long_title).unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("80") && msg.contains("characters"),
+            "error message must state limit and length, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_default_subdir_for_type_daily() {
+        assert_eq!(default_subdir_for_type("daily"), "daily");
     }
 }

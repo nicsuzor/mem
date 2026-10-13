@@ -1592,7 +1592,7 @@ checksum = "490cc448043f947bae3cbee9c203358d62dbee0db12107a74be5c30ccfd09771"
 
 [[package]]
 name = "mem"
-version = "0.3.97"
+version = "0.3.101"
 dependencies = [
  "anyhow",
  "axum 0.8.9",
@@ -1603,6 +1603,7 @@ dependencies = [
  "dirs",
  "fd-lock",
  "flate2",
+ "futures-util",
  "glob",
  "gray_matter",
  "http",
@@ -1630,6 +1631,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml",
+ "socket2 0.5.10",
  "tar",
  "tempfile",
  "terminal_size",
@@ -2413,6 +2415,7 @@ dependencies = [
  "futures-channel",
  "futures-core",
  "futures-util",
+ "h2",
  "http",
  "http-body",
  "http-body-util",

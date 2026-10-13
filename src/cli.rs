@@ -839,6 +839,32 @@ enum MigrateCommands {
         #[arg(long, default_value = "text")]
         format: String,
     },
+    /// Flow migration commands (§7.3, flow-migration.md §5.5).
+    Flow {
+        /// Preview changes without writing
+        #[arg(long)]
+        dry_run: bool,
+
+        /// Apply flow migration
+        #[arg(long)]
+        apply: bool,
+
+        /// Revert flow migration using ledger path
+        #[arg(long)]
+        revert: Option<std::path::PathBuf>,
+
+        /// Inspect migration status and list statusless tasks
+        #[arg(long)]
+        status: bool,
+
+        /// Cleanup legacy fields using ledger path
+        #[arg(long)]
+        cleanup: Option<std::path::PathBuf>,
+
+        /// Confirm destructive cleanup
+        #[arg(long)]
+        confirm: bool,
+    },
 }
 
 /// Shared filter arguments for batch commands.
@@ -1031,13 +1057,12 @@ async fn main() -> Result<()> {
         let mut filter =
             tracing_subscriber::EnvFilter::new(if is_protocol_server { "info" } else { "warn" });
         if matches!(command, Commands::Mcp { .. }) {
-            // Suppress noisy rmcp session close errors (benign during shutdown/cleanup).
-            // Refs task-2ae61ce6.
-            filter = filter.add_directive(
-                "rmcp::transport::streamable_http_server::tower=warn"
-                    .parse()
-                    .unwrap(),
-            );
+            // rmcp logs every session handshake at INFO (create new session,
+            // Service initialized with a full peer_info dump, received
+            // notification, client initialized) and benign session close
+            // errors (task-2ae61ce6). The per-call `pkb::tool_call` summary
+            // is the INFO line per transaction. Refs task_14e0fee6.
+            filter = filter.add_directive("rmcp=warn".parse().unwrap());
         }
         filter
     });
@@ -1131,7 +1156,7 @@ async fn main() -> Result<()> {
             | Commands::Batch(BatchCommands::Merge { .. })
             | Commands::Batch(BatchCommands::CreateEpics { .. })
             | Commands::Batch(BatchCommands::Reclassify { .. })
-            | Commands::Migrate(MigrateCommands::TargetParents { .. })
+            | Commands::Migrate(..)
     );
     if disables_gpu && std::env::var("AOPS_GPU").is_err() {
         std::env::set_var("AOPS_GPU", "0");
@@ -1507,7 +1532,24 @@ async fn main() -> Result<()> {
 
             // Apply --sort if specified
             let mut tasks: Vec<&graph::GraphNode> = tasks;
-            if let Some(ref sort_key) = sort {
+            let is_flow = gs.ranking_mode() == mem::polecat_config::RankingMode::Flow;
+            let today = chrono::Utc::now().date_naive();
+            let buffer_days = mem::display_rank::DISPLAY_CLIFF_BUFFER_DAYS;
+
+            if is_flow {
+                if let Some(ref sort_key) = sort {
+                    let task_sort = mem::display_rank::TaskSort::from_str_loose(sort_key)
+                        .unwrap_or(mem::display_rank::TaskSort::Default);
+                    graph_store::GraphStore::sort_by_display_with_sort(
+                        &mut tasks,
+                        task_sort,
+                        today,
+                        buffer_days,
+                    );
+                } else {
+                    graph_store::GraphStore::sort_by_display(&mut tasks, today, buffer_days);
+                }
+            } else if let Some(ref sort_key) = sort {
                 match sort_key.as_str() {
                     // Honour explicit sort keys verbatim (AC4 — explicit args unaffected).
                     "weight" => {
@@ -1555,37 +1597,83 @@ async fn main() -> Result<()> {
                 println!();
                 print_dashboard(&tasks, &filter);
                 println!();
-                println!(
-                    "  {}PRI  {:<50}  {:>6}  {:<14}{}",
-                    colors::BOLD,
-                    "TITLE",
-                    "WEIGHT",
-                    "ID",
-                    colors::RESET
-                );
-                println!("  {}", "\u{2500}".repeat(width.saturating_sub(4)));
-
-                for task in &tasks {
-                    let pri = task.intent.unwrap_or(4);
-                    let color = pri_color(pri);
-                    let weight = if task.downstream_weight > 0.0 {
-                        format!("{:.1}", task.downstream_weight)
-                    } else {
-                        "-".to_string()
-                    };
-                    let exposure = if task.stakeholder_exposure { "!" } else { "" };
-                    let tid = task.task_id.as_deref().unwrap_or(&task.id);
-                    let age = days_since_created(task.created.as_deref())
-                        .map(|d| format!("  {}", format_staleness(d)))
-                        .unwrap_or_default();
+                if is_flow {
                     println!(
-                        "  {color}P{pri}{exposure}{} {:<50}  {:>5}  {}[{tid}]{}{age}",
-                        colors::RESET,
-                        task.label,
-                        weight,
-                        colors::DIM_GRAY,
-                        colors::RESET,
+                        "  {}PRI  {:<45}  {:>7}  {:>7}  {:>10}  {:<14}{}",
+                        colors::BOLD,
+                        "TITLE",
+                        "GAIN",
+                        "LOSS",
+                        "DUE",
+                        "ID",
+                        colors::RESET
                     );
+                    println!("  {}", "\u{2500}".repeat(width.saturating_sub(4)));
+
+                    for task in &tasks {
+                        let pri = task.intent.unwrap_or(4);
+                        let color = pri_color(pri);
+                        let gain_str = task
+                            .flow
+                            .as_ref()
+                            .and_then(|f| f.gain)
+                            .map(|g| format!("{:.2}", g))
+                            .unwrap_or_else(|| "-".to_string());
+                        let loss_str = task
+                            .flow
+                            .as_ref()
+                            .and_then(|f| f.loss_averted)
+                            .map(|l| format!("{:.2}", l))
+                            .unwrap_or_else(|| "-".to_string());
+                        let due_str = task.due.as_deref().unwrap_or("-");
+                        let tid = task.task_id.as_deref().unwrap_or(&task.id);
+                        let age = days_since_created(task.created.as_deref())
+                            .map(|d| format!("  {}", format_staleness(d)))
+                            .unwrap_or_default();
+                        println!(
+                            "  {color}P{pri}{}   {:<45}  {:>7}  {:>7}  {:>10}  {}[{tid}]{}{age}",
+                            colors::RESET,
+                            task.label,
+                            gain_str,
+                            loss_str,
+                            due_str,
+                            colors::DIM_GRAY,
+                            colors::RESET,
+                        );
+                    }
+                } else {
+                    println!(
+                        "  {}PRI  {:<50}  {:>6}  {:<14}{}",
+                        colors::BOLD,
+                        "TITLE",
+                        "WEIGHT",
+                        "ID",
+                        colors::RESET
+                    );
+                    println!("  {}", "\u{2500}".repeat(width.saturating_sub(4)));
+
+                    for task in &tasks {
+                        let pri = task.intent.unwrap_or(4);
+                        let color = pri_color(pri);
+                        let weight = if task.downstream_weight > 0.0 {
+                            format!("{:.1}", task.downstream_weight)
+                        } else {
+                            "-".to_string()
+                        };
+                        let exposure = if task.stakeholder_exposure { "!" } else { "" };
+                        let tid = task.task_id.as_deref().unwrap_or(&task.id);
+                        let age = days_since_created(task.created.as_deref())
+                            .map(|d| format!("  {}", format_staleness(d)))
+                            .unwrap_or_default();
+                        println!(
+                            "  {color}P{pri}{exposure}{} {:<50}  {:>5}  {}[{tid}]{}{age}",
+                            colors::RESET,
+                            task.label,
+                            weight,
+                            colors::DIM_GRAY,
+                            colors::RESET,
+                        );
+                    }
                 }
                 println!(
                     "\n  {}{} {} tasks{}",
@@ -1604,7 +1692,7 @@ async fn main() -> Result<()> {
 
                 // ── Focus picks (only for default ready view) ──
                 if matches!(filter, TaskFilter::Ready) {
-                    let pick_ids = gs.focus_picks(5);
+                    let pick_ids = gs.focus_picks_active(5);
                     let picks: Vec<&graph::GraphNode> =
                         pick_ids.iter().filter_map(|id| gs.get_node(id)).collect();
                     if !picks.is_empty() {
@@ -1648,7 +1736,7 @@ async fn main() -> Result<()> {
 
         Commands::Focus { limit } => {
             let gs = load_graph(&pkb_root, &db_path, None);
-            let pick_ids = gs.focus_picks(limit);
+            let pick_ids = gs.focus_picks_active(limit);
 
             if pick_ids.is_empty() {
                 println!("No focus tasks.");
@@ -1710,7 +1798,32 @@ async fn main() -> Result<()> {
                     }
 
                     // --- Weight / Metrics ---
-                    if node.downstream_weight > 0.0 {
+                    if gs.ranking_mode() == mem::polecat_config::RankingMode::Flow {
+                        if let Some(ref flow) = node.flow {
+                            println!("\n  \x1b[1mFlow:\x1b[0m");
+                            if let Some(gain) = flow.gain {
+                                println!("    Gain:            {:.2}", gain);
+                            }
+                            if let Some(loss) = flow.loss_averted {
+                                println!("    Loss averted:    {:.2}", loss);
+                            }
+                            if let Some(dec) = flow.decision_value {
+                                println!("    Decision value:  {:.2}", dec);
+                            }
+                            println!("    Status:          {:?}", flow.flow_status);
+                            for (target, val) in &flow.stake {
+                                println!("    Stake [{}]:      {:.2}", target, val);
+                            }
+                            for (target, val) in &flow.loop_extra {
+                                println!("    Loop extra [{}]: {:.2}", target, val);
+                            }
+                            if let Some((_routes, _trunc, explanation)) = gs.routes_for_node(&node.id) {
+                                if !explanation.is_empty() {
+                                    println!("    Explanation:     {explanation}");
+                                }
+                            }
+                        }
+                    } else if node.downstream_weight > 0.0 {
                         println!(
                             "\n  Weight: {:.2}{}",
                             node.downstream_weight,
@@ -1799,26 +1912,37 @@ async fn main() -> Result<()> {
                         std::process::exit(1);
                     }
                     let node = node.unwrap();
+                    let is_flow = gs.ranking_mode() == mem::polecat_config::RankingMode::Flow;
+                    let (dw, se) = if is_flow {
+                        (None, None)
+                    } else {
+                        (Some(node.downstream_weight), Some(node.stakeholder_exposure))
+                    };
                     let m = metrics::compute_network_metrics(
                         nid,
                         &node_ids,
                         edges,
-                        node.downstream_weight,
-                        node.stakeholder_exposure,
+                        dw,
+                        se,
                     );
                     if let Some(m) = m {
                         println!();
                         println!("  \x1b[1m{}\x1b[0m", node.label);
                         println!("  In-degree:           {}", m.in_degree);
                         println!("  Out-degree:          {}", m.out_degree);
-                        println!("  Downstream weight:   {:.2}", m.downstream_weight);
-                        println!("  Stakeholder:         {}", m.stakeholder_exposure);
+                        if let Some(dw) = m.downstream_weight {
+                            println!("  Downstream weight:   {:.2}", dw);
+                        }
+                        if let Some(se) = m.stakeholder_exposure {
+                            println!("  Stakeholder:         {}", se);
+                        }
                         println!("  Betweenness:         {:.4}", m.betweenness);
                         println!("  PageRank:            {:.4}", m.pagerank);
                         println!();
                     }
                 }
                 None => {
+                    let is_flow = gs.ranking_mode() == mem::polecat_config::RankingMode::Flow;
                     let pr = metrics::compute_pagerank(&node_ids, edges);
                     let bc = metrics::compute_betweenness_centrality(&node_ids, edges);
                     let degrees = metrics::compute_degrees(&node_ids, edges);
@@ -1860,34 +1984,55 @@ async fn main() -> Result<()> {
                     let print_ready = |title: &str, nodes: &[&graph::GraphNode]| {
                         println!();
                         println!("  \x1b[1m=== Top 20 {} ===\x1b[0m", title);
-                        println!(
-                            "  {:<35} {:>4} {:>6} {:>8} {:>8}",
-                            "TASK", "PRI", "D.WT", "PAGERANK", "BETWEEN"
-                        );
-                        println!("  {}", "-".repeat(65));
-                        for node in nodes.iter().take(20) {
-                            let p = pr.get(node.id.as_str()).copied().unwrap_or(0.0);
-                            let b = bc.get(node.id.as_str()).copied().unwrap_or(0.0);
-                            let exposure = if node.stakeholder_exposure { "!" } else { "" };
+                        if is_flow {
                             println!(
-                                "  {:<35} P{:<3} {:>5.1}{} {:>8.4} {:>8.4}",
-                                trunc(&node.label, 35),
-                                node.intent.unwrap_or(4),
-                                node.downstream_weight,
-                                exposure,
-                                p,
-                                b
+                                "  {:<35} {:>4} {:>8} {:>8}",
+                                "TASK", "PRI", "PAGERANK", "BETWEEN"
                             );
+                            println!("  {}", "-".repeat(59));
+                            for node in nodes.iter().take(20) {
+                                let p = pr.get(node.id.as_str()).copied().unwrap_or(0.0);
+                                let b = bc.get(node.id.as_str()).copied().unwrap_or(0.0);
+                                println!(
+                                    "  {:<35} P{:<3} {:>8.4} {:>8.4}",
+                                    trunc(&node.label, 35),
+                                    node.intent.unwrap_or(4),
+                                    p,
+                                    b
+                                );
+                            }
+                        } else {
+                            println!(
+                                "  {:<35} {:>4} {:>6} {:>8} {:>8}",
+                                "TASK", "PRI", "D.WT", "PAGERANK", "BETWEEN"
+                            );
+                            println!("  {}", "-".repeat(65));
+                            for node in nodes.iter().take(20) {
+                                let p = pr.get(node.id.as_str()).copied().unwrap_or(0.0);
+                                let b = bc.get(node.id.as_str()).copied().unwrap_or(0.0);
+                                let exposure = if node.stakeholder_exposure { "!" } else { "" };
+                                println!(
+                                    "  {:<35} P{:<3} {:>5.1}{} {:>8.4} {:>8.4}",
+                                    trunc(&node.label, 35),
+                                    node.intent.unwrap_or(4),
+                                    node.downstream_weight,
+                                    exposure,
+                                    p,
+                                    b
+                                );
+                            }
                         }
                     };
 
                     let mut ready_nodes = gs.ready_tasks();
-                    ready_nodes.sort_by(|a, b| {
-                        b.downstream_weight
-                            .partial_cmp(&a.downstream_weight)
-                            .unwrap_or(std::cmp::Ordering::Equal)
-                    });
-                    print_ready("Ready Tasks by Downstream Weight", &ready_nodes);
+                    if !is_flow {
+                        ready_nodes.sort_by(|a, b| {
+                            b.downstream_weight
+                                .partial_cmp(&a.downstream_weight)
+                                .unwrap_or(std::cmp::Ordering::Equal)
+                        });
+                        print_ready("Ready Tasks by Downstream Weight", &ready_nodes);
+                    }
 
                     let mut ready_by_pr: Vec<_> = ready_nodes
                         .iter()
@@ -2968,6 +3113,8 @@ async fn main() -> Result<()> {
                                     "message": d.message,
                                     "line": d.line,
                                     "fixable": d.fixable,
+                                    "agent_fix": d.agent_fix.to_string(),
+                                    "subject": d.subject,
                                 }))
                                 .collect::<Vec<_>>(),
                         })
@@ -2976,11 +3123,29 @@ async fn main() -> Result<()> {
                 println!("{}", serde_json::to_string_pretty(&json_results)?);
             } else {
                 // Human-readable text output
+                let mut no_route_nodes = Vec::new();
                 for r in &results {
                     let diags: Vec<&lint::Diagnostic> = r
                         .diagnostics
                         .iter()
                         .filter(|d| !errors_only || d.severity == lint::Severity::Error)
+                        .filter(|d| {
+                            if d.rule == "flow-no-route" {
+                                if let Some(lint::DiagnosticSubject::Node(ref id)) = d.subject {
+                                    no_route_nodes.push(id.clone());
+                                } else {
+                                    no_route_nodes.push(
+                                        r.path
+                                            .file_stem()
+                                            .map(|s| s.to_string_lossy().to_string())
+                                            .unwrap_or_default(),
+                                    );
+                                }
+                                false
+                            } else {
+                                true
+                            }
+                        })
                         .collect();
                     if diags.is_empty() {
                         continue;
@@ -3007,6 +3172,21 @@ async fn main() -> Result<()> {
                             );
                         }
                     }
+                    println!();
+                }
+
+                if !no_route_nodes.is_empty() {
+                    let count = no_route_nodes.len();
+                    let first_ten = no_route_nodes
+                        .iter()
+                        .take(10)
+                        .cloned()
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    println!(
+                        "\x1b[36mstyle\x1b[0m flow-no-route: {} open nodes with no route to a priced target (first 10: {})",
+                        count, first_ten
+                    );
                     println!();
                 }
 
@@ -3464,13 +3644,38 @@ async fn main() -> Result<()> {
                 let mcp_service =
                     StreamableHttpService::new(move || Ok(server.clone()), session_manager, config);
 
-                let app =
-                    axum::Router::new().route("/mcp", axum::routing::any_service(mcp_service));
+                let app = axum::Router::new()
+                    .route("/mcp", axum::routing::any_service(mcp_service))
+                    .layer(axum::middleware::from_fn(|mut req: axum::extract::Request, next: axum::middleware::Next| async move {
+                        // Ensure Host header is present for HTTP/2 requests where the :authority pseudo-header
+                        // is populated on uri.authority(), satisfying downstream rmcp DNS rebinding validation.
+                        if !req.headers().contains_key(http::header::HOST) {
+                            if let Some(auth) = req.uri().authority() {
+                                if let Ok(val) = http::HeaderValue::from_str(auth.as_str()) {
+                                    req.headers_mut().insert(http::header::HOST, val);
+                                }
+                            }
+                        }
+                        next.run(req).await
+                    }));
 
                 let addr: std::net::SocketAddr = format!("{host}:{port}").parse()?;
                 let listener = tokio::net::TcpListener::bind(addr).await?;
                 let bound_addr = listener.local_addr()?;
                 eprintln!("   Starting MCP HTTP/SSE server on http://{bound_addr}/mcp");
+
+                use axum::serve::ListenerExt;
+                let keepalive = socket2::TcpKeepalive::new()
+                    .with_time(std::time::Duration::from_secs(60))
+                    .with_interval(std::time::Duration::from_secs(10));
+                let listener = listener.tap_io(move |stream| {
+                    let sock_ref = socket2::SockRef::from(&*stream);
+                    if let Err(e) = sock_ref.set_tcp_keepalive(&keepalive) {
+                        tracing::debug!("failed to set TCP keepalive: {e}");
+                    }
+                    let _ = stream.set_nodelay(true);
+                });
+
                 axum::serve(listener, app)
                     .with_graceful_shutdown(async move { ct.cancelled().await })
                     .await?;
@@ -3567,6 +3772,92 @@ fn handle_migrate_command(cmd: MigrateCommands, pkb_root: &std::path::Path) -> R
             if report.dry_run && report.total() > 0 {
                 println!("\nRe-run without --dry-run to apply.");
             }
+        }
+        MigrateCommands::Flow {
+            dry_run,
+            apply,
+            revert,
+            status,
+            cleanup,
+            confirm,
+        } => {
+            if dry_run {
+                let report = mem::flow_migration::generate_dry_run_report(pkb_root)?;
+                print!("{}", report);
+                return Ok(());
+            }
+
+            if apply {
+                let ledger = mem::flow_migration::apply_flow_migration(pkb_root)?;
+                println!("Successfully applied flow migration ({}):", ledger.migration);
+                println!("  Changed nodes: {}", ledger.report.changed_nodes);
+                println!("  Total rows:    {}", ledger.report.total_rows);
+                println!("  Ledger path:   .agents/migrations/{}.json", ledger.migration);
+                if let Some(ref commit) = ledger.snapshot_commit {
+                    println!("  Snapshot base: {}", commit);
+                }
+                return Ok(());
+            }
+
+            if let Some(ref ledger_path) = revert {
+                let report = mem::flow_migration::revert_flow_migration(pkb_root, ledger_path)?;
+                println!("Reverted flow migration using {}:", ledger_path.display());
+                println!("  Files reverted: {}", report.files_reverted);
+                println!("  Rows reverted:  {}", report.rows_reverted);
+                if !report.drifted_rows.is_empty() {
+                    println!("  Drifted rows (skipped): {}", report.drifted_rows.len());
+                    for row in &report.drifted_rows {
+                        println!("    - [{}] {} on {}", row.node_id, row.key_path, row.path);
+                    }
+                }
+                if report.ledger_removed {
+                    println!("  Ledger removed.");
+                }
+                return Ok(());
+            }
+
+            if status {
+                let report = mem::flow_migration::status_flow_migration(pkb_root, None)?;
+                println!("pkb migrate flow status:");
+                println!(
+                    "  Migration applied: {}",
+                    if report.migration_applied { "yes" } else { "no" }
+                );
+                if let Some(ref lpath) = report.ledger_file {
+                    println!("  Active ledger:     {}", lpath.display());
+                }
+                println!("  Drifted rows:      {}", report.drifted_rows.len());
+                for r in &report.drifted_rows {
+                    println!("    - [{}] {} on {}", r.node_id, r.key_path, r.path);
+                }
+                println!("  Statusless tasks:  {}", report.statusless_tasks.len());
+                for n in &report.statusless_tasks {
+                    println!("    - [{}] {}", n.node_id, n.note);
+                }
+                println!(
+                    "  Targets lacking worth: {}",
+                    report.targets_lacking_worth.len()
+                );
+                for (id, label) in &report.targets_lacking_worth {
+                    println!("    - [{id}] {label}");
+                }
+                return Ok(());
+            }
+
+            if let Some(ref ledger_path) = cleanup {
+                let report = mem::flow_migration::cleanup_flow_migration(pkb_root, ledger_path, confirm)?;
+                println!("Cleaned up legacy fields using {}:", ledger_path.display());
+                println!("  Files cleaned:   {}", report.files_cleaned);
+                println!("  Fields removed:  {}", report.fields_removed);
+                if let Some(ref commit) = report.commit_hash {
+                    println!("  Cleanup commit:  {}", commit);
+                }
+                return Ok(());
+            }
+
+            println!(
+                "pkb migrate flow: specify --status, --dry-run, --apply, --revert <LEDGER>, or --cleanup <LEDGER>."
+            );
         }
     }
     Ok(())
@@ -4153,6 +4444,19 @@ fn index_pkb(
         }
     }
 
+    // Record filesystem stamps for all scanned files that are now up to date
+    let mut initial_stamps = std::collections::HashMap::with_capacity(files.len());
+    for file_path in &files {
+        if let Ok(rel_path) = file_path.strip_prefix(pkb_root) {
+            if let Ok(meta) = file_path.metadata() {
+                if let Some(stamp) = vectordb::FileStamp::from_metadata(&meta) {
+                    initial_stamps.insert(rel_path.to_path_buf(), stamp);
+                }
+            }
+        }
+    }
+    store.read().set_stamps(initial_stamps);
+
     // Final save to guarantee everything is written to disk
     if let Err(e) = store.read().save(db_path) {
         eprintln!("  ✗ final save failed: {e}");
@@ -4411,7 +4715,9 @@ fn days_since_created(created: Option<&str>) -> Option<i64> {
     if created.len() < 10 {
         return None;
     }
-    let created_dt = chrono::NaiveDate::parse_from_str(&created[..10], "%Y-%m-%d").ok()?;
+    let created_dt =
+        chrono::NaiveDate::parse_from_str(&created[..created.floor_char_boundary(10)], "%Y-%m-%d")
+            .ok()?;
     let today = chrono::Utc::now().date_naive();
     Some((today - created_dt).num_days())
 }
@@ -4430,7 +4736,9 @@ fn format_staleness(days: i64) -> String {
 fn format_due(due: &str) -> String {
     let today = chrono::Utc::now().date_naive();
     let len = std::cmp::min(10, due.len());
-    if let Ok(due_date) = chrono::NaiveDate::parse_from_str(&due[..len], "%Y-%m-%d") {
+    if let Ok(due_date) =
+        chrono::NaiveDate::parse_from_str(&due[..due.floor_char_boundary(len)], "%Y-%m-%d")
+    {
         let days_until = (due_date - today).num_days();
         let color = if days_until < 0 {
             colors::RED
@@ -4453,7 +4761,13 @@ fn format_complexity(complexity: &str) -> String {
 fn format_task_line(task: &graph::GraphNode, width: usize) -> String {
     let pri = task.intent.unwrap_or(4);
     let color = pri_color(pri);
-    let exposure = if task.stakeholder_exposure { "!" } else { " " };
+    let exposure = if task.flow.is_some() {
+        " "
+    } else if task.stakeholder_exposure {
+        "!"
+    } else {
+        " "
+    };
 
     // Left: priority + label
     let left = format!("{color}P{pri}{exposure}{} {}", colors::RESET, task.label);
@@ -4461,7 +4775,14 @@ fn format_task_line(task: &graph::GraphNode, width: usize) -> String {
     // Right: metadata pieces
     let mut right_parts: Vec<String> = Vec::new();
 
-    if task.downstream_weight > 0.0 {
+    if let Some(ref flow) = task.flow {
+        if let Some(gain) = flow.gain {
+            right_parts.push(format!("{}g:{:.2}{}", colors::DIM, gain, colors::RESET));
+        }
+        if let Some(loss) = flow.loss_averted {
+            right_parts.push(format!("{}l:{:.2}{}", colors::DIM, loss, colors::RESET));
+        }
+    } else if task.downstream_weight > 0.0 {
         right_parts.push(format!(
             "{}wt:{:.1}{}",
             colors::DIM,
@@ -4493,6 +4814,15 @@ fn format_task_line(task: &graph::GraphNode, width: usize) -> String {
     format!("{left}{:>pad$}{right}", "", pad = padding)
 }
 
+fn is_overdue(due: Option<&str>, today: chrono::NaiveDate) -> bool {
+    due.and_then(|d| {
+        let len = std::cmp::min(10, d.len());
+        chrono::NaiveDate::parse_from_str(&d[..d.floor_char_boundary(len)], "%Y-%m-%d").ok()
+    })
+    .map(|d| d < today)
+    .unwrap_or(false)
+}
+
 fn print_dashboard(tasks: &[&graph::GraphNode], filter: &TaskFilter) {
     let total = tasks.len();
     let urgent = tasks.iter().filter(|t| t.intent.unwrap_or(4) <= 1).count();
@@ -4501,16 +4831,7 @@ fn print_dashboard(tasks: &[&graph::GraphNode], filter: &TaskFilter) {
         let today = chrono::Utc::now().date_naive();
         tasks
             .iter()
-            .filter(|t| {
-                t.due
-                    .as_deref()
-                    .and_then(|d| {
-                        let len = std::cmp::min(10, d.len());
-                        chrono::NaiveDate::parse_from_str(&d[..len], "%Y-%m-%d").ok()
-                    })
-                    .map(|d| d < today)
-                    .unwrap_or(false)
-            })
+            .filter(|t| is_overdue(t.due.as_deref(), today))
             .count()
     };
 
@@ -4553,4 +4874,33 @@ fn print_dashboard(tasks: &[&graph::GraphNode], filter: &TaskFilter) {
         "  {}",
         parts.join(&format!(" {}│{} ", colors::DIM, colors::RESET))
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // #686: "2026-01-0é" is 11 bytes; byte 10 is inside 'é' (bytes 9..11).
+    const MULTIBYTE_DATE: &str = "2026-01-0\u{e9}";
+
+    #[test]
+    fn test_days_since_created_multibyte_does_not_panic() {
+        assert_eq!(days_since_created(Some(MULTIBYTE_DATE)), None);
+        assert!(days_since_created(Some("2026-01-01T00:00:00Z")).is_some());
+    }
+
+    #[test]
+    fn test_format_due_multibyte_does_not_panic() {
+        assert!(format_due(MULTIBYTE_DATE).contains(&format!("due:{MULTIBYTE_DATE}")));
+        assert!(format_due("2026-01-01T00:00:00Z").contains("due:2026-01-01"));
+    }
+
+    #[test]
+    fn test_is_overdue_multibyte_does_not_panic() {
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 6, 1).unwrap();
+        assert!(!is_overdue(Some(MULTIBYTE_DATE), today));
+        assert!(is_overdue(Some("2026-01-01T00:00:00Z"), today));
+        assert!(!is_overdue(Some("2026-12-01"), today));
+        assert!(!is_overdue(None, today));
+    }
 }

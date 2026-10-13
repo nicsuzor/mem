@@ -1110,6 +1110,94 @@ fn test_release_task_success_status_unaffected_by_reason_gate() {
 }
 
 #[test]
+fn test_release_task_refused_when_acceptance_items_unticked_and_allowed_when_ticked() {
+    let (tmp, server) = build_disk_backed_server(&[(
+            "tasks/task-ac-gate.md",
+            "---\nid: task-ac-gate\ntitle: Gate AC Task\ntype: task\nstatus: in_progress\ncreated: 2026-10-12T00:00:00+00:00\n---\n\n## Goal\nImplement feature\n\n## Acceptance\n- [ ] A test shows release to done refused for a task with an unticked acceptance item and allowed once all are ticked; command and output recorded.\n- [ ] The release refusal names the unticked items; output quoted.\n\n## Instructions\n1. Run tests\n",
+        )]);
+
+    // 1. Release to done must be refused while items are unticked
+    let err = server
+        .handle_release_task(&json!({
+            "id": "task-ac-gate",
+            "status": "done",
+            "summary": "Premature done release attempt",
+        }))
+        .expect_err("release_task(status=done) must be refused when acceptance items are unticked");
+
+    assert_eq!(err.code, ErrorCode::INVALID_PARAMS);
+    let err_msg = err.message.to_string();
+    assert!(
+        err_msg.contains("Cannot release task \"task-ac-gate\" as \"done\""),
+        "Error message should mention inability to release as done: {err_msg}"
+    );
+    assert!(
+            err_msg.contains("A test shows release to done refused for a task with an unticked acceptance item and allowed once all are ticked; command and output recorded."),
+            "Error message should name the first unticked item: {err_msg}"
+        );
+    assert!(
+        err_msg.contains("The release refusal names the unticked items; output quoted."),
+        "Error message should name the second unticked item: {err_msg}"
+    );
+
+    // 2. Updating checkboxes to ticked (- [x]) allows release to done
+    let task_file = tmp.path().join("tasks/task-ac-gate.md");
+    let ticked_content = "---\nid: task-ac-gate\ntitle: Gate AC Task\ntype: task\nstatus: in_progress\ncreated: 2026-10-12T00:00:00+00:00\n---\n\n## Goal\nImplement feature\n\n## Acceptance\n- [x] A test shows release to done refused for a task with an unticked acceptance item and allowed once all are ticked; command and output recorded.\n- [x] The release refusal names the unticked items; output quoted.\n\n## Instructions\n1. Run tests\n";
+    std::fs::write(&task_file, ticked_content).unwrap();
+
+    let res = server
+        .handle_release_task(&json!({
+            "id": "task-ac-gate",
+            "status": "done",
+            "summary": "Completed and verified with all criteria ticked.",
+        }))
+        .expect("release_task(status=done) must succeed once all items are ticked");
+
+    assert!(!res.is_error.unwrap_or(false));
+}
+
+#[test]
+fn test_release_task_handback_statuses_allowed_with_unticked_acceptance_items() {
+    for status in ["partial", "review", "cancelled"] {
+        let (_tmp, server) = build_disk_backed_server(&[(
+                "tasks/task-handback.md",
+                "---\nid: task-handback\ntitle: Handback Task\ntype: task\nstatus: in_progress\ncreated: 2026-10-12T00:00:00+00:00\n---\n\n## Acceptance\n- [ ] Remaining item\n",
+            )]);
+
+        let res = server
+            .handle_release_task(&json!({
+                "id": "task-handback",
+                "status": status,
+                "summary": format!("Handback release as {status}."),
+                "reason": "Blocker or partial progress documented.",
+            }))
+            .expect(&format!("release as {status} should succeed with reason"));
+
+        assert!(!res.is_error.unwrap_or(false));
+    }
+}
+
+#[test]
+fn test_release_task_checkboxes_outside_acceptance_ignored() {
+    let (_tmp, server) = build_disk_backed_server(&[(
+            "tasks/task-instruction-boxes.md",
+            "---\nid: task-instruction-boxes\ntitle: Instruction Boxes Task\ntype: task\nstatus: in_progress\ncreated: 2026-10-12T00:00:00+00:00\n---\n\n## Goal\nDo thing\n\n## Instructions\n- [ ] Step 1 checklist\n- [ ] Step 2 checklist\n",
+        )]);
+
+    let res = server
+        .handle_release_task(&json!({
+            "id": "task-instruction-boxes",
+            "status": "done",
+            "summary": "Done release with checkboxes only in instructions.",
+        }))
+        .expect(
+            "release_task(status=done) should succeed when checkboxes are only in instructions",
+        );
+
+    assert!(!res.is_error.unwrap_or(false));
+}
+
+#[test]
 fn test_release_task_missing_created() {
     // No `created` frontmatter at all — fail-closed.
     let (_tmp, server) = build_disk_backed_server(&[(
@@ -2877,5 +2965,41 @@ fn test_hard_cycle_rejected_on_batch_create_epics() {
             || summary.errors[0].error.contains("DAG"),
         "error should explain DAG cycle: {}",
         summary.errors[0].error
+    );
+}
+
+#[test]
+fn test_adhoc_release_with_uuid_session_id_and_long_summary_succeeds() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    std::fs::create_dir_all(root.join("tasks")).unwrap();
+    write_test_polecat_yaml(root);
+
+    let graph = GraphStore::build(&[], root);
+    let store = VectorStore::new(3);
+    let embedder = Embedder::new_dummy();
+    let db_path = root.join("db");
+    let server = PkbSearchServer::new(
+        Arc::new(RwLock::new(store)),
+        Arc::new(embedder),
+        root.to_path_buf(),
+        db_path,
+        Arc::new(RwLock::new(graph)),
+    );
+
+    let session_id = "c9927f3f-e654-493b-98f1-2d06d37b0364";
+    let summary = "This is an extensive release summary for an ad-hoc session that implements important feature work and verifies everything end to end";
+    let res = server.handle_release_task(&json!({
+        "project": "adhoc-sessions",
+        "session_id": session_id,
+        "status": "done",
+        "summary": summary,
+        "completion_evidence": "All tests passed and verified",
+    }));
+
+    assert!(
+        res.is_ok(),
+        "ad-hoc release with UUID session_id and long summary must succeed, got error: {:?}",
+        res.err()
     );
 }

@@ -16,6 +16,13 @@ The example (all nodes open unless stated):
 
 from __future__ import annotations
 
+import os
+import sys
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+if HERE not in sys.path:
+    sys.path.insert(0, HERE)
+
 import flow
 
 
@@ -107,10 +114,16 @@ CANDIDATES = [("share", share), ("cut loops", cut_loops), ("strongest route", st
 
 
 def safe(f, g, node):
-    try:
-        return fmt(f(g)[node])
-    except flow.SaturatedLoop:
+    if f is knockout and flow.saturated_loops(g):
+        bad = flow.saturated_loops(g)
+        bad_nodes = {v for comp in bad for v in comp}
+        cone = flow._forward(flow._index(g)[1], node)
+        if any(v in bad_nodes for v in cone):
+            return "rejected"
+    val = f(g)[node]
+    if val is None:
         return "rejected"
+    return fmt(val)
 
 
 def fmt(v: float) -> str:

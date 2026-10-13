@@ -4,7 +4,8 @@
 //! Build from `PkbDocument`s via [`GraphStore::build`], then query with
 //! the various accessor methods.
 
-use crate::graph::{self, deduplicate_vec, Edge, EdgeType, GraphNode};
+use crate::graph::{self, deduplicate_vec, Edge, EdgeType, GraphNode, ParseWarning};
+pub use crate::graph::{FlowEdge, ResolvedLink};
 use crate::metrics;
 use crate::pkb::PkbDocument;
 use anyhow::Result;
@@ -34,6 +35,17 @@ pub struct ExportNode {
     /// ordered by [`GraphStore::focus_cmp`] (1 = highest priority).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub queue_rank: Option<usize>,
+    /// `GraphNode.effective_intent` (specs/ranking.md §4.6), emitted on every
+    /// node of an actionable type so consumers read the band the engine
+    /// ranks by (§8.5). Computed; never written back to frontmatter.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effective_intent: Option<i32>,
+    /// Flow display metadata structure (§7.2, `export_graph`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display: Option<crate::display_rank::TaskDisplay>,
+    /// 1-based position among exported nodes ordered by `display_cmp` (§7.2).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub display_rank: Option<usize>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -49,6 +61,9 @@ pub struct OutputGraph {
     /// Top focus picks: ready tasks ranked by priority + deadline + staleness + downstream weight.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub focus: Vec<String>,
+    /// Hard-deadline cliff lane tasks (§7.2, `export_graph`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cliff: Vec<String>,
 }
 
 /// `export_graph` JSON document: [`OutputGraph`] with ranked [`ExportNode`]s.
@@ -65,6 +80,9 @@ pub struct ExportGraph {
     /// Top focus picks (`GraphStore::focus_picks`, max 50) within the exported set.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub focus: Vec<String>,
+    /// Hard-deadline cliff lane tasks (§7.2, `export_graph`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cliff: Vec<String>,
 }
 
 pub const DEFAULT_DIVERGENCE_THRESHOLD_DAYS: i64 = 14;
@@ -101,6 +119,14 @@ pub struct WeightDivergence {
     pub numeric_weight: f64,
     pub justification: String,
     pub days_since_interaction: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quantum: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub probability: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub strength: Option<f64>,
 }
 
 // ===========================================================================
@@ -122,6 +148,8 @@ pub struct GraphStore {
     resolution_map: HashMap<String, String>,
     /// Generation stamp recorded at build/patch time for validate-on-read cache invalidation
     generation: crate::pkb::GenerationStamp,
+    pub flow_input: Option<crate::flow::FlowInput>,
+    pub ranking_mode: crate::polecat_config::RankingMode,
 }
 
 /// Document types considered actionable work items in task trees and dashboards.
@@ -420,6 +448,14 @@ impl GraphStore {
             for follow in &n.follow_up_tasks {
                 referenced_ids.insert(follow.clone());
             }
+            for link in &n.links {
+                if let Some(ref to) = link.to {
+                    referenced_ids.insert(to.clone());
+                }
+                if let Some(ref from) = link.from {
+                    referenced_ids.insert(from.clone());
+                }
+            }
         }
 
         let mut sorted_referenced_ids: Vec<String> = referenced_ids.into_iter().collect();
@@ -482,6 +518,14 @@ impl GraphStore {
         let _t = std::time::Instant::now();
         compute_inverses(&mut nodes, &edges, &id_map, &path_to_id);
         tracing::debug!(target: "perf::graph_rebuild", phase = "inverses", elapsed_ms = _t.elapsed().as_secs_f64() * 1000.0);
+
+        // Attach duplicate disagreement warnings (pkb-flow-engine §3.1 R4, E4)
+        let (_, duplicate_warnings) = resolve_flow_edges_from_nodes(&nodes);
+        for (target_node_id, warning) in duplicate_warnings {
+            if let Some(node) = nodes.iter_mut().find(|n| n.id == target_node_id) {
+                node.parse_warnings.push(warning);
+            }
+        }
 
         // 5. Compute degree metrics (indegree/outdegree)
         let _t = std::time::Instant::now();
@@ -574,13 +618,33 @@ impl GraphStore {
         for node in &mut nodes {
             node.reachable = reachable_set.contains(&node.id);
         }
-        tracing::debug!(target: "perf::graph_rebuild", phase = "reachable_set", elapsed_ms = _t.elapsed().as_secs_f64() * 1000.0);
+        // 9d. Compute flow and decision values (pkb-flow-engine §3.1, §5, §5.3)
+        let _t_flow = std::time::Instant::now();
+        let flow_input = build_flow_input(&nodes);
+        let mut flow_outputs = crate::flow::compute_flow(&flow_input);
+        crate::flow::compute_decision_value(&flow_input, &mut flow_outputs);
+        for node in &mut nodes {
+            node.flow = flow_outputs.get(&node.id).cloned();
+        }
+        tracing::debug!(target: "perf::graph_rebuild", phase = "flow_computation", elapsed_ms = _t_flow.elapsed().as_secs_f64() * 1000.0);
 
         // 10. Build node map and classify tasks
         let _t = std::time::Instant::now();
+        let ranking_mode = crate::polecat_config::resolve_ranking_mode(pkb_root);
         let mut node_map: HashMap<String, GraphNode> =
             nodes.into_iter().map(|n| (n.id.clone(), n)).collect();
-        let (ready, blocked, roots) = classify_tasks(&node_map);
+        let (ready, blocked, roots) = if ranking_mode == crate::polecat_config::RankingMode::Flow {
+            let today = chrono::Utc::now().date_naive();
+            let flow_map: HashMap<String, crate::flow::FlowOutput> = flow_outputs.into_iter().collect();
+            crate::display_rank::classify_graph_nodes(
+                &node_map,
+                Some(&flow_map),
+                today,
+                crate::display_rank::DISPLAY_CLIFF_BUFFER_DAYS,
+            )
+        } else {
+            classify_tasks(&node_map)
+        };
         tracing::debug!(target: "perf::graph_rebuild", phase = "classify_tasks", elapsed_ms = _t.elapsed().as_secs_f64() * 1000.0);
 
         // 11. Compute divergence anomalies and set flags on nodes (default 14 days)
@@ -603,6 +667,8 @@ impl GraphStore {
             roots,
             resolution_map,
             generation,
+            flow_input: Some(flow_input),
+            ranking_mode,
         }
     }
 
@@ -622,6 +688,92 @@ impl GraphStore {
 
     pub fn get_node(&self, id: &str) -> Option<&GraphNode> {
         self.nodes.get(id)
+    }
+
+    /// Resolve flow edges and duplicate warnings across all nodes in the store (pkb-flow-engine §3.1, R4).
+    pub fn resolve_flow_edges_with_warnings(&self) -> (Vec<FlowEdge>, Vec<(String, ParseWarning)>) {
+        resolve_flow_edges_from_nodes(self.nodes.values())
+    }
+
+    /// Resolve all flow edges across the store.
+    pub fn resolve_flow_edges(&self) -> Vec<FlowEdge> {
+        self.resolve_flow_edges_with_warnings().0
+    }
+
+    /// Outgoing flow links from a given node (pkb-flow-engine §7.2).
+    pub fn links_out(&self, node_id: &str) -> Vec<ResolvedLink> {
+        let mut links = Vec::new();
+        for edge in self.resolve_flow_edges() {
+            if edge.src == node_id {
+                let strength = edge.strength();
+                links.push(ResolvedLink {
+                    to: Some(edge.dst),
+                    from: None,
+                    label: edge.label,
+                    quantum: edge.quantum,
+                    probability: edge.probability,
+                    effect: edge.effect,
+                    justification: edge.justification,
+                    set_by: edge.set_by,
+                    strength,
+                });
+            }
+        }
+        links.sort_by(|a, b| {
+            (a.to.as_deref().unwrap_or(""), a.label.as_str())
+                .cmp(&(b.to.as_deref().unwrap_or(""), b.label.as_str()))
+        });
+        links
+    }
+
+    /// Incoming flow links into a given node (pkb-flow-engine §7.2).
+    pub fn links_in(&self, node_id: &str) -> Vec<ResolvedLink> {
+        let mut links = Vec::new();
+        for edge in self.resolve_flow_edges() {
+            if edge.dst == node_id {
+                let strength = edge.strength();
+                links.push(ResolvedLink {
+                    to: None,
+                    from: Some(edge.src),
+                    label: edge.label,
+                    quantum: edge.quantum,
+                    probability: edge.probability,
+                    effect: edge.effect,
+                    justification: edge.justification,
+                    set_by: edge.set_by,
+                    strength,
+                });
+            }
+        }
+        links.sort_by(|a, b| {
+            (a.from.as_deref().unwrap_or(""), a.label.as_str())
+                .cmp(&(b.from.as_deref().unwrap_or(""), b.label.as_str()))
+        });
+        links
+    }
+
+    /// Active ranking mode configured on the store (§4, C2).
+    pub fn ranking_mode(&self) -> crate::polecat_config::RankingMode {
+        self.ranking_mode
+    }
+
+    /// Flow input graph used to compute flow figures.
+    pub fn flow_input(&self) -> Option<&crate::flow::FlowInput> {
+        self.flow_input.as_ref()
+    }
+
+    /// Compute routes, truncation status, and one-sentence explanation for a node (§7.2, `get_task`).
+    pub fn routes_for_node(
+        &self,
+        id: &str,
+    ) -> Option<(std::collections::BTreeMap<String, crate::flow::TargetRoutes>, bool, String)> {
+        let node = self.get_node(id)?;
+        let flow = node.flow.as_ref()?;
+        let flow_input = self.flow_input.as_ref()?;
+        let routes = crate::flow::compute_routes(flow_input, flow, id);
+        let truncated = routes.values().any(|tr| tr.routes_truncated);
+        let explanation = crate::flow::build_explanation(id, &routes, &flow.stake);
+        Some((routes, truncated, explanation))
     }
 
     /// Collect IDs of all descendants (recursive via children) whose status is open
@@ -884,16 +1036,32 @@ impl GraphStore {
 
     /// Cheap in-place removal. Drops the node from `nodes`; stale edges and
     /// resolution-map entries are left for the background rebuild to fix.
-    pub fn remove_node_in_place(&mut self, id: &str) {
+    pub fn remove_node_in_place(&mut self, id: &str, pkb_root: &Path) {
         self.nodes.remove(id);
         self.resolution_map.retain(|_, target| target != id);
+        self.generation = crate::pkb::scan_generation(pkb_root);
     }
 
     /// Re-run classification (ready / blocked / roots) from the current nodes
     /// and update self. Cheap O(V+E). Called by Tier-2 swap after merging
     /// patched nodes.
     pub fn reclassify(&mut self) {
-        let (ready, blocked, roots) = classify_tasks(&self.nodes);
+        let (ready, blocked, roots) = if self.ranking_mode == crate::polecat_config::RankingMode::Flow {
+            let today = chrono::Utc::now().date_naive();
+            let flow_map: HashMap<String, crate::flow::FlowOutput> = self
+                .nodes
+                .iter()
+                .filter_map(|(id, n)| n.flow.as_ref().map(|f| (id.clone(), f.clone())))
+                .collect();
+            crate::display_rank::classify_graph_nodes(
+                &self.nodes,
+                Some(&flow_map),
+                today,
+                crate::display_rank::DISPLAY_CLIFF_BUFFER_DAYS,
+            )
+        } else {
+            classify_tasks(&self.nodes)
+        };
         self.ready = ready;
         self.blocked = blocked;
         self.roots = roots;
@@ -989,6 +1157,139 @@ impl GraphStore {
     /// Sort a slice of node refs in place by the canonical focus-score default order.
     pub fn sort_by_focus(nodes: &mut [&GraphNode]) {
         nodes.sort_by(|a, b| Self::focus_cmp(a, b));
+    }
+
+    /// Sort a slice of node refs in place by canonical flow display order (display_cmp).
+    pub fn sort_by_display(
+        nodes: &mut [&GraphNode],
+        today: chrono::NaiveDate,
+        buffer_days: i64,
+    ) {
+        Self::sort_by_display_with_sort(
+            nodes,
+            crate::display_rank::TaskSort::Default,
+            today,
+            buffer_days,
+        );
+    }
+
+    /// Sort a slice of node refs in place by flow display order with an explicit sort key.
+    pub fn sort_by_display_with_sort(
+        nodes: &mut [&GraphNode],
+        sort: crate::display_rank::TaskSort,
+        today: chrono::NaiveDate,
+        buffer_days: i64,
+    ) {
+        let items: HashMap<String, crate::display_rank::DisplayItem> = nodes
+            .iter()
+            .map(|node| {
+                let dt =
+                    crate::display_rank::DisplayTask::from_graph_node(node, node.flow.as_ref());
+                (node.id.clone(), dt.to_display_item(today, buffer_days))
+            })
+            .collect();
+
+        nodes.sort_by(|a, b| {
+            let item_a = &items[&a.id];
+            let item_b = &items[&b.id];
+            crate::display_rank::display_cmp_by(item_a, item_b, sort)
+        });
+    }
+
+    /// Sort a slice of node refs according to the active engine ranking mode.
+    pub fn sort_by_active_ranking(
+        &self,
+        nodes: &mut [&GraphNode],
+        today: chrono::NaiveDate,
+        buffer_days: i64,
+    ) {
+        if self.ranking_mode == crate::polecat_config::RankingMode::Flow {
+            Self::sort_by_display(nodes, today, buffer_days);
+        } else {
+            Self::sort_by_focus(nodes);
+        }
+    }
+
+    /// Focus picks under the flow engine (§7.3, `pkb focus`):
+    /// the cliff lane, then the head of display_cmp over ready work and human gates.
+    pub fn flow_focus_picks(
+        &self,
+        max: usize,
+        today: chrono::NaiveDate,
+        buffer_days: i64,
+    ) -> (Vec<String>, Vec<String>) {
+        let completed_statuses = crate::graph::COMPLETED_STATUSES;
+        let mut candidate_map: HashMap<String, &GraphNode> = HashMap::new();
+
+        for id in &self.ready {
+            if let Some(node) = self.nodes.get(id) {
+                candidate_map.insert(node.id.clone(), node);
+            }
+        }
+
+        for node in self.nodes.values() {
+            if node.is_human_gate()
+                && !completed_statuses.contains(&node.status.as_deref().unwrap_or(""))
+            {
+                let is_review = node
+                    .status
+                    .as_deref()
+                    .map(|s| s.eq_ignore_ascii_case("review"))
+                    .unwrap_or(false);
+                let is_unblocked = !self.is_blocked(&node.id);
+                if is_review || is_unblocked {
+                    candidate_map.insert(node.id.clone(), node);
+                }
+            }
+        }
+
+        let mut candidates: Vec<&GraphNode> = candidate_map.into_values().collect();
+        Self::sort_by_display(&mut candidates, today, buffer_days);
+
+        let mut cliff_picks = Vec::new();
+        let mut regular_picks = Vec::new();
+
+        for node in candidates {
+            let due_date = node.due.as_deref().and_then(crate::display_rank::parse_due_date);
+            let eff = crate::display_rank::resolve_effort_days(node.effort.as_deref());
+            let resolved_class = crate::display_rank::DeadlineClass::resolve(
+                node.deadline_class.map(|dc| match dc {
+                    crate::graph::DeadlineClass::Fake => crate::display_rank::DeadlineClass::Fake,
+                    crate::graph::DeadlineClass::Soft => crate::display_rank::DeadlineClass::Soft,
+                    crate::graph::DeadlineClass::Hard => crate::display_rank::DeadlineClass::Hard,
+                }),
+                due_date.is_some(),
+            );
+            if crate::display_rank::is_on_cliff(due_date, resolved_class, eff, today, buffer_days) {
+                cliff_picks.push(node.id.clone());
+            } else {
+                regular_picks.push(node.id.clone());
+            }
+        }
+
+        if cliff_picks.len() > max {
+            cliff_picks.truncate(max);
+        }
+        let remaining = max.saturating_sub(cliff_picks.len());
+        if regular_picks.len() > remaining {
+            regular_picks.truncate(remaining);
+        }
+
+        (cliff_picks, regular_picks)
+    }
+
+    /// Focus picks respecting active engine ranking mode.
+    pub fn focus_picks_active(&self, max: usize) -> Vec<String> {
+        if self.ranking_mode == crate::polecat_config::RankingMode::Flow {
+            let today = chrono::Utc::now().date_naive();
+            let (cliff, regular) =
+                self.flow_focus_picks(max, today, crate::display_rank::DISPLAY_CLIFF_BUFFER_DAYS);
+            let mut all = cliff;
+            all.extend(regular);
+            all
+        } else {
+            self.focus_picks(max)
+        }
     }
 
     /// Returns all open actionable tasks (type in [`ACTIONABLE_TYPES`] and not completed/archived).
@@ -1544,46 +1845,92 @@ impl GraphStore {
         components
     }
 
-    /// Detect 'contributes_to' edges with high stated weight but zero interaction
-    /// on the source task in N days.
+    /// Detect edges with high stated weight/strength but zero interaction
+    /// on the source task in N days (pkb-flow-engine §7.2).
     pub fn detect_weight_divergences(&self, threshold_days: i64) -> Vec<WeightDivergence> {
         let now = Utc::now();
         let mut divergences = Vec::new();
         let blocked_ids: HashSet<&str> = self.blocked.iter().map(|s| s.as_str()).collect();
 
-        for node in self.nodes.values() {
-            // False-positive guard: don't flag edges where the task is rationally blocked
-            if blocked_ids.contains(node.id.as_str()) {
-                continue;
+        if self.ranking_mode == crate::polecat_config::RankingMode::Flow {
+            let (flow_edges, _) = self.resolve_flow_edges_with_warnings();
+            for edge in flow_edges {
+                let node = match self.nodes.get(&edge.src) {
+                    Some(n) => n,
+                    None => continue,
+                };
+                if blocked_ids.contains(node.id.as_str()) {
+                    continue;
+                }
+                if graph::is_completed(node.status.as_deref()) {
+                    continue;
+                }
+                let days_since_interaction = days_since_modified(node.modified.as_deref(), now);
+                if days_since_interaction >= threshold_days
+                    && edge.strength() >= DIVERGENCE_WEIGHT_THRESHOLD
+                {
+                    let target_id = edge.dst.clone();
+                    let target_label = self
+                        .nodes
+                        .get(&target_id)
+                        .map(|n| n.label.clone())
+                        .unwrap_or_else(|| target_id.clone());
+
+                    divergences.push(WeightDivergence {
+                        source_id: node.id.clone(),
+                        source_label: node.label.clone(),
+                        target_id,
+                        target_label,
+                        stated_weight: format!("{:.2}", edge.strength()),
+                        numeric_weight: edge.strength(),
+                        justification: edge.justification.clone().unwrap_or_default(),
+                        days_since_interaction,
+                        label: Some(edge.label.as_str().to_string()),
+                        quantum: Some(edge.quantum),
+                        probability: Some(edge.probability),
+                        strength: Some(edge.strength()),
+                    });
+                }
             }
+        } else {
+            for node in self.nodes.values() {
+                // False-positive guard: don't flag edges where the task is rationally blocked
+                if blocked_ids.contains(node.id.as_str()) {
+                    continue;
+                }
 
-            // Also skip completed tasks
-            if graph::is_completed(node.status.as_deref()) {
-                continue;
-            }
+                // Also skip completed tasks
+                if graph::is_completed(node.status.as_deref()) {
+                    continue;
+                }
 
-            let days_since_interaction = days_since_modified(node.modified.as_deref(), now);
+                let days_since_interaction = days_since_modified(node.modified.as_deref(), now);
 
-            if days_since_interaction >= threshold_days {
-                for ct in &node.contributes_to {
-                    if ct.numeric_weight() >= DIVERGENCE_WEIGHT_THRESHOLD {
-                        let target_id = ct.resolved_to.clone().unwrap_or_else(|| ct.to.clone());
-                        let target_label = self
-                            .nodes
-                            .get(&target_id)
-                            .map(|n| n.label.clone())
-                            .unwrap_or_else(|| ct.to.clone());
+                if days_since_interaction >= threshold_days {
+                    for ct in &node.contributes_to {
+                        if ct.numeric_weight() >= DIVERGENCE_WEIGHT_THRESHOLD {
+                            let target_id = ct.resolved_to.clone().unwrap_or_else(|| ct.to.clone());
+                            let target_label = self
+                                .nodes
+                                .get(&target_id)
+                                .map(|n| n.label.clone())
+                                .unwrap_or_else(|| ct.to.clone());
 
-                        divergences.push(WeightDivergence {
-                            source_id: node.id.clone(),
-                            source_label: node.label.clone(),
-                            target_id,
-                            target_label,
-                            stated_weight: ct.stated_weight.clone(),
-                            numeric_weight: ct.numeric_weight(),
-                            justification: ct.justification.clone(),
-                            days_since_interaction,
-                        });
+                            divergences.push(WeightDivergence {
+                                source_id: node.id.clone(),
+                                source_label: node.label.clone(),
+                                target_id,
+                                target_label,
+                                stated_weight: ct.stated_weight.clone(),
+                                numeric_weight: ct.numeric_weight(),
+                                justification: ct.justification.clone(),
+                                days_since_interaction,
+                                label: None,
+                                quantum: None,
+                                probability: None,
+                                strength: None,
+                            });
+                        }
                     }
                 }
             }
@@ -2249,6 +2596,36 @@ impl GraphStore {
             .filter(|id| placed_ids.contains(id.as_str()))
             .collect();
 
+        let today = chrono::Utc::now().date_naive();
+        let buffer_days = crate::display_rank::DISPLAY_CLIFF_BUFFER_DAYS;
+
+        let cliff_list: Vec<String> = nodes
+            .iter()
+            .filter(|n| {
+                let due_date = n.due.as_deref().and_then(crate::display_rank::parse_due_date);
+                let eff = crate::display_rank::resolve_effort_days(n.effort.as_deref());
+                let resolved_class = crate::display_rank::DeadlineClass::resolve(
+                    n.deadline_class.map(|dc| match dc {
+                        crate::graph::DeadlineClass::Fake => crate::display_rank::DeadlineClass::Fake,
+                        crate::graph::DeadlineClass::Soft => crate::display_rank::DeadlineClass::Soft,
+                        crate::graph::DeadlineClass::Hard => crate::display_rank::DeadlineClass::Hard,
+                    }),
+                    due_date.is_some(),
+                );
+                crate::display_rank::is_on_cliff(due_date, resolved_class, eff, today, buffer_days)
+            })
+            .map(|n| n.id.clone())
+            .filter(|id| placed_ids.contains(id.as_str()))
+            .collect();
+
+        let mut display_ranked: Vec<&GraphNode> = nodes.iter().collect();
+        Self::sort_by_display(&mut display_ranked, today, buffer_days);
+        let display_ranks: HashMap<String, usize> = display_ranked
+            .iter()
+            .enumerate()
+            .map(|(i, n)| (n.id.clone(), i + 1))
+            .collect();
+
         let mut ranked: Vec<&GraphNode> =
             nodes.iter().filter(|n| n.focus_tuple.is_some()).collect();
         Self::sort_by_focus(&mut ranked);
@@ -2260,19 +2637,66 @@ impl GraphStore {
         let nodes: Vec<ExportNode> = nodes
             .into_iter()
             .map(|node| {
-                let queue_rank = ranks.get(&node.id).copied();
-                let (severity_gate, cost_of_delay) = match node.focus_tuple.as_ref() {
-                    Some(ft) => (Some(ft.severity_gate), Some(ft.cost_of_delay)),
-                    None => (None, None),
+                let queue_rank = if self.ranking_mode == crate::polecat_config::RankingMode::Flow {
+                    None
+                } else {
+                    ranks.get(&node.id).copied()
                 };
+                let display_rank = display_ranks.get(&node.id).copied();
+                let (severity_gate, cost_of_delay) = if self.ranking_mode == crate::polecat_config::RankingMode::Flow {
+                    (None, None)
+                } else {
+                    match node.focus_tuple.as_ref() {
+                        Some(ft) => (Some(ft.severity_gate), Some(ft.cost_of_delay)),
+                        None => (None, None),
+                    }
+                };
+                let actionable = match node.node_type.as_deref() {
+                    Some(t) => ACTIONABLE_TYPES.contains(&t),
+                    None => true,
+                };
+                let effective_intent = if self.ranking_mode == crate::polecat_config::RankingMode::Flow {
+                    None
+                } else if actionable {
+                    Some(node.effective_intent.unwrap_or(node.intent.unwrap_or(4)))
+                } else {
+                    None
+                };
+                let is_ready = ready.contains(&node.id);
+                let is_blocked = blocked.contains(&node.id);
+                let eff = crate::display_rank::resolve_effort_days(node.effort.as_deref());
+                let dc = node.deadline_class.map(|d| match d {
+                    crate::graph::DeadlineClass::Fake => crate::display_rank::DeadlineClass::Fake,
+                    crate::graph::DeadlineClass::Soft => crate::display_rank::DeadlineClass::Soft,
+                    crate::graph::DeadlineClass::Hard => crate::display_rank::DeadlineClass::Hard,
+                });
+                let due_date = node.due.as_deref().and_then(crate::display_rank::parse_due_date);
+                let display = Some(crate::display_rank::TaskDisplay::new(
+                    is_ready,
+                    is_blocked,
+                    due_date,
+                    dc,
+                    eff,
+                    today,
+                    buffer_days,
+                ));
                 ExportNode {
                     node,
                     severity_gate,
                     cost_of_delay,
                     queue_rank,
+                    effective_intent,
+                    display,
+                    display_rank,
                 }
             })
             .collect();
+
+        let focus = if self.ranking_mode == crate::polecat_config::RankingMode::Flow {
+            vec![]
+        } else {
+            focus_list
+        };
 
         let graph = ExportGraph {
             nodes,
@@ -2280,7 +2704,8 @@ impl GraphStore {
             ready,
             blocked,
             roots,
-            focus: focus_list,
+            focus,
+            cliff: cliff_list,
         };
         Ok(serde_json::to_string_pretty(&graph)?)
     }
@@ -2340,6 +2765,7 @@ impl GraphStore {
             blocked: self.blocked.clone(),
             roots: self.roots.clone(),
             focus: vec![],
+            cliff: vec![],
         };
         let mut xml = String::from(
             r#"<?xml version="1.0" encoding="UTF-8"?>
@@ -2698,6 +3124,169 @@ fn build_node_edges(
     edges
 }
 
+/// Helper to resolve flow edges from a collection of nodes, detecting duplicates and disagreement (pkb-flow-engine §3.1 R4, E4).
+pub fn resolve_flow_edges_from_nodes<'a, I>(
+    nodes: I,
+) -> (Vec<FlowEdge>, Vec<(String, ParseWarning)>)
+where
+    I: IntoIterator<Item = &'a GraphNode>,
+{
+    struct Decl<'a> {
+        is_source: bool,
+        link: &'a crate::graph::Link,
+    }
+
+    let mut decls_by_edge: HashMap<(String, String, crate::graph::LinkLabel), Vec<Decl<'a>>> =
+        HashMap::new();
+
+    for node in nodes {
+        for link in &node.links {
+            if let Some(ref target) = link.to {
+                decls_by_edge
+                    .entry((node.id.clone(), target.clone(), link.label))
+                    .or_default()
+                    .push(Decl {
+                        is_source: true,
+                        link,
+                    });
+            } else if let Some(ref source) = link.from {
+                decls_by_edge
+                    .entry((source.clone(), node.id.clone(), link.label))
+                    .or_default()
+                    .push(Decl {
+                        is_source: false,
+                        link,
+                    });
+            }
+        }
+    }
+
+    let mut edges = Vec::with_capacity(decls_by_edge.len());
+    let mut warnings = Vec::new();
+
+    for ((src, dst, label), decls) in decls_by_edge {
+        if decls.len() == 1 {
+            let d = &decls[0];
+            edges.push(FlowEdge {
+                src,
+                dst,
+                label,
+                quantum: d.link.quantum,
+                probability: d.link.probability,
+                effect: d.link.effect,
+                justification: d.link.justification.clone(),
+                set_by: d.link.set_by,
+            });
+        } else {
+            let src_decl = decls.iter().find(|d| d.is_source);
+            let dst_decl = decls.iter().find(|d| !d.is_source);
+
+            match (src_decl, dst_decl) {
+                (Some(s), Some(d)) => {
+                    let agree = (s.link.quantum - d.link.quantum).abs() < 1e-9
+                        && (s.link.probability - d.link.probability).abs() < 1e-9
+                        && s.link.effect == d.link.effect
+                        && s.link.justification == d.link.justification
+                        && s.link.set_by == d.link.set_by;
+
+                    if agree {
+                        edges.push(FlowEdge {
+                            src,
+                            dst,
+                            label,
+                            quantum: s.link.quantum,
+                            probability: s.link.probability,
+                            effect: s.link.effect,
+                            justification: s.link.justification.clone(),
+                            set_by: s.link.set_by,
+                        });
+                    } else {
+                        // Disagreement: from-node (src) wins; warning emitted for dst-node (dst)
+                        edges.push(FlowEdge {
+                            src: src.clone(),
+                            dst: dst.clone(),
+                            label,
+                            quantum: s.link.quantum,
+                            probability: s.link.probability,
+                            effect: s.link.effect,
+                            justification: s.link.justification.clone(),
+                            set_by: s.link.set_by,
+                        });
+                        warnings.push((
+                            dst.clone(),
+                            ParseWarning {
+                                field: "links".to_string(),
+                                message: format!(
+                                    "duplicate link declaration disagreement between {} and {} for label {:?}; entry on from-node {} wins",
+                                    src, dst, label, src
+                                ),
+                            },
+                        ));
+                    }
+                }
+                (Some(s), None) => {
+                    edges.push(FlowEdge {
+                        src,
+                        dst,
+                        label,
+                        quantum: s.link.quantum,
+                        probability: s.link.probability,
+                        effect: s.link.effect,
+                        justification: s.link.justification.clone(),
+                        set_by: s.link.set_by,
+                    });
+                }
+                (None, Some(d)) => {
+                    edges.push(FlowEdge {
+                        src,
+                        dst,
+                        label,
+                        quantum: d.link.quantum,
+                        probability: d.link.probability,
+                        effect: d.link.effect,
+                        justification: d.link.justification.clone(),
+                        set_by: d.link.set_by,
+                    });
+                }
+                (None, None) => unreachable!(),
+            }
+        }
+    }
+
+    edges.sort_by(|a, b| {
+        (&a.src, &a.dst, a.label.as_str()).cmp(&(&b.src, &b.dst, b.label.as_str()))
+    });
+    warnings
+        .sort_by(|a, b| (&a.0, &a.1.field, &a.1.message).cmp(&(&b.0, &b.1.field, &b.1.message)));
+
+    (edges, warnings)
+}
+
+/// Build a `FlowInput` from parsed `GraphNode`s and resolved flow edges (pkb-flow-engine §3.1, R1).
+pub fn build_flow_input(nodes: &[GraphNode]) -> crate::flow::FlowInput {
+    let mut flow_input = crate::flow::FlowInput::new();
+    for node in nodes {
+        let state = crate::flow::status_to_flow_state(node.status.as_deref());
+        flow_input.add_node(node.id.clone(), state, node.worth);
+    }
+    let (resolved_edges, _) = resolve_flow_edges_from_nodes(nodes);
+    for e in resolved_edges {
+        flow_input.add_edge(crate::flow::FlowEdge {
+            src: e.src,
+            dst: e.dst,
+            label: e.label.as_str().to_string(),
+            quantum: e.quantum,
+            probability: e.probability,
+            effect: match e.effect {
+                crate::graph::LinkEffect::Helps => crate::flow::FlowEffect::Helps,
+                crate::graph::LinkEffect::Harms => crate::flow::FlowEffect::Harms,
+            },
+            unvalued: false,
+        });
+    }
+    flow_input
+}
+
 /// Compute inverse relationships on nodes from resolved edges.
 ///
 /// For each DependsOn edge (source depends on target):
@@ -2745,6 +3334,18 @@ fn compute_inverses(
         for c in node.closes.iter_mut() {
             if let Some(target_id) = graph::resolve_ref(c, id_map, path_to_id) {
                 *c = target_id;
+            }
+        }
+        for link in node.links.iter_mut() {
+            if let Some(ref mut to_id) = link.to {
+                if let Some(target_id) = graph::resolve_ref(to_id, id_map, path_to_id) {
+                    *to_id = target_id;
+                }
+            }
+            if let Some(ref mut from_id) = link.from {
+                if let Some(target_id) = graph::resolve_ref(from_id, id_map, path_to_id) {
+                    *from_id = target_id;
+                }
             }
         }
     }
@@ -4079,18 +4680,17 @@ const K_VALUE_LINEAGE: f64 = 10000.0;
 /// (`standing_weight: None`) still contributes nothing, so this is Zero
 /// Defaults / Zero Inference, not a relaxed default.
 ///
-/// **One hop from the target, then down to the nearest ready leaf.** The
-/// pricing walk itself is one hop: it reads each node's own `contributes_to`
-/// edges directly and does not chain transitively through a contributor's
-/// own further `contributes_to` edges (a contributor of a contributor of a
-/// priced target earns nothing unless it also has a direct edge). But the
-/// edge-holder does not necessarily keep the resulting value for itself: if
-/// the edge-holder is a container (has open children), the value is instead
-/// pushed down to its nearest ready, unblocked leaf descendant (Nic,
-/// 2026-09-12, mem_537e44a9 "Verdict: value flow to children" — see the
-/// conduit pass at the end of this function). This is still a local
-/// per-node scan (one `contributes_to` read plus one `parent`-chain walk
-/// per node), not a new whole-graph cone-walk mechanism.
+/// **One hop from the target, then shared down the tree.** The pricing
+/// walk itself is one hop: it reads each node's own `contributes_to` edges
+/// directly and does not chain transitively through a contributor's own
+/// further `contributes_to` edges (a contributor of a contributor of a
+/// priced target earns nothing unless it also has a direct edge). Only an
+/// eligible leaf (actionable, open, unblocked, no open actionable child;
+/// specs/ranking.md §4.11a) keeps a nonzero value. Any other edge-holder's
+/// raw value is split equally among its live children at each level down
+/// to the eligible leaves beneath it (§4.11b), so the shares one holder
+/// delivers sum to its raw value. A leaf takes the max share any single
+/// holder gives it; its own direct edge is never divided.
 ///
 /// **Sibling-contributor semantics (outcome 6):** independent and additive.
 /// Multiple nodes contributing to the same target are each scored off their
@@ -4147,15 +4747,16 @@ fn compute_value_lineage(nodes: &mut [GraphNode]) {
         }
     }
 
-    // Conduit pass (outcome 5, mem_fix_value_flows_to_ready_leaves): a
-    // priced edge held by a container (`!leaf`, i.e. it has children) does
-    // not land on the container. "A target's weight lands on the ready,
-    // unblocked leaves that advance it -- never on the container, never on
-    // anything itself blocked" (Nic, 2026-09-12, mem_537e44a9 "Verdict:
-    // value flow to children"). This replaces the previous strict one-hop
-    // reading with "one hop from the edge-holder, then down to the nearest
-    // ready/unblocked leaf beneath it" -- still a local scan (walk `parent`
-    // to the root once per node), not a new whole-graph cone walk.
+    // Conduit pass (specs/ranking.md §4.11a-b, mem_c07240b6): only an
+    // eligible leaf holds value. Every other edge-holder's raw value is
+    // zeroed on it and *shared* down the tree -- divided equally among its
+    // live children at each level -- to the eligible leaves beneath it. It
+    // is never copied whole onto each of them: one priced edge copied onto
+    // every ready leaf under its holder was the 117-way tie at 2,975 the
+    // overwhelm dashboard showed as "almost everything high priority". A
+    // leaf takes the max share any one edge-holder gives it (nested holders
+    // concentrate, they do not double-count); its own direct edge is never
+    // divided.
     if !standing_weights.is_empty() {
         let id_to_idx: HashMap<String, usize> = nodes
             .iter()
@@ -4165,49 +4766,89 @@ fn compute_value_lineage(nodes: &mut [GraphNode]) {
         let is_blocked = compute_effectively_blocked(nodes, &id_to_idx);
         let raw_lineage = lineage.clone();
 
-        for i in 0..nodes.len() {
-            // See the equivalent comment in `compute_urgency`'s conduit
-            // pass: read `children` directly rather than the cached `leaf`
-            // flag so this stays correct when exercised directly in tests
-            // against hand-built `GraphNode`s (where `leaf` was never set
-            // by the full build pipeline's `compute_inverses`).
-            if !nodes[i].children.is_empty() {
-                lineage[i] = 0.0; // container: conduit, does not compete
-                continue;
-            }
-            if graph::is_completed(nodes[i].status.as_deref()) || is_blocked[i] {
-                // Conduit gate: a blocked/completed leaf is itself a
-                // conduit, not a competitor (doctrine: "never on anything
-                // itself blocked"). Zero the leaf's OWN direct-edge value
-                // (computed above, before this pass ran) — not just skip
-                // inheriting from an ancestor. Without this, a blocked node
-                // holding its own priced `contributes_to` edge kept full
-                // credit for work it cannot currently advance.
-                lineage[i] = 0.0;
-                continue;
-            }
-
-            let mut best = raw_lineage[i];
-            let mut current = nodes[i].parent.clone();
-            let mut climbed: HashSet<usize> = HashSet::new();
-            let mut depth = 0usize;
-            while let Some(pid) = current {
-                if depth >= MAX_CONE_DEPTH {
-                    break;
-                }
-                let Some(&pidx) = id_to_idx.get(&pid) else {
-                    break;
+        // §4.11a (1)+(2): actionable type, not completed. Untyped nodes
+        // default to actionable, as everywhere else in the engine.
+        let open_actionable: Vec<bool> = nodes
+            .iter()
+            .map(|n| {
+                let actionable = match n.node_type.as_deref() {
+                    Some(t) => ACTIONABLE_TYPES.contains(&t),
+                    None => true,
                 };
-                if !climbed.insert(pidx) {
-                    break; // cycle guard
-                }
-                if raw_lineage[pidx] > best {
-                    best = raw_lineage[pidx];
-                }
-                current = nodes[pidx].parent.clone();
-                depth += 1;
+                actionable && !graph::is_completed(n.status.as_deref())
+            })
+            .collect();
+        // Open actionable children only: the walk descends through these,
+        // and a node with none of them is a leaf (§4.11a (4)). Reading
+        // `children` directly (not the cached `leaf` flag) keeps this
+        // correct against hand-built `GraphNode`s in tests.
+        let open_children: Vec<Vec<usize>> = nodes
+            .iter()
+            .map(|n| {
+                n.children
+                    .iter()
+                    .filter_map(|c| id_to_idx.get(c).copied())
+                    .filter(|&c| open_actionable[c])
+                    .collect()
+            })
+            .collect();
+        let eligible: Vec<bool> = (0..nodes.len())
+            .map(|i| open_actionable[i] && !is_blocked[i] && open_children[i].is_empty())
+            .collect();
+
+        // live(x): x is an eligible leaf, or has one beneath it (§4.11b).
+        // Computed bottom-up from eligible leaves without depth cap.
+        let mut live: Vec<bool> = eligible.clone();
+        let mut open_parents: Vec<Vec<usize>> = vec![Vec::new(); nodes.len()];
+        for (p, children) in open_children.iter().enumerate() {
+            for &c in children {
+                open_parents[c].push(p);
             }
-            lineage[i] = best;
+        }
+        let mut queue: Vec<usize> = (0..nodes.len()).filter(|&i| eligible[i]).collect();
+        while let Some(curr) = queue.pop() {
+            for &p in &open_parents[curr] {
+                if !live[p] {
+                    live[p] = true;
+                    queue.push(p);
+                }
+            }
+        }
+
+        for (i, v) in lineage.iter_mut().enumerate() {
+            *v = if eligible[i] { raw_lineage[i] } else { 0.0 };
+        }
+
+        for h in 0..nodes.len() {
+            if raw_lineage[h] <= 0.0 || eligible[h] {
+                continue;
+            }
+            // Tree split (§4.11b): share(h, c) = share(h, p) / |live(p)|.
+            let mut stack: Vec<(usize, f64)> = vec![(h, raw_lineage[h])];
+            let mut visited: HashSet<usize> = HashSet::new();
+            while let Some((p, share)) = stack.pop() {
+                if !visited.insert(p) {
+                    continue; // cycle guard
+                }
+                if eligible[p] {
+                    if share > lineage[p] {
+                        lineage[p] = share;
+                    }
+                    continue;
+                }
+                let live_children: Vec<usize> = open_children[p]
+                    .iter()
+                    .copied()
+                    .filter(|&c| live[c])
+                    .collect();
+                if live_children.is_empty() {
+                    continue; // no eligible leaf yet: nobody holds the value
+                }
+                let each = share / live_children.len() as f64;
+                for c in live_children {
+                    stack.push((c, each));
+                }
+            }
         }
     }
 
@@ -8088,6 +8729,8 @@ mod tests {
             brier_history: Vec::new(),
             last_interacted: None,
             anomaly_flag: false,
+            quantum: None,
+            set_by: None,
         }
     }
 
@@ -8421,6 +9064,379 @@ mod tests {
             a, b,
             "sibling contributors to the same target must each receive full, independent \
              credit -- the presence of another contributor must not reduce either one's"
+        );
+    }
+
+    // ── value_lineage tree split: specs/ranking.md §4.11d regression
+    // properties, one test each (mem_c07240b6). Fixture prices mirror the
+    // live failure: a `Probable` (0.85) edge to a 0.35 target is 2975.
+
+    fn vl_node(id: &str, node_type: &str, parent: Option<&str>, children: &[&str]) -> GraphNode {
+        GraphNode {
+            id: id.to_string(),
+            node_type: Some(node_type.to_string()),
+            status: Some("ready".to_string()),
+            parent: parent.map(str::to_string),
+            children: children.iter().map(|c| c.to_string()).collect(),
+            ..Default::default()
+        }
+    }
+
+    fn vl_target(id: &str, standing_weight: f64) -> GraphNode {
+        GraphNode {
+            id: id.to_string(),
+            node_type: Some("target".to_string()),
+            status: Some("active".to_string()),
+            standing_weight: Some(standing_weight),
+            ..Default::default()
+        }
+    }
+
+    /// A holder `epic` with a `Probable` edge to a 0.35 target (raw 2975)
+    /// and `n` ready task children `leaf-0..n`.
+    fn vl_flat_epic(n: usize) -> Vec<GraphNode> {
+        let ids: Vec<String> = (0..n).map(|i| format!("leaf-{i}")).collect();
+        let refs: Vec<&str> = ids.iter().map(String::as_str).collect();
+        let mut epic = vl_node("epic", "task", None, &refs);
+        epic.contributes_to = vec![ct_edge("targ", "Probable")];
+        let mut nodes = vec![vl_target("targ", 0.35), epic];
+        nodes.extend(ids.iter().map(|id| vl_node(id, "task", Some("epic"), &[])));
+        nodes
+    }
+
+    fn vl_of(nodes: &[GraphNode], id: &str) -> f64 {
+        nodes.iter().find(|n| n.id == id).unwrap().value_lineage
+    }
+
+    fn vl_total(nodes: &[GraphNode]) -> f64 {
+        nodes.iter().map(|n| n.value_lineage).sum()
+    }
+
+    const VL_RAW_2975: f64 = 0.85 * 0.35 * K_VALUE_LINEAGE;
+
+    /// §4.11d (1) Conservation: the shares one edge-holder delivers sum to
+    /// exactly its raw value when it has an eligible leaf, and to nothing
+    /// (never more) when it has none. Per level: `a`, `b` and the live
+    /// sub-epic `sub` each get a third; `sub`'s three leaves a ninth each;
+    /// the blocked child `c` is not live and takes no slice.
+    #[test]
+    fn test_value_lineage_conservation_shares_sum_to_raw() {
+        let mut epic = vl_node("epic", "task", None, &["a", "b", "c", "sub"]);
+        epic.contributes_to = vec![ct_edge("targ", "Probable")];
+        let mut c = vl_node("c", "task", Some("epic"), &[]);
+        c.depends_on = vec!["unmet".to_string()];
+        let mut lonely = vl_node("lonely-holder", "task", None, &["lonely-blocked"]);
+        lonely.contributes_to = vec![ct_edge("targ", "Probable")];
+        let mut lonely_blocked = vl_node("lonely-blocked", "task", Some("lonely-holder"), &[]);
+        lonely_blocked.depends_on = vec!["unmet".to_string()];
+        let mut nodes = vec![
+            vl_target("targ", 0.35),
+            epic,
+            vl_node("a", "task", Some("epic"), &[]),
+            vl_node("b", "task", Some("epic"), &[]),
+            c,
+            vl_node("sub", "task", Some("epic"), &["s1", "s2", "s3"]),
+            vl_node("s1", "task", Some("sub"), &[]),
+            vl_node("s2", "task", Some("sub"), &[]),
+            vl_node("s3", "task", Some("sub"), &[]),
+            lonely,
+            lonely_blocked,
+        ];
+        compute_value_lineage(&mut nodes);
+
+        let delivered: f64 = ["a", "b", "c", "sub", "s1", "s2", "s3", "epic"]
+            .iter()
+            .map(|id| vl_of(&nodes, id))
+            .sum();
+        assert!(
+            (delivered - VL_RAW_2975).abs() < 1e-6,
+            "shares from one holder must sum to exactly raw(h) = {VL_RAW_2975}, got {delivered}"
+        );
+        assert!((vl_of(&nodes, "a") - VL_RAW_2975 / 3.0).abs() < 1e-6);
+        assert!((vl_of(&nodes, "s1") - VL_RAW_2975 / 9.0).abs() < 1e-6);
+        assert_eq!(vl_of(&nodes, "c"), 0.0, "blocked child takes no slice");
+        assert_eq!(
+            vl_of(&nodes, "lonely-holder") + vl_of(&nodes, "lonely-blocked"),
+            0.0,
+            "a holder with no eligible leaf delivers nothing until one becomes ready"
+        );
+    }
+
+    /// §4.11d (2) Bounded ties: for any threshold T, at most ⌊raw(h)/T⌋
+    /// leaves receive ≥ T from one holder. The live failure: one 2975
+    /// holder over 117 ready leaves put all 117 at exactly 2975; now at most
+    /// 2 can reach 1000, and the 117-way tie sits at 2975/117 ≈ 25.
+    #[test]
+    fn test_value_lineage_bounded_ties_one_holder_cannot_plateau() {
+        let mut nodes = vl_flat_epic(117);
+        compute_value_lineage(&mut nodes);
+        let leaves: Vec<f64> = (0..117)
+            .map(|i| vl_of(&nodes, &format!("leaf-{i}")))
+            .collect();
+        for t in [1000.0, 100.0, 26.0, 25.0, 1.0] {
+            let at_or_above = leaves.iter().filter(|&&v| v >= t).count();
+            let bound = (VL_RAW_2975 / t).floor() as usize;
+            assert!(
+                at_or_above <= bound,
+                "at most ⌊{VL_RAW_2975}/{t}⌋ = {bound} leaves may reach {t}; got {at_or_above}"
+            );
+        }
+        let max = leaves.iter().cloned().fold(0.0_f64, f64::max);
+        assert!(
+            max <= VL_RAW_2975 / 117.0 + 1e-6,
+            "117 leaves tied on one holder must each sit at ≤ raw/117, got {max}"
+        );
+    }
+
+    /// §4.11d (3) Decomposition neutrality: splitting an eligible leaf into
+    /// k actionable children does not raise the total value delivered.
+    #[test]
+    fn test_value_lineage_decomposition_neutral() {
+        let mut before = vl_flat_epic(2);
+        compute_value_lineage(&mut before);
+
+        let mut after = vl_flat_epic(2);
+        after
+            .iter_mut()
+            .find(|n| n.id == "leaf-0")
+            .unwrap()
+            .children = vec!["k1".to_string(), "k2".to_string(), "k3".to_string()];
+        for k in ["k1", "k2", "k3"] {
+            after.push(vl_node(k, "task", Some("leaf-0"), &[]));
+        }
+        compute_value_lineage(&mut after);
+
+        let (tb, ta) = (vl_total(&before), vl_total(&after));
+        assert!(
+            ta <= tb + 1e-6,
+            "decomposing leaf-0 into 3 children must not raise total delivered value: \
+             before {tb}, after {ta}"
+        );
+        assert!(
+            (vl_of(&after, "leaf-1") - vl_of(&before, "leaf-1")).abs() < 1e-6,
+            "the undecomposed sibling keeps its half: the split is per level, not per leaf"
+        );
+    }
+
+    /// §4.11d (4) Finishing concentrates: completing or cancelling an
+    /// eligible leaf never lowers a remaining leaf's share from the same
+    /// holder, and the value it held moves to the leaves still open — so
+    /// the last open leaf of a priced epic carries the whole price.
+    #[test]
+    fn test_value_lineage_finishing_concentrates() {
+        let mut nodes = vl_flat_epic(4);
+        compute_value_lineage(&mut nodes);
+        let before = vl_of(&nodes, "leaf-0");
+
+        nodes.iter_mut().find(|n| n.id == "leaf-3").unwrap().status = Some("done".to_string());
+        compute_value_lineage(&mut nodes);
+        let after_one = vl_of(&nodes, "leaf-0");
+        assert!(
+            after_one >= before,
+            "finishing must never lower a sibling's share"
+        );
+        assert!(
+            after_one > before + 1e-6,
+            "finishing leaf-3 must concentrate its share on the open leaves: \
+             before {before}, after {after_one}"
+        );
+
+        for id in ["leaf-1", "leaf-2"] {
+            nodes.iter_mut().find(|n| n.id == id).unwrap().status = Some("cancelled".to_string());
+        }
+        compute_value_lineage(&mut nodes);
+        assert!(
+            (vl_of(&nodes, "leaf-0") - VL_RAW_2975).abs() < 1e-6,
+            "the last open leaf carries the holder's whole raw value, got {}",
+            vl_of(&nodes, "leaf-0")
+        );
+    }
+
+    /// §4.11d (5) Eligibility: containers, blocked or completed nodes and
+    /// non-actionable nodes hold 0; a task whose only children are completed
+    /// or non-actionable is an eligible leaf and takes its share.
+    #[test]
+    fn test_value_lineage_eligibility() {
+        let mut epic = vl_node(
+            "epic",
+            "task",
+            None,
+            &[
+                "note-leaf",
+                "all-done",
+                "has-note",
+                "blocked",
+                "done",
+                "container",
+            ],
+        );
+        epic.contributes_to = vec![ct_edge("targ", "Probable")];
+        let mut blocked = vl_node("blocked", "task", Some("epic"), &[]);
+        blocked.depends_on = vec!["unmet".to_string()];
+        let mut done = vl_node("done", "task", Some("epic"), &[]);
+        done.status = Some("done".to_string());
+        let mut done_child = vl_node("done-child", "task", Some("all-done"), &[]);
+        done_child.status = Some("done".to_string());
+        let mut nodes = vec![
+            vl_target("targ", 0.35),
+            epic,
+            vl_node("note-leaf", "note", Some("epic"), &[]),
+            vl_node("all-done", "task", Some("epic"), &["done-child"]),
+            done_child,
+            vl_node("has-note", "task", Some("epic"), &["a-note"]),
+            vl_node("a-note", "knowledge", Some("has-note"), &[]),
+            blocked,
+            done,
+            vl_node("container", "task", Some("epic"), &["inner"]),
+            vl_node("inner", "task", Some("container"), &[]),
+        ];
+        compute_value_lineage(&mut nodes);
+
+        for id in [
+            "epic",
+            "container",
+            "note-leaf",
+            "a-note",
+            "blocked",
+            "done",
+            "done-child",
+        ] {
+            assert_eq!(
+                vl_of(&nodes, id),
+                0.0,
+                "{id} is not an eligible leaf and must hold 0"
+            );
+        }
+        // Live children of `epic`: all-done, has-note, container -> a third each.
+        let third = VL_RAW_2975 / 3.0;
+        for id in ["all-done", "has-note", "inner"] {
+            assert!(
+                (vl_of(&nodes, id) - third).abs() < 1e-6,
+                "{id} is an eligible leaf and must take its share {third}, got {}",
+                vl_of(&nodes, id)
+            );
+        }
+    }
+
+    /// §4.11d (6) Direct edges survive: an eligible leaf with its own priced
+    /// edge keeps at least its own raw value, undivided — even under a
+    /// holder whose split share is smaller, and even when the leaf has only
+    /// completed or non-actionable children.
+    #[test]
+    fn test_value_lineage_direct_edge_survives() {
+        let siblings: Vec<String> = (0..9).map(|i| format!("sib-{i}")).collect();
+        let mut child_ids: Vec<&str> = siblings.iter().map(String::as_str).collect();
+        child_ids.push("direct");
+        let mut epic = vl_node("epic", "task", None, &child_ids);
+        epic.contributes_to = vec![ct_edge("targ-big", "Certain")]; // raw 10000, 1000 per child
+        let mut direct = vl_node(
+            "direct",
+            "task",
+            Some("epic"),
+            &["direct-done", "direct-note"],
+        );
+        direct.contributes_to = vec![ct_edge("targ", "Probable")]; // raw 2975
+        let mut direct_done = vl_node("direct-done", "task", Some("direct"), &[]);
+        direct_done.status = Some("done".to_string());
+        let mut nodes = vec![
+            vl_target("targ", 0.35),
+            vl_target("targ-big", 1.0),
+            epic,
+            direct,
+            direct_done,
+            vl_node("direct-note", "note", Some("direct"), &[]),
+        ];
+        nodes.extend(
+            siblings
+                .iter()
+                .map(|id| vl_node(id, "task", Some("epic"), &[])),
+        );
+        compute_value_lineage(&mut nodes);
+
+        let v = vl_of(&nodes, "direct");
+        assert!(
+            v >= VL_RAW_2975 - 1e-6,
+            "an eligible leaf's own direct edge ({VL_RAW_2975}) must survive undivided, got {v}"
+        );
+        assert!(
+            (vl_of(&nodes, "sib-0") - 1000.0).abs() < 1e-6,
+            "siblings take the holder's per-level share, got {}",
+            vl_of(&nodes, "sib-0")
+        );
+    }
+
+    /// §4.11d (1) Deep tree value conservation: one holder over a chain deeper
+    /// than MAX_CONE_DEPTH (e.g. 23 levels) delivers its full raw value to the leaf.
+    #[test]
+    fn test_value_lineage_deep_chain_conserves_value_past_max_cone_depth() {
+        let chain_len = 23;
+        let mut epic = vl_node("epic", "task", None, &["node-0"]);
+        epic.contributes_to = vec![ct_edge("targ", "Probable")]; // raw 2975
+        let mut nodes = vec![vl_target("targ", 0.35), epic];
+        for i in 0..chain_len {
+            let id = format!("node-{i}");
+            let parent = if i == 0 {
+                "epic".to_string()
+            } else {
+                format!("node-{}", i - 1)
+            };
+            let children: Vec<String> = if i + 1 < chain_len {
+                vec![format!("node-{}", i + 1)]
+            } else {
+                vec![]
+            };
+            let child_refs: Vec<&str> = children.iter().map(String::as_str).collect();
+            nodes.push(vl_node(&id, "task", Some(&parent), &child_refs));
+        }
+        compute_value_lineage(&mut nodes);
+
+        let leaf_id = format!("node-{}", chain_len - 1);
+        let delivered = vl_of(&nodes, &leaf_id);
+        assert!(
+            (delivered - VL_RAW_2975).abs() < 1e-6,
+            "one holder over a 23-deep chain must deliver full raw value {VL_RAW_2975}, got {delivered}"
+        );
+    }
+
+    /// §4.11d (1) Outer priced root over a 25-deep chain must not zero an inner
+    /// priced holder's leaf due to depth-cap truncation or poisoned memoisation.
+    #[test]
+    fn test_value_lineage_outer_priced_root_does_not_zero_inner_priced_holder_leaf() {
+        let chain_len = 25;
+        let mut outer = vl_node("outer", "task", None, &["node-0"]);
+        outer.contributes_to = vec![ct_edge("targ-outer", "Probable")]; // raw 2975
+        let mut nodes = vec![
+            vl_target("targ-outer", 0.35),
+            vl_target("targ-inner", 0.50),
+            outer,
+        ];
+        for i in 0..chain_len {
+            let id = format!("node-{i}");
+            let parent = if i == 0 {
+                "outer".to_string()
+            } else {
+                format!("node-{}", i - 1)
+            };
+            let children: Vec<String> = if i + 1 < chain_len {
+                vec![format!("node-{}", i + 1)]
+            } else {
+                vec![]
+            };
+            let child_refs: Vec<&str> = children.iter().map(String::as_str).collect();
+            let mut n = vl_node(&id, "task", Some(&parent), &child_refs);
+            if i == 15 {
+                // inner priced holder at depth 15
+                n.contributes_to = vec![ct_edge("targ-inner", "Certain")]; // raw 5000 (1.0 * 0.50 * 10000)
+            }
+            nodes.push(n);
+        }
+        compute_value_lineage(&mut nodes);
+
+        let leaf_id = format!("node-{}", chain_len - 1);
+        let delivered = vl_of(&nodes, &leaf_id);
+        assert!(
+            (delivered - 5000.0).abs() < 1e-6,
+            "outer root must not zero inner holder leaf value (expected 5000.0), got {delivered}"
         );
     }
 
@@ -9959,6 +10975,8 @@ mod tests {
             brier_history: Vec::new(),
             last_interacted: None,
             anomaly_flag: false,
+            quantum: None,
+            set_by: None,
         }];
         let mut nodes = vec![target.clone(), contributor];
 

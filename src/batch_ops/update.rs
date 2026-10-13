@@ -124,6 +124,33 @@ pub fn batch_update(
                             }
                         }
                     }
+                    "links" => {
+                        if let Err(e) = crate::graph::validate_links_value(value) {
+                            summary.errors.push(TaskError {
+                                id: "".to_string(),
+                                error: e,
+                            });
+                            return summary;
+                        }
+                    }
+                    "worth" => {
+                        if let Err(e) = crate::graph::validate_worth_value(value) {
+                            summary.errors.push(TaskError {
+                                id: "".to_string(),
+                                error: e,
+                            });
+                            return summary;
+                        }
+                    }
+                    "deadline_class" => {
+                        if let Err(e) = crate::graph::validate_deadline_class_value(value) {
+                            summary.errors.push(TaskError {
+                                id: "".to_string(),
+                                error: e,
+                            });
+                            return summary;
+                        }
+                    }
                     _ => {}
                 }
             }

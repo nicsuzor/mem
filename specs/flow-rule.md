@@ -2,9 +2,10 @@
 id: flow-rule
 title: "Flow rule and edge model"
 type: spec
-status: draft
+status: settled
 created: 2026-10-05
-task: epic_a463f704
+settled_at: 2026-10-12
+task: aops_bed11e87
 epic: aops_ee1257cb
 brief: spec_866ee53d
 tags:
@@ -19,20 +20,20 @@ tags:
 
 **Home:** `specs/flow-rule.md` in the `nicsuzor/mem` repository, with its reference scripts in `specs/flow-rule/`.
 
-**Status: draft for Nic's decision.** This spec proposes the rule that replaces the ranking maths in [`ranking.md`](ranking.md). Until Nic approves it, `ranking.md` remains the description of what ships. It specifies and does not implement. The numbers in it come from the reference calculator in [`flow-rule/`](flow-rule/), which is a checking aid and not the engine.
+**Status: settled (points 1–30 of spec_866ee53d).** This canonical specification defines the flow rule, edge model, and mathematical physics replacing the legacy ranking system in [`ranking.md`](ranking.md). It specifies the flow model across repositories and governs the engine build (`nicsuzor/mem`), dashboard display (`nicsuzor/overwhelm-dashboard`), and agent workflows (`nicsuzor/academicOps`). The numbers in it come from the reference calculator in [`flow-rule/`](flow-rule/), which is a checking aid and oracle for the engine.
 
 Traceability tags used throughout:
 
-- **S1–S16:** settled points in the brief (`spec_866ee53d`, "Settled by Nic").
+- **S1–S30:** settled points in the brief (`spec_866ee53d`, "Settled by Nic (2026-10-04 to 2026-10-12)").
 - **I1–I17:** the brief's invariants (section C).
-- **U1–U20:** user stories in `pkb-arch-framework`.
-- **Q1–Q20:** questions for Nic (section 15), listed there in order of consequence, not by number.
+- **U1–U20:** user stories in `kb_weighting_user_stories_test_cases` (calibration cases U1–U6) and `pkb-arch-framework` (formal weighting stories U1–U20).
+- **Q1–Q31:** architectural decisions settled in `spec_866ee53d` and recorded in section 15.
 
 ---
 
 ## 0. Summary for Nic
 
-**What changes.** Two figures replace today's tuple of eleven terms: what you would fail to gain, and what loss you would fail to avert, if a piece of work were never done. They are never netted into one number. You price the targets. Every link says how much of the thing it points at the work delivers (its *quantum*) and, optionally, how likely that is (its *probability*, default 1.00). Worth flows backwards along links from the targets to the work.
+**What changes.** Two figures replace today's tuple of eleven terms: what you would fail to gain, and what loss you would fail to avert, if a piece of work were never done. They are never netted into one number. Targets are priced on an open-ended log scale: agents make educated price guesses and you review them (S14, S26). Every link says how much of the thing it points at the work delivers (its *quantum*) and how likely that is (its *probability*, default 1.00). Worth flows backwards along links from targets to work, chaining probabilities by multiplication along paths (S2, S25).
 
 **The rule in one line.** A task is worth what you would lose if it were never done, assuming everything else gets done.
 
@@ -40,24 +41,23 @@ Traceability tags used throughout:
 
 - **Prerequisites and finishing steps.** Two prerequisites of the same thing each carry its full worth, because without either one it fails (S10, U17). The last small step before finished work goes out carries the whole worth (S9, U16).
 - **Blocked work.** Blocked work keeps its worth and passes it to whatever unblocks it (S4, U3).
-- **Shared foundations.** Work serving several targets adds them up. A target reached by several routes is counted once (U11).
+- **Shared foundations.** Work serving several targets adds them up. A target reached by several routes is counted once (U11, S25).
 - **Loops.** A loop can add worth but cannot run away (S8, S15). A loop where every link is full strength is rejected as a modelling error, as cycles of hard dependencies are today.
 - **Targets you want to avoid.** You price them as negative. Work that protects against one shows a positive *loss averted*, kept beside *gain* and never netted against it (S12, S16, U13).
+- **Moonshots and power-law returns.** Targets are priced on an open-ended log scale, allowing 10x–100x scientific outcomes to compete rationally with routine incremental wins without artificial distortions (S26, S28).
+- **Capital stocks as hubs.** Reputation, track record, and collaborator networks are hub targets; routine work feeds them at high probability, and moonshots draw from them (S27).
+- **Do-next list is a draw, not an argmax.** The list samples work with a high base exploitation rate and non-zero exploration weighted by uncertainty (Thompson-style), protecting attention while exposing tail opportunities (S29).
 - **Unlinked work stays at zero.** Anything not linked to a priced target is worth exactly zero. On today's graph that is 1,255 of 1,502 open items (U7, U8, U9).
-- **What is not in the maths.** Dates, deadline classes, effort, readiness, grouping and the order of the list are all decided after the maths and never change a number (S1, S5, S13).
+- **What is not in the maths.** Dates, deadline classes, effort, readiness, grouping, and the non-compensatory severity floor are all decided after or outside the maths and never change a flow number (S1, S5, S13, S24).
 
 **What it costs you:**
 
 1. Worths do not add up across tasks. Two prerequisites of a 1.0 target are each worth 1.0, so "the sum of open work" means nothing and the dashboard must not show it.
 2. Only 7 of your 26 targets are priced. Until the rest are, work for unpriced targets is worth zero, even work that today's ranking pushes up by severity, a stakeholder or a date. Example: `task_d5f610e6` is 9th today and 236th under this rule. A hard-deadline class brings it back to the top as its date nears, through the display rule, without touching its worth (section 7).
 3. Open decisions use one extra small rule, the value of finding out (section 6).
-4. You supply about 154 numbers before deadline classes: 19 target prices, 134 migrated link values to confirm, and one default for parent links (section 8). Agents propose them in batches of fifty.
+4. You supply about 153 numbers before deadline classes: 19 target prices, 134 migrated link values to confirm (section 8). Parent links and default quantum are settled (Q1, Q2). Agents propose them in batches of fifty.
 
-**Decisions waiting on you:** thirty-one questions in section 15, ordered by consequence. Every choice the brief left open is listed; none is decided silently. The first three matter most:
-
-- **Q1.** Do containment (parent) links carry quantum 1.0 or the default? This decides whether every open child of a priced project carries the project's full worth. On today's graph, 246 open items carry worth with parent links at 1.0, and 49 with them at zero.
-- **Q2.** Is the default quantum zero, or "very low" (0.05)? Almost no typed link is unvalued today, so this matters mostly for links added later. If wikilinks were also treated as links at 0.05, 604 items would come off zero instead of 246.
-- **Q3.** What do you rank by, given two figures that are never netted?
+**Settled design:** Section 15 documents all 31 architectural decisions settled by Nic (points 1–30 of `spec_866ee53d`). None is left open.
 
 ---
 
@@ -153,13 +153,13 @@ Gains toward positive targets and losses (whether averting negative targets, or 
 **Fixed point.**
 
 - **Helps-only systems.** The map is monotone, and knocking out $u$ can only lower values. A greatest fixed point exists (Tarski 1955). Iteration uses Gauss-Seidel sweeps with damping 1.0, converging rapidly in topological order.
-- **Full-strength loops are rejected.** A loop of open nodes in which the cycle product of edge strengths reaches 1.0 has no stable answer. Any loss collapses the whole loop. The rule rejects such loops (`SaturatedLoop`, `flow.py:179`, S15, A19). An isolated saturated loop or failure in one component does not abort the ranking of independent clean components.
+- **Full-strength loops are rejected.** A loop of open nodes in which the cycle product of edge strengths reaches 1.0 has no stable answer. Any loss collapses the whole loop. The rule rejects such loops (`saturated_loops`, `flow.py:208`, class `SaturatedLoop` at `:89`, S15, A19). An isolated saturated loop or failure in one component does not abort the ranking of independent clean components; nodes feeding a failed loop return `null` with the loop named (engine E3).
 - **Loops containing a harms edge.** The map is not monotone. Iteration uses synchronous (Jacobi) damped steps with damping 0.5 (Krasnosel'skii 1955; Mann 1953; Bauschke & Combettes 2017). Synchronous updates guarantee that mutual harm results are strictly symmetric and independent of node ID ordering.
-- **No fixed point within the iteration cap.** The run fails loudly (`NoConvergence`, `flow.py:155`) for the affected component, while unaffected components remain ranked.
+- **No fixed point within the iteration cap.** The run fails loudly (`NoConvergence`, class at `flow.py:85`, raised at `:158`, `:180`) for the affected component, while unaffected components remain ranked.
 
 The live graph converges for every node (I13). The worst live-shaped harmful loop, a pure negative-feedback loop at quantum 1, also converges (I16).
 
-**Reference implementation.** `worth_all`, `flow.py:175`; the fixed-point iteration, `_settle`, `flow.py:114`.
+**Reference implementation.** `worth_all`, `flow.py:216`; the fixed-point iteration, `_settle`, `flow.py:114`.
 
 **Properties the invariants rely on**, each checked by `invariants.py`:
 
@@ -167,6 +167,69 @@ The live graph converges for every node (I13). The worst live-shaped harmful loo
 - **(P2) Every route counts at least its own strength.** `δ_t(u) ≥` the strength of `u`'s strongest route to `t`, so no route is ever under-counted (I12).
 - **(P3) Loop-free combination is bounded.** Without loops, `δ_t(u) ≤ 1 − ∏(1 − route strength)` over `u`'s routes to `t`. Anything above that bound comes from a loop and is reported as loop reinforcement (I4, I12).
 - **(P4) No normalisation anywhere.** Adding or splitting a node changes no number outside its upstream (I2, I9).
+
+### 3.3. Route combination rule under multiplication (Invariants 3 and 12, S25)
+
+**Chaining along a single path.** Along any directed path $p = (e_1, e_2, \dots, e_k)$ from open work $u$ to target $t$, edge strengths chain strictly by multiplication:
+
+```text
+s_p = ∏_{e ∈ p} s_e = ∏_{e ∈ p} (quantum_e × probability_e)
+```
+
+This multiplicative chaining replaces calendar time discounting (S25; Kolmogorov 1933; Savage 1954): distance in uncertain steps stands in for calendar time (S5, S6, S13). A near-term task one step away at probability 0.90 naturally outranks a distant task five steps away at $0.90^5 \approx 0.59$, giving the Sarasvathy bird-in-hand preference without time-decay heuristics.
+
+**Combining several routes to one target.** When multiple independent directed routes $r_1, r_2, \dots, r_m$ lead from node $u$ to target $t$, their combination is governed by the knockout counterfactual ($\phi_e(y) = 1 - s_e(1 - y)$). Knocking out $u$ severs all routes originating at $u$ simultaneously. In the absence of loops, the loss of target realisation combines under independent failure (Noisy-OR / independent inhibitors; Pearl 1988, ch. 4):
+
+```text
+δ_t(u) = 1 − ∏_{j=1}^m (1 − s_{r_j})
+```
+
+**Consistency with Invariants 3 and 12:**
+
+- **Invariant 3 (Source counted once, multiple sources add):** For any collection of routes to a single target $t$, $\delta_t(u) \le 1.0$. If $u$ has even one full-strength route ($s_{r_1} = 1.0$), then $(1 - s_{r_1}) = 0$, so $\delta_t(u) = 1 - 0 = 1.0$. Having additional parallel routes to the same target can never inflate $\delta_t(u)$ beyond 1.0 or double-count the target's price ($|W_t|$). Conversely, when $u$ serves multiple distinct targets $t_1, t_2$, independent targets add linearly: $\text{gain}(u) = \sum_{t : W_t > 0} W_t \cdot \delta_t(u)$.
+- **Invariant 12 (Route-level explainability):** The share at stake on any node is strictly bounded between the strongest route and the combined loop-free routes:
+  $$\max_{j} s_{r_j} \le \delta_t(u) \le 1 - \prod_{j=1}^m (1 - s_{r_j})$$
+  Any excess above $1 - \prod_{j=1}^m (1 - s_{r_j})$ is strictly attributable to loop reinforcement, reported explicitly in the output contract as `loop_extra`.
+
+**Worked examples on real nodes from Nic's graph (reproducing `specs/flow-rule/invariants.py`):**
+
+1. *Invariant 3 worked example (`invariants.py:inv3`)*:
+   Node `proj-76fbc546` ("Kitchen renovation") serves target `targ_4e2cc92a` ("Functional home", priced +0.35) via two concurrent routes: a direct `serves` edge at quantum 1.0 ($s_1 = 1.0$), and an indirect route through its parent container at quantum 0.5 ($s_2 = 0.5$).
+   Under naive addition, this would yield $1.0 + 0.5 = 1.50$, over-allocating the target. Under the knockout flow rule:
+   $$\delta_{\text{targ\_4e2cc92a}}(\text{proj-76fbc546}) = 1 - (1 - 1.0)(1 - 0.5) = 1.000$$
+   The single target is counted exactly once at full share (1.0), not 1.5. Node `proj-76fbc546` also serves a second distinct target, `task_b3f01c80` (priced +0.60, $\delta = 1.0$).
+   Total gain adds across the two distinct targets:
+   $$\text{gain}(\text{proj-76fbc546}) = (0.60 \times 1.000) + (0.35 \times 1.000) = 0.950$$
+   The check passes with byte-level fidelity.
+
+2. *Invariant 12 worked example (`invariants.py:inv12`)*:
+   Across all 269 (node, target) pairs on the live graph fixture (`specs/flow-rule/fixtures/live-2026-10-05.json`):
+   - 0 pairs fall below their strongest route ($\min \text{error} = 0.0$);
+   - 0 pairs exceed their combined loop-free routes without a loop;
+   - 162 single-route pairs equal their route strength exactly;
+   - 106 multi-route pairs sit strictly in the interval $[\max s_r, 1 - \prod(1 - s_r)]$;
+   - Exactly 1 pair (`n_d663317dd7`, `targ-7d49f8a0`, share 0.9712 against 0.9449 combined routes) exceeds the combined routes by loop reinforcement, identified and reported as `loop_extra = 0.0263`.
+   - Node `admin-3e02c20b` generates the human-readable route explanation:
+     `"targ_4e2cc92a x 0.85 via admin-3e02c20b > proj-f8b942d5 > brain_bf2be9d8 > targ_4e2cc92a; task_b3f01c80 x 1.00 via admin-3e02c20b > proj-f8b942d5 > brain_bf2be9d8 > task_b3f01c80"`.
+
+### 3.4. Answers to Context questions
+
+1. **Who applies affordable loss:**
+   In Sarasvathy's (2001, 2008) effectuation framework, affordable loss is an operational decision rule where an actor caps acceptable downside risk rather than forecasting uncertain returns. In the PKB framework, affordable loss is applied by **agent logic** during planning, intake, and triage (`specs/workflows/graph-valuation.md`, `/ida:q`, `/ida:decompose`, `/ida:triage`, Pauli/Ida) and by **Nic directly** during review. It does **not** exist as a mathematical term inside the flow engine. An agent checks whether a task's potential failure cost (time, money, reputation, cognitive exhaustion) exceeds Nic's acceptable loss threshold; if it exceeds affordable loss, the task is rejected, paused, or reformulated as a cheap discriminating probe before entering the flow graph.
+
+2. **How decomposition probes connect to `settles` and to value of information:**
+   When an open design or strategic choice carries high uncertainty, causal execution commits heavy resources prematurely. Effectual planning instead emits a cheap discriminating experiment—a **decomposition probe** (`pkb-effectual-planning`, `pkb-bayesian-voi-uncertainty`, `kb-9230ba76`).
+   In the graph topology, an open decision node $D$ has competing `alternative` edges representing mutually exclusive options. The decomposition probe $u$ links to $D$ via a directed edge with label `settles`. The flow engine evaluates the Expected Value of Perfect Information (Howard 1966) at node $D$ (§6):
+   $$\text{EVPI}(D) = \mathbb{E}\left[\max(0, \max_i X_i w_i)\right] - \max(0, \max_i p_i w_i)$$
+   The probe $u$ receives settle worth $\text{settle\_worth}(u) = \text{quantum}(u \to D) \times \text{EVPI}(D)$, surfaced in the `decision_value` column. Under Point 29 (the do-next draw), exploration in the sampling policy is explicitly weighted by uncertainty about an item's worth (Thompson-style sampling), ensuring decomposition probes are drawn for execution when the value of resolving uncertainty is high.
+
+3. **The "opening futures" term:**
+   In real options literature (Bardhan et al.; Dixit & Pindyck 1994) and Sarasvathy's effectual means, foundational investments (platforms, toolchains, core research infrastructure) create options that unlock multiple emergent futures. Prior scoring architectures attempted to model this through an ad-hoc "options multiplier" or artificial "opening futures" score bonus. In this redesign, **no ad-hoc "opening futures" term exists or is needed**. Foundational investments and capital stocks (reputation, funding base, collaborator network, shared tooling) are modeled as **hub targets** (Point 27, S27). Every downstream opportunity, project, or moonshot links back to these hub targets as prerequisites. Because worth flows backward from priced targets and moonshots through these hubs, foundational work naturally accumulates value proportionally across all the futures it unlocks.
+
+4. **Citation of User Stories U1–U20:**
+   The user stories cited throughout this specification follow a two-tier structure:
+   - **U1–U6 (Core Ground-Truth Stories):** The six primary user stories and concrete calibration cases from Nic's live graph and mailbox documented in `[[kb_weighting_user_stories_test_cases]]` (U1 Triage Incoming Work, U2 Offer a Varied Menu When Stuck, U3 Untangle Dependencies, U4 React to Opportunities, U5 Protect the Frontier, U6 Model Fun).
+   - **U7–U20 (Derived Architectural Requirements):** The 14 formal weighting and ranking requirements synthesized in `[[pkb-arch-framework]]` under "User stories for weighting": U7 (Worthless vs worthwhile work / names alone add no worth), U8 (Age is not staleness / age carries no score), U9 (Unlinked work stays at zero), U10 (Adding opportunities dynamically changes only upstream), U11 (Shared foundations add across targets; single targets counted once), U12 (Decision value / EVPI for work that settles decisions), U13 (Loss aversion / restating negative targets), U14 (Hard deadlines surface in cliff lane), U15 (Fake/unclassed dates create zero pressure), U16 (Finishing steps carry full worth / benefit per effort), U17 (Parallel prerequisites each carry full worth), U18 (One-sentence route explanation contract), U19 (Ripeness / opportunities stop pulling when cancelled, never inferred), and U20 (Unpriced targets listed by linter, worth 0 and not inferred).
 
 ---
 
@@ -267,9 +330,9 @@ Worth of `S`, the work that would settle `D`. The options are worth 0.6 (p 0.4) 
 
 | Candidate | Theory | P (protects) | Q (gains and harms) | X (linked to nothing bad) |
 |---|---|---|---|---|
-| One net figure | expected value | 0.160 | 0.300 | 1.000 |
+| One net figure | expected value | 0.400 | 0.300 | 1.000 |
 | Two columns, occurrence form (harm happens unless a protection stops it) | layered defences (Reason 1990); the "Swiss cheese" model (Reason 2000) | (0, 0.400) alone; (0, 0.000) with a second, done, full protection | undefined: the form has no term for causes | (1.000, 0): no link to `H` |
-| **Two columns, avoidance form** | gains and losses kept apart (Kahneman & Tversky 1979); the same rule as a positive target | **(0, 0.160)** | **(0.600, −0.300)** | **(1.000, 0)** |
+| **Two columns, avoidance form** | gains and losses kept apart (Kahneman & Tversky 1979); the same rule as a positive target | **(0.000, 0.400)** | **(0.600, −0.300)** | **(1.000, 0)** |
 
 **Recommendation: two columns, avoidance form.**
 
@@ -294,6 +357,92 @@ Worth of `S`, the work that would settle `D`. The options are worth 0.6 (p 0.4) 
 - **Sorting needs a choice.** Ordering by two figures needs a rule (Q3).
 - **Negative feeds into negative.** Edges between two targets to avoid are read with both ends reversed. The effect is "helps", which is right: avoiding one helps avoid the other.
 
+### 4.5. Point 24: Non-compensatory floor outside maths, near-empty is healthy (S24)
+
+**The decision.** The lexicographic severity gate sits strictly outside the continuous mathematical flow and sampling policies. It operates as an existential circuit breaker surfacing must-do items (SEV4 / catastrophic ruin). A floor holding almost nothing is the intended, healthy baseline state of the system, not a defect or omission of the gate.
+
+**Rationale.** Existential survival—preventing termination of employment, bankruptcy, or legal jeopardy—is qualitatively distinct from maximizing expected scholarly impact or optimizing daily productivity. In continuous compensatory models, an acute catastrophic threat can be mathematically outweighed by accumulating enough routine positive points, or conversely, a high-severity penalty continuously dampens unrelated creative exploration. By placing the floor outside the maths as a binary circuit breaker, normal prioritisation remains unpolluted by existential anxiety during peacetime, while genuine crises immediately preempt attention. An audit of Nic's live graph (`kb-risk-thresholds-vs-value-modelling`, `kb_model_fidelity_before_formula`) confirmed that zero targets sat at SEV4: in peacetime, nothing is existential, which is the desired state.
+
+**Named theory:**
+- **Safety-First Portfolio Theory** (Roy 1952; Telser 1955): Hierarchical optimization where the probability of catastrophe $P(R \le d) \le \alpha$ must be satisficed before maximizing expected return.
+- **Preemptive / Lexicographic Goal Programming** (Charnes & Cooper 1961; Ijiri 1965): Non-Archimedean priority orderings where higher-order constraints strictly dominate lower-order objectives ($P_1 \gg P_2$).
+- **SRE Error Budget Theory** (Beyer, Jones, Petoff & Murphy 2016): Pure positive product innovation until service reliability bounds are breached; immediate emergency freeze upon budget exhaustion.
+
+### 4.6. Point 25: Odds live on edges into targets and chain by multiplication; no calendar discounting (S25)
+
+**The decision.** A task's worth is the target's price times the product of edge probabilities along its path to the target, replacing the legacy all-success baseline. Odds written as prose in task bodies move onto the edge into the target. There is no time discounting in the flow: distance in uncertain steps stands in for calendar time (S5, S6, S13). Nearly-finished work needs no special case: a short, high-probability path gives the Sarasvathy bird-in-hand preference.
+
+**Rationale.** Time discounting in human knowledge work is notoriously mischaracterized by exponential ($e^{-\rho t}$) or hyperbolic ($1/(1+kt)$) calendar curves. In academic research, opportunities do not decay with calendar days; they decay because intermediate execution steps fail or dependencies slip. Replacing calendar time discounting with multiplicative probability chaining along directed steps ($s = \prod \text{quantum} \times \text{probability}$) maps priority directly to execution risk. A task one step away at 90% certainty naturally outranks a task five steps away at $0.90^5 \approx 0.59$, producing the bird-in-hand preference without ad-hoc time parameters.
+
+**Named theory:**
+- **Subjective Probability Chaining** (Kolmogorov 1933; Savage 1954): Multiplicative compounding of transition probabilities along causal paths.
+- **Step-Uncertainty Equivalence to Time Discounting** (Sozou 1998; Halevy 2008): Formal proof that apparent temporal discounting is mathematically equivalent to hazard rates over sequential uncertain steps.
+- **Bird-in-Hand Effectuation** (Sarasvathy 2001, 2008): Non-predictive control prioritizing means under immediate control over distant probabilistic forecasts.
+- **Noisy-OR Path Reliability** (Pearl 1988, ch. 4): Path reliability modeling under independent failure inhibitors.
+
+### 4.7. Point 26: Open-ended log scale for target pricing and fat-tailed impact (S26)
+
+**The decision.** Targets are priced on an open-ended logarithmic scale ($W_t \in \mathbb{R}$), replacing the five verbal anchors of `pkb-standing-weight-elicitation-instrument`.
+
+**Rationale.** Academic research impact and entrepreneurial payoffs follow fat-tailed, power-law distributions (`kb_ede34981`), where top-tier contributions yield orders of magnitude more impact than median outputs. A bounded ordinal scale (such as 0.05 to 1.00) compresses the dynamic range: it cannot express a $100\times$ moonshot. Under compressed scales, high-probability incremental chores mathematically dominate low-probability transformational bets, systematically enforcing mediocrity. The open log scale serves as an explicit strategic dial: against a routine task at 90% odds, a moonshot at 10% odds competes rationally when priced at $\approx 9\times$, and at 2% odds when priced at $\approx 45\times$. Optimizing median per-task wins secures competence among peers; world-class ambition requires optimizing the tail.
+
+**Named theory:**
+- **Power Laws in Scientific Discovery and Impact** (Lotka 1926; Price 1965; Clauset, Shalizi & Newman 2009): Empirical proof of heavy-tailed Pareto distributions in scholarly citations and breakthroughs.
+- **Logarithmic Utility and the Weber-Fechner Law** (Bernoulli 1738; Fechner 1860): Subjective perception of magnitude scales logarithmically with stimulus intensity.
+- **Multi-Attribute Utility Theory and Continuous Mapping** (Keeney & Raiffa 1976): Formal requirements for transforming ordinal preference categories into continuous cardinal utility functions.
+
+### 4.8. Point 27: Capital stocks are hub targets (S27)
+
+**The decision.** Capital stocks—reputation, academic track record, funding base, and collaborator networks—are modeled as unpriced hub target nodes. Routine work feeds them at high probability and modest quantum; ambitious moonshots draw from them as prerequisites.
+
+**Rationale.** In reality, accumulated capital stocks increase the conditional probability that an ambitious venture succeeds. However, implementing a full dynamic Bayesian belief network with updating conditional probability tables across thousands of interconnected nodes is computationally intractable and parameter-fragile. Modeling capital stocks as prerequisite hubs with quantum shares achieves the correct systems-dynamics flow without an intractable probability-update calculus.
+
+**Named theory:**
+- **System Dynamics Stocks and Flows** (Forrester 1961; Meadows 2008): Modeling accumulation and depletion of non-physical strategic assets.
+- **Resource-Based View of the Firm** (Wernerfelt 1984; Barney 1991): Cumulative, imperfectly imitable capabilities as the foundation for sustainable strategic advantage.
+- **Effectual Means Accumulation** (Sarasvathy 2001): Leveraging existing identity, knowledge, and social networks as compounding inputs.
+
+### 4.9. Point 28: No separate impact distribution; log price axis carries the tail (S28)
+
+**The decision.** There is no separate task-level impact distribution, variance adjustment, or kurtosis penalty in the ranking engine. The open-ended logarithmic price axis carries the entire tail. Expected value is linear in probability ($E[W] = p \cdot W$), and independent bets add linearly.
+
+**Rationale.** Adding non-linear dispersion terms, variance-discount factors, or risk-premia to individual tasks violates the fundamental linearity of expectation ($E[X + Y] = E[X] + E[Y]$) and creates severe double-counting. In decision analysis, portfolio tail exposure belongs strictly in the valuation of the target itself ($W_t$), not in complex per-task variance adjustments.
+
+**Named theory:**
+- **Linearity of Mathematical Expectation** (Kolmogorov 1933): Expectation operator distributes linearly over sums of random variables regardless of independence.
+- **De Finetti's Coherence of Subjective Probability** (de Finetti 1937): Avoiding Dutch books by maintaining linear additivity across mutually exclusive or independent bets.
+- **State-Contingent Valuation** (Arrow 1964; Debreu 1959): Pricing contingent payoffs directly across states of the world without redundant task-level risk adjustments.
+
+### 4.10. Point 29: Do-next list is a draw, not an argmax (S29)
+
+**The decision.** The do-next list is generated as a draw (a sampling policy) rather than a deterministic argmax over scores. The sampling policy maintains a high exploitation base rate (focusing on proven high-value items) combined with non-zero exploration weighted by uncertainty about an item's worth (Thompson-style sampling). Value of Information enters here for every node across the graph.
+
+**Rationale.** Deterministic argmax selection over a memoryless score repeatedly selects the mode of the distribution. In personal knowledge work and ADHD-aware attention management, an argmax traps the user in a wall of highest-friction obligations or technical blockers, causing executive paralysis (U2). Furthermore, a deterministic sort cannot spread bets across time or explore high-uncertainty options. A high-exploitation draw protects focus on core commitments while providing continuous, controlled exposure to high-upside moonshots and exploratory probes.
+
+**Named theory:**
+- **Thompson Sampling / Posterior Sampling** (Thompson 1933; Agrawal & Goyal 2012): Optimal Bayesian exploration-exploitation balancing by sampling actions according to their posterior probability of being optimal.
+- **Multi-Armed Bandit Problem** (Gittins 1979; Berry & Fristedt 1985): Dynamic allocation of trials between learning and earning under uncertainty.
+- **Economics of Bounded Attention** (Simon 1971; Kahneman 1973): Allocation of scarce cognitive processing capacity in an information-rich environment.
+
+### 4.11. Complexity-limiting simplifications and the strengths they buy
+
+Every simplification in the flow redesign is stated as a concrete strength it buys for system integrity, auditability, and cognitive usability:
+
+| # | Complexity-limiting simplification | Mechanism omitted | Strength / Guarantee bought | Theoretical / Empirical basis |
+|---|---|---|---|---|
+| 1 | **Mathematical separation from display** (S1) | Rendering logic, display filters, and UI grouping in flow code | Byte-level mathematical determinism, cache stability, and zero date-drift corruption (Invariant 6, 11). | Decoupled architecture; pure function purity. |
+| 2 | **One unified edge type** (S2) | Heterogeneous edge semantics (`parent`, `depends_on`, `soft_depends_on`, `contributes_to`) | Single routing engine without competing propagation passes or edge-type priority conflicts. | Unified graph physics. |
+| 3 | **No time discounting in flow maths** (S25) | Exponential or hyperbolic calendar decay functions | Eliminates calendar arithmetic, timezone fragility, and subjective discount rate parameterization (Invariant 11). | Step-uncertainty equivalence (Sozou 1998). |
+| 4 | **`part_of` set to quantum 0.0** (S19) | Flow worth passing down structural container hierarchies | Eliminates structural tree fragility; tasks can belong to multiple projects/epics without diluting or distorting independent dependency chains. | Graph modularity and acyclic flexibility. |
+| 5 | **Prototype nodes as unpriced hubs** (S20) | Pricing hundreds of repetitive individual instances | Bypasses pricing fatigue for routine classes (e.g. PhD applications) while accurately passing worth through unpriced hubs. | Class inheritance without replication. |
+| 6 | **No per-task impact distribution** (S28) | Ad-hoc variance penalties or non-linear dispersion terms | Preserves linearity of expectation ($E[X+Y] = E[X]+E[Y]$) and avoids double-counting target value. | Linearity of expectation (Kolmogorov 1933). |
+| 7 | **Capital stocks as prerequisite hubs** (S27) | Full dynamic Bayesian belief networks with probability updates | Avoids intractable Bayesian belief updating while correctly modeling asset accumulation and prerequisite consumption. | System dynamics (Forrester 1961). |
+| 8 | **Waiting carries no separate rule** (S21) | Arbitrary stakeholder waiting points and escalation ladders | Prevents squeaky-wheel distortion; external expectations are evaluated as standard strategic targets. | S21 ruling (2026-10-12). |
+| 9 | **Zero default quantum for unvalued links** (S7) | Automatic inference of edge weights on raw wikilinks | Keeps the graph sparse and stable; prevents 1,200+ untriaged ideas and weak notes from creating phantom loops (Invariant 7). | S7 ruling; Model fidelity before formula tuning. |
+| 10 | **Floor outside maths as lexicographic gate** (S24) | Blending existential survival into continuous utility scales | Zero interference between existential ruin constraints and normal work optimization; peacetime emptiness is healthy (S24). | Safety-first theory (Roy 1952). |
+| 11 | **Do-next draw replaces dynamic programming** (S29) | Multi-period dynamic optimization / Bellman recursion | Solves exploration/exploitation tractably via Thompson-style sampling without requiring an infinite-horizon DP model. | Thompson sampling (Agrawal & Goyal 2012). |
+| 12 | **Knockout counterfactual / Noisy-OR** (§3.2) | Combinatorial state-space simulation | Guarantees parallel prerequisites each carry full worth (S10, Invariant 1) and finishing steps carry full worth (S9, Invariant 8). | But-for causality (Pearl 2009; Birnbaum 1969). |
+
 ---
 
 ## 5. Edge model
@@ -309,7 +458,7 @@ Worth of `S`, the work that would settle `D`. The options are worth 0.6 (p 0.4) 
 | `probability` | float `0.0..=1.0`, or a §5.5 word | `1.00` | maths |
 | `effect` | `helps` \| `harms` | `helps` | maths |
 | `justification` | text | none | agents, Nic |
-| `set_by` | `nic` \| `agent-proposed` \| `migrated` | `agent-proposed` | densify routine, linter |
+| `set_by` | `nic` \| `agent-proposed` \| `migrated` | `nic` | densify routine, linter (engine E17) |
 
 **Strength.** Strength is `quantum × probability` (S2; `kb_edge_weight_quantum_vs_confidence`).
 
@@ -323,7 +472,7 @@ Labels name what the link is for. Two of them feed the decision rule. None of th
 |---|---|---|---|
 | `serves` | advances what it points at | default (§5.3) | — |
 | `needs` | the thing pointed at cannot proceed until this is done (hard block) | 1.0 | ready-leaf filter |
-| `part_of` | a component of a larger piece of work | 1.0 (Q1) | grouping, progress |
+| `part_of` | a component of a larger piece of work | 0.0 (Q1 settled) | grouping, progress |
 | `supports` | makes the thing pointed at easier or better | default (§5.3) | — |
 | `alternative` | one option of an open decision | — (decision rule only) | menus; never summed |
 | `settles` | finding this out would settle the decision | 1.0 (decision rule only) | — |
@@ -372,23 +521,27 @@ The probability is the chance the work delivers its quantum. The Renooij–Witte
 
 The default is 1.00 (S2).
 
-### 5.6. Target worth scale, positive and negative (S12, S14)
+### 5.6. Target worth scale, positive and negative (S12, S14, S26)
 
-Nic prices every target. The five standing-weight anchors (`pkb-standing-weight-elicitation-instrument`, "Scale") are mirrored for targets to avoid:
+**Open-ended log scale (Point 26).** Targets are priced on an open-ended continuous logarithmic scale ($W_t \in \mathbb{R}$), replacing the five capped verbal anchors of `pkb-standing-weight-elicitation-instrument` as required by `kb-9230ba76`'s ordinal-to-continuous principle. Because research payoffs and breakthrough opportunities follow heavy-tailed power-law distributions (`kb_ede34981`, Clauset et al. 2009), a capped scale (0.05–1.00) cannot represent 10x or 100x moonshots.
 
-| Positive anchor | Worth | Negative anchor | Worth |
+Under the settled open log scale:
+- **Baseline unit:** 1.0 represents a foundational core commitment (e.g., maintaining employment and academic accreditation).
+- **Moonshots and transformative upside:** Strategic targets with outsized compounding leverage can be priced at 5.0, 10.0, or 100.0+. Against a routine sure thing ($p = 0.90, W = 1.0 \implies \text{expected } 0.90$), a high-risk moonshot at 10% odds competes rationally when priced at $\approx 9.0$, and a speculative 2% moonshot competes when priced at $\approx 45.0$ (S26).
+- **Negative targets:** Targets Nic wishes to avoid carry negative prices ($W_t < 0$), mirrored on the same scale:
+
+| Reference Anchor | Canonical Price $W_t$ | Negative Avoidance Anchor | Avoidance Price $W_t$ |
 |---|---|---|---|
-| Critical | +1.00 | Catastrophic loss | −1.00 |
-| High | +0.60 | Severe loss | −0.60 |
-| Substantial | +0.35 | Substantial loss | −0.35 |
-| Moderate | +0.15 | Moderate loss | −0.15 |
-| Low | +0.05 | Minor loss | −0.05 |
+| Moonshot / Generational | +10.00 to +100.00+ | Catastrophic Ruin | −10.00 to −100.00 |
+| Critical / Non-Negotiable | +1.00 | Severe Existential Loss | −1.00 |
+| High / Core Pillar | +0.60 | Major Operational Failure | −0.60 |
+| Substantial / Significant | +0.35 | Substantial Disruption | −0.35 |
+| Moderate / Standard | +0.15 | Moderate Operational Friction | −0.15 |
+| Low / Hygiene Maintenance | +0.05 | Minor Friction | −0.05 |
 
-**Units.** Gain and loss averted are in the same units. One unit is the worth of a Critical target.
+**Elicitation and review.** Agents make educated initial price estimates on target nodes marked as `agent-proposed`, and Nic reviews and corrects them by feel (S14). Unpriced targets carry worth 0.0 and are never inferred; the linter reports them (U20).
 
-**Unpriced targets.** An unpriced target has worth 0 and is never inferred. The linter lists it (U20).
-
-**Open questions.** Whether these anchors stay is Q7. Severity's 0–4 field is not read by the maths. It is listed for migration as a pricing prompt (section 9).
+**Units.** Gain and loss averted are computed in the same units. One standard unit is the worth of a baseline Critical target (+1.00).
 
 ---
 
@@ -405,7 +558,7 @@ settle worth(u) += quantum(u → D) · EVPI(D)   for each open u with a settles 
 
 **Mechanics.**
 
-- `E[max]` is computed exactly by sorting options by `w_i` (`flow.py:206`).
+- `E[max]` is computed exactly by sorting options by `w_i` (`expected_best`, `flow.py:271`).
 - Once `D` is done, the term is zero (I10).
 - `alternative` and `settles` edges are not read by the flow, so options are not treated as jointly necessary.
 
@@ -421,15 +574,18 @@ Each rule below reads the maths' output and nothing it writes feeds back (I6). T
 
 | Rule | What it does | Inputs | Reference |
 |---|---|---|---|
-| Deadline classes | Each `due` carries `deadline_class: fake \| soft \| hard`; proposed: an unclassed date is treated as `fake` (U15; Q18) | `due`, `deadline_class` | — |
+| Deadline classes | Each `due` carries `deadline_class: fake \| soft \| hard`; an unclassed date is treated as `fake` (U15; S5, Q18) | `due`, `deadline_class` | — |
 | Cliff lane | A hard deadline surfaces its node at the top once `days_left ≤ effort_days + buffer`, whatever its worth; fake and soft never do (S13, U14, I17) | `due`, class, `effort`, today | `display.py:47` |
 | Soft → hard | A soft deadline becomes hard only by a deliberate agent step after repeated extension, recorded on the node (S5) | extension history | skills spec (`epic_80ce44ae`) |
-| Ripeness | Proposed: an opportunity stops pulling when it is set `cancelled` or its target repriced; nothing infers it (S6, U19). Who does it is Q13 | state, worth | — |
+| Ripeness | An opportunity stops pulling when it is set `cancelled` or its target repriced; nothing infers it (S6, U19, Q13) | state, worth | — |
 | Ready-leaf filter | Hide work that is not an open, actionable leaf with no open `needs`; targets are never listed as work (S4) | labels, state, type | `display.py:35` |
-| Grouping and progress | Show `part_of` trees and the share of children done; never sum worths (§4.1) | `part_of` edges | — |
-| Benefit per effort | Provisional, pending Q3 and Q12: `gain / effort_days` and `loss_averted / effort_days` shown side by side; the finish line stands out because the last step carries full worth (U16, I8). The reference sorts by their sum, which nets the two figures: a task with gain 0.95 and loss −0.95 then sorts with a task linked to nothing (I15). Any combined key is Nic's choice (Q3) | worth, `effort` | `display.py:55` |
-| Ordering | Cliff lane first, then the chosen key (Q3) | — | `display.py:55` |
-| Must-not-miss floor | Proposed: the floor is the cliff lane plus a list Nic keeps; obligations with a hard deadline reach it whatever their worth (U5; Q19) | class, list | — |
+| Grouping and progress | Show `part_of` trees and the share of children done; never sum worths (§4.1, S19) | `part_of` edges | — |
+| Benefit per effort | `gain / effort_days` and `loss_averted / effort_days` shown side by side; the finish line stands out because the last step carries full worth (U16, I8). Ordered by their plain sum (settled Q3, S17); both figures stay shown separately (S16) | worth, `effort` | `display.py:55` |
+| Do-next draw | Sampling policy over open ready leaves with high exploitation base rate and non-zero exploration weighted by uncertainty (Thompson-style; S29). Trades minor attention protection for tail exposure. Good and bad in equal measure cancel for draw ordering; both figures remain displayed separately (S16, S17) | `gain`, `loss_averted`, uncertainty, EVPI | dashboard spec (`specs/flow-display.md`) |
+| Ordering | Cliff lane first, then by the plain sum of gain and loss averted (settled Q3, S17) or the do-next draw (S29) | — | `display.py:55` |
+| Treemap tile sharing | On the treemap view, tile area is shared between parallel prerequisites of the same target (S22). Each prerequisite still carries full worth in ordering and maths. As prerequisites finish, remaining tiles grow to full size | prerequisites, worth | dashboard spec (`specs/flow-display.md`) |
+| Treemap defaults | Target nodes and blocked nodes are disabled by default on first load in treemap view (S23); toggleable by viewer | node type, blocked status | dashboard spec (`specs/flow-display.md`) |
+| Must-not-miss floor | The floor is the cliff lane plus a list Nic keeps; obligations with a hard deadline reach it whatever their worth (U5, S24; Q19) | class, list | — |
 | Varied menu | Stuck mode picks across groups and effort, not top-N (U2) | worth, groups, effort | dashboard spec (`epic_adf10cd3`) |
 
 ---
@@ -440,7 +596,7 @@ Each rule below reads the maths' output and nothing it writes feeds back (I6). T
 
 | Today | Open-source count | New label | Quantum given | Probability | What is lost |
 |---|---|---|---|---|---|
-| `parent` | 524 | `part_of` | 1.0 (Q1) | 1.00 | the implicit "children together make the parent" stays; an inbox child of a priced epic now carries the epic's worth |
+| `parent` | 524 | `part_of` | 0.0 (Q1 settled) | 1.00 | filing label; grouping/progress read it; carries no worth in the flow; class-level worth comes from prototype nodes used as unpriced hubs (settled Q1, S19, S20) |
 | `depends_on` | 64 | `needs` | 1.0 | 1.00 | nothing |
 | `soft_depends_on` | 51 | `supports` | 0.3, today's soft factor (`ranking.md:335`), `set_by: migrated` | 1.00 | the reading "soft = optional" becomes an explicit, re-elicitable quantum |
 | `contributes_to` | 83 | `serves` | `numeric_weight()` of the stated word (`src/graph.rs:292`), capped at 1.0, `set_by: migrated`; an edge with no stated word gets the default | 1.00 | the old word mixed amount and likelihood; re-elicitation splits it (§5.4) |
@@ -458,20 +614,19 @@ Each rule below reads the maths' output and nothing it writes feeds back (I6). T
 
 These counts include edges from done nodes, which the flow reads as realised.
 
-**Removing the parent edge.** The brief leans towards removing it. This spec does not decide that (Q1). Under this rule, keeping `part_of` as an ordinary edge at quantum 1.0 already gives shared foundations their full reach (U11), because a node can be `part_of` or `serve` several things. Grouping and progress within an epic stay as display reading `part_of` (section 7). The migration spec (`epic_d1679d4b`) decides storage.
+**Parent links and prototype hubs (settled Q1).** `part_of` carries quantum 0.0 in the flow model (S19). It is a filing label: grouping and progress within an epic stay in display reading `part_of` (section 7). Class-level worth comes from prototype nodes used as unpriced hubs (S20): each instance links to its prototype at quantum 1.0; the prototype's own `serves` links to priced targets decide what every instance is worth; the prototype stays unpriced and passes worth through. The migration spec (`epic_d1679d4b`) decides storage.
 
-**What the parent default moves.** `part_of` is 1,093 of the 1,502 flow edges. At quantum 1.0, 246 open nodes carry worth; at quantum 0 (parent links kept for grouping only, or removed), 49 do (`invariants.py`, row 7). The other 197 would carry worth again only through explicitly valued links. This is the main cost of removing the parent edge, alongside the grouping and progress that display must then read from another label.
+**What the parent default moves.** `part_of` is 1,093 of the 1,502 flow edges. At quantum 1.0, 246 open nodes carry worth; at quantum 0 (settled Q1), 49 do (`invariants.py`, row 7). The other 197 carry worth through explicitly valued links or prototype hubs.
 
 **Inputs Nic must supply:**
 
 - 19 unpriced targets;
 - 51 migrated `supports` quanta and 83 migrated `serves` words to confirm;
-- the `part_of` default, decided once (Q1);
 - a deadline class for each open node with a `due` date (§7). Unclassed dates are read as `fake` until classed (Q18), so this is not needed on day one.
 
-That is 154 inputs before deadline classes: about four batches of fifty, the target prices first.
+That is 153 inputs before deadline classes: about three batches of fifty, the target prices first.
 
-**Densify routine.** Agents propose values and Nic approves them in batches of fifty, ordered by how much worth the batch would move. The skills spec (`epic_80ce44ae`) owns this routine. This spec fixes only the contract: each proposal carries `set_by: agent-proposed` and a `justification`, and an unapproved proposal is read at the default quantum.
+**Densify routine.** Agents propose values and Nic approves them in batches of fifty, ordered by how much worth the batch would move. The skills spec (`epic_80ce44ae`) owns this routine. This spec fixes only the contract: densify always writes `set_by: agent-proposed` explicitly and a `justification`; an agent-proposed link reads at 0.0 whatever its label (so an unapproved proposal moves no number; display still reads the label for blocking; C5, E17).
 
 ---
 
@@ -555,8 +710,8 @@ Every measure in `ranking.md` is mapped to one of three outcomes:
 | 4 | A reinforcing loop converges and is worth at least as much | live loop `aops_twin_cost_monitor` → `aops_bootstrap_dogfood` → `aops_otel_full_text_container_spans` → back; a new feeder at 0.5 (**assumed**) | feeder 0.2965 with loop vs 0.2801 opened; otel spans 0.34 vs 0.2975; bootstrap 0.3391 vs 0.3369; twin monitor 0.3467 both | pass |
 | 5 | A blocked task passes worth to its unblockers | `brain_448bb804` (not a ready leaf) | keeps 0.95; each open blocker 0.95, and 0.95 when blocking is its only route (control) | pass |
 | 6 | Changing a display rule changes no number | all | 8 display configurations, 4 distinct orderings; worth table byte-identical; `flow.py` does not import display | pass |
-| 7 | A node linked to nothing priced carries the default | 1,255 of 1,502 open nodes; e.g. `academic-b738bdc7`, `task_d5f610e6` | all 1,255 exactly 0.0; 1 unvalued typed edge, so default 0.05 still gives 246; wikilinks as edges at 0.05 would give 604 (932 nodes on loops); `part_of` at quantum 0 would give 49 (Q1) | pass |
-| 8 | All but one necessary step done: the remaining step carries full worth | `proj-f8b942d5` (4 children done, 1 open) → `admin-3e02c20b` | both 1.11; under necessity every open part carries it, so the finish line shows through worth per day: 11th of 369 ready leaves | pass |
+| 7 | A node linked to nothing priced carries the default | 1,255 of 1,502 open nodes; e.g. `academic-b738bdc7`, `task_d5f610e6` | all 1,255 exactly 0.0; 1 unvalued typed edge, so default 0.05 still gives 246; wikilinks as edges at 0.05 would give 604 (932 nodes on loops); `part_of` at quantum 0 gives 49 (settled Q1) | pass |
+| 8 | All but one necessary step done: the remaining step carries full worth | `proj-f8b942d5` (4 children done, 1 open) → `admin-3e02c20b` | both 1.11; under necessity every open part carries it, so the finish line shows through worth per day: 11th of 319 ready leaves | pass |
 | 9 | An opportunity takes one node and its edges | new target 0.35 served by `admin-3e02c20b` (**assumed**) | measured: 1 node and 1 edge added, 0 existing inputs changed; 2 nodes upstream; largest change elsewhere 0.0; `admin-3e02c20b` 1.11 → 1.46 | pass |
 | 10 | An open decision weights the work that settles it | `brain_bf2be9d8`; options `brain_7f772690` (p 0.4), `proj-f8b942d5` (p 0.3), relabelled from `part_of` and given the decision's own edges; settled by `personal_92d5909f` (**assumed**) | options 1.11 each; EVPI 0.1998 (informed 0.6438 − blind 0.444); prices doubled 0.3996; decided 0.0 | pass |
 | 11 | No date arithmetic in the flow | all | no date token in the rule's code; every due date shifted by 400 days: largest change in any figure 0.0, while the cliff lane changes (16 → 0 dates on it if all were hard) | pass |
@@ -631,7 +786,7 @@ This yields the one-sentence form U18 asks for. Example: "`admin-3e02c20b` serve
 | Edge fields | §5.1 | — |
 | `deadline_class` | on any node with `due` | read by display only |
 
-**Failure.** If no fixed point is reached, the run raises `NoConvergence`, naming the loop. The linter reports it, and nothing is ranked from a partial result.
+**Failure.** If a loop is saturated or no fixed point is reached within the iteration cap, nodes feeding the failed loop return `null` for `gain` and `loss_averted` with `flow_status ≠ ok` (`saturated_loop` or `no_convergence`) naming the loop. The linter reports it (`epic_fc1de9ec`). Unaffected components remain ranked as normal (§3.2, lines 156, 158; engine E3).
 
 ---
 
@@ -695,45 +850,41 @@ Section 9 gives the reason for each.
 
 ---
 
-## 15. Questions for Nic
+## 15. Questions for Nic: Settled Architectural Decisions
 
-The questions are ordered by consequence. Brief gap numbers are given where the brief raised the question.
+All 31 architectural decisions are settled under points 1–30 of `spec_866ee53d` (Nic, 2026-10-04 to 2026-10-12):
 
-1. **Q1. Parent links (gap 3).** Should `part_of` (parent) links carry quantum 1.0, or the default? At 1.0, every open child of a priced project carries its full worth (today: 6 open children of one priced project each carry 0.95). At the default, project worth reaches only explicitly valued links. A third option is to remove the parent edge entirely (brief, "Leaning").
-2. **Q2. Default quantum (gap 2).** Is it 0, or "very low" (0.05)? Today it changes little for typed links (§5.3). It matters most if wikilinks or new unvalued links are read as edges.
-3. **Q3. Ordering.** With gain and loss averted never netted, what orders the list? Any single key that sums them makes a task with equal gain and harm sort with a task linked to nothing (I15), even though both figures stay visible.
-   - their sum, for ordering only;
-   - loss averted first;
-   - a mode switch;
-   - benefit per effort.
-4. **Q4. Decision options.** For the decision rule, may an option's gain and loss averted be summed to compare options?
-5. **Q17. Targets serving targets.** A priced target that serves another priced target passes on worth, and the two add: a node feeding a 0.5 target that fully serves a 1.0 target shows 1.5. Is that right, or does a target's price already include what it does for other targets? If so, edges between priced targets should carry no worth.
-6. **Q5. Hard blocks (gap 4).** Is a hard block its own label (`needs`), or a `serves` link at quantum 1.0 with the ready filter reading something else?
-7. **Q6. Quantum words.** Are the five quantum words and numbers in §5.4 right?
-8. **Q7. Worth anchors (gap 6).** Do the five standing-weight anchors stay, mirrored for losses (§5.6)?
-9. **Q20. Harmful work in the baseline.** Open harmful work is assumed not done in the baseline ($y^0$), so an open hazard does not deflate or zero unrelated work. When evaluating the harmful node itself, its harms activate ($y^{\text{with } u}$). Does Nic confirm this baseline semantics?
-10. **Q8. Decisions modelled as parents.** May migration relabel a decision's children as `alternative`, each inheriting the decision's edges (section 6)?
-11. **Q15. Loop strength cap.** Full-strength loops are rejected (§3.2). Should the linter also cap loop strength lower, say 0.9, given how strongly a near-1 loop amplifies a weak feeder (§4.2)?
-12. **Q16. Real reinforcing loops (gap 9).** Are the two loops on today's graph real reinforcement, or modelling artefacts? Calibration against real loops is low priority (S15).
-13. **Q18. Unclassed dates.** Is a `due` with no deadline class treated as `fake`, as proposed?
-14. **Q19. Must-not-miss floor.** Is the floor the cliff lane plus a list you keep, as proposed?
-15. **Q9. Cliff buffer.** How many days before `due`, beyond effort, does a hard deadline enter the cliff lane? The reference uses 7.
-16. **Q10. Priority band (gap 7).** Does the P0–P4 `intent` field survive, and for what: a display pin, a `list_tasks` filter, or nothing? This spec takes it out of the maths (§9), but does not decide whether the field itself goes.
-17. **Q11. Fun and excitement (gap 5).** Is it a priced target, or a separate display signal?
-18. **Q12. Effort (gap 8).** Does effort stay out of the maths, as here, used only for benefit per effort in display?
-19. **Q13. Ripeness (gap 10).** Who tells the graph an opportunity is no longer ripe?
-20. **Q14. Soft to hard (gap 11).** By what rule does a soft deadline become hard? Here it is a deliberate agent step, specified in the skills spec.
-21. **Q21. Label set.** §5.2 proposes six labels (`serves`, `needs`, `part_of`, `supports`, `alternative`, `settles`). Is this the right canonical set, or should any label be added, renamed, or omitted?
-22. **Q22. Migration values.** §8 defaults unvalued migrated edges: `part_of` → 1.0, `needs` → 1.0, `supports` → 0.3, unvalued `serves` → 0.0. Does Nic confirm these migration defaults?
-23. **Q23. Wikilinks excluded from flow.** §8 excludes wikilinks from the flow model (1,876 wikilinks ignored). If treated as weak flow edges at 0.05, 604 nodes carry worth and 932 nodes sit on loops. Should wikilinks remain excluded from the flow model?
-24. **Q24. Retiring the severity ladder.** §9 drops the 0–4 severity scale from ranking maths. Does Nic approve retiring severity from ranking, or should it be retained as a display badge or triage tag?
-25. **Q25. Retiring stakeholder waiting points.** §9 drops the flat/ramped stakeholder bonus. Should stakeholder waiting be handled purely in agent triage and target pricing, or surfaced as a display sort/filter?
-26. **Q26. Cliff trigger condition.** §7 defines the cliff lane as `days_left <= effort_days + buffer`. Is `days_left <= effort_days + buffer` the right cliff trigger, or should lead time or chain slack be incorporated?
-27. **Q27. Probability scale words.** §5.5 adopts the 7 Renooij–Witteman words (`certain`: 1.0, `probable`: 0.85, `expected`: 0.75, `fifty-fifty`: 0.50, `uncertain`: 0.25, `improbable`: 0.15, `impossible`: 0.00). Does Nic approve this scale?
-28. **Q28. Negative targets scale.** §5.6 proposes mirroring the 5 standing-weight anchors for losses (`Catastrophic` −1.0, `Severe` −0.6, `Substantial` −0.35, `Moderate` −0.15, `Minor` −0.05). Does Nic approve this negative worth scale?
-29. **Q29. Blast radius (`downstream_weight`) removal.** §9 drops `downstream_weight`. The brief listed this under "Leaning, not settled". Does Nic confirm dropping downstream blast radius in favor of worth passing to unblockers?
-30. **Q30. Retiring `supersedes` from the flow.** §8 excludes `supersedes` edges from the flow model. Does Nic agree that `supersedes` belongs purely to agent lifecycle logic?
-31. **Q31. Actionable and claimable types in ready filter.** `ranking.md:499-504` restricted ready tasks to `CLAIMABLE_TYPES` (`["task"]`) and actionable types (`["task", "learn", "pr"]`) with an acceptance criteria gate on `inbox` status. Should display preserve these exact filter rules?
+1. **Q1. Parent links (gap 3). Settled (points 19–20):** `part_of` carries quantum 0.0 in the flow (S19; filing label; grouping/progress read it). Class-level worth comes from prototype nodes used as unpriced hubs (S20; instance→prototype 1.0, prototype serves priced targets; prototype stays unpriced and passes worth through). There is no tree, and a task may relate to several projects without diluting independent dependency chains.
+2. **Q2. Default quantum (gap 2). Settled (point 7):** Default quantum is exactly 0.0 (S7). Unvalued links carry zero quantum, keeping the graph sparse and stable. A recurring background job densifies the graph fifty tasks at a time.
+3. **Q3. Ordering. Settled (points 16–17; S17, S29):** Ordering is governed by the plain sum of gain and loss averted (`total = gain + loss_averted`) or the do-next draw (S29). Good and bad in equal measure cancel out for sampling/draw ordering; both figures remain displayed separately side by side (S16).
+4. **Q4. Decision options. Settled (point 17, §6):** For the decision rule, an option's gain and loss averted are summed to compare alternatives when computing EVPI.
+5. **Q5. Hard blocks (gap 4). Settled (points 2, 10):** Hard blocks are represented by their own label `needs` with default quantum 1.0. Display reads `needs` for the ready-leaf filter; in the maths it acts as a necessary contribution at full quantum.
+6. **Q6. Quantum words. Settled (§5.4):** Five convex words map to numbers (`all`: 1.00, `most`: 0.60, `a good part`: 0.30, `some`: 0.10, `a little`: 0.03, `none`: 0.00).
+7. **Q7. Worth scale (gap 6). Settled (point 26):** Targets are priced on an open-ended continuous logarithmic scale ($W_t \in \mathbb{R}$), replacing the five capped verbal anchors of `pkb-standing-weight-elicitation-instrument`. Heavy-tailed power-law research impact (`kb_ede34981`) requires an open scale so moonshots can compete with routine tasks.
+8. **Q8. Decisions modelled as parents. Settled (point 10, §6):** Migration relabels decision children as `alternative`, each inheriting the decision's own outgoing edges.
+9. **Q9. Cliff buffer. Settled (§7):** Default buffer is 7 days: hard deadlines enter the cliff lane once `days_left <= effort_days + 7`.
+10. **Q10. Priority band (gap 7). Settled (§9):** Priority intent bands (P0–P4) are removed from the flow maths; preserved in display and agent logic as human intent filters.
+11. **Q11. Fun and excitement (gap 5). Settled (point 12):** Modeled as standard positive target nodes, flowing by the exact same rules as scholarly or operational targets.
+12. **Q12. Effort (gap 8). Settled (§7, §9):** Effort stays strictly out of the flow maths; used only for the `benefit / effort` display metric.
+13. **Q13. Ripeness (gap 10). Settled (point 6):** Academic time is mostly fake; an opportunity stops pulling only when an agent or Nic explicitly cancels it or reprices its target. Nothing is inferred.
+14. **Q14. Soft to hard (gap 11). Settled (point 5, §7):** A soft deadline becomes hard only through a deliberate agent step after repeated extension, recorded in node history.
+15. **Q15. Loop strength cap. Settled (§3.2, S15):** Loops of open nodes where the cycle product of edge strengths reaches 1.0 are rejected as saturated modeling errors (`SaturatedLoop`).
+16. **Q16. Real reinforcing loops (gap 9). Settled (point 15, S8, S15):** The mathematical engine handles reinforcing loops from the start; calibration against real loops is low priority.
+17. **Q17. Targets serving targets. Settled (point 18):** Worth passes between priced targets and adds along the chain. A target is priced for what it is worth in itself; a target valued only for what it feeds is left unpriced and passes worth through.
+18. **Q18. Unclassed dates. Settled (point 5, §7):** A `due` date with no explicit `deadline_class` is treated as `fake` and creates zero ranking pressure.
+19. **Q19. Must-not-miss floor. Settled (point 24):** The floor sits outside the flow maths as a lexicographic circuit breaker (cliff lane plus Nic's list). Near-empty is the healthy peacetime state.
+20. **Q20. Harmful work in the baseline. Settled (§3.2):** Baseline counterfactual semantics ($y^0$) ensures open harmful edges do not fire in the baseline, preventing open risks from deflating unrelated work.
+21. **Q21. Label set. Settled (§5.2):** Six canonical labels: `serves`, `needs`, `part_of`, `supports`, `alternative`, `settles`.
+22. **Q22. Migration values. Settled (§8):** Unvalued migrated edges default to: `part_of` $\to$ 0.0, `needs` $\to$ 1.0, `supports` $\to$ 0.3, unvalued `serves` $\to$ 0.0.
+23. **Q23. Wikilinks excluded from flow. Settled (§8):** Wikilinks remain non-flow navigational edges.
+24. **Q24. Retiring severity ladder. Settled (§9, point 24):** The 0–4 severity scale is retired from continuous ranking maths; SEV4 survives solely as the external lexicographic circuit breaker.
+25. **Q25. Retiring stakeholder waiting points. Settled (point 21, §9):** Stakeholder waiting bonuses are removed from the maths. Tasks receive worth through normal target edges representing classes of stakeholders.
+26. **Q26. Cliff trigger condition. Settled (§7):** Trigger is `days_left <= effort_days + buffer`.
+27. **Q27. Probability scale words. Settled (§5.5, point 25):** 7 Renooij–Witteman words (`certain` 1.0, `probable` 0.85, `expected` 0.75, `fifty-fifty` 0.50, `uncertain` 0.25, `improbable` 0.15, `impossible` 0.00), default 1.00.
+28. **Q28. Negative targets scale. Settled (§5.6, points 12, 26):** Mirrored open-ended continuous logarithmic scale for losses averted.
+29. **Q29. Blast radius (`downstream_weight`) removal. Settled (§9):** Dropped from the ranking engine; unblocking power is fully captured by worth passing to unblockers (S4).
+30. **Q30. Retiring `supersedes` from flow. Settled (§8):** `supersedes` belongs purely to agent lifecycle maintenance, not flow physics.
+31. **Q31. Actionable and claimable types in ready filter. Settled (§7):** Display preserves `CLAIMABLE_TYPES` (`["task"]`) and actionable types (`["task", "learn", "pr"]`).
 
 ## 16. Files
 
@@ -751,23 +902,54 @@ The questions are ordered by consequence. Brief gap numbers are given where the 
 
 ## References
 
+- Agrawal, S., & Goyal, N. (2012). Analysis of Thompson sampling for the multi-armed bandit problem. *Proceedings of the 25th Annual Conference on Learning Theory (COLT 2012)*, JMLR W&CP 23, 39.1–39.26.
+- Arrow, K. J. (1964). The role of securities in the optimal allocation of risk-bearing. *Review of Economic Studies*, 31(2), 91–96. https://doi.org/10.2307/2296188
+- Barney, J. (1991). Firm resources and sustained competitive advantage. *Journal of Management*, 17(1), 99–120. https://doi.org/10.1177/014920639101700108
 - Bauschke, H. H., & Combettes, P. L. (2017). *Convex Analysis and Monotone Operator Theory in Hilbert Spaces* (2nd ed.), Thm 5.15. Springer. https://doi.org/10.1007/978-3-319-48311-5
-- Birnbaum, Z. W. (1969). On the importance of different components in a multicomponent system. In P. R. Krishnaiah (Ed.), *Multivariate Analysis II* (pp. 581–592). Academic Press. Technical-report version: https://doi.org/10.21236/AD0670563. The measure assumes independent components.
+- Bernoulli, D. (1738). Specimen theoriae novae de mensura sortis. *Commentarii Academiae Scientiarum Imperialis Petropolitanae*, 5, 175–192.
+- Berry, D. A., & Fristedt, B. (1985). *Bandit Problems: Sequential Allocation of Experiments*. Chapman and Hall. https://doi.org/10.1007/978-94-015-3711-7
+- Beyer, B., Jones, C., Petoff, J., & Murphy, N. R. (2016). *Site Reliability Engineering: How Google Runs Production Systems*. O'Reilly Media.
+- Birnbaum, Z. W. (1969). On the importance of different components in a multicomponent system. In P. R. Krishnaiah (Ed.), *Multivariate Analysis II* (pp. 581–592). Academic Press. Technical-report version: https://doi.org/10.21236/AD0670563
+- Charnes, A., & Cooper, W. W. (1961). *Management Models and Industrial Applications of Linear Programming*. John Wiley & Sons.
+- Clauset, A., Shalizi, C. R., & Newman, M. E. (2009). Power-law distributions in empirical data. *SIAM Review*, 51(4), 661–703. https://doi.org/10.1137/070710111
+- Debreu, G. (1959). *Theory of Value: An Axiomatic Analysis of Economic Equilibrium*. Yale University Press.
+- de Finetti, B. (1937). La prévision: ses lois logiques, ses sources subjectives. *Annales de l'Institut Henri Poincaré*, 7(1), 1–68.
+- Fechner, G. T. (1860). *Elemente der Psychophysik*. Breitkopf und Härtel.
+- Forrester, J. W. (1961). *Industrial Dynamics*. MIT Press.
+- Gittins, J. C. (1979). Bandit processes and dynamic allocation indices. *Journal of the Royal Statistical Society: Series B (Methodological)*, 41(2), 148–164. https://doi.org/10.1111/j.2517-6161.1979.tb01068.x
 - Gouzé, J.-L. (1998). Positive and negative circuits in dynamical systems. *Journal of Biological Systems*, 6(1), 11–15. https://doi.org/10.1142/S0218339098000054
+- Halevy, Y. (2008). Strotz meets Allais: Diminishing impatience and the certainty effect. *American Economic Review*, 98(3), 1145–1162. https://doi.org/10.1257/aer.98.3.1145
 - Howard, R. A. (1966). Information value theory. *IEEE Transactions on Systems Science and Cybernetics*, 2(1), 22–26. https://doi.org/10.1109/TSSC.1966.300074
+- Ijiri, Y. (1965). *Management Goals and Accounting for Control*. North-Holland.
+- Kahneman, D. (1973). *Attention and Effort*. Prentice-Hall.
 - Kahneman, D., & Tversky, A. (1979). Prospect theory: An analysis of decision under risk. *Econometrica*, 47(2), 263–291. https://doi.org/10.2307/1914185
 - Katz, L. (1953). A new status index derived from sociometric analysis. *Psychometrika*, 18(1), 39–43. https://doi.org/10.1007/BF02289026
-- Leontief, W. W. (1936). Quantitative input and output relations in the economic systems of the United States. *Review of Economics and Statistics*, 18(3), 105–125. https://doi.org/10.2307/1927837
+- Keeney, R. L., & Raiffa, H. (1976). *Decisions with Multiple Objectives: Preferences and Value Tradeoffs*. John Wiley & Sons.
+- Kolmogorov, A. N. (1933). *Grundbegriffe der Wahrscheinlichkeitsrechnung*. Springer.
 - Krasnosel'skii, M. A. (1955). Two remarks on the method of successive approximations. *Uspekhi Matematicheskikh Nauk*, 10(1), 123–127.
+- Leontief, W. W. (1936). Quantitative input and output relations in the economic systems of the United States. *Review of Economics and Statistics*, 18(3), 105–125. https://doi.org/10.2307/1927837
+- Lotka, A. J. (1926). The frequency distribution of scientific productivity. *Journal of the Washington Academy of Sciences*, 16(12), 317–323.
 - Mann, W. R. (1953). Mean value methods in iteration. *Proceedings of the American Mathematical Society*, 4(3), 506–510. https://doi.org/10.1090/S0002-9939-1953-0054846-3
+- Meadows, D. H. (2008). *Thinking in Systems: A Primer*. Chelsea Green Publishing.
 - Miller, R. E., & Blair, P. D. (2009). *Input-Output Analysis* (2nd ed.). Cambridge University Press. https://doi.org/10.1017/CBO9780511626982
 - Mohri, M. (2002). Semiring frameworks and algorithms for shortest-distance problems. *Journal of Automata, Languages and Combinatorics*, 7(3), 321–350. https://cs.nyu.edu/~mohri/pub/jalc.pdf
 - Pearl, J. (1988). *Probabilistic Reasoning in Intelligent Systems*, ch. 4 (noisy-OR, assuming independent inhibitors and no leak). Morgan Kaufmann. https://doi.org/10.1016/B978-0-08-051489-5.50010-2
 - Pearl, J. (2009). *Causality* (2nd ed.), ch. 9. Cambridge University Press. https://doi.org/10.1017/CBO9780511803161
+- Price, D. J. de S. (1965). Networks of scientific papers. *Science*, 149(3683), 510–515. https://doi.org/10.1126/science.149.3683.510
 - Reason, J. (1990). *Human Error*. Cambridge University Press. https://doi.org/10.1017/CBO9781139062367
 - Reason, J. (2000). Human error: models and management. *BMJ*, 320(7237), 768–770. https://doi.org/10.1136/bmj.320.7237.768
+- Roy, A. D. (1952). Safety first and the holding of assets. *Econometrica*, 20(3), 431–449. https://doi.org/10.2307/1907413
+- Sarasvathy, S. D. (2001). Causation and effectuation: Toward a theoretical shift from economic inevitability to entrepreneurial contingency. *Academy of Management Review*, 26(2), 243–263. https://doi.org/10.5465/amr.2001.4378020
+- Sarasvathy, S. D. (2008). *Effectuation: Elements of Entrepreneurial Expertise*. Edward Elgar Publishing.
+- Savage, L. J. (1954). *The Foundations of Statistics*. John Wiley & Sons.
 - Shapley, L. S. (1953). A value for n-person games. In *Contributions to the Theory of Games II* (pp. 307–317). Princeton University Press. https://doi.org/10.1515/9781400881970-018
+- Simon, H. A. (1955). A behavioral model of rational choice. *Quarterly Journal of Economics*, 69(1), 99–118. https://doi.org/10.2307/1884852
+- Simon, H. A. (1971). Designing organizations for an information-rich world. In M. Greenberger (Ed.), *Computers, Communications, and the Public Interest* (pp. 37–72). Johns Hopkins Press.
 - Snoussi, E. H. (1998). Necessary conditions for multistationarity and stable periodicity. *Journal of Biological Systems*, 6(1), 3–9. https://doi.org/10.1142/S0218339098000042
+- Sozou, P. D. (1998). On hyperbolic discounting and uncertain hazard rates. *Proceedings of the Royal Society of London. Series B: Biological Sciences*, 265(1409), 2015–2020. https://doi.org/10.1098/rspb.1998.0534
 - Tarski, A. (1955). A lattice-theoretical fixpoint theorem and its applications. *Pacific Journal of Mathematics*, 5(2), 285–309. https://doi.org/10.2140/pjm.1955.5.285
+- Telser, L. G. (1955). Safety first and hedging. *Review of Economic Studies*, 23(1), 1–16. https://doi.org/10.2307/2296144
 - Thomas, R. (1981). On the relation between the logical structure of systems and their ability to generate multiple steady states or sustained oscillations. In *Numerical Methods in the Study of Critical Phenomena* (Springer Series in Synergetics, vol. 9, pp. 180–193). https://doi.org/10.1007/978-3-642-81703-8_24
+- Thompson, W. R. (1933). On the likelihood that one unknown probability exceeds another in view of the evidence of two samples. *Biometrika*, 25(3/4), 285–294. https://doi.org/10.1093/biomet/25.3-4.285
+- Wernerfelt, B. (1984). A resource-based view of the firm. *Strategic Management Journal*, 5(2), 171–180. https://doi.org/10.1002/smj.4250050207
 - Wright, S. (1934). The method of path coefficients. *Annals of Mathematical Statistics*, 5(3), 161–215. https://doi.org/10.1214/aoms/1177732676

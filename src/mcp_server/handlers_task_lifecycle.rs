@@ -539,16 +539,27 @@ impl PkbSearchServer {
             Self::build_mutation_neighborhood(&graph, &node_id, cascade_closed)
         };
 
+        let (node_title, node_modified) = {
+            let graph = self.graph.read();
+            (
+                graph.resolve(id).map(|n| n.label.clone()),
+                graph.resolve(id).and_then(|n| n.modified.clone()),
+            )
+        };
+        let new_modified = node_modified.unwrap_or_else(|| chrono::Utc::now().to_rfc3339());
+        let title_to_use = node_title.as_deref().unwrap_or(&label);
+
         let response = serde_json::json!({
             "ok": true,
             "id": id,
+            "title": title_to_use,
             "status": "done",
-            "message": format!("Completed: {} (`{}`)", label, id),
+            "modified": new_modified,
+            "message": format!("Completed: {} (`{}`)", title_to_use, id),
             "neighborhood": neighborhood,
         });
-        Ok(CallToolResult::success(vec![Content::text(
-            serde_json::to_string_pretty(&response).unwrap_or_default(),
-        )]))
+        let text = serde_json::to_string_pretty(&response).unwrap_or_default();
+        Ok(Self::structured_result(text, response))
     }
 
     /// M3: Semantic attach — search open epics for a confident topic match.
@@ -648,13 +659,20 @@ impl PkbSearchServer {
             }
         }
 
+        let sid_len = session_id.floor_char_boundary(session_id.len().min(8));
+        let short_sid = &session_id[..sid_len];
+
+        // Epic ID is adhoc_{hash8} (14 chars) + '_' + slug + '.md' (3 chars) = 18 chars overhead.
+        // MAX_FILENAME_LEN is 80 chars, leaving at most 62 chars for slug.
+        // Prefix slug is 'session_{short_sid}' (at most 16 chars) + '_' (1 char) = 17 chars.
+        // That leaves 45 chars for hint slug. We truncate hint to at most 40 chars.
         let hint = title_hint.trim();
-        let hint_end = hint.floor_char_boundary(hint.len().min(80));
+        let hint_end = hint.floor_char_boundary(hint.len().min(40));
         let truncated = hint[..hint_end].trim_end();
         let title = if truncated.is_empty() {
-            format!("Session {session_id}")
+            format!("Session {short_sid}")
         } else {
-            format!("Session {session_id}: {truncated}")
+            format!("Session {short_sid}: {truncated}")
         };
 
         let fields = crate::document_crud::TaskFields {
@@ -692,7 +710,7 @@ impl PkbSearchServer {
             self.rebuild_graph();
         }
 
-        tracing::info!(target: "adhoc_grouping", epic_id = epic_id.as_str(), session_id, "M2: created session epic");
+        tracing::debug!(target: "adhoc_grouping", epic_id = epic_id.as_str(), session_id, "M2: created session epic");
         Ok(epic_id)
     }
 
@@ -714,16 +732,25 @@ impl PkbSearchServer {
 
         let summary = args.get("summary").and_then(|v| v.as_str()).unwrap_or("");
 
-        // Truncate summary to 200 chars for title
+        // Dynamically clamp title length based on project prefix length so generated filename
+        // stays strictly within MAX_FILENAME_LEN (80 chars).
+        // Fixed overhead: prefix (project) + 1 ('_') + 8 (hash) + 1 ('_') + 3 ('.md') = project.len() + 13.
+        let max_title_len = crate::document_crud::MAX_FILENAME_LEN
+            .saturating_sub(project.len() + 14)
+            .clamp(15, 50);
+
         let mut title = summary.trim().replace('\n', " ");
-        if title.len() > 200 {
-            let end = title.floor_char_boundary(200);
+        if title.len() > max_title_len {
+            let end = title.floor_char_boundary(max_title_len);
             let last_space = title[..end].rfind(' ').unwrap_or(end);
             title.truncate(last_space);
         }
-        if title.is_empty() {
-            title = "Ad-hoc Session Task".to_string();
-        }
+        let title_clean = title.trim();
+        let title = if title_clean.is_empty() {
+            "Ad-hoc Session Task".to_string()
+        } else {
+            title_clean.to_string()
+        };
 
         // Ensure adhoc-sessions root exists
         crate::document_crud::ensure_adhoc_sessions_root(&self.pkb_root).map_err(|e| McpError {
@@ -747,7 +774,7 @@ impl PkbSearchServer {
         let parent_id = if let Some((epic_id, score, ref epic_title)) =
             self.find_topic_epic(summary)
         {
-            tracing::info!(
+            tracing::debug!(
                 target: "adhoc_grouping",
                 routing = "M3",
                 score,
@@ -758,7 +785,7 @@ impl PkbSearchServer {
             epic_id
         } else if let Some(sid) = session_id_opt {
             let epic_id = self.find_or_create_session_epic(sid, summary)?;
-            tracing::info!(
+            tracing::debug!(
                 target: "adhoc_grouping",
                 routing = "M2",
                 session_id = sid,
@@ -767,7 +794,7 @@ impl PkbSearchServer {
             );
             epic_id
         } else {
-            tracing::info!(
+            tracing::debug!(
                 target: "adhoc_grouping",
                 routing = "fallback",
                 "Fallback: no session_id and no confident topic match; parenting to adhoc-sessions root"
@@ -1016,6 +1043,31 @@ impl PkbSearchServer {
         let node_id = node.id.clone();
         drop(graph);
 
+        // academicOps#2747: release to done requires all acceptance criteria checkboxes to be ticked.
+        if status == "done" {
+            let doc = crate::pkb::parse_file_relative(&abs_path, &self.pkb_root)
+                .or_else(|| crate::pkb::parse_file(&abs_path));
+            if let Some(doc) = doc {
+                let unticked = crate::graph::find_unticked_acceptance_items(&doc.body);
+                if !unticked.is_empty() {
+                    let items_list: Vec<String> = unticked
+                        .iter()
+                        .map(|item| format!("  - [ ] {item}"))
+                        .collect();
+                    return Err(McpError {
+                        code: ErrorCode::INVALID_PARAMS,
+                        message: Cow::from(format!(
+                            "Cannot release task \"{id}\" as \"done\": {} unticked acceptance item(s) remain:\n{}\n\n\
+                             All acceptance items must be verified and checked (- [x]) before releasing as done.",
+                            unticked.len(),
+                            items_list.join("\n")
+                        )),
+                        data: None,
+                    });
+                }
+            }
+        }
+
         // Cascade-close open descendants when recursive=true. Batch the
         // graph patches into a single write lock + one reclassify, and queue
         // re-embeds for the background worker, so 100 descendants don't cost
@@ -1258,19 +1310,25 @@ impl PkbSearchServer {
             Self::build_mutation_neighborhood(&graph, &node_id, cascade_closed)
         };
 
+        let node_modified = {
+            let graph = self.graph.read();
+            graph.resolve(id).and_then(|n| n.modified.clone())
+        };
+        let new_modified = node_modified.unwrap_or_else(|| chrono::Utc::now().to_rfc3339());
         let mut json = serde_json::json!({
             "ok": true,
             "id": id,
+            "title": label,
             "status": status,
+            "modified": new_modified,
             "message": response_text,
             "neighborhood": neighborhood,
         });
         if let Some(nid) = created_id {
             json["created_id"] = serde_json::json!(nid);
         }
-        Ok(CallToolResult::success(vec![Content::text(
-            serde_json::to_string_pretty(&json).unwrap_or_default(),
-        )]))
+        let text = serde_json::to_string_pretty(&json).unwrap_or_default();
+        Ok(Self::structured_result(text, json))
     }
 
     // =========================================================================
@@ -1593,6 +1651,9 @@ impl PkbSearchServer {
                 follow_up_tasks: vec![],
                 release_summary: None,
                 contributes_to: vec![],
+                links: vec![],
+                worth: None,
+                deadline_class: None,
                 classification: subtask
                     .get("classification")
                     .and_then(|v| v.as_str())

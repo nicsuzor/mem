@@ -5,6 +5,55 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.101](https://github.com/nicsuzor/mem/compare/mem-v0.3.100...mem-v0.3.101) (2026-10-09)
+
+
+### Bug Fixes
+
+* **excalidraw:** trim connect arrows to shape outlines; mint valid fractional indices ([#691](https://github.com/nicsuzor/mem/issues/691)) ([9f72881](https://github.com/nicsuzor/mem/commit/9f72881802a16ec808529691858f8958c1a4cd25))
+
+## [0.3.100](https://github.com/nicsuzor/mem/compare/mem-v0.3.99...mem-v0.3.100) (2026-10-09)
+
+
+### Bug Fixes
+
+* **ranking:** share value_lineage down the tree instead of copying it to every leaf ([8cdd96e](https://github.com/nicsuzor/mem/commit/8cdd96ecf72f84eaa64096b6a0efa67702734579))
+
+## [0.3.99](https://github.com/nicsuzor/mem/compare/mem-v0.3.98...mem-v0.3.99) (2026-10-08)
+
+
+### Bug Fixes
+
+* char-boundary-safe string truncation (pkb crash loop, [#686](https://github.com/nicsuzor/mem/issues/686)) ([#687](https://github.com/nicsuzor/mem/issues/687)) ([6342e55](https://github.com/nicsuzor/mem/commit/6342e557b161d2b3f42e64a256268ab03b6c3df6))
+
+
+### Documentation
+
+* **pkb-rules:** trust the write response; drop read-back-after-write ([11aac6a](https://github.com/nicsuzor/mem/commit/11aac6a118e2a639ff4d8de7253e24ee4b00de44))
+* **pkb-rules:** trust the write response; drop read-back-after-write ([071aaa3](https://github.com/nicsuzor/mem/commit/071aaa3a9e0c4168c1228121746a1b9f95cce437))
+* **specs:** migration of the live graph to the flow rule (draft) ([#673](https://github.com/nicsuzor/mem/issues/673)) ([37668d1](https://github.com/nicsuzor/mem/commit/37668d1fd737015e2074ece87b73bb3fcf9b2dcd))
+* **specs:** PKB engine and tools for the flow rule (draft) ([#674](https://github.com/nicsuzor/mem/issues/674)) ([93b5014](https://github.com/nicsuzor/mem/commit/93b5014f11b43e297fdc18f40f9b2eef2d95ee04))
+
+## [0.3.98](https://github.com/nicsuzor/mem/compare/mem-v0.3.97...mem-v0.3.98) (2026-10-08)
+
+
+### Features
+
+* **excalidraw:** first-class strokeStyle flags and set-stroke-style command ([a93a94d](https://github.com/nicsuzor/mem/commit/a93a94d85c620783327dc1017369bb483c866a52))
+
+
+### Bug Fixes
+
+* **batch_merge:** cancel merged sources with a merge note, not done ([f188db4](https://github.com/nicsuzor/mem/commit/f188db4b991ac08c8cf4f3770823c23d654e7a5c))
+* **clippy:** hoist wikilink regex out of loop in lsp document links ([44082d5](https://github.com/nicsuzor/mem/commit/44082d5df695d3f1e3873691300e4c28c98b0d98))
+* **clippy:** hoist wikilink regex out of loop in lsp.rs ([021ab60](https://github.com/nicsuzor/mem/commit/021ab6074575f8ece0597432a2b073e95c481dfc))
+* **mcp:** drop index/disk disagreement warning from list responses ([f05abac](https://github.com/nicsuzor/mem/commit/f05abac9a48626b64c7545a17043b703c5292e31))
+
+
+### Miscellaneous
+
+* **logging:** one INFO line per tool call; per-request noise to DEBUG ([#676](https://github.com/nicsuzor/mem/issues/676)) ([8bdec50](https://github.com/nicsuzor/mem/commit/8bdec50752a8605e12a4b3982798ce3db53ced57))
+
 ## [0.3.97](https://github.com/nicsuzor/mem/compare/mem-v0.3.96...mem-v0.3.97) (2026-10-06)
 
 

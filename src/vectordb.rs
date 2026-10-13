@@ -166,6 +166,31 @@ pub fn wal_compacting_path(db_path: &Path) -> PathBuf {
     db_path.with_extension("wal.compacting")
 }
 
+/// Returns the sidecar stamps file path corresponding to a database path (e.g. `pkb_vectors.stamps`).
+pub fn stamps_path(db_path: &Path) -> PathBuf {
+    db_path.with_extension("stamps")
+}
+
+/// Filesystem stamp for change detection without reading or parsing file content.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FileStamp {
+    pub mtime: std::time::SystemTime,
+    pub size: u64,
+}
+
+impl FileStamp {
+    pub fn from_metadata(meta: &std::fs::Metadata) -> Option<Self> {
+        let mtime = meta.modified().ok()?;
+        let size = meta.len();
+        Some(Self { mtime, size })
+    }
+
+    pub fn from_path(path: &Path) -> Option<Self> {
+        let meta = std::fs::metadata(path).ok()?;
+        Self::from_metadata(&meta)
+    }
+}
+
 /// Outcome of [`VectorStore::prepare_upsert`]. The caller applies this under
 /// a brief write lock via [`VectorStore::apply_prepared`].
 ///
@@ -243,6 +268,12 @@ pub struct VectorStore {
     /// In-memory BM25 lexical index
     #[serde(skip)]
     bm25: Arc<parking_lot::RwLock<crate::bm25::Bm25Index>>,
+    /// In-memory cached file stamps for fast staleness detection
+    #[serde(skip)]
+    stamps: Arc<parking_lot::RwLock<HashMap<PathBuf, FileStamp>>>,
+    /// Database file path on disk (for sidecar persistence)
+    #[serde(skip)]
+    db_path: parking_lot::RwLock<Option<PathBuf>>,
 }
 
 /// Helper to check if a document's doc_type matches an optional type filter string.
@@ -309,6 +340,46 @@ impl VectorStore {
             documents: HashMap::new(),
             dimension,
             bm25: Arc::new(parking_lot::RwLock::new(crate::bm25::Bm25Index::new())),
+            stamps: Arc::new(parking_lot::RwLock::new(HashMap::new())),
+            db_path: parking_lot::RwLock::new(None),
+        }
+    }
+
+    pub fn get_stamp(&self, rel_path: &Path) -> Option<FileStamp> {
+        self.stamps.read().get(rel_path).copied()
+    }
+
+    pub fn set_stamp(&self, rel_path: PathBuf, stamp: FileStamp) {
+        self.stamps.write().insert(rel_path, stamp);
+    }
+
+    pub fn set_stamps(&self, new_stamps: HashMap<PathBuf, FileStamp>) {
+        let mut w = self.stamps.write();
+        w.extend(new_stamps);
+    }
+
+    pub fn stamps_cloned(&self) -> HashMap<PathBuf, FileStamp> {
+        self.stamps.read().clone()
+    }
+
+    pub fn clear_stamps(&self) {
+        self.stamps.write().clear();
+    }
+
+    pub fn set_db_path(&self, path: PathBuf) {
+        *self.db_path.write() = Some(path);
+    }
+
+    pub fn save_stamps(&self) {
+        if let Some(db_path) = self.db_path.read().as_ref() {
+            let stamps_file = stamps_path(db_path);
+            let stamps_map = self.stamps.read();
+            if let Ok(data) = bincode::serialize(&*stamps_map) {
+                let tmp_stamps = db_path.with_extension("stamps.tmp");
+                if std::fs::write(&tmp_stamps, &data).is_ok() {
+                    let _ = std::fs::rename(&tmp_stamps, &stamps_file);
+                }
+            }
         }
     }
 
@@ -529,6 +600,17 @@ impl VectorStore {
         }
 
         store.sync_bm25_all();
+        store.set_db_path(path.to_path_buf());
+        let stamps_file = stamps_path(path);
+        if stamps_file.exists() {
+            if let Ok(bytes) = std::fs::read(&stamps_file) {
+                if let Ok(loaded_stamps) =
+                    bincode::deserialize::<HashMap<PathBuf, FileStamp>>(&bytes)
+                {
+                    *store.stamps.write() = loaded_stamps;
+                }
+            }
+        }
 
         Ok(store)
     }
@@ -567,9 +649,12 @@ impl VectorStore {
             let _ = std::fs::remove_file(&wal_compacting);
         }
 
+        self.set_db_path(path.to_path_buf());
+        self.save_stamps();
+
         let elapsed_write = t_write.elapsed();
 
-        tracing::info!(
+        tracing::debug!(
             "Saved vector store ({} documents, {:.1} MB) in {:.1}ms (serialize: {:.1}ms, io: {:.1}ms)",
             self.documents.len(),
             data.len() as f64 / 1_048_576.0,
@@ -946,7 +1031,8 @@ impl VectorStore {
     /// Returns true if the document was found and removed.
     pub fn remove(&mut self, id: &str) -> bool {
         self.bm25.write().remove(id);
-        if self.documents.remove(id).is_some() {
+        if let Some(entry) = self.documents.remove(id) {
+            self.stamps.write().remove(&entry.path);
             true
         } else {
             let target_path = Path::new(id);
@@ -959,7 +1045,12 @@ impl VectorStore {
             });
             if let Some(actual_id) = found_id {
                 self.bm25.write().remove(&actual_id);
-                self.documents.remove(&actual_id).is_some()
+                if let Some(entry) = self.documents.remove(&actual_id) {
+                    self.stamps.write().remove(&entry.path);
+                    true
+                } else {
+                    false
+                }
             } else {
                 false
             }
@@ -973,10 +1064,12 @@ impl VectorStore {
     ) -> usize {
         let before = self.documents.len();
         let mut bm25 = self.bm25.write();
-        self.documents.retain(|id, _| {
+        let mut stamps = self.stamps.write();
+        self.documents.retain(|id, entry| {
             let keep = existing_ids.contains(id);
             if !keep {
                 bm25.remove(id);
+                stamps.remove(&entry.path);
             }
             keep
         });
@@ -1015,6 +1108,12 @@ impl VectorStore {
         type_filter: Option<&str>,
         reranker: Option<&crate::rerank::CrossEncoderReranker>,
     ) -> Vec<SearchResult> {
+        let tracer = opentelemetry::global::tracer("mem");
+        use opentelemetry::trace::Tracer;
+        let span = tracer.start("search_hybrid");
+        let _guard = opentelemetry::trace::mark_span_as_active(span);
+        let start = std::time::Instant::now();
+
         let fetch_limit = (limit * 3).max(20);
         let vector_results = self.search(
             query_embedding,
@@ -1040,6 +1139,7 @@ impl VectorStore {
         }
 
         fused.truncate(limit);
+        crate::otel::call_metrics::CallMetrics::record_hybrid_search_duration(start.elapsed());
         fused
     }
 

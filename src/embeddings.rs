@@ -363,8 +363,7 @@ fn download_onnx_runtime() -> Result<PathBuf> {
 
                 if let Some(fname) = filename {
                     // Normalize the main library name (strip version suffix)
-                    let is_main_lib =
-                        fname.starts_with("libonnxruntime.") || fname == "onnxruntime.dll";
+                    let is_main_lib = fname.starts_with("libonnxruntime.") || fname == "onnxruntime.dll";
                     let dest_name = if is_main_lib {
                         lib_name.to_string()
                     } else {
@@ -440,18 +439,73 @@ fn get_onnx_runtime_path() -> Option<PathBuf> {
 /// Threads per ONNX inference session.
 const THREADS_PER_SESSION: usize = 8;
 
+#[derive(Debug)]
+struct LruQueryCache {
+    capacity: usize,
+    map: std::collections::HashMap<String, Vec<f32>>,
+    order: std::collections::VecDeque<String>,
+}
+
+impl LruQueryCache {
+    fn new(capacity: usize) -> Self {
+        Self {
+            capacity,
+            map: std::collections::HashMap::new(),
+            order: std::collections::VecDeque::new(),
+        }
+    }
+
+    fn get(&mut self, key: &str) -> Option<Vec<f32>> {
+        if let Some(val) = self.map.get(key) {
+            if let Some(pos) = self.order.iter().position(|k| k == key) {
+                self.order.remove(pos);
+            }
+            self.order.push_back(key.to_string());
+            Some(val.clone())
+        } else {
+            None
+        }
+    }
+
+    fn insert(&mut self, key: String, val: Vec<f32>) {
+        if self.map.contains_key(&key) {
+            self.map.insert(key.clone(), val);
+            if let Some(pos) = self.order.iter().position(|k| k == &key) {
+                self.order.remove(pos);
+            }
+            self.order.push_back(key);
+            return;
+        }
+
+        if self.map.len() >= self.capacity {
+            if let Some(oldest) = self.order.pop_front() {
+                self.map.remove(&oldest);
+            }
+        }
+        self.map.insert(key.clone(), val);
+        self.order.push_back(key);
+    }
+
+    fn len(&self) -> usize {
+        self.map.len()
+    }
+}
+
 /// Max parallel ONNX sessions for CPU mode, computed from available cores.
-/// Pool starts with 1 session (fast startup for search), grows on demand for reindex.
-/// GPU mode uses exactly 1 session (hardcoded in the GPU path) — the GPU parallelizes internally.
-///
-/// BGE-M3 FP32 loads ~2.1GB per session, so we cap at 2 sessions (~4GB RAM max).
-/// Fewer sessions with more threads per session reduces memory-bandwidth contention
-/// from multiple model copies competing for cache/DRAM.
+/// Pool pre-warms with at least 2 sessions on multi-core systems so concurrent searches do not serialise.
 fn max_sessions_cpu() -> usize {
     let cores = std::thread::available_parallelism()
         .map(|n| n.get())
         .unwrap_or(4);
-    (cores / THREADS_PER_SESSION).clamp(1, 2)
+    if cores <= 1 {
+        1
+    } else {
+        (cores / 2).clamp(2, 4)
+    }
+}
+
+fn threads_per_session_cpu(cores: usize, max_sess: usize) -> usize {
+    (cores / max_sess).clamp(1, 4)
 }
 
 struct SessionPool {
@@ -538,7 +592,7 @@ impl SessionPool {
 
         // BGE-M3 (XLM-RoBERTa): pad_id=1, pad_token="<pad>"
         tokenizer.with_padding(Some(tokenizers::PaddingParams {
-            strategy: tokenizers::PaddingStrategy::Fixed(config.max_length),
+            strategy: tokenizers::PaddingStrategy::BatchLongest,
             pad_id: 1,
             pad_token: "<pad>".to_string(),
             ..Default::default()
@@ -550,8 +604,30 @@ impl SessionPool {
             }))
             .map_err(|e| anyhow::anyhow!("Failed to set truncation: {e}"))?;
 
+        let max_sess = if override_max_sessions > 0 {
+            override_max_sessions
+        } else {
+            max_sessions_cpu()
+        };
+        let mut initial_sessions = vec![Arc::new(Mutex::new(session))];
+        if !using_gpu && max_sess >= 2 {
+            let cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
+            let sess_threads = if override_threads > 0 {
+                override_threads
+            } else {
+                threads_per_session_cpu(cores, max_sess)
+            };
+            if let Ok(extra_sess) = Session::builder()
+                .and_then(|b| b.with_optimization_level(GraphOptimizationLevel::Level3))
+                .and_then(|b| b.with_intra_threads(sess_threads))
+                .and_then(|b| b.commit_from_file(&config.model_path))
+            {
+                initial_sessions.push(Arc::new(Mutex::new(extra_sess)));
+            }
+        }
+
         let pool = Self {
-            sessions: parking_lot::RwLock::new(vec![Arc::new(Mutex::new(session))]),
+            sessions: parking_lot::RwLock::new(initial_sessions),
             model_path: config.model_path.clone(),
             tokenizer,
             uses_token_type_ids,
@@ -586,7 +662,6 @@ impl SessionPool {
         ];
 
         let batch_size = probe_texts.len();
-        let max_length = 64; // Short sequences for the probe
 
         let encodings = match self.tokenizer.encode_batch(probe_texts.to_vec(), true) {
             Ok(enc) => enc,
@@ -595,6 +670,13 @@ impl SessionPool {
                 return false;
             }
         };
+
+        let max_length = encodings
+            .iter()
+            .map(|enc| enc.get_ids().len().min(64))
+            .max()
+            .unwrap_or(64)
+            .max(1);
 
         let total_len = batch_size * max_length;
         let mut input_ids_data = vec![0i64; total_len];
@@ -634,7 +716,15 @@ impl SessionPool {
         };
 
         let session_arc = self.acquire_session();
-        let mut session = session_arc.lock();
+        let mut session = {
+            let tracer = opentelemetry::global::tracer("mem");
+            use opentelemetry::trace::Tracer;
+            let mut span = tracer.start("session_mutex_wait");
+            let s = session_arc.lock();
+            use opentelemetry::trace::Span;
+            span.end();
+            s
+        };
 
         let start = std::time::Instant::now();
         let result = if self.uses_token_type_ids {
@@ -758,13 +848,45 @@ impl SessionPool {
         Ok(())
     }
 
-    /// Get the first available (unlocked) session, or block on session 0.
+    /// Get the first available (unlocked) session, or spawn a new session if pool not full, or block on session 0.
     fn acquire_session(&self) -> Arc<Mutex<Session>> {
-        let sessions = self.sessions.read();
-        // Try each session without blocking
+        {
+            let sessions = self.sessions.read();
+            // Try each session without blocking
+            for session in sessions.iter() {
+                if session.try_lock().is_some() {
+                    return Arc::clone(session);
+                }
+            }
+        }
+        let max_sess = if self.override_max_sessions > 0 {
+            self.override_max_sessions
+        } else {
+            max_sessions_cpu()
+        };
+        let mut sessions = self.sessions.write();
         for session in sessions.iter() {
             if session.try_lock().is_some() {
                 return Arc::clone(session);
+            }
+        }
+        if sessions.len() < max_sess && !self.gpu_mode.load(Ordering::Relaxed) {
+            let cores = std::thread::available_parallelism()
+                .map(|n| n.get())
+                .unwrap_or(4);
+            let threads = if self.override_threads > 0 {
+                self.override_threads
+            } else {
+                threads_per_session_cpu(cores, max_sess)
+            };
+            if let Ok(sess) = Session::builder()
+                .and_then(|b| b.with_optimization_level(ort::session::builder::GraphOptimizationLevel::Level3))
+                .and_then(|b| b.with_intra_threads(threads))
+                .and_then(|b| b.commit_from_file(&self.model_path))
+            {
+                let arc = Arc::new(Mutex::new(sess));
+                sessions.push(Arc::clone(&arc));
+                return arc;
             }
         }
         // All busy — return first (caller will block on lock)
@@ -787,6 +909,12 @@ pub struct Embedder {
     override_batch_size: usize,
     /// If true, return dummy zero vectors (used for testing without model files).
     is_dummy: bool,
+    /// Query embedding cache (LRU)
+    query_cache: parking_lot::Mutex<LruQueryCache>,
+    /// Dummy sessions for testing concurrency without model files
+    dummy_sessions: parking_lot::RwLock<Vec<Arc<Mutex<()>>>>,
+    /// Artificial delay for dummy sessions in tests
+    dummy_delay: parking_lot::Mutex<Option<std::time::Duration>>,
 }
 
 impl Embedder {
@@ -834,6 +962,12 @@ impl Embedder {
             override_threads: 0,
             override_batch_size: 0,
             is_dummy: false,
+            query_cache: parking_lot::Mutex::new(LruQueryCache::new(512)),
+            dummy_sessions: parking_lot::RwLock::new(vec![
+                Arc::new(Mutex::new(())),
+                Arc::new(Mutex::new(())),
+            ]),
+            dummy_delay: parking_lot::Mutex::new(None),
         })
     }
 
@@ -867,7 +1001,21 @@ impl Embedder {
             override_threads: 0,
             override_batch_size: 0,
             is_dummy: true,
+            query_cache: parking_lot::Mutex::new(LruQueryCache::new(512)),
+            dummy_sessions: parking_lot::RwLock::new(vec![
+                Arc::new(Mutex::new(())),
+                Arc::new(Mutex::new(())),
+            ]),
+            dummy_delay: parking_lot::Mutex::new(None),
         }
+    }
+
+    pub fn query_cache_len(&self) -> usize {
+        self.query_cache.lock().len()
+    }
+
+    pub fn set_dummy_delay(&mut self, delay: std::time::Duration) {
+        *self.dummy_delay.lock() = Some(delay);
     }
 
     /// Set parallelism overrides for benchmarking. Zero values use defaults.
@@ -906,8 +1054,23 @@ impl Embedder {
 
     /// Encode a query with instruction prefix (asymmetric retrieval).
     pub fn encode_query(&self, text: &str) -> Result<Vec<f32>> {
+        let tracer = opentelemetry::global::tracer("mem");
+        use opentelemetry::trace::Tracer;
+        let span = tracer.start("encode_query");
+        let _guard = opentelemetry::trace::mark_span_as_active(span);
+        let start = std::time::Instant::now();
+
+        if let Some(cached) = self.query_cache.lock().get(text) {
+            crate::otel::call_metrics::CallMetrics::record_embed_duration(start.elapsed());
+            return Ok(cached);
+        }
+
         let prefixed = format!("{QUERY_PREFIX}{text}");
-        self.encode(&prefixed)
+        let res = self.encode(&prefixed)?;
+
+        self.query_cache.lock().insert(text.to_string(), res.clone());
+        crate::otel::call_metrics::CallMetrics::record_embed_duration(start.elapsed());
+        Ok(res)
     }
 
     /// Encode a document without prefix (asymmetric retrieval).
@@ -952,6 +1115,26 @@ impl Embedder {
         }
 
         if self.is_dummy {
+            let tracer = opentelemetry::global::tracer("mem");
+            use opentelemetry::trace::Tracer;
+            let mut span = tracer.start("session_mutex_wait");
+            let dummy_pool = self.dummy_sessions.read().clone();
+            let mut _guard = None;
+            for s in &dummy_pool {
+                if let Some(g) = s.try_lock() {
+                    _guard = Some(g);
+                    break;
+                }
+            }
+            let _guard = _guard.unwrap_or_else(|| dummy_pool[0].lock());
+            use opentelemetry::trace::Span;
+            span.end();
+
+            let delay = *self.dummy_delay.lock();
+            if let Some(d) = delay {
+                std::thread::sleep(d);
+            }
+
             return Ok(vec![vec![0.0; EMBEDDING_DIM]; texts.len()]);
         }
 
@@ -1061,7 +1244,15 @@ impl Embedder {
 
         // Acquire a session from the pool and run inference
         let session_arc = pool.acquire_session();
-        let mut session = session_arc.lock();
+        let mut session = {
+            let tracer = opentelemetry::global::tracer("mem");
+            use opentelemetry::trace::Tracer;
+            let mut span = tracer.start("session_mutex_wait");
+            let s = session_arc.lock();
+            use opentelemetry::trace::Span;
+            span.end();
+            s
+        };
 
         // Conditionally include token_type_ids (BERT needs them, XLM-RoBERTa does not)
         let outputs = if pool.uses_token_type_ids {
@@ -1730,10 +1921,7 @@ After the code.";
 
         // Step 1: Simulate interrupted download (leaves .part file, dest does not exist)
         std::fs::write(&tmp, b"incomplete payload").unwrap();
-        assert!(
-            !dest.exists(),
-            "Interrupted download must not leave final destination file"
-        );
+        assert!(!dest.exists(), "Interrupted download must not leave final destination file");
         assert!(tmp.exists(), "Interrupted download leaves .part file");
 
         // Step 2: Simulate subsequent run logic from download_models()
@@ -1752,14 +1940,8 @@ After the code.";
         std::fs::rename(&tmp, &dest).unwrap();
 
         // 2e. Assert final destination exists with full payload, tmp is gone
-        assert!(
-            dest.exists(),
-            "Destination file must exist after successful rename"
-        );
-        assert!(
-            !tmp.exists(),
-            "Temp .part file must no longer exist after rename"
-        );
+        assert!(dest.exists(), "Destination file must exist after successful rename");
+        assert!(!tmp.exists(), "Temp .part file must no longer exist after rename");
         assert_eq!(std::fs::read(&dest).unwrap(), full_payload);
     }
 
@@ -1806,14 +1988,8 @@ After the code.";
         let config = EmbeddingConfig::from_env();
         std::env::remove_var("AOPS_MODEL_PATH");
 
-        assert_eq!(
-            config.model_path,
-            temp_dir.path().join("model_quantized.onnx")
-        );
-        assert_eq!(
-            config.tokenizer_path,
-            temp_dir.path().join("tokenizer.json")
-        );
+        assert_eq!(config.model_path, temp_dir.path().join("model_quantized.onnx"));
+        assert_eq!(config.tokenizer_path, temp_dir.path().join("tokenizer.json"));
     }
 
     #[test]
@@ -1832,4 +2008,145 @@ After the code.";
             models_dir
         );
     }
+
+    #[test]
+    fn test_short_input_not_padded_to_512() {
+        let config = EmbeddingConfig::from_env();
+        if !config.model_path.exists() || !config.tokenizer_path.exists() {
+            eprintln!("Skipping: model files not present on disk");
+            return;
+        }
+        let embedder = Embedder::new().expect("failed to create embedder");
+        let pool = embedder.ensure_pool().expect("ensure_pool failed");
+
+        let short_input = "keyboard EMR interference";
+        let encodings = pool
+            .tokenizer
+            .encode_batch(vec![short_input], true)
+            .expect("tokenization failed");
+
+        let token_count = encodings[0].get_ids().len();
+        eprintln!("Token count for {:?}: {}", short_input, token_count);
+
+        assert!(
+            token_count < 512,
+            "Short input was padded to {token_count} tokens; expected dynamic padding < 512 tokens"
+        );
+        assert!(
+            matches!(
+                pool.tokenizer.get_padding().map(|p| &p.strategy),
+                Some(tokenizers::PaddingStrategy::BatchLongest)
+            ),
+            "Tokenizer padding strategy should be BatchLongest"
+        );
+    }
+
+    #[test]
+    fn test_embeddings_match_prefix_vectors_within_tolerance() {
+        let config = EmbeddingConfig::from_env();
+        if !config.model_path.exists() || !config.tokenizer_path.exists() {
+            eprintln!("Skipping: model files not present on disk");
+            return;
+        }
+
+        let embedder = Embedder::new().expect("failed to create embedder");
+        let pool = embedder.ensure_pool().expect("ensure_pool failed");
+
+        let text = "keyboard EMR interference";
+
+        // Dynamic padding vector (post-fix behavior)
+        let dynamic_vec = embedder.encode_query(text).expect("dynamic encode failed");
+
+        // Compute pre-fix vector using Fixed(512) padding strategy
+        let mut fixed_tokenizer =
+            tokenizers::Tokenizer::from_file(&config.tokenizer_path).expect("load tokenizer");
+        fixed_tokenizer.with_padding(Some(tokenizers::PaddingParams {
+            strategy: tokenizers::PaddingStrategy::Fixed(config.max_length),
+            pad_id: 1,
+            pad_token: "<pad>".to_string(),
+            ..Default::default()
+        }));
+        fixed_tokenizer
+            .with_truncation(Some(tokenizers::TruncationParams {
+                max_length: config.max_length,
+                ..Default::default()
+            }))
+            .expect("truncation");
+
+        let prefixed = format!("{QUERY_PREFIX}{text}");
+        let encodings = fixed_tokenizer
+            .encode_batch(vec![prefixed.as_str()], true)
+            .expect("fixed tokenization failed");
+
+        assert_eq!(encodings[0].get_ids().len(), 512, "Fixed padding must produce 512 tokens");
+
+        let mut input_ids = vec![0i64; 512];
+        let mut attention = vec![0i64; 512];
+        for (i, &token) in encodings[0].get_ids().iter().enumerate() {
+            input_ids[i] = token as i64;
+        }
+        for (i, &mask) in encodings[0].get_attention_mask().iter().enumerate() {
+            attention[i] = mask as i64;
+        }
+
+        use ort::value::TensorRef;
+        let shape = [1, 512];
+        let input_ids_val = TensorRef::from_array_view((shape, input_ids.as_slice())).unwrap();
+        let attention_val = TensorRef::from_array_view((shape, attention.as_slice())).unwrap();
+
+        let session_arc = pool.acquire_session();
+        let mut session = session_arc.lock();
+        let outputs = session
+            .run(ort::inputs![input_ids_val, attention_val])
+            .expect("session run");
+        let (_, sent_data) = outputs["sentence_embedding"]
+            .try_extract_tensor::<f32>()
+            .expect("extract tensor");
+
+        let mut fixed_vec = vec![0.0f32; EMBEDDING_DIM];
+        fixed_vec.copy_from_slice(&sent_data[..EMBEDDING_DIM]);
+        crate::distance::normalize_inplace(&mut fixed_vec);
+
+        let sim = crate::distance::cosine_similarity(&dynamic_vec, &fixed_vec);
+        let max_diff = dynamic_vec
+            .iter()
+            .zip(fixed_vec.iter())
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0f32, f32::max);
+
+        eprintln!("Cosine similarity between dynamic and fixed(512) vectors: {sim:.8}");
+        eprintln!("Max absolute difference: {max_diff:.8}");
+
+        assert!(
+            sim > 0.9999,
+            "Cosine similarity between dynamic and fixed padding must be > 0.9999, got {sim:.8}"
+        );
+        assert!(
+            max_diff < 1e-3,
+            "Max absolute difference between dynamic and fixed padding must be < 1e-3, got {max_diff:.8}"
+        );
+    }
+
+    #[test]
+    #[ignore]
+    fn measure_single_query_latency() {
+        let embedder = Embedder::new().expect("failed to create embedder");
+        let query = "keyboard EMR interference";
+
+        // Warmup
+        let _ = embedder.encode_query(query).expect("warmup failed");
+
+        let iters = 10;
+        let mut total_duration = std::time::Duration::ZERO;
+
+        for _ in 0..iters {
+            let start = std::time::Instant::now();
+            let _ = embedder.encode_query(query).expect("encode failed");
+            total_duration += start.elapsed();
+        }
+
+        let avg_ms = total_duration.as_secs_f64() * 1000.0 / (iters as f64);
+        eprintln!("POST_FIX_AVG_LATENCY_MS: {avg_ms:.2} ms");
+    }
 }
+

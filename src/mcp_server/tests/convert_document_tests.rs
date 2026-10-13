@@ -251,3 +251,38 @@ fn git_records_the_move_as_a_rename() {
         "expected a rename entry, got:\n{last}"
     );
 }
+
+#[test]
+fn convert_document_over_limit_filename_rejected_and_writes_nothing() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    let dir = root.join("notes/mobile-captures");
+    std::fs::create_dir_all(&dir).unwrap();
+    let old_path = dir.join(format!("{CAPTURE_STEM}.md"));
+    std::fs::write(
+        &old_path,
+        "---\ntitle: This is an extremely long capture title that exceeds the tight filename length limit for PKB tasks\ntype: note\n---\n\nAsk about the enrolment form.\n",
+    )
+    .unwrap();
+    let original = std::fs::read_to_string(&old_path).unwrap();
+    let server = make_server(root);
+
+    let err = server
+        .handle_convert_document(&json!({ "id": CAPTURE_STEM, "type": "task", "status": "inbox" }))
+        .expect_err("convert_document with over-limit filename must fail");
+    assert!(
+        err.message.contains("80") && err.message.contains("characters"),
+        "error message must state limit and length, got: {}",
+        err.message
+    );
+    assert!(old_path.exists(), "source file must remain untouched");
+    assert_eq!(std::fs::read_to_string(&old_path).unwrap(), original);
+    let tasks_dir = root.join("tasks");
+    if tasks_dir.exists() {
+        assert_eq!(
+            std::fs::read_dir(tasks_dir).unwrap().count(),
+            0,
+            "no task file must be written"
+        );
+    }
+}

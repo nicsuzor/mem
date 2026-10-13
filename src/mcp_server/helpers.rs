@@ -6,6 +6,9 @@ use std::path::{Path, PathBuf};
 
 use super::PkbSearchServer;
 
+/// Byte cap for tool input/output recorded on OTel spans.
+pub(crate) const SPAN_VALUE_MAX_BYTES: usize = 8192;
+
 impl PkbSearchServer {
     /// Reject `new_text` if it introduces a machine-specific path to a PKB
     /// file (see `crate::path_lint`). `existing_text` is the body as it is
@@ -60,10 +63,7 @@ impl PkbSearchServer {
     ///
     /// The error message names the referrer count and up to 3 referencing
     /// nodes/edge types, avoiding path disclosure while providing an actionable diagnosis.
-    pub(crate) fn ghost_node_error(
-        id: &str,
-        graph: Option<&crate::graph_store::GraphStore>,
-    ) -> McpError {
+    pub(crate) fn ghost_node_error(id: &str, graph: Option<&crate::graph_store::GraphStore>) -> McpError {
         let msg = if let Some(g) = graph {
             let incoming = g.get_incoming_edges(id);
             let count = incoming.len();
@@ -151,6 +151,57 @@ impl PkbSearchServer {
         }
     }
 
+    pub(crate) fn truncate_body_with_info(
+        body: String,
+        max_bytes: Option<usize>,
+    ) -> (String, bool, usize) {
+        let total = body.len();
+        match max_bytes {
+            Some(max) if total > max => {
+                let boundary = body.floor_char_boundary(max);
+                let truncated = body[..boundary].to_string();
+                (truncated, true, total)
+            }
+            _ => (body, false, total),
+        }
+    }
+
+    pub(crate) fn excerpt_body(body: &str, max_chars: usize) -> (String, bool) {
+        let trimmed = body.trim();
+        let mut chars = trimmed.chars();
+        let exc: String = chars.by_ref().take(max_chars).collect();
+        if chars.next().is_some() {
+            (format!("{exc}..."), true)
+        } else {
+            (exc, false)
+        }
+    }
+
+    pub(crate) fn prune_null_and_empty(val: &mut JsonValue) -> bool {
+        match val {
+            JsonValue::Null => true,
+            JsonValue::String(s) => s.is_empty(),
+            JsonValue::Array(arr) => {
+                arr.retain_mut(|elem| !Self::prune_null_and_empty(elem));
+                arr.is_empty()
+            }
+            JsonValue::Object(map) => {
+                map.retain(|_, v| !Self::prune_null_and_empty(v));
+                map.is_empty()
+            }
+            _ => false,
+        }
+    }
+
+    pub(crate) fn structured_result(
+        content_text: String,
+        structured: JsonValue,
+    ) -> CallToolResult {
+        let mut res = CallToolResult::success(vec![Content::text(content_text)]);
+        res.structured_content = Some(structured);
+        res
+    }
+
     /// Statuses that are a handback rather than a clean success. Releasing to
     /// one of these requires a stated failure reason. Canonical list lives at
     /// `crate::graph::FAILURE_HANDBACK_STATUSES` so `batch_update` (which
@@ -203,6 +254,20 @@ impl PkbSearchServer {
                 message: Cow::from(format!("Failed to append evidence: {e}")),
                 data: None,
             })
+    }
+
+    /// Cap a JSON string recorded as an OTel span attribute (`input.value` /
+    /// `output.value`) at `SPAN_VALUE_MAX_BYTES`, cutting on a UTF-8 char
+    /// boundary and appending `...`. A raw byte slice here panics when a
+    /// multi-byte char straddles the cut, and the release build aborts on
+    /// panic, taking the whole server down (#686).
+    pub(crate) fn truncate_span_value(value: String) -> String {
+        if value.len() > SPAN_VALUE_MAX_BYTES {
+            let boundary = value.floor_char_boundary(SPAN_VALUE_MAX_BYTES - 3);
+            format!("{}...", &value[..boundary])
+        } else {
+            value
+        }
     }
 
     pub(crate) fn args_to_value(args: Option<JsonObject>) -> JsonValue {

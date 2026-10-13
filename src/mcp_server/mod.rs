@@ -54,13 +54,40 @@ pub struct ReindexStatus {
 }
 
 #[derive(Clone)]
+pub struct InstrumentedGraphStore {
+    inner: Arc<RwLock<GraphStore>>,
+}
+
+impl InstrumentedGraphStore {
+    pub fn new(inner: Arc<RwLock<GraphStore>>) -> Self {
+        Self { inner }
+    }
+
+    pub fn read(&self) -> parking_lot::RwLockReadGuard<'_, GraphStore> {
+        let start = std::time::Instant::now();
+        let guard = self.inner.read();
+        let wait = start.elapsed();
+        crate::otel::call_metrics::CallMetrics::record_graph_read_wait(wait);
+        guard
+    }
+
+    pub fn write(&self) -> parking_lot::RwLockWriteGuard<'_, GraphStore> {
+        self.inner.write()
+    }
+
+    pub fn inner(&self) -> &Arc<RwLock<GraphStore>> {
+        &self.inner
+    }
+}
+
+#[derive(Clone)]
 pub struct PkbSearchServer {
     pub(crate) store: Arc<RwLock<VectorStore>>,
     pub(crate) embedder: Arc<Embedder>,
     pub(crate) reranker: Arc<crate::rerank::CrossEncoderReranker>,
     pub(crate) pkb_root: PathBuf,
     pub(crate) db_path: PathBuf,
-    pub(crate) graph: Arc<RwLock<GraphStore>>,
+    pub(crate) graph: InstrumentedGraphStore,
     pub(crate) session_registry: Arc<crate::otel::session_registry::SessionRegistry>,
     pub(crate) stale_count: usize,
     /// True when a background vector-store save is already scheduled. Used
@@ -159,6 +186,10 @@ pub struct PkbSearchServer {
     pub(crate) last_reindex: Arc<RwLock<ReindexStatus>>,
     /// Stats from the last disk scan and graph rebuild.
     pub(crate) last_rebuild_stats: Arc<RwLock<RebuildStats>>,
+    /// Mutex ensuring single-flight graph rebuilds under concurrent callers.
+    pub(crate) rebuild_mutex: Arc<Mutex<()>>,
+    /// Total count of full graph rebuilds performed.
+    pub(crate) rebuild_count: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -197,7 +228,7 @@ impl PkbSearchServer {
             reranker,
             pkb_root,
             db_path,
-            graph,
+            graph: InstrumentedGraphStore::new(graph),
             session_registry: crate::otel::session_registry::SessionRegistry::new(),
             stale_count: 0,
             save_pending: Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -225,7 +256,15 @@ impl PkbSearchServer {
                 parsed_documents: initial_file_backed,
                 loaded_nodes: initial_loaded,
             })),
+            rebuild_mutex: Arc::new(Mutex::new(())),
+            rebuild_count: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         }
+    }
+
+    /// Total count of full graph rebuilds that have executed.
+    pub fn rebuild_count(&self) -> usize {
+        self.rebuild_count
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Number of Tier-2 background rebuilds that have actually executed.
@@ -321,10 +360,34 @@ impl PkbSearchServer {
     pub fn bench_search(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
         self.handle_pkb_search(args)
     }
+    #[doc(hidden)]
+    pub fn bench_status(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+        self.handle_status(args)
+    }
 
     #[doc(hidden)]
     pub fn store_for_test(&self) -> Arc<parking_lot::RwLock<VectorStore>> {
         self.store.clone()
+    }
+
+    pub(crate) fn acquire_store_read(&self) -> parking_lot::RwLockReadGuard<'_, VectorStore> {
+        let tracer = opentelemetry::global::tracer("mem");
+        use opentelemetry::trace::Tracer;
+        let mut span = tracer.start("store_lock_acquisition");
+        let guard = self.store.read();
+        use opentelemetry::trace::Span;
+        span.end();
+        guard
+    }
+
+    pub(crate) fn acquire_store_write(&self) -> parking_lot::RwLockWriteGuard<'_, VectorStore> {
+        let tracer = opentelemetry::global::tracer("mem");
+        use opentelemetry::trace::Tracer;
+        let mut span = tracer.start("store_lock_acquisition");
+        let guard = self.store.write();
+        use opentelemetry::trace::Span;
+        span.end();
+        guard
     }
 
     /// Ensure the in-memory graph index is up-to-date with on-disk state.
@@ -333,30 +396,34 @@ impl PkbSearchServer {
     /// filesystem. If an external write occurred (git-sync sidecar, CLI, direct disk edit),
     /// the graph is automatically rebuilt from disk before the read proceeds.
     pub(crate) fn ensure_graph_fresh(&self) {
+        let tracer = opentelemetry::global::tracer("mem");
+        use opentelemetry::trace::Tracer;
+        let span = tracer.start("ensure_graph_fresh");
+        let _guard = opentelemetry::trace::mark_span_as_active(span);
+
         let current_gen = crate::pkb::scan_generation(&self.pkb_root);
         let cached_gen = self.graph.read().generation();
         if current_gen != cached_gen {
-            tracing::info!(
-                target: "pkb::invalidation",
-                disk_count = current_gen.file_count,
-                cached_count = cached_gen.file_count,
-                "In-memory graph index out of date with disk; invalidating and rebuilding"
-            );
-            self.rebuild_graph();
+            let _lock = self.rebuild_mutex.lock();
+            let cached_gen = self.graph.read().generation();
+            if current_gen != cached_gen {
+                tracing::info!(
+                    target: "pkb::invalidation",
+                    disk_count = current_gen.file_count,
+                    cached_count = cached_gen.file_count,
+                    "In-memory graph index out of date with disk; invalidating and rebuilding"
+                );
+                self.rebuild_graph();
+                crate::otel::call_metrics::CallMetrics::record_rebuild(true);
+            }
         }
     }
 
-    /// Cheap staleness signal for list/filter surfaces.
-    ///
-    /// Validates disk freshness via `ensure_graph_fresh`, guaranteeing
-    /// that reads reflect disk ground truth.
-    pub(crate) fn list_staleness_signal(&self) -> Option<(usize, usize)> {
-        self.ensure_graph_fresh();
+    /// Markdown files on disk vs. file-backed nodes in the in-memory index,
+    /// as `(disk_file_count, indexed_file_count)`. Diagnostic only: reported
+    /// by `status`, never appended to list/search responses.
+    pub(crate) fn index_disk_counts(&self) -> (usize, usize) {
         let disk_count = crate::pkb::scan_directory(&self.pkb_root).len();
-        let last_stats = *self.last_rebuild_stats.read();
-        if disk_count == last_stats.scanned_files {
-            return None;
-        }
         let index_count = self
             .graph
             .read()
@@ -364,11 +431,7 @@ impl PkbSearchServer {
             .values()
             .filter(|n| !n.path.as_os_str().is_empty())
             .count();
-        if disk_count == index_count {
-            None
-        } else {
-            Some((disk_count, index_count))
-        }
+        (disk_count, index_count)
     }
 
     /// Reconstruct an absolute path from a (possibly relative) graph node path.
@@ -382,8 +445,13 @@ impl PkbSearchServer {
     /// no store lock held — concurrent writers can proceed during the
     /// rebuild instead of blocking behind it.
     pub(crate) fn rebuild_graph(&self) -> (usize, usize, usize) {
+        let tracer = opentelemetry::global::tracer("mem");
+        use opentelemetry::trace::Tracer;
+        let span = tracer.start("rebuild_graph");
+        let _guard = opentelemetry::trace::mark_span_as_active(span);
+
         let _t_snap = std::time::Instant::now();
-        let snapshot = self.store.read().averaged_embeddings();
+        let snapshot = self.acquire_store_read().averaged_embeddings();
         tracing::debug!(
             target: "perf::graph_rebuild",
             phase = "embedding_snapshot",
@@ -438,6 +506,8 @@ impl PkbSearchServer {
             // the bump lands and then clobber this fresher graph.
             self.full_rebuild_epoch
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.rebuild_count
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             count
         };
         *self.last_reindex.write() = ReindexStatus {
@@ -526,7 +596,7 @@ impl PkbSearchServer {
         let _t = std::time::Instant::now();
         {
             let mut g = self.graph.write();
-            g.remove_node_in_place(id);
+            g.remove_node_in_place(id, &self.pkb_root);
             g.reclassify();
             // Same as rebuild_graph_for_pkb_document: insert inside the write
             // lock so the removal is visible to any concurrent Tier-2 swap.
@@ -690,6 +760,10 @@ impl PkbSearchServer {
                 merged.reclassify();
                 reclassified = true;
             }
+            // Preserve the live generation stamp (which may have been updated
+            // by in-place node removals or concurrent mutations during rebuild)
+            // so the swap does not clobber it with the older scan from build start.
+            merged.set_generation(g.generation());
             *g = merged;
             #[cfg(test)]
             {
@@ -860,7 +934,7 @@ impl PkbSearchServer {
                             );
                         }
                         Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                            tracing::info!(
+                            tracing::debug!(
                                 "Vector store lock held by another process — disk save deferred"
                             );
                             tracing::debug!(
@@ -957,14 +1031,14 @@ impl PkbSearchServer {
 
         if was_held {
             // Adopt the reindex's authoritative on-disk state.
-            let dim = self.store.read().dimension_or_default();
+            let dim = self.acquire_store_read().dimension_or_default();
             match VectorStore::load_or_create(&self.db_path, dim) {
                 Ok(fresh) => {
                     tracing::info!(
                         "Cross-process index lock released — reloaded vector store from disk ({} docs)",
                         fresh.len()
                     );
-                    *self.store.write() = fresh;
+                    *self.acquire_store_write() = fresh;
                 }
                 Err(e) => {
                     tracing::warn!(
@@ -1017,7 +1091,7 @@ impl PkbSearchServer {
                 ) {
                     tracing::error!("maybe_drain_deferred: Failed to append remove to WAL: {e}");
                 }
-                if self.store.write().remove(&id) {
+                if self.acquire_store_write().remove(&id) {
                     applied_removes += 1;
                 }
             }
@@ -1063,7 +1137,7 @@ impl PkbSearchServer {
             self.deferred_paths.lock().insert(abs);
             self.lock_was_held
                 .store(true, std::sync::atomic::Ordering::Relaxed);
-            tracing::info!(
+            tracing::debug!(
                 "Index locked by another process — deferring in-memory upsert for {}",
                 doc.path.display()
             );
@@ -1289,7 +1363,7 @@ impl PkbSearchServer {
                                 }
                             }
                             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                                tracing::info!(
+                                tracing::debug!(
                                     "Vector store lock held by another process — disk save deferred"
                                 );
                             }
@@ -1349,7 +1423,7 @@ impl PkbSearchServer {
         }
 
         if !self.index_lock_available() {
-            tracing::info!(
+            tracing::debug!(
                 "Index locked by another process — skipping in-memory finalize for batch ({} modified, {} removed)",
                 modified_paths.len(),
                 removed_paths.len()
@@ -1372,7 +1446,7 @@ impl PkbSearchServer {
                 let doc = crate::pkb::parse_file_relative(abs_path, &self.pkb_root)?;
                 let doc_id = doc.id();
 
-                let existing = self.store.read().get_entry(&doc_id).cloned();
+                let existing = self.acquire_store_read().get_entry(&doc_id).cloned();
                 match crate::vectordb::VectorStore::prepare_upsert(
                     &doc,
                     &self.embedder,
@@ -1392,7 +1466,7 @@ impl PkbSearchServer {
 
         // Single brief write lock for the whole batch.
         {
-            let mut store = self.store.write();
+            let mut store = self.acquire_store_write();
             let wal_p = self.wal_path();
             for p in &results {
                 let wal_res = match p {
@@ -1468,7 +1542,9 @@ impl PkbSearchServer {
             self.deferred_paths.lock().insert(abs);
             self.lock_was_held
                 .store(true, std::sync::atomic::Ordering::Relaxed);
-            tracing::info!("Index locked by another process — deferring in-memory remove for {id}");
+            tracing::debug!(
+                "Index locked by another process — deferring in-memory remove for {id}"
+            );
             return;
         }
         if let Err(e) = crate::vectordb::VectorStore::append_wal_record(
@@ -1477,8 +1553,17 @@ impl PkbSearchServer {
         ) {
             tracing::error!("try_remove_document: Failed to append remove to WAL: {e}");
         }
-        self.store.write().remove(id);
+        self.acquire_store_write().remove(id);
         self.save_store();
+    }
+
+    pub fn list_tools_result(&self) -> rmcp::model::ListToolsResult {
+        let tools = Self::get_published_tools();
+        let mut meta = rmcp::model::Meta::new();
+        meta.0.insert("ttlMs".to_string(), serde_json::json!(86_400_000));
+        let mut result = rmcp::model::ListToolsResult::with_all_items(tools);
+        result.meta = Some(meta);
+        result
     }
 
     // =========================================================================
@@ -1490,7 +1575,7 @@ impl PkbSearchServer {
         name: &str,
         args: &JsonValue,
     ) -> Result<CallToolResult, McpError> {
-        match name {
+        let mut res = match name {
             "search" => self.handle_pkb_search(args),
             "get_document" => self.handle_get_document(args),
             "list_documents" => self.handle_list_documents(args),
@@ -1552,7 +1637,235 @@ impl PkbSearchServer {
                 message: Cow::from(format!("Unknown tool: {name}")),
                 data: None,
             }),
+        };
+
+        if let Ok(ref mut result) = res {
+            if result.structured_content.is_none() {
+                let text = result
+                    .content
+                    .iter()
+                    .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+                    .collect::<String>();
+                if let Ok(val) = serde_json::from_str::<serde_json::Value>(&text) {
+                    result.structured_content = Some(val);
+                } else {
+                    result.structured_content = Some(serde_json::json!({
+                        "ok": true,
+                        "text": text,
+                    }));
+                }
+            }
         }
+
+        res
+    }
+
+    pub async fn execute_tool_call(
+        &self,
+        tool_name: &str,
+        args: &JsonValue,
+        parts: Option<&http::request::Parts>,
+        meta: Option<&rmcp::model::Meta>,
+    ) -> Result<CallToolResult, McpError> {
+        let start = std::time::Instant::now();
+        let tool_name = tool_name.to_string();
+        let args = args.clone();
+
+        let client_context = crate::otel::client_context::ClientContext::extract(
+            parts,
+            meta,
+            &self.session_registry,
+        );
+
+        if let Some(ref mcp_id) = client_context.mcp_session_id {
+            self.session_registry
+                .update_activity(mcp_id, Some(client_context.session_id.clone()));
+        }
+        let session_id = client_context.session_id.clone();
+
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let this_task = self.clone();
+        let tool_name_task = tool_name.clone();
+
+        tokio::task::spawn_blocking(move || {
+            crate::otel::call_metrics::CallMetrics::start_recording();
+
+            let parent_cx = client_context
+                .parent_context
+                .unwrap_or_else(opentelemetry::Context::current);
+
+            let tracer = opentelemetry::global::tracer("mem");
+            use opentelemetry::trace::Tracer;
+
+            let canonical_name = match tool_name_task.as_str() {
+                "pkb_trace" | "pkb_orphans" => tool_name_task.clone(),
+                other => other.strip_prefix("pkb_").unwrap_or(other).to_string(),
+            };
+
+            let mut builder = tracer
+                .span_builder(format!("mcp.{}", canonical_name))
+                .with_kind(opentelemetry::trace::SpanKind::Server);
+
+            let mut attrs = vec![
+                opentelemetry::KeyValue::new("openinference.span.kind", "TOOL"),
+                opentelemetry::KeyValue::new("tool.name", canonical_name.clone()),
+                opentelemetry::KeyValue::new("session.id", client_context.session_id.clone()),
+            ];
+
+            if let Some(ref tid) = client_context.task_id {
+                attrs.push(opentelemetry::KeyValue::new(
+                    "tag.tags",
+                    format!("[\"task:{}\"]", tid),
+                ));
+            }
+            if let Some(ref mcp_id) = client_context.mcp_session_id {
+                attrs.push(opentelemetry::KeyValue::new(
+                    "mcp.session_id",
+                    mcp_id.clone(),
+                ));
+            }
+
+            let input_str = serde_json::to_string(&args).unwrap_or_default();
+            let truncated_input = Self::truncate_span_value(input_str);
+            attrs.push(opentelemetry::KeyValue::new("input.value", truncated_input));
+            attrs.push(opentelemetry::KeyValue::new(
+                "input.mime_type",
+                "application/json",
+            ));
+
+            builder = builder.with_attributes(attrs);
+
+            let span = tracer.build_with_context(builder, &parent_cx);
+            let cx = parent_cx.with_span(span);
+            let _guard = cx.clone().attach();
+
+            let res = this_task.dispatch_tool_sync(&canonical_name, &args);
+
+            let metrics = crate::otel::call_metrics::CallMetrics::finish_recording().unwrap_or_default();
+
+            // Add output attributes
+            let is_error = res.is_err();
+            let output_str = match &res {
+                Ok(r) => serde_json::to_string(r).unwrap_or_default(),
+                Err(e) => serde_json::to_string(e).unwrap_or_default(),
+            };
+            let response_bytes = output_str.len();
+            let truncated_output = Self::truncate_span_value(output_str);
+
+            use opentelemetry::trace::TraceContextExt;
+            let current_span = cx.span();
+
+            current_span.set_attribute(opentelemetry::KeyValue::new(
+                "output.value",
+                truncated_output,
+            ));
+            current_span.set_attribute(opentelemetry::KeyValue::new(
+                "output.mime_type",
+                "application/json",
+            ));
+
+            // Required per-call attributes
+            current_span.set_attribute(opentelemetry::KeyValue::new(
+                "result_bytes",
+                response_bytes as i64,
+            ));
+            current_span.set_attribute(opentelemetry::KeyValue::new(
+                "result-bytes",
+                response_bytes as i64,
+            ));
+
+            let graph_read_wait_ms = (metrics.graph_read_wait_us as f64) / 1000.0;
+            current_span.set_attribute(opentelemetry::KeyValue::new(
+                "graph.read_wait_ms",
+                graph_read_wait_ms,
+            ));
+            current_span.set_attribute(opentelemetry::KeyValue::new(
+                "graph_read_wait_ms",
+                graph_read_wait_ms,
+            ));
+            current_span.set_attribute(opentelemetry::KeyValue::new(
+                "graph.read.wait_ms",
+                graph_read_wait_ms,
+            ));
+            current_span.set_attribute(opentelemetry::KeyValue::new(
+                "graph.read_count",
+                metrics.graph_read_count as i64,
+            ));
+
+            current_span.set_attribute(opentelemetry::KeyValue::new(
+                "rebuild_flag",
+                metrics.rebuilt,
+            ));
+            current_span.set_attribute(opentelemetry::KeyValue::new(
+                "ensure_graph_fresh.rebuilt",
+                metrics.rebuilt,
+            ));
+
+            let embed_time_ms = (metrics.embed_time_us as f64) / 1000.0;
+            current_span.set_attribute(opentelemetry::KeyValue::new(
+                "embed_time_ms",
+                embed_time_ms,
+            ));
+            current_span.set_attribute(opentelemetry::KeyValue::new(
+                "embed.time_ms",
+                embed_time_ms,
+            ));
+
+            let hybrid_search_time_ms = (metrics.hybrid_search_time_us as f64) / 1000.0;
+            current_span.set_attribute(opentelemetry::KeyValue::new(
+                "hybrid_search_time_ms",
+                hybrid_search_time_ms,
+            ));
+            current_span.set_attribute(opentelemetry::KeyValue::new(
+                "hybrid_search.time_ms",
+                hybrid_search_time_ms,
+            ));
+
+            if is_error {
+                current_span.set_status(opentelemetry::trace::Status::Error {
+                    description: std::borrow::Cow::Borrowed("Tool error"),
+                });
+            } else {
+                current_span.set_status(opentelemetry::trace::Status::Ok);
+            }
+            current_span.end();
+
+            drop(_guard);
+
+            let _ = tx.send((res, response_bytes, is_error));
+        });
+
+        let (result, response_bytes, is_error) = rx.await.map_err(|_| McpError {
+            code: ErrorCode::INTERNAL_ERROR,
+            message: Cow::from("Internal error in tool execution task"),
+            data: None,
+        })?;
+
+        let latency = start.elapsed().as_millis();
+        crate::telemetry::record_call(&tool_name, response_bytes, latency, is_error);
+
+        if session_id == "unknown" {
+            tracing::info!(
+                target: "pkb::tool_call",
+                tool = %tool_name,
+                status = %if is_error { "error" } else { "ok" },
+                latency_ms = latency as u64,
+                response_bytes,
+                "tool call"
+            );
+        } else {
+            tracing::info!(
+                target: "pkb::tool_call",
+                tool = %tool_name,
+                status = %if is_error { "error" } else { "ok" },
+                latency_ms = latency as u64,
+                response_bytes,
+                session = %session_id,
+                "tool call"
+            );
+        }
+
+        result
     }
 }
 
@@ -1587,143 +1900,25 @@ impl ServerHandler for PkbSearchServer {
         request: CallToolRequestParams,
         context: rmcp::service::RequestContext<rmcp::service::RoleServer>,
     ) -> impl std::future::Future<Output = Result<CallToolResult, McpError>> + Send + '_ {
-        let start = std::time::Instant::now();
-        let tool_name = request.name.clone();
         let args = Self::args_to_value(request.arguments);
-
-        let effective_name = tool_name.to_string();
-
-        let client_context = crate::otel::client_context::ClientContext::extract(
-            context.extensions.get::<http::request::Parts>(),
-            request.meta.as_ref(),
-            &self.session_registry,
-        );
-
-        if let Some(ref mcp_id) = client_context.mcp_session_id {
-            self.session_registry
-                .update_activity(mcp_id, Some(client_context.session_id.clone()));
-        }
-
+        let name = request.name.clone();
+        let parts = context.extensions.get::<http::request::Parts>().cloned();
+        let meta = request.meta.clone();
+        let ct = context.ct.clone();
         let this = self.clone();
+
         async move {
-            let (tx, rx) = tokio::sync::oneshot::channel();
-
-            // Offload to a blocking thread so the async task can respond to
-            // session cancellation (e.g. keep-alive timeout or disconnect).
-            // Refs task-2ae61ce6.
-            let tool_name_task = tool_name.clone();
-            let args_task = args.clone();
-            let this_task = this.clone();
-
-            tokio::task::spawn_blocking(move || {
-                let tracer = opentelemetry::global::tracer("mem");
-                use opentelemetry::trace::Tracer;
-                let mut builder = tracer
-                    .span_builder(format!("mcp.{}", tool_name_task))
-                    .with_kind(opentelemetry::trace::SpanKind::Server);
-
-                let mut attrs = vec![
-                    opentelemetry::KeyValue::new("openinference.span.kind", "TOOL"),
-                    opentelemetry::KeyValue::new("tool.name", tool_name_task.clone()),
-                    opentelemetry::KeyValue::new("session.id", client_context.session_id.clone()),
-                ];
-
-                if let Some(ref tid) = client_context.task_id {
-                    attrs.push(opentelemetry::KeyValue::new(
-                        "tag.tags",
-                        format!("[\"task:{}\"]", tid),
-                    ));
-                }
-                if let Some(ref mcp_id) = client_context.mcp_session_id {
-                    attrs.push(opentelemetry::KeyValue::new(
-                        "mcp.session_id",
-                        mcp_id.clone(),
-                    ));
-                }
-
-                let input_str = serde_json::to_string(&args_task).unwrap_or_default();
-                let truncated_input = if input_str.len() > 8192 {
-                    format!("{}...", &input_str[..8189])
-                } else {
-                    input_str
-                };
-                attrs.push(opentelemetry::KeyValue::new("input.value", truncated_input));
-                attrs.push(opentelemetry::KeyValue::new(
-                    "input.mime_type",
-                    "application/json",
-                ));
-
-                builder = builder.with_attributes(attrs);
-
-                let mut span = if let Some(ref parent) = client_context.parent_context {
-                    use opentelemetry::trace::Tracer;
-                    tracer.build_with_context(builder, parent)
-                } else {
-                    use opentelemetry::trace::Tracer;
-                    tracer.build(builder)
-                };
-
-                let res = this_task.dispatch_tool_sync(&tool_name_task, &args_task);
-
-                // Add output attributes
-                let is_error = res.is_err();
-                let output_str = match &res {
-                    Ok(r) => serde_json::to_string(r).unwrap_or_default(),
-                    Err(e) => serde_json::to_string(e).unwrap_or_default(),
-                };
-                let truncated_output = if output_str.len() > 8192 {
-                    format!("{}...", &output_str[..8189])
-                } else {
-                    output_str
-                };
-
-                use opentelemetry::trace::Span;
-                span.set_attribute(opentelemetry::KeyValue::new(
-                    "output.value",
-                    truncated_output,
-                ));
-                span.set_attribute(opentelemetry::KeyValue::new(
-                    "output.mime_type",
-                    "application/json",
-                ));
-                if is_error {
-                    span.set_status(opentelemetry::trace::Status::Error {
-                        description: std::borrow::Cow::Borrowed("Tool error"),
-                    });
-                } else {
-                    span.set_status(opentelemetry::trace::Status::Ok);
-                }
-                span.end();
-
-                let _ = tx.send(res);
-            });
-
-            let result = tokio::select! {
-                res = rx => res.unwrap_or_else(|_| Err(McpError {
-                    code: ErrorCode::INTERNAL_ERROR,
-                    message: Cow::from("Internal error in tool execution task"),
-                    data: None,
-                })),
-                _ = context.ct.cancelled() => {
-                    tracing::warn!("Session terminated while tool '{}' was in flight", tool_name);
+            tokio::select! {
+                res = this.execute_tool_call(&name, &args, parts.as_ref(), meta.as_ref()) => res,
+                _ = ct.cancelled() => {
+                    tracing::warn!("Session terminated while tool '{}' was in flight", name);
                     Err(McpError {
                         code: ErrorCode::INTERNAL_ERROR,
                         message: Cow::from("Session terminated"),
                         data: None,
                     })
                 }
-            };
-
-            let latency = start.elapsed().as_millis();
-            let is_error = result.is_err();
-            let response_bytes = match &result {
-                Ok(res) => serde_json::to_vec(res).map(|v| v.len()).unwrap_or(0),
-                Err(e) => serde_json::to_vec(e).map(|v| v.len()).unwrap_or(0),
-            };
-
-            crate::telemetry::record_call(&effective_name, response_bytes, latency, is_error);
-
-            result
+            }
         }
     }
 
@@ -1732,8 +1927,7 @@ impl ServerHandler for PkbSearchServer {
         _request: Option<PaginatedRequestParams>,
         _context: rmcp::service::RequestContext<rmcp::service::RoleServer>,
     ) -> impl std::future::Future<Output = Result<ListToolsResult, McpError>> + Send + '_ {
-        let tools = Self::get_all_tools();
-        std::future::ready(Ok(ListToolsResult::with_all_items(tools)))
+        std::future::ready(Ok(self.list_tools_result()))
     }
 
     fn list_prompts(

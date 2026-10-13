@@ -19,7 +19,7 @@ done
 # the container and reindex starts over in a loop.
 #
 # Concurrency: while reindex holds pkb_vectors.lock, mcp defers
-# in-memory upserts (logging "Index locked by another process") and
+# in-memory upserts (logging "Index locked..." at DEBUG) and
 # skips disk saves. When reindex releases the lock, mcp self-heals via
 # maybe_drain_deferred (mcp_server.rs): reloads the store from disk and
 # replays queued upserts. No restart required.
