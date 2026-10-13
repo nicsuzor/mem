@@ -679,7 +679,7 @@ Every measure in `ranking.md` is mapped to one of three outcomes:
 | `blocking_urgency` (pipeline stage `:46`; `src/graph_store.rs:503`) | dropped | a blocker carries the full worth of what it unblocks (I5); urgency by date is the cliff lane |
 | `stakeholder_exposure` (input to criticality, `:318`) | moved | display, with `criticality` |
 | `deadline_pressure_active` flag (`:152`) | dropped | no date term in the maths (I11); display reads `due` and `deadline_class` directly |
-| `has_real_stakes`, `is_human_gate` gates (`:161-172`, `:213`) | dropped | they gate terms this spec removes (courtesy decay, stakeholder waiting); a human gate is agent logic |
+| `has_real_stakes` gates (`:161-172`, `:213`) | dropped | they gate terms this spec removes (courtesy decay, stakeholder waiting); gate detection is agent logic |
 | committed-SEV4 overdue pin guard (`:342`) | moved | the cliff lane for hard deadlines (S13) |
 | `order`, `id` tie-breaks (`:80`, `:522`) | moved | ordering is display; a deterministic final tie-break stays there |
 | `has_open_question`, `dep_resolution_ratio`, C_open / C_divergence gates (`:366-370`, `:381`) | dropped | value of information comes only from `alternative` edges (§6). An open question with no modelled alternatives earns nothing until migration or an agent adds them (Q8) |

@@ -319,9 +319,9 @@ Status values and transitions are specified in `references/TAXONOMY.md`. The rul
 
 - **`done` asserts delivery.** A task is `done` when its deliverable verifiably exists where it belongs, judged in its delivery location, never by a run's duration, byte count or self-report. A run that did the work but left it where the deliverable does not live (an unpushed branch, a container workspace) is not `done`. The release cites where the deliverable lives.
 - **`done` is refused while the task's own record shows open work**: a pending checklist item, an unmet acceptance criterion, or a body describing remaining work.
-- **`review` means a person owes a decision before anything can move.** If nobody does, the task closes. A `review` task is closed by the decision, never by a PR match. Three shapes are not `review`:
+- **`review` is a worker asking for help from the agent that next picks it up.** Escalation is one level per hop and is an agent's decision, never a server inference. Three shapes are not `review`:
   - Physically complete work whose durability is only being watched is `done`, reopened if it fails. Nic, 2026-08-21: "just close the task now, i'll reopen if it fails."
-  - Work with a default available: take the default, record it on the node as chosen, close. Only one-way doors and value judgements are human blocks.
+  - Work with a default available: take the default, record it on the node as chosen, close. Only one-way doors and value judgements warrant escalation to the principal.
   - Work whose remainder is genuinely separate: `done` plus a follow-up, or `partial`. Never hold the finished part open to carry the rest.
 - **`partial` always has a live follow-up child** carrying the remainder; a `partial` with none is a defect.
 - **An attempt that produced nothing shippable is not `partial`.** The task returns to `inbox`. What was learned is worked into its body as instruction (§2.3); the attempt itself is not logged there.

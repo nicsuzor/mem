@@ -458,7 +458,7 @@ Its form follows `flow-rule.md` §12. The cost is one maximum-product search per
 
 - `compute_cost_of_delay` (`:1820-2033`);
 - `focus_cmp` (`:969`), replaced by `display_cmp`;
-- `focus_picks` (`:2111-2186`), replaced by the head of `display_cmp` over ready work plus human gates;
+- `focus_picks` (`:2111-2186`), replaced by the head of `display_cmp` over ready work;
 - `actionable_tasks`' urgency-first sort (`:1012`).
 
 **`GraphNode` fields removed** (`src/graph.rs:358-618`), with the reason for each in `flow-rule.md` §9:
@@ -528,7 +528,7 @@ When `flow_status ≠ ok`, the three figures are `null` and a `loop: [ids]` key 
 | Surface | New | Removed | Today |
 |---|---|---|---|
 | `pkb tasks`, `pkb list` | default order `display_cmp`; `--sort gain\|loss\|decision\|due\|intent`; columns Gain / Loss averted / Due | `--sort weight`, the WEIGHT column, "!" | `src/cli.rs:1509-1588` |
-| `pkb focus` (the default command) | the cliff lane, then the head of `display_cmp` over ready work and human gates | `focus_picks` | `src/cli.rs:1025`, `:1648-1666` |
+| `pkb focus` (the default command) | the cliff lane, then the head of `display_cmp` over ready work | `focus_picks` | `src/cli.rs:1025`, `:1648-1666` |
 | `pkb show` | the `get_task` flow block and explanation | Weight, exposure | `src/cli.rs:1712-1722` |
 | `pkb metrics` | pagerank, betweenness, degrees | D.WT ranking, exposure | `src/cli.rs:1788-1905` |
 | `format_task_line` | `g:` and `l:` figures | `wt:`, "!" | `src/cli.rs:4452-4493`; `src/graph_display.rs:813` |

@@ -1188,9 +1188,11 @@ fn test_http2_listener_serves_requests_with_keepalive() {
             body3.contains("\"name\": \"mem\"") || body3.contains("\"name\":\"mem\""),
             "Expected tool response to contain name 'mem', got: {body3}"
         );
+        let expected_version = env!("CARGO_PKG_VERSION");
         assert!(
-            body3.contains("\"version\": \"0.3.101\"") || body3.contains("\"version\":\"0.3.101\""),
-            "Expected tool response to contain version '0.3.101', got: {body3}"
+            body3.contains(&format!("\"version\": \"{expected_version}\""))
+                || body3.contains(&format!("\"version\":\"{expected_version}\"")),
+            "Expected tool response to contain version '{expected_version}', got: {body3}"
         );
     });
 }
