@@ -602,6 +602,10 @@ enum Commands {
         /// Optional path to the PKB root directory (overrides global --pkb-root)
         #[arg(long)]
         root: Option<PathBuf>,
+
+        /// Accept --stdio flag passed automatically by LSP clients (VS Code, etc.)
+        #[arg(long)]
+        stdio: bool,
     },
 
     /// Find potential duplicate tasks
@@ -1094,7 +1098,10 @@ async fn main() -> Result<()> {
         PathBuf::from(mem::document_crud::expand_env_vars(&cli.pkb_root))
     } else if let Ok(aca) = std::env::var("ACA_DATA") {
         PathBuf::from(mem::document_crud::expand_env_vars(&aca))
-    } else if let Commands::Lsp { root: Some(ref r) } = command {
+    } else if let Commands::Lsp {
+        root: Some(ref r), ..
+    } = command
+    {
         r.clone()
     } else if matches!(command, Commands::Lsp { .. }) {
         std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
@@ -1817,7 +1824,9 @@ async fn main() -> Result<()> {
                             for (target, val) in &flow.loop_extra {
                                 println!("    Loop extra [{}]: {:.2}", target, val);
                             }
-                            if let Some((_routes, _trunc, explanation)) = gs.routes_for_node(&node.id) {
+                            if let Some((_routes, _trunc, explanation)) =
+                                gs.routes_for_node(&node.id)
+                            {
                                 if !explanation.is_empty() {
                                     println!("    Explanation:     {explanation}");
                                 }
@@ -1854,7 +1863,9 @@ async fn main() -> Result<()> {
                     // Navigation hints
                     let node_id = node.task_id.as_deref().unwrap_or(&node.id);
                     println!();
-                    println!("  \x1b[2mTip: pkb context {node_id}  — show full knowledge neighbourhood\x1b[0m");
+                    println!(
+                        "  \x1b[2mTip: pkb context {node_id}  — show full knowledge neighbourhood\x1b[0m"
+                    );
                 }
                 None => {
                     eprintln!("Document not found: {id}");
@@ -1916,15 +1927,12 @@ async fn main() -> Result<()> {
                     let (dw, se) = if is_flow {
                         (None, None)
                     } else {
-                        (Some(node.downstream_weight), Some(node.stakeholder_exposure))
+                        (
+                            Some(node.downstream_weight),
+                            Some(node.stakeholder_exposure),
+                        )
                     };
-                    let m = metrics::compute_network_metrics(
-                        nid,
-                        &node_ids,
-                        edges,
-                        dw,
-                        se,
-                    );
+                    let m = metrics::compute_network_metrics(nid, &node_ids, edges, dw, se);
                     if let Some(m) = m {
                         println!();
                         println!("  \x1b[1m{}\x1b[0m", node.label);
@@ -3535,7 +3543,7 @@ async fn main() -> Result<()> {
             println!();
         }
 
-        Commands::Lsp { root } => {
+        Commands::Lsp { root, .. } => {
             let lsp_root = root.unwrap_or(pkb_root);
             eprintln!("🔍 PKB LSP Server starting over stdio...");
             eprintln!("   PKB root: {}", lsp_root.display());
@@ -3618,8 +3626,8 @@ async fn main() -> Result<()> {
             if http {
                 // HTTP/SSE mode
                 use rmcp::transport::streamable_http_server::{
-                    session::local::LocalSessionManager, StreamableHttpServerConfig,
-                    StreamableHttpService,
+                    StreamableHttpServerConfig, StreamableHttpService,
+                    session::local::LocalSessionManager,
                 };
 
                 let ct = tokio_util::sync::CancellationToken::new();
@@ -3646,18 +3654,20 @@ async fn main() -> Result<()> {
 
                 let app = axum::Router::new()
                     .route("/mcp", axum::routing::any_service(mcp_service))
-                    .layer(axum::middleware::from_fn(|mut req: axum::extract::Request, next: axum::middleware::Next| async move {
-                        // Ensure Host header is present for HTTP/2 requests where the :authority pseudo-header
-                        // is populated on uri.authority(), satisfying downstream rmcp DNS rebinding validation.
-                        if !req.headers().contains_key(http::header::HOST) {
-                            if let Some(auth) = req.uri().authority() {
-                                if let Ok(val) = http::HeaderValue::from_str(auth.as_str()) {
-                                    req.headers_mut().insert(http::header::HOST, val);
+                    .layer(axum::middleware::from_fn(
+                        |mut req: axum::extract::Request, next: axum::middleware::Next| async move {
+                            // Ensure Host header is present for HTTP/2 requests where the :authority pseudo-header
+                            // is populated on uri.authority(), satisfying downstream rmcp DNS rebinding validation.
+                            if !req.headers().contains_key(http::header::HOST) {
+                                if let Some(auth) = req.uri().authority() {
+                                    if let Ok(val) = http::HeaderValue::from_str(auth.as_str()) {
+                                        req.headers_mut().insert(http::header::HOST, val);
+                                    }
                                 }
                             }
-                        }
-                        next.run(req).await
-                    }));
+                            next.run(req).await
+                        },
+                    ));
 
                 let addr: std::net::SocketAddr = format!("{host}:{port}").parse()?;
                 let listener = tokio::net::TcpListener::bind(addr).await?;
@@ -3789,10 +3799,16 @@ fn handle_migrate_command(cmd: MigrateCommands, pkb_root: &std::path::Path) -> R
 
             if apply {
                 let ledger = mem::flow_migration::apply_flow_migration(pkb_root)?;
-                println!("Successfully applied flow migration ({}):", ledger.migration);
+                println!(
+                    "Successfully applied flow migration ({}):",
+                    ledger.migration
+                );
                 println!("  Changed nodes: {}", ledger.report.changed_nodes);
                 println!("  Total rows:    {}", ledger.report.total_rows);
-                println!("  Ledger path:   .agents/migrations/{}.json", ledger.migration);
+                println!(
+                    "  Ledger path:   .agents/migrations/{}.json",
+                    ledger.migration
+                );
                 if let Some(ref commit) = ledger.snapshot_commit {
                     println!("  Snapshot base: {}", commit);
                 }
@@ -3821,7 +3837,11 @@ fn handle_migrate_command(cmd: MigrateCommands, pkb_root: &std::path::Path) -> R
                 println!("pkb migrate flow status:");
                 println!(
                     "  Migration applied: {}",
-                    if report.migration_applied { "yes" } else { "no" }
+                    if report.migration_applied {
+                        "yes"
+                    } else {
+                        "no"
+                    }
                 );
                 if let Some(ref lpath) = report.ledger_file {
                     println!("  Active ledger:     {}", lpath.display());
@@ -3845,7 +3865,8 @@ fn handle_migrate_command(cmd: MigrateCommands, pkb_root: &std::path::Path) -> R
             }
 
             if let Some(ref ledger_path) = cleanup {
-                let report = mem::flow_migration::cleanup_flow_migration(pkb_root, ledger_path, confirm)?;
+                let report =
+                    mem::flow_migration::cleanup_flow_migration(pkb_root, ledger_path, confirm)?;
                 println!("Cleaned up legacy fields using {}:", ledger_path.display());
                 println!("  Files cleaned:   {}", report.files_cleaned);
                 println!("  Fields removed:  {}", report.fields_removed);

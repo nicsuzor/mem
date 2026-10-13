@@ -1,4 +1,5 @@
 import * as path from 'path';
+import * as fs from 'fs';
 import * as vscode from 'vscode';
 import {
   LanguageClient,
@@ -8,6 +9,25 @@ import {
 } from 'vscode-languageclient/node';
 
 let client: LanguageClient | undefined;
+
+export function resolvePkbExecutable(configured: string): string {
+  if (configured && configured !== 'pkb') {
+    return configured;
+  }
+  const home = process.env.HOME || '';
+  const candidates = [
+    '/opt/suzor/bin/pkb',
+    path.join(home, '.cargo', 'bin', 'pkb'),
+    '/opt/suzor/lib/cargo/bin/pkb',
+    '/usr/local/bin/pkb',
+  ];
+  for (const candidate of candidates) {
+    if (candidate && fs.existsSync(candidate)) {
+      return candidate;
+    }
+  }
+  return 'pkb';
+}
 
 export interface OpenReferenceOptions {
   preview?: boolean;
@@ -109,7 +129,8 @@ export function extractReferenceAtPosition(
 
 export function activate(context: vscode.ExtensionContext): void {
   const config = vscode.workspace.getConfiguration('mem.lsp');
-  const executable = config.get<string>('executable') || 'pkb';
+  const configuredExec = config.get<string>('executable') || 'pkb';
+  const executable = resolvePkbExecutable(configuredExec);
 
   let pkbRoot = config.get<string>('pkbRoot');
   if (!pkbRoot) {

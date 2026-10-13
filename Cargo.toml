@@ -40,6 +40,7 @@ rmcp = { version = "1.3", features = ["server", "macros", "transport-io", "trans
 # LSP Protocol
 lsp-types = "0.97"
 lsp-server = "0.10"
+url = "2.5"
 
 # CLI
 clap = { version = "4", features = ["derive", "env"] }
