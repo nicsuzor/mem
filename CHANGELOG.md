@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.104](https://github.com/nicsuzor/mem/compare/mem-v0.3.103...mem-v0.3.104) (2026-10-14)
+
+
+### Features
+
+* **cli:** alias --pkb-root to --root and deprecate legacy form ([8d432c0](https://github.com/nicsuzor/mem/commit/8d432c08b3691dc9b5a5a540afdf94df37347e23))
+* **vscode:** auto-increment extension version and display status ([d92fd59](https://github.com/nicsuzor/mem/commit/d92fd595148b0ac6afb3b843d571043998c83b0c))
+* **vscode:** auto-increment extension version and display status ([7cf145a](https://github.com/nicsuzor/mem/commit/7cf145a5120eef672be1cc4173fed36f306d8233))
+
+
+### Bug Fixes
+
+* **excalidraw:** wrap multiline text and respect container bounds in SVG renderer ([4ea083e](https://github.com/nicsuzor/mem/commit/4ea083ec2597a4485d261b769e0f68f3ca9caa4e))
+* **lsp:** accept --stdio flag and harden LSP request dispatch ([be79d36](https://github.com/nicsuzor/mem/commit/be79d36051596428741f06d5148d1cfdc0e6b72b))
+* **lsp:** accept --stdio flag and harden LSP server dispatch ([7e8ec12](https://github.com/nicsuzor/mem/commit/7e8ec12a443647937b8511ebdd9d50baa191b903))
+* **mcp:** fail loudly when update_task or batch_update receives a field in the wrong format ([facee7d](https://github.com/nicsuzor/mem/commit/facee7ddff2fd84f0f8d660af32e214539496272))
+* **mcp:** fail loudly when update_task or batch_update receives a field in the wrong format ([7edbc9c](https://github.com/nicsuzor/mem/commit/7edbc9cf2bf68d0176f539abc779f9ca7fd60ce0))
+
 ## [0.3.103](https://github.com/nicsuzor/mem/compare/mem-v0.3.102...mem-v0.3.103) (2026-10-13)
 
 
