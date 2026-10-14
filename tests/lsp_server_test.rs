@@ -587,3 +587,85 @@ fn test_lsp_cli_accepts_stdio_flag() {
     let _ = child.kill();
     let _ = child.wait();
 }
+
+#[test]
+fn test_lsp_cli_root_env_var_expansion() {
+    let dir = tempdir().unwrap();
+    let pkb_root = dir.path().to_path_buf();
+    let sub = pkb_root.join("sub_pkb");
+    fs::create_dir_all(&sub).unwrap();
+
+    let pkb_exe = env!("CARGO_BIN_EXE_pkb");
+    let output = std::process::Command::new(pkb_exe)
+        .env("CUSTOM_PKB_ROOT_TEST", pkb_root.to_str().unwrap())
+        .args(["lsp", "--root", "$CUSTOM_PKB_ROOT_TEST/sub_pkb", "--stdio"])
+        .stdin(std::process::Stdio::null())
+        .output()
+        .expect("Failed to execute pkb lsp");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains(&format!("PKB root: {}", sub.display())),
+        "Expected stderr to contain expanded root {}, got: {}",
+        sub.display(),
+        stderr
+    );
+}
+
+#[test]
+fn test_lsp_cli_pkb_root_alias_and_deprecation_warning() {
+    let dir = tempdir().unwrap();
+    let pkb_root = dir.path().to_path_buf();
+    let sub = pkb_root.join("sub_pkb");
+    fs::create_dir_all(&sub).unwrap();
+
+    let pkb_exe = env!("CARGO_BIN_EXE_pkb");
+    let output = std::process::Command::new(pkb_exe)
+        .env("CUSTOM_PKB_ROOT_TEST2", pkb_root.to_str().unwrap())
+        .args([
+            "lsp",
+            "--pkb-root",
+            "$CUSTOM_PKB_ROOT_TEST2/sub_pkb",
+            "--stdio",
+        ])
+        .stdin(std::process::Stdio::null())
+        .output()
+        .expect("Failed to execute pkb lsp");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("warning: --pkb-root is deprecated, please use --root instead"),
+        "Expected deprecation warning in stderr, got: {}",
+        stderr
+    );
+    assert!(
+        stderr.contains(&format!("PKB root: {}", sub.display())),
+        "Expected stderr to contain expanded root {}, got: {}",
+        sub.display(),
+        stderr
+    );
+}
+
+#[test]
+fn test_global_root_flag_before_subcommand() {
+    let dir = tempdir().unwrap();
+    let pkb_root = dir.path().to_path_buf();
+    let sub = pkb_root.join("sub_pkb");
+    fs::create_dir_all(&sub).unwrap();
+
+    let pkb_exe = env!("CARGO_BIN_EXE_pkb");
+    let output = std::process::Command::new(pkb_exe)
+        .env("CUSTOM_PKB_ROOT_TEST3", pkb_root.to_str().unwrap())
+        .args(["--root", "$CUSTOM_PKB_ROOT_TEST3/sub_pkb", "lsp", "--stdio"])
+        .stdin(std::process::Stdio::null())
+        .output()
+        .expect("Failed to execute pkb lsp");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains(&format!("PKB root: {}", sub.display())),
+        "Expected stderr to contain expanded root {}, got: {}",
+        sub.display(),
+        stderr
+    );
+}

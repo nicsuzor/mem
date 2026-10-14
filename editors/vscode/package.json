@@ -2,8 +2,12 @@
   "name": "mem-vscode",
   "displayName": "Mem PKB Language Server",
   "description": "VS Code extension backed by pkb lsp for previewing PKB references on mouseover and opening referenced files in a new tab",
-  "version": "0.1.0",
+  "version": "0.1.3",
   "publisher": "nicsuzor",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/nicsuzor/mem"
+  },
   "engines": {
     "vscode": "^1.80.0"
   },
@@ -28,6 +32,10 @@
       {
         "command": "mem.restartServer",
         "title": "Mem: Restart PKB LSP Server"
+      },
+      {
+        "command": "mem.showVersion",
+        "title": "Mem: Show PKB Version & Status"
       }
     ],
     "configuration": {
@@ -59,7 +67,11 @@
   "scripts": {
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
-    "test": "node ./out/test/runner.js"
+    "test": "node ./out/test/runner.js",
+    "bump": "node ./scripts/bump-version.js",
+    "vscode:prepublish": "node ./scripts/bump-version.js && npm run compile",
+    "package": "npx @vscode/vsce package",
+    "install-extension": "npm run package && node ./scripts/install-extension.js"
   },
   "dependencies": {
     "vscode-languageclient": "^10.1.2"
@@ -67,7 +79,8 @@
   "devDependencies": {
     "@types/mocha": "^10.0.10",
     "@types/node": "^26.6.3",
-    "@types/vscode": "^1.138.0",
+    "@types/vscode": "^1.80.0",
+    "@vscode/vsce": "^3.2.1",
     "typescript": "^7.0.2"
   }
 }

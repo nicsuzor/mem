@@ -180,6 +180,14 @@ sizes:
 	@echo "── Windows ──"
 	@ls -lh $(WIN_DIR)/pkb.exe 2>/dev/null || true
 
+.PHONY: extension
+extension:
+	cd editors/vscode && npm run package
+
+.PHONY: install-extension
+install-extension:
+	cd editors/vscode && npm run install-extension
+
 .PHONY: help
 help:
 	@echo "Targets:"

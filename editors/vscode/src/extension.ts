@@ -127,7 +127,26 @@ export function extractReferenceAtPosition(
   return undefined;
 }
 
+export function getExtensionVersion(context: vscode.ExtensionContext): string {
+  try {
+    if (context.extension?.packageJSON?.version) {
+      return context.extension.packageJSON.version;
+    }
+    const pkgPath = path.resolve(context.extensionPath || __dirname, '..', 'package.json');
+    if (fs.existsSync(pkgPath)) {
+      const data = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
+      if (data.version) {
+        return data.version;
+      }
+    }
+  } catch {
+    // fallback
+  }
+  return '0.1.0';
+}
+
 export function activate(context: vscode.ExtensionContext): void {
+  const extVersion = getExtensionVersion(context);
   const config = vscode.workspace.getConfiguration('mem.lsp');
   const configuredExec = config.get<string>('executable') || 'pkb';
   const executable = resolvePkbExecutable(configuredExec);
@@ -174,6 +193,19 @@ export function activate(context: vscode.ExtensionContext): void {
   );
 
   client.start();
+
+  // Status bar showing active version and status
+  if (typeof vscode.window.createStatusBarItem === 'function') {
+    const statusBar = vscode.window.createStatusBarItem(
+      vscode.StatusBarAlignment.Right,
+      100
+    );
+    statusBar.text = `$(plug) Mem PKB v${extVersion}`;
+    statusBar.tooltip = `Mem PKB Language Server v${extVersion}\nBinary: ${executable}\nClick for status & version info`;
+    statusBar.command = 'mem.showVersion';
+    statusBar.show();
+    context.subscriptions.push(statusBar);
+  }
 
   // Register command to open referenced file in a new tab
   const openCmd = vscode.commands.registerCommand(
@@ -230,12 +262,42 @@ export function activate(context: vscode.ExtensionContext): void {
       if (client) {
         await client.stop();
         client.start();
-        vscode.window.showInformationMessage('Mem PKB Language Server restarted.');
+        vscode.window.showInformationMessage(`Mem PKB Language Server (v${extVersion}) restarted.`);
       }
     }
   );
 
-  context.subscriptions.push(openCmd, openAtCursorCmd, restartCmd);
+  // Register command to display version & diagnostic status
+  const showVersionCmd = vscode.commands.registerCommand(
+    'mem.showVersion',
+    async () => {
+      let binVersion = 'unknown';
+      try {
+        const { execSync } = require('child_process');
+        binVersion = execSync(`"${executable}" --version`, { encoding: 'utf8' }).trim();
+      } catch (e) {
+        binVersion = `error running ${executable}: ${e instanceof Error ? e.message : String(e)}`;
+      }
+
+      const msg = `Mem PKB Extension: v${extVersion}\nLSP Binary: ${binVersion}\nBinary Path: ${executable}\nPKB Root: ${pkbRoot}`;
+      const action = await vscode.window.showInformationMessage(
+        msg,
+        { modal: false },
+        'Restart Server',
+        'Copy Info'
+      );
+      if (action === 'Restart Server') {
+        vscode.commands.executeCommand('mem.restartServer');
+      } else if (action === 'Copy Info') {
+        if (vscode.env?.clipboard?.writeText) {
+          await vscode.env.clipboard.writeText(msg);
+          vscode.window.showInformationMessage('Version info copied to clipboard.');
+        }
+      }
+    }
+  );
+
+  context.subscriptions.push(openCmd, openAtCursorCmd, restartCmd, showVersionCmd);
 }
 
 export async function deactivate(): Promise<void> {
