@@ -4917,6 +4917,96 @@ pub fn xml_escape(s: &str) -> String {
         .replace('\'', "&apos;")
 }
 
+pub fn wrap_text_to_width(
+    text: &str,
+    max_width: f64,
+    font_size: f64,
+    font_family_code: i64,
+) -> Vec<String> {
+    let char_width = match font_family_code {
+        2 => font_size * 0.54, // Helvetica / sans-serif
+        3 => font_size * 0.60, // Cascadia / monospace
+        _ => font_size * 0.56, // Virgil / cursive
+    };
+    let max_chars = ((max_width / char_width).floor() as usize).max(1);
+
+    let mut result = Vec::new();
+    for paragraph in text.split('\n') {
+        if paragraph.is_empty() {
+            result.push(String::new());
+            continue;
+        }
+
+        if paragraph.chars().count() <= max_chars {
+            result.push(paragraph.to_string());
+            continue;
+        }
+
+        let words: Vec<&str> = paragraph.split(' ').collect();
+        let mut current_line = String::new();
+        let mut current_len = 0;
+
+        for word in words {
+            if word.is_empty() {
+                if !current_line.is_empty() {
+                    current_line.push(' ');
+                    current_len += 1;
+                }
+                continue;
+            }
+
+            let word_len = word.chars().count();
+            if current_line.is_empty() {
+                if word_len > max_chars {
+                    let chars: Vec<char> = word.chars().collect();
+                    let chunks: Vec<_> = chars.chunks(max_chars).collect();
+                    for (i, chunk) in chunks.iter().enumerate() {
+                        if i + 1 == chunks.len() {
+                            current_line = chunk.iter().collect();
+                            current_len = current_line.chars().count();
+                        } else {
+                            result.push(chunk.iter().collect());
+                        }
+                    }
+                } else {
+                    current_line.push_str(word);
+                    current_len = word_len;
+                }
+            } else if current_len + 1 + word_len <= max_chars {
+                current_line.push(' ');
+                current_line.push_str(word);
+                current_len += 1 + word_len;
+            } else {
+                result.push(std::mem::take(&mut current_line));
+                if word_len > max_chars {
+                    let chars: Vec<char> = word.chars().collect();
+                    let chunks: Vec<_> = chars.chunks(max_chars).collect();
+                    for (i, chunk) in chunks.iter().enumerate() {
+                        if i + 1 == chunks.len() {
+                            current_line = chunk.iter().collect();
+                            current_len = current_line.chars().count();
+                        } else {
+                            result.push(chunk.iter().collect());
+                        }
+                    }
+                } else {
+                    current_line = word.to_string();
+                    current_len = word_len;
+                }
+            }
+        }
+        if !current_line.is_empty() {
+            result.push(current_line);
+        }
+    }
+
+    if result.is_empty() {
+        vec![String::new()]
+    } else {
+        result
+    }
+}
+
 pub fn render_svg(doc: &Value, include_background: bool) -> Result<String, String> {
     let elements = live(doc);
     let (min_x, min_y, w, h) = if elements.is_empty() {
@@ -4936,6 +5026,24 @@ pub fn render_svg(doc: &Value, include_background: bool) -> Result<String, Strin
         .and_then(|a| a.get("viewBackgroundColor"))
         .and_then(|v| v.as_str())
         .unwrap_or("#ffffff");
+
+    let by_id: HashMap<&str, &Value> = elements
+        .iter()
+        .filter_map(|e| e.get("id").and_then(|v| v.as_str()).map(|id| (id, *e)))
+        .collect();
+
+    let mut container_by_text_id: HashMap<&str, &Value> = HashMap::new();
+    for elem in &elements {
+        if let Some(bound_arr) = elem.get("boundElements").and_then(|v| v.as_array()) {
+            for b in bound_arr {
+                if b.get("type").and_then(|v| v.as_str()) == Some("text") {
+                    if let Some(tid) = b.get("id").and_then(|v| v.as_str()) {
+                        container_by_text_id.insert(tid, *elem);
+                    }
+                }
+            }
+        }
+    }
 
     let mut svg = String::new();
     svg.push_str(&format!(
@@ -5052,19 +5160,6 @@ pub fn render_svg(doc: &Value, include_background: bool) -> Result<String, Strin
             }
             "text" => {
                 let font_size = e.get("fontSize").and_then(|v| v.as_f64()).unwrap_or(20.0);
-                let text_val = element_text(e);
-                let text_align = e.get("textAlign").and_then(|v| v.as_str()).unwrap_or("left");
-                let text_anchor = match text_align {
-                    "center" => "middle",
-                    "right" => "end",
-                    _ => "start",
-                };
-                let text_x = match text_align {
-                    "center" => x + width / 2.0,
-                    "right" => x + width,
-                    _ => x,
-                };
-
                 let font_family_code = e.get("fontFamily").and_then(|v| v.as_i64()).unwrap_or(1);
                 let font_family_str = match font_family_code {
                     2 => "Helvetica Neue, Arial, sans-serif",
@@ -5072,19 +5167,131 @@ pub fn render_svg(doc: &Value, include_background: bool) -> Result<String, Strin
                     _ => "Virgil, Segoe UI Emoji, cursive, sans-serif",
                 };
 
-                let lines: Vec<&str> = text_val.split('\n').collect();
+                let text_prop = e.get("text").and_then(|v| v.as_str()).unwrap_or("");
+                let orig_prop = e.get("originalText").and_then(|v| v.as_str()).unwrap_or("");
+                let raw_text = if !text_prop.is_empty() {
+                    if !text_prop.contains('\n') && orig_prop.contains('\n') {
+                        orig_prop
+                    } else {
+                        text_prop
+                    }
+                } else {
+                    orig_prop
+                };
+
+                let clean_text = raw_text.replace("\r\n", "\n").replace('\r', "\n");
+                if clean_text.is_empty() {
+                    continue;
+                }
+
+                let container_opt = e
+                    .get("containerId")
+                    .and_then(|v| v.as_str())
+                    .and_then(|cid| by_id.get(cid))
+                    .or_else(|| {
+                        let text_id = e.get("id").and_then(|v| v.as_str()).unwrap_or("");
+                        container_by_text_id.get(text_id)
+                    });
+
                 let line_height = font_size * 1.25;
+
+                let (lines, text_x, text_anchor, first_line_y) = if let Some(cont) = container_opt {
+                    let cont_type = cont.get("type").and_then(|v| v.as_str()).unwrap_or("");
+                    if cont_type == "arrow" || cont_type == "line" {
+                        let text_align = e.get("textAlign").and_then(|v| v.as_str()).unwrap_or("center");
+                        let text_anchor = match text_align {
+                            "center" => "middle",
+                            "right" => "end",
+                            _ => "start",
+                        };
+
+                        let lines: Vec<String> = clean_text.split('\n').map(|s| s.to_string()).collect();
+                        let total_h = (lines.len() as f64) * line_height;
+
+                        let (tx, fy) = if x.abs() > 0.001 || y.abs() > 0.001 {
+                            let tx = match text_align {
+                                "center" => x + width / 2.0,
+                                "right" => x + width,
+                                _ => x,
+                            };
+                            let fy = y + font_size * 0.85;
+                            (tx, fy)
+                        } else {
+                            let (mid_x, mid_y) = get_arrow_midpoint(cont);
+                            let fy = mid_y - (total_h / 2.0) + font_size * 0.85;
+                            (mid_x, fy)
+                        };
+                        (lines, tx, text_anchor, fy)
+                    } else {
+                        let cx = cont.get("x").and_then(|v| v.as_f64()).unwrap_or(x);
+                        let cy = cont.get("y").and_then(|v| v.as_f64()).unwrap_or(y);
+                        let cw = cont.get("width").and_then(|v| v.as_f64()).unwrap_or(width);
+                        let ch = cont.get("height").and_then(|v| v.as_f64()).unwrap_or(height);
+
+                        let pad = 10.0;
+                        let usable_w = match cont_type {
+                            "ellipse" => (cw * 0.75 - 2.0 * pad).max(20.0),
+                            "diamond" => (cw * 0.65 - 2.0 * pad).max(20.0),
+                            _ => (cw - 2.0 * pad).max(20.0),
+                        };
+
+                        let lines = wrap_text_to_width(&clean_text, usable_w, font_size, font_family_code);
+                        let total_h = (lines.len() as f64) * line_height;
+
+                        let text_align = e.get("textAlign").and_then(|v| v.as_str()).unwrap_or("center");
+                        let (tx, text_anchor) = match text_align {
+                            "left" => (cx + pad, "start"),
+                            "right" => (cx + cw - pad, "end"),
+                            _ => (cx + cw / 2.0, "middle"),
+                        };
+
+                        let vert_align = e.get("verticalAlign").and_then(|v| v.as_str()).unwrap_or("middle");
+                        let start_y = match vert_align {
+                            "top" => cy + pad,
+                            "bottom" => cy + ch - pad - total_h,
+                            _ => cy + (ch - total_h) / 2.0,
+                        };
+                        let fy = start_y + font_size * 0.85;
+
+                        (lines, tx, text_anchor, fy)
+                    }
+                } else {
+                    let text_align = e.get("textAlign").and_then(|v| v.as_str()).unwrap_or("left");
+                    let text_anchor = match text_align {
+                        "center" => "middle",
+                        "right" => "end",
+                        _ => "start",
+                    };
+                    let tx = match text_align {
+                        "center" => x + width / 2.0,
+                        "right" => x + width,
+                        _ => x,
+                    };
+
+                    let lines: Vec<String> = clean_text.split('\n').map(|s| s.to_string()).collect();
+                    let total_h = (lines.len() as f64) * line_height;
+
+                    let vert_align = e.get("verticalAlign").and_then(|v| v.as_str()).unwrap_or("top");
+                    let start_y = match vert_align {
+                        "middle" => y + (height - total_h) / 2.0,
+                        "bottom" => y + height - total_h,
+                        _ => y,
+                    };
+                    let fy = start_y + font_size * 0.85;
+
+                    (lines, tx, text_anchor, fy)
+                };
 
                 svg.push_str(&format!(
                     r#"  <text x="{:.1}" y="{:.1}" font-size="{:.1}" font-family="{}" fill="{}" text-anchor="{}"{}>"#,
-                    text_x, y + font_size * 0.8, font_size, font_family_str, stroke_color, text_anchor, opacity_attr
+                    text_x, first_line_y, font_size, font_family_str, stroke_color, text_anchor, opacity_attr
                 ));
                 svg.push('\n');
                 for (i, line) in lines.iter().enumerate() {
-                    let dy = if i == 0 { 0.0 } else { line_height };
+                    let line_y = first_line_y + (i as f64) * line_height;
                     svg.push_str(&format!(
-                        r#"    <tspan x="{:.1}" dy="{:.1}">{}</tspan>"#,
-                        text_x, dy, xml_escape(line)
+                        r#"    <tspan x="{:.1}" y="{:.1}">{}</tspan>"#,
+                        text_x, line_y, xml_escape(line)
                     ));
                     svg.push('\n');
                 }
@@ -7223,5 +7430,107 @@ mod tests {
         assert_eq!(doc["elements"][0]["backgroundColor"], "#ffa500");
         assert_eq!(doc["elements"][1]["fontFamily"], 1);
         assert_eq!(doc["elements"][1]["strokeColor"], "#1a1a1a");
+    }
+
+    #[test]
+    fn test_wrap_text_to_width() {
+        // max_width 100.0 with Virgil (char_width = 20 * 0.56 = 11.2) -> max_chars = 8
+        let wrapped = wrap_text_to_width("Alpha Beta Gamma", 100.0, 20.0, 1);
+        assert_eq!(wrapped, vec!["Alpha", "Beta", "Gamma"]);
+
+        // Preserves explicit newlines
+        let wrapped2 = wrap_text_to_width("First\nSecond Line Here", 100.0, 20.0, 1);
+        assert_eq!(wrapped2, vec!["First", "Second", "Line", "Here"]);
+
+        // Breaks single word exceeding max_chars
+        let wrapped3 = wrap_text_to_width("Supercalifragilistic", 100.0, 20.0, 1);
+        assert_eq!(wrapped3, vec!["Supercal", "ifragili", "stic"]);
+    }
+
+    #[test]
+    fn test_render_svg_multiline_container_text() {
+        let doc = json!({
+            "elements": [
+                {
+                    "id": "box1",
+                    "type": "rectangle",
+                    "x": 100.0,
+                    "y": 100.0,
+                    "width": 200.0,
+                    "height": 80.0,
+                    "strokeColor": "#1e1e1e",
+                    "boundElements": [{ "id": "t1", "type": "text" }]
+                },
+                {
+                    "id": "t1",
+                    "type": "text",
+                    "containerId": "box1",
+                    "x": 110.0,
+                    "y": 120.0,
+                    "width": 100.0,
+                    "height": 40.0,
+                    "text": "First Line\nSecond Line",
+                    "originalText": "First Line Second Line",
+                    "fontSize": 20.0,
+                    "fontFamily": 1,
+                    "textAlign": "center",
+                    "verticalAlign": "middle",
+                    "strokeColor": "#1e1e1e"
+                },
+                {
+                    "id": "headline",
+                    "type": "text",
+                    "x": 50.0,
+                    "y": 20.0,
+                    "width": 300.0,
+                    "height": 50.0,
+                    "text": "System Architecture\nHigh-Level Overview",
+                    "originalText": "System Architecture\nHigh-Level Overview",
+                    "fontSize": 24.0,
+                    "fontFamily": 2,
+                    "textAlign": "left",
+                    "verticalAlign": "top",
+                    "strokeColor": "#000000"
+                }
+            ]
+        });
+
+        let svg = render_svg(&doc, false).unwrap();
+
+        // 1. Verify bound text uses <tspan> rows with distinct y baselines
+        assert!(svg.contains("<tspan x=\"200.0\" y="), "svg: {svg}");
+        assert!(svg.contains("First Line</tspan>"));
+        assert!(svg.contains("Second Line</tspan>"));
+
+        // 2. Verify headline preserves multiline with <tspan>
+        assert!(svg.contains("System Architecture</tspan>"));
+        assert!(svg.contains("High-Level Overview</tspan>"));
+
+        // 3. Verify container wrapping when text is longer than container
+        let doc_long = json!({
+            "elements": [
+                {
+                    "id": "b2",
+                    "type": "rectangle",
+                    "x": 50.0,
+                    "y": 50.0,
+                    "width": 100.0,
+                    "height": 80.0,
+                    "boundElements": [{ "id": "t2", "type": "text" }]
+                },
+                {
+                    "id": "t2",
+                    "type": "text",
+                    "containerId": "b2",
+                    "text": "Very long description that must wrap into multiple rows inside the box",
+                    "fontSize": 20.0,
+                    "fontFamily": 1
+                }
+            ]
+        });
+        let svg_long = render_svg(&doc_long, false).unwrap();
+        // The text should wrap into at least 4 lines
+        let tspan_count = svg_long.matches("<tspan").count();
+        assert!(tspan_count >= 4, "Expected >= 4 tspans, found {tspan_count} in {svg_long}");
     }
 }

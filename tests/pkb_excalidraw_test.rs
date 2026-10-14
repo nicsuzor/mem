@@ -2373,6 +2373,88 @@ fn test_screenshot_mode_svg() {
 }
 
 #[test]
+fn test_screenshot_svg_multiline_bound_text_wrapping() {
+    let sample = r##"{
+        "type": "excalidraw",
+        "version": 2,
+        "elements": [
+            {
+                "id": "box1",
+                "type": "rectangle",
+                "x": 100,
+                "y": 100,
+                "width": 140,
+                "height": 90,
+                "strokeColor": "#1e1e1e",
+                "backgroundColor": "#a5d8ff",
+                "fillStyle": "solid",
+                "strokeWidth": 2,
+                "roundness": {"type": 3},
+                "index": "a0",
+                "isDeleted": false,
+                "boundElements": [{"id": "txt1", "type": "text"}]
+            },
+            {
+                "id": "txt1",
+                "type": "text",
+                "containerId": "box1",
+                "x": 110,
+                "y": 120,
+                "width": 120,
+                "height": 50,
+                "text": "Payment Processor Gateway Service",
+                "originalText": "Payment Processor Gateway Service",
+                "fontSize": 20,
+                "fontFamily": 1,
+                "textAlign": "center",
+                "verticalAlign": "middle",
+                "strokeColor": "#1e1e1e",
+                "index": "a1",
+                "isDeleted": false
+            },
+            {
+                "id": "title1",
+                "type": "text",
+                "x": 40,
+                "y": 20,
+                "width": 200,
+                "height": 40,
+                "text": "Main Headline\nSub-headline Details",
+                "originalText": "Main Headline\nSub-headline Details",
+                "fontSize": 22,
+                "fontFamily": 2,
+                "textAlign": "left",
+                "verticalAlign": "top",
+                "strokeColor": "#1e1e1e",
+                "index": "a2",
+                "isDeleted": false
+            }
+        ]
+    }"##;
+    let file = NamedTempFile::new().unwrap();
+    fs::write(file.path(), sample).unwrap();
+    let path = file.path().to_str().unwrap();
+
+    let (code, stdout, stderr) = run_bin(&[path, "screenshot"]);
+    assert_eq!(code, 0, "stderr: {}", stderr);
+
+    // Verify SVG structure
+    assert!(stdout.contains("<svg xmlns=\"http://www.w3.org/2000/svg\""));
+
+    // Verify bound text was wrapped into multiple <tspan> rows
+    // For box1 centered at x = 100 + 140/2 = 170.0
+    assert!(stdout.contains("<tspan x=\"170.0\" y="), "stdout: {stdout}");
+    assert!(stdout.contains("Payment"), "stdout: {stdout}");
+    assert!(stdout.contains("Processor"), "stdout: {stdout}");
+    assert!(stdout.contains("Gateway"), "stdout: {stdout}");
+    assert!(stdout.contains("Service"), "stdout: {stdout}");
+
+    // Verify headline preserved separate tspans
+    assert!(stdout.contains("Main Headline</tspan>"), "stdout: {stdout}");
+    assert!(stdout.contains("Sub-headline Details</tspan>"), "stdout: {stdout}");
+}
+
+#[test]
 fn test_query_mode() {
     let sample = r##"{
         "type": "excalidraw",
