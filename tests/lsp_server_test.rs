@@ -669,3 +669,240 @@ fn test_global_root_flag_before_subcommand() {
         stderr
     );
 }
+
+#[test]
+fn test_lsp_custom_status_and_resolve_reference_requests() {
+    let dir = tempdir().unwrap();
+    let pkb_root = dir.path().to_path_buf();
+
+    let tasks_dir = pkb_root.join("tasks");
+    fs::create_dir_all(&tasks_dir).unwrap();
+    let epic_path = tasks_dir.join("epic-root.md");
+    fs::write(
+        &epic_path,
+        "---\nid: epic-root\ntitle: Root Epic\ntype: epic\nstatus: ready\n---\nRoot epic.\n",
+    )
+    .unwrap();
+    let task_path = tasks_dir.join("task-custom.md");
+    let task_content = r#"---
+id: task-custom
+title: Custom Resolve Target
+type: task
+status: in_progress
+intent: 2
+tags:
+  - preview
+parent: epic-root
+---
+Body of the custom resolve target for markdown preview.
+"#;
+    fs::write(&task_path, task_content).unwrap();
+
+    let (server_conn, client_conn) = lsp_server::Connection::memory();
+    let server = LspServer::new(pkb_root.clone());
+    let server_handle = std::thread::spawn(move || {
+        server.run_connection(server_conn).unwrap();
+    });
+
+    // 1. Initialize
+    let init_id = lsp_server::RequestId::from(1);
+    #[allow(deprecated)]
+    let init_params = InitializeParams {
+        root_uri: None,
+        capabilities: ClientCapabilities::default(),
+        ..Default::default()
+    };
+    client_conn
+        .sender
+        .send(lsp_server::Message::Request(lsp_server::Request::new(
+            init_id,
+            "initialize".to_string(),
+            serde_json::to_value(init_params).unwrap(),
+        )))
+        .unwrap();
+    let _ = client_conn.receiver.recv().unwrap();
+
+    client_conn
+        .sender
+        .send(lsp_server::Message::Notification(
+            lsp_server::Notification::new(
+                "initialized".to_string(),
+                serde_json::to_value(InitializedParams {}).unwrap(),
+            ),
+        ))
+        .unwrap();
+
+    // 2. Request mem/status
+    let status_id = lsp_server::RequestId::from(2);
+    client_conn
+        .sender
+        .send(lsp_server::Message::Request(lsp_server::Request::new(
+            status_id.clone(),
+            "mem/status".to_string(),
+            serde_json::json!({}),
+        )))
+        .unwrap();
+
+    let status_resp = match client_conn.receiver.recv().unwrap() {
+        lsp_server::Message::Response(r) => r,
+        other => panic!("Expected mem/status response, got {:?}", other),
+    };
+    assert_eq!(status_resp.id, status_id);
+    let status_val = status_resp.response_result.unwrap();
+    assert_eq!(status_val["rootExists"], true);
+    assert_eq!(status_val["nodeCount"], 2);
+    assert_eq!(status_val["openDocuments"], 0);
+    assert_eq!(status_val["version"], env!("CARGO_PKG_VERSION"));
+
+    // 3. Request mem/resolveReference for existing node
+    let resolve_id = lsp_server::RequestId::from(3);
+    client_conn
+        .sender
+        .send(lsp_server::Message::Request(lsp_server::Request::new(
+            resolve_id.clone(),
+            "mem/resolveReference".to_string(),
+            serde_json::json!({ "target": "task-custom" }),
+        )))
+        .unwrap();
+
+    let resolve_resp = match client_conn.receiver.recv().unwrap() {
+        lsp_server::Message::Response(r) => r,
+        other => panic!("Expected mem/resolveReference response, got {:?}", other),
+    };
+    assert_eq!(resolve_resp.id, resolve_id);
+    let resolved_val = resolve_resp.response_result.unwrap();
+    assert_eq!(resolved_val["id"], "task-custom");
+    assert_eq!(resolved_val["label"], "Custom Resolve Target");
+    assert_eq!(resolved_val["type"], "task");
+    assert_eq!(resolved_val["status"], "in_progress");
+    assert_eq!(resolved_val["intent"], 2);
+    assert_eq!(resolved_val["parent"], "epic-root");
+    assert!(resolved_val["uri"]
+        .as_str()
+        .unwrap()
+        .ends_with("task-custom.md"));
+    assert!(resolved_val["previewMarkdown"]
+        .as_str()
+        .unwrap()
+        .contains("Custom Resolve Target"));
+
+    // 4. Request mem/resolveReference for non-existent node -> null
+    let missing_id = lsp_server::RequestId::from(4);
+    client_conn
+        .sender
+        .send(lsp_server::Message::Request(lsp_server::Request::new(
+            missing_id.clone(),
+            "mem/resolveReference".to_string(),
+            serde_json::json!({ "target": "nonexistent-node-id" }),
+        )))
+        .unwrap();
+
+    let missing_resp = match client_conn.receiver.recv().unwrap() {
+        lsp_server::Message::Response(r) => r,
+        other => panic!("Expected mem/resolveReference response, got {:?}", other),
+    };
+    assert_eq!(missing_resp.id, missing_id);
+    assert!(missing_resp.response_result.unwrap().is_null());
+
+    // 5. Shutdown
+    let shutdown_id = lsp_server::RequestId::from(5);
+    client_conn
+        .sender
+        .send(lsp_server::Message::Request(lsp_server::Request::new(
+            shutdown_id,
+            "shutdown".to_string(),
+            serde_json::Value::Null,
+        )))
+        .unwrap();
+    let _ = client_conn.receiver.recv().unwrap();
+    client_conn
+        .sender
+        .send(lsp_server::Message::Notification(
+            lsp_server::Notification::new("exit".to_string(), serde_json::Value::Null),
+        ))
+        .unwrap();
+    drop(client_conn);
+    server_handle.join().unwrap();
+}
+
+#[test]
+fn test_document_link_resolves_markdown_links_and_wikilinks() {
+    let dir = tempdir().unwrap();
+    let pkb_root = dir.path().to_path_buf();
+
+    let tasks_dir = pkb_root.join("tasks");
+    fs::create_dir_all(&tasks_dir).unwrap();
+    fs::write(
+        tasks_dir.join("task-wiki.md"),
+        "---\nid: task-wiki\ntitle: Wiki Task\ntype: task\nstatus: ready\n---\nWiki body.\n",
+    )
+    .unwrap();
+    fs::write(
+        tasks_dir.join("task-md.md"),
+        "---\nid: task-md\ntitle: Markdown Link Task\ntype: task\nstatus: ready\n---\nMD body.\n",
+    )
+    .unwrap();
+
+    let mut server = LspServer::new(pkb_root.clone());
+    let doc_path = pkb_root.join("notes").join("links.md");
+    let doc_uri: Uri = format!("file://{}", doc_path.to_string_lossy())
+        .parse()
+        .unwrap();
+    let doc_text = "See [[task-wiki]] and [MD Link](task-md) and [External](https://example.com) and [Unresolved](missing-id).\n";
+    server.handle_did_open(DidOpenTextDocumentParams {
+        text_document: TextDocumentItem {
+            uri: doc_uri.clone(),
+            language_id: "markdown".to_string(),
+            version: 1,
+            text: doc_text.to_string(),
+        },
+    });
+
+    let links = server.handle_document_link(&DocumentLinkParams {
+        text_document: TextDocumentIdentifier { uri: doc_uri },
+        work_done_progress_params: Default::default(),
+        partial_result_params: Default::default(),
+    });
+
+    assert_eq!(
+        links.len(),
+        2,
+        "Expected 2 resolved document links (1 wikilink + 1 markdown link), got: {:?}",
+        links
+    );
+    assert!(links[0]
+        .target
+        .as_ref()
+        .unwrap()
+        .as_str()
+        .ends_with("task-wiki.md"));
+    assert!(links[1]
+        .target
+        .as_ref()
+        .unwrap()
+        .as_str()
+        .ends_with("task-md.md"));
+}
+
+#[test]
+fn test_lsp_cli_warns_on_missing_root_directory() {
+    let dir = tempdir().unwrap();
+    let missing_root = dir.path().join("does_not_exist_pkb_root");
+
+    let pkb_exe = env!("CARGO_BIN_EXE_pkb");
+    let output = std::process::Command::new(pkb_exe)
+        .args(["lsp", "--root", missing_root.to_str().unwrap(), "--stdio"])
+        .stdin(std::process::Stdio::null())
+        .output()
+        .expect("Failed to execute pkb lsp");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains(&format!(
+            "warning: PKB root directory does not exist: {}",
+            missing_root.display()
+        )),
+        "Expected missing root warning in stderr, got: {}",
+        stderr
+    );
+}

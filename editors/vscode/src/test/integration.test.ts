@@ -3,7 +3,11 @@ import * as path from 'path';
 import * as fs from 'fs';
 import * as os from 'os';
 import { spawn } from 'child_process';
-import { openReferencedFile } from '../extension';
+import {
+  createMarkdownItPlugin,
+  openReferencedFile,
+  PkbPreviewIndex,
+} from '../extension';
 
 // Helper to write JSON-RPC messages with Content-Length header
 function writeLspMessage(stream: NodeJS.WritableStream, msg: any) {
@@ -61,7 +65,7 @@ class LspReader {
   }
 }
 
-describe('VS Code Extension - End-to-End LSP Integration', () => {
+describe('VS Code Extension - End-to-End LSP & Markdown Preview Integration', () => {
   let tmpDir: string;
   let pkbProc: any;
   let reader: LspReader;
@@ -255,5 +259,54 @@ It must be shown in hover preview and opened in a new tab.
       false,
       'Opening reference must set preview: false to ensure a new editor tab'
     );
+  });
+
+  it('Markdown Preview window renders hover preview cards and links that open the whole file in a new tab', async () => {
+    const index = new PkbPreviewIndex(tmpDir);
+    const plugin = createMarkdownItPlugin(index);
+
+    const previewHtml = plugin.render(
+      'In Markdown Preview: [[task-integration]] and [Integration Link](task-integration) and bare task-integration.'
+    );
+
+    const expectedTaskPath = path.join(tmpDir, 'tasks', 'task-integration.md');
+    const expectedUri = `file://${expectedTaskPath}`;
+
+    assert.ok(
+      previewHtml.includes(`href="${expectedUri}"`),
+      `Markdown Preview must link to ${expectedUri}`
+    );
+    assert.ok(
+      previewHtml.includes('mem-pkb-hover-card'),
+      'Markdown Preview must include rich hover card'
+    );
+    assert.ok(
+      previewHtml.includes('E2E Integration Task'),
+      'Markdown Preview hover card must include node title'
+    );
+    assert.ok(
+      previewHtml.includes('This is the complete text of the integration task.'),
+      'Markdown Preview hover card must include node body excerpt'
+    );
+
+    // Clicking the link opens the whole file in a new editor tab (preview: false)
+    const mockShowOptions: any[] = [];
+    const fullContent = fs.readFileSync(expectedTaskPath, 'utf8');
+    const editor = await openReferencedFile(
+      expectedUri,
+      { preview: false },
+      {
+        openTextDocument: async (uri: any) => ({ uri, getText: () => fullContent }),
+      } as any,
+      {
+        showTextDocument: async (doc: any, options: any) => {
+          mockShowOptions.push(options);
+          return { document: doc };
+        },
+      } as any
+    );
+
+    assert.strictEqual(editor.document.getText(), fullContent);
+    assert.strictEqual(mockShowOptions[0].preview, false);
   });
 });

@@ -8,10 +8,12 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::{Arc, LazyLock};
+use std::time::Instant;
 
 use lsp_types::*;
 use parking_lot::RwLock;
 use regex::Regex;
+use tracing::{debug, info, warn};
 
 use crate::graph::GraphNode;
 use crate::graph_store::GraphStore;
@@ -51,7 +53,28 @@ pub struct LspServer {
 
 impl LspServer {
     pub fn new(pkb_root: PathBuf) -> Self {
+        if !pkb_root.exists() {
+            warn!(
+                pkb_root = %pkb_root.display(),
+                "PKB root directory does not exist when initializing LspServer"
+            );
+        }
+        let start = Instant::now();
         let store = GraphStore::build_from_directory(&pkb_root);
+        let elapsed = start.elapsed();
+        let node_count = store.node_count();
+        info!(
+            node_count = node_count,
+            pkb_root = %pkb_root.display(),
+            elapsed_ms = elapsed.as_millis() as u64,
+            "LspServer initialized graph from directory"
+        );
+        if node_count == 0 {
+            warn!(
+                pkb_root = %pkb_root.display(),
+                "0 nodes were loaded from pkb_root"
+            );
+        }
         Self {
             pkb_root,
             graph: Arc::new(RwLock::new(store)),
@@ -64,23 +87,36 @@ impl LspServer {
         let current_gen = crate::pkb::scan_generation(&self.pkb_root);
         let cached_gen = self.graph.read().generation();
         if current_gen != cached_gen {
+            let start = Instant::now();
+            let new_store = GraphStore::build_from_directory(&self.pkb_root);
+            let elapsed = start.elapsed();
+            let node_count = new_store.node_count();
+            info!(
+                node_count = node_count,
+                pkb_root = %self.pkb_root.display(),
+                elapsed_ms = elapsed.as_millis() as u64,
+                "Reloaded PKB graph after file changes"
+            );
             let mut store = self.graph.write();
-            *store = GraphStore::build_from_directory(&self.pkb_root);
+            *store = new_store;
         }
     }
 
     pub fn handle_did_open(&mut self, params: DidOpenTextDocumentParams) {
+        debug!(uri = %params.text_document.uri.as_str(), "textDocument/didOpen");
         self.documents
             .insert(params.text_document.uri, params.text_document.text);
     }
 
     pub fn handle_did_change(&mut self, params: DidChangeTextDocumentParams) {
+        debug!(uri = %params.text_document.uri.as_str(), "textDocument/didChange");
         if let Some(change) = params.content_changes.into_iter().last() {
             self.documents.insert(params.text_document.uri, change.text);
         }
     }
 
     pub fn handle_did_close(&mut self, params: DidCloseTextDocumentParams) {
+        debug!(uri = %params.text_document.uri.as_str(), "textDocument/didClose");
         self.documents.remove(&params.text_document.uri);
     }
 
@@ -104,6 +140,10 @@ impl LspServer {
                 return Some(content);
             }
         }
+        warn!(
+            uri = %uri_str,
+            "Document content could not be found in memory or read from disk"
+        );
         None
     }
 
@@ -284,17 +324,50 @@ impl LspServer {
         let pos = params.text_document_position_params.position;
         let content = self.get_document_content(uri)?;
 
-        let span = Self::find_reference_at_position(&content, pos.line, pos.character)?;
-        let (node, abs_path) = self.resolve_node(&span.target)?;
-        let preview = self.format_hover_preview(&node, &abs_path);
+        let span = Self::find_reference_at_position(&content, pos.line, pos.character);
+        let Some(span) = span else {
+            debug!(
+                uri = %uri.as_str(),
+                line = pos.line,
+                character = pos.character,
+                "hover: no reference span at position"
+            );
+            return None;
+        };
 
-        Some(Hover {
-            contents: HoverContents::Markup(MarkupContent {
-                kind: MarkupKind::Markdown,
-                value: preview,
-            }),
-            range: Some(span.range),
-        })
+        match self.resolve_node(&span.target) {
+            Some((node, abs_path)) => {
+                debug!(
+                    uri = %uri.as_str(),
+                    line = pos.line,
+                    character = pos.character,
+                    target = %span.target,
+                    node_id = %node.id,
+                    path = %abs_path.display(),
+                    "hover: resolved node"
+                );
+                let preview = self.format_hover_preview(&node, &abs_path);
+                Some(Hover {
+                    contents: HoverContents::Markup(MarkupContent {
+                        kind: MarkupKind::Markdown,
+                        value: preview,
+                    }),
+                    range: Some(span.range),
+                })
+            }
+            None => {
+                let node_count = self.graph.read().node_count();
+                debug!(
+                    uri = %uri.as_str(),
+                    line = pos.line,
+                    character = pos.character,
+                    target = %span.target,
+                    node_count = node_count,
+                    "hover: failed to resolve reference"
+                );
+                None
+            }
+        }
     }
 
     /// Handle textDocument/definition request.
@@ -306,14 +379,47 @@ impl LspServer {
         let pos = params.text_document_position_params.position;
         let content = self.get_document_content(uri)?;
 
-        let span = Self::find_reference_at_position(&content, pos.line, pos.character)?;
-        let (_node, abs_path) = self.resolve_node(&span.target)?;
+        let span = Self::find_reference_at_position(&content, pos.line, pos.character);
+        let Some(span) = span else {
+            debug!(
+                uri = %uri.as_str(),
+                line = pos.line,
+                character = pos.character,
+                "definition: no reference span at position"
+            );
+            return None;
+        };
 
-        let target_uri = path_to_uri(&abs_path)?;
-        Some(GotoDefinitionResponse::Scalar(Location {
-            uri: target_uri,
-            range: Range::default(),
-        }))
+        match self.resolve_node(&span.target) {
+            Some((node, abs_path)) => {
+                debug!(
+                    uri = %uri.as_str(),
+                    line = pos.line,
+                    character = pos.character,
+                    target = %span.target,
+                    node_id = %node.id,
+                    path = %abs_path.display(),
+                    "definition: resolved node"
+                );
+                let target_uri = path_to_uri(&abs_path)?;
+                Some(GotoDefinitionResponse::Scalar(Location {
+                    uri: target_uri,
+                    range: Range::default(),
+                }))
+            }
+            None => {
+                let node_count = self.graph.read().node_count();
+                debug!(
+                    uri = %uri.as_str(),
+                    line = pos.line,
+                    character = pos.character,
+                    target = %span.target,
+                    node_count = node_count,
+                    "definition: failed to resolve reference"
+                );
+                None
+            }
+        }
     }
 
     /// Handle textDocument/documentLink request.
@@ -327,21 +433,26 @@ impl LspServer {
         let mut links = Vec::new();
 
         for (line_idx, line) in content.lines().enumerate() {
-            // Find wikilinks
+            let mut occupied_ranges: Vec<(u32, u32)> = Vec::new();
+
+            // 1. Find wikilinks
             for cap in WIKILINK_RE.captures_iter(line) {
                 if let (Some(full), Some(target_match)) = (cap.get(0), cap.get(1)) {
+                    let start = full.start() as u32;
+                    let end = full.end() as u32;
                     let target = target_match.as_str().trim();
                     if let Some((node, abs_path)) = self.resolve_node(target) {
                         if let Some(target_uri) = path_to_uri(&abs_path) {
+                            occupied_ranges.push((start, end));
                             links.push(DocumentLink {
                                 range: Range {
                                     start: Position {
                                         line: line_idx as u32,
-                                        character: full.start() as u32,
+                                        character: start,
                                     },
                                     end: Position {
                                         line: line_idx as u32,
-                                        character: full.end() as u32,
+                                        character: end,
                                     },
                                 },
                                 target: Some(target_uri),
@@ -352,8 +463,47 @@ impl LspServer {
                     }
                 }
             }
+
+            // 2. Find standard markdown links [label](target) that resolve to PKB nodes
+            for cap in MD_LINK_RE.captures_iter(line) {
+                if let (Some(full), Some(target_match)) = (cap.get(0), cap.get(2)) {
+                    let start = full.start() as u32;
+                    let end = full.end() as u32;
+                    if occupied_ranges.iter().any(|&(s, e)| start < e && end > s) {
+                        continue;
+                    }
+                    let target = target_match.as_str().trim();
+                    if !target.starts_with("http://") && !target.starts_with("https://") {
+                        if let Some((node, abs_path)) = self.resolve_node(target) {
+                            if let Some(target_uri) = path_to_uri(&abs_path) {
+                                occupied_ranges.push((start, end));
+                                links.push(DocumentLink {
+                                    range: Range {
+                                        start: Position {
+                                            line: line_idx as u32,
+                                            character: start,
+                                        },
+                                        end: Position {
+                                            line: line_idx as u32,
+                                            character: end,
+                                        },
+                                    },
+                                    target: Some(target_uri),
+                                    tooltip: Some(format!("Open {}: {}", node.id, node.label)),
+                                    data: None,
+                                });
+                            }
+                        }
+                    }
+                }
+            }
         }
 
+        debug!(
+            uri = %uri.as_str(),
+            resolved_links = links.len(),
+            "documentLink: resolved links"
+        );
         links
     }
 
@@ -371,7 +521,23 @@ impl LspServer {
         })?;
 
         let initialization_params = connection.initialize(server_capabilities)?;
-        let _params: Option<InitializeParams> = serde_json::from_value(initialization_params).ok();
+        #[allow(deprecated)]
+        match serde_json::from_value::<InitializeParams>(initialization_params) {
+            Ok(params) => {
+                info!(
+                    client_info = ?params.client_info,
+                    root_uri = ?params.root_uri,
+                    workspace_folders = ?params.workspace_folders,
+                    "LSP client initialized"
+                );
+            }
+            Err(err) => {
+                warn!(
+                    error = %err,
+                    "Failed to deserialize InitializeParams"
+                );
+            }
+        }
 
         for msg in &connection.receiver {
             match msg {
@@ -389,6 +555,12 @@ impl LspServer {
                                         connection.sender.send(lsp_server::Message::Response(resp));
                                 }
                                 Err(err) => {
+                                    warn!(
+                                        method = %req.method,
+                                        id = ?req.id,
+                                        error = %err,
+                                        "Invalid hover params"
+                                    );
                                     let resp = lsp_server::Response::new_err(
                                         req.id,
                                         lsp_server::ErrorCode::InvalidParams as i32,
@@ -408,6 +580,12 @@ impl LspServer {
                                         connection.sender.send(lsp_server::Message::Response(resp));
                                 }
                                 Err(err) => {
+                                    warn!(
+                                        method = %req.method,
+                                        id = ?req.id,
+                                        error = %err,
+                                        "Invalid definition params"
+                                    );
                                     let resp = lsp_server::Response::new_err(
                                         req.id,
                                         lsp_server::ErrorCode::InvalidParams as i32,
@@ -427,10 +605,78 @@ impl LspServer {
                                         connection.sender.send(lsp_server::Message::Response(resp));
                                 }
                                 Err(err) => {
+                                    warn!(
+                                        method = %req.method,
+                                        id = ?req.id,
+                                        error = %err,
+                                        "Invalid documentLink params"
+                                    );
                                     let resp = lsp_server::Response::new_err(
                                         req.id,
                                         lsp_server::ErrorCode::InvalidParams as i32,
                                         format!("Invalid documentLink params: {}", err),
+                                    );
+                                    let _ =
+                                        connection.sender.send(lsp_server::Message::Response(resp));
+                                }
+                            }
+                        }
+                        "mem/status" => {
+                            self.ensure_fresh();
+                            let node_count = self.graph.read().node_count();
+                            let status = serde_json::json!({
+                                "pkbRoot": self.pkb_root,
+                                "rootExists": self.pkb_root.exists(),
+                                "nodeCount": node_count,
+                                "openDocuments": self.documents.len(),
+                                "version": env!("CARGO_PKG_VERSION"),
+                            });
+                            let resp = lsp_server::Response::new_ok(req.id, status);
+                            let _ = connection.sender.send(lsp_server::Message::Response(resp));
+                        }
+                        "mem/resolveReference" => {
+                            #[derive(serde::Deserialize)]
+                            struct ResolveReferenceParams {
+                                target: String,
+                            }
+                            match serde_json::from_value::<ResolveReferenceParams>(req.params) {
+                                Ok(params) => {
+                                    let result = if let Some((node, abs_path)) =
+                                        self.resolve_node(&params.target)
+                                    {
+                                        let target_uri =
+                                            path_to_uri(&abs_path).map(|u| u.as_str().to_string());
+                                        let preview = self.format_hover_preview(&node, &abs_path);
+                                        serde_json::json!({
+                                            "id": node.id,
+                                            "label": node.label,
+                                            "type": node.node_type,
+                                            "status": node.status,
+                                            "intent": node.intent,
+                                            "tags": node.tags,
+                                            "parent": node.parent,
+                                            "path": abs_path,
+                                            "uri": target_uri,
+                                            "previewMarkdown": preview,
+                                        })
+                                    } else {
+                                        serde_json::Value::Null
+                                    };
+                                    let resp = lsp_server::Response::new_ok(req.id, result);
+                                    let _ =
+                                        connection.sender.send(lsp_server::Message::Response(resp));
+                                }
+                                Err(err) => {
+                                    warn!(
+                                        method = %req.method,
+                                        id = ?req.id,
+                                        error = %err,
+                                        "Invalid resolveReference params"
+                                    );
+                                    let resp = lsp_server::Response::new_err(
+                                        req.id,
+                                        lsp_server::ErrorCode::InvalidParams as i32,
+                                        format!("Invalid resolveReference params: {}", err),
                                     );
                                     let _ =
                                         connection.sender.send(lsp_server::Message::Response(resp));
@@ -446,24 +692,33 @@ impl LspServer {
                 }
                 lsp_server::Message::Notification(not) => match not.method.as_str() {
                     "textDocument/didOpen" => {
-                        if let Ok(params) =
-                            serde_json::from_value::<DidOpenTextDocumentParams>(not.params)
-                        {
-                            self.handle_did_open(params);
+                        match serde_json::from_value::<DidOpenTextDocumentParams>(not.params) {
+                            Ok(params) => self.handle_did_open(params),
+                            Err(err) => warn!(
+                                method = %not.method,
+                                error = %err,
+                                "Malformed textDocument/didOpen notification"
+                            ),
                         }
                     }
                     "textDocument/didChange" => {
-                        if let Ok(params) =
-                            serde_json::from_value::<DidChangeTextDocumentParams>(not.params)
-                        {
-                            self.handle_did_change(params);
+                        match serde_json::from_value::<DidChangeTextDocumentParams>(not.params) {
+                            Ok(params) => self.handle_did_change(params),
+                            Err(err) => warn!(
+                                method = %not.method,
+                                error = %err,
+                                "Malformed textDocument/didChange notification"
+                            ),
                         }
                     }
                     "textDocument/didClose" => {
-                        if let Ok(params) =
-                            serde_json::from_value::<DidCloseTextDocumentParams>(not.params)
-                        {
-                            self.handle_did_close(params);
+                        match serde_json::from_value::<DidCloseTextDocumentParams>(not.params) {
+                            Ok(params) => self.handle_did_close(params),
+                            Err(err) => warn!(
+                                method = %not.method,
+                                error = %err,
+                                "Malformed textDocument/didClose notification"
+                            ),
                         }
                     }
                     _ => {}
