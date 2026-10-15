@@ -567,7 +567,7 @@ pub fn parse_probability_word_or_float(val: &serde_json::Value) -> Result<Option
             "certain" | "almost certain" => Ok(Some(1.00)),
             "very probable" | "probable" | "highly likely" => Ok(Some(0.85)),
             "expected" | "likely" => Ok(Some(0.75)),
-            "fifty-fifty" | "even chance" => Ok(Some(0.50)),
+            "fifty-fifty" | "fifty_fifty" | "fifty fifty" | "even chance" => Ok(Some(0.50)),
             "uncertain" | "possible" | "perhaps" | "maybe" => Ok(Some(0.25)),
             "improbable" | "unlikely" | "very unlikely" | "almost impossible" => Ok(Some(0.15)),
             "impossible" | "none" => Ok(Some(0.00)),
@@ -684,7 +684,7 @@ pub fn validate_links_value(val: &serde_json::Value) -> Result<(), String> {
                 return Err(format!("links[{i}].quantum: {e}"));
             }
         }
-        if let Some(p_val) = obj.get("probability") {
+        if let Some(p_val) = obj.get("probability").or_else(|| obj.get("certainty")) {
             if let Err(e) = parse_probability_word_or_float(p_val) {
                 return Err(format!("links[{i}].probability: {e}"));
             }
@@ -846,6 +846,21 @@ pub fn validate_contributes_to_value(val: &serde_json::Value) -> Result<(), Stri
         if let Some(q_val) = obj.get("quantum") {
             if let Err(e) = parse_quantum_word_or_float(q_val) {
                 return Err(format!("contributes_to[{i}].quantum: {e}"));
+            }
+        }
+        if let Some(p_val) = obj.get("probability").or_else(|| obj.get("certainty")) {
+            if let Err(e) = parse_probability_word_or_float(p_val) {
+                return Err(format!("contributes_to[{i}].probability: {e}"));
+            }
+        }
+        if let Some(eff_val) = obj.get("effect") {
+            let s = eff_val
+                .as_str()
+                .ok_or_else(|| format!("contributes_to[{i}].effect must be a string"))?;
+            if LinkEffect::from_str(s).is_none() {
+                return Err(format!(
+                    "contributes_to[{i}].effect \"{s}\" not in {{helps, harms}}"
+                ));
             }
         }
         if let Some(sb_val) = obj.get("set_by") {
@@ -2478,10 +2493,35 @@ impl GraphNode {
             .as_ref()
             .map(|f| parse_string_array(f, "goals"))
             .unwrap_or_default();
-        let contributes_to = fm
+        let contributes_to: Vec<ContributesTo> = fm
             .as_ref()
             .and_then(|f| f.get("contributes_to"))
-            .and_then(|v| serde_json::from_value::<Vec<ContributesTo>>(v.clone()).ok())
+            .and_then(|v| {
+                serde_json::from_value::<Vec<ContributesTo>>(v.clone())
+                    .ok()
+                    .or_else(|| {
+                        v.as_array().map(|arr| {
+                            arr.iter()
+                                .filter_map(|item| {
+                                    let mut cloned = item.clone();
+                                    if let Some(obj) = cloned.as_object_mut() {
+                                        if let Some(qv) = obj.get("quantum").cloned() {
+                                            if let Ok(Some(qf)) = parse_quantum_word_or_float(&qv) {
+                                                if let Some(n) = serde_json::Number::from_f64(qf) {
+                                                    obj.insert(
+                                                        "quantum".to_string(),
+                                                        serde_json::Value::Number(n),
+                                                    );
+                                                }
+                                            }
+                                        }
+                                    }
+                                    serde_json::from_value::<ContributesTo>(cloned).ok()
+                                })
+                                .collect()
+                        })
+                    })
+            })
             .unwrap_or_default();
         // Reject out-of-scale stated_weight at parse time instead of silently
         // defaulting to 0.3 (`ContributesTo::numeric_weight`'s catch-all is
@@ -2683,7 +2723,7 @@ impl GraphNode {
                         quantum = 0.0;
                     }
 
-                    let probability = match obj.get("probability") {
+                    let probability = match obj.get("probability").or_else(|| obj.get("certainty")) {
                         Some(v) => match parse_probability_word_or_float(v) {
                             Ok(Some(p)) => p,
                             Ok(None) => 1.00,
@@ -2824,6 +2864,7 @@ impl GraphNode {
                                 .unwrap_or(LinkSetBy::Migrated);
                             let p = obj
                                 .get("probability")
+                                .or_else(|| obj.get("certainty"))
                                 .and_then(|v| parse_probability_word_or_float(v).ok().flatten())
                                 .unwrap_or(1.0);
                             let eff = obj
@@ -2911,6 +2952,7 @@ impl GraphNode {
                                 .unwrap_or(LinkSetBy::Migrated);
                             let p = obj
                                 .get("probability")
+                                .or_else(|| obj.get("certainty"))
                                 .and_then(|v| parse_probability_word_or_float(v).ok().flatten())
                                 .unwrap_or(1.0);
                             let eff = obj
@@ -2959,30 +3001,148 @@ impl GraphNode {
         }
 
         // R7: Map contributes_to
-        for ct in &contributes_to {
-            let q = ct.quantum.unwrap_or_else(|| ct.numeric_weight().min(1.0));
-            let sb = ct
-                .set_by
-                .as_deref()
-                .and_then(LinkSetBy::from_str)
-                .unwrap_or(LinkSetBy::Migrated);
-            let just = if ct.justification.is_empty() {
-                None
-            } else {
-                Some(ct.justification.clone())
-            };
-            add_mapped_link(
-                ct.to.clone(),
-                true,
-                LinkLabel::Serves,
-                q,
-                1.0,
-                LinkEffect::Helps,
-                just,
-                sb,
-                "contributes_to",
-                &mut parse_warnings,
-            );
+        if let Some(ct_arr) = fm
+            .as_ref()
+            .and_then(|f| f.get("contributes_to"))
+            .and_then(|v| v.as_array())
+        {
+            for (i, item) in ct_arr.iter().enumerate() {
+                if let Some(s) = item.as_str() {
+                    let t = s.trim();
+                    if !t.is_empty() {
+                        add_mapped_link(
+                            t.to_string(),
+                            true,
+                            LinkLabel::Serves,
+                            DEFAULT_QUANTUM,
+                            1.0,
+                            LinkEffect::Helps,
+                            None,
+                            LinkSetBy::Migrated,
+                            "contributes_to",
+                            &mut parse_warnings,
+                        );
+                    }
+                } else if let Some(obj) = item.as_object() {
+                    let Some(t) = obj
+                        .get("to")
+                        .or_else(|| obj.get("target"))
+                        .and_then(|v| v.as_str())
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())
+                    else {
+                        continue;
+                    };
+
+                    let stated_w = obj
+                        .get("stated_weight")
+                        .or_else(|| obj.get("weight"))
+                        .and_then(|v| {
+                            v.as_str()
+                                .map(String::from)
+                                .or_else(|| v.as_f64().map(|n| n.to_string()))
+                                .or_else(|| v.as_i64().map(|n| n.to_string()))
+                        })
+                        .unwrap_or_default();
+                    let mult = obj
+                        .get("multiplier")
+                        .or_else(|| obj.get("x"))
+                        .and_then(|v| v.as_f64());
+                    let fallback_ct = ContributesTo {
+                        to: t.to_string(),
+                        stated_weight: stated_w,
+                        justification: String::new(),
+                        multiplier: mult,
+                        current_weight: None,
+                        resolved_to: None,
+                        inherits_from: None,
+                        brier_history: Vec::new(),
+                        last_interacted: None,
+                        anomaly_flag: false,
+                        quantum: None,
+                        set_by: None,
+                    };
+                    let fallback_q = fallback_ct.numeric_weight().min(1.0);
+
+                    let q = match obj.get("quantum") {
+                        Some(v) => match parse_quantum_word_or_float(v) {
+                            Ok(Some(q)) => q,
+                            Ok(None) => fallback_q,
+                            Err(err) => {
+                                parse_warnings.push(ParseWarning {
+                                    field: format!("contributes_to[{i}].quantum"),
+                                    message: err,
+                                });
+                                DEFAULT_QUANTUM
+                            }
+                        },
+                        None => fallback_q,
+                    };
+
+                    let p = match obj.get("probability").or_else(|| obj.get("certainty")) {
+                        Some(v) => match parse_probability_word_or_float(v) {
+                            Ok(Some(p)) => p,
+                            Ok(None) => 1.00,
+                            Err(err) => {
+                                parse_warnings.push(ParseWarning {
+                                    field: format!("contributes_to[{i}].probability"),
+                                    message: err,
+                                });
+                                1.00
+                            }
+                        },
+                        None => 1.00,
+                    };
+
+                    let sb = match obj.get("set_by") {
+                        Some(v) => match v.as_str().and_then(LinkSetBy::from_str) {
+                            Some(s) => s,
+                            None => {
+                                parse_warnings.push(ParseWarning {
+                                    field: format!("contributes_to[{i}].set_by"),
+                                    message: format!("unrecognized set_by \"{v}\""),
+                                });
+                                LinkSetBy::Migrated
+                            }
+                        },
+                        None => LinkSetBy::Migrated,
+                    };
+
+                    let eff = match obj.get("effect") {
+                        Some(v) => match v.as_str().and_then(LinkEffect::from_str) {
+                            Some(e) => e,
+                            None => {
+                                parse_warnings.push(ParseWarning {
+                                    field: format!("contributes_to[{i}].effect"),
+                                    message: format!("unrecognized effect \"{v}\""),
+                                });
+                                LinkEffect::Helps
+                            }
+                        },
+                        None => LinkEffect::Helps,
+                    };
+
+                    let just = obj
+                        .get("justification")
+                        .or_else(|| obj.get("why"))
+                        .and_then(|v| v.as_str())
+                        .filter(|s| !s.is_empty())
+                        .map(String::from);
+
+                    add_mapped_link(
+                        t.to_string(),
+                        true,
+                        LinkLabel::Serves,
+                        q,
+                        p,
+                        eff,
+                        just,
+                        sb,
+                        "contributes_to",
+                        &mut parse_warnings,
+                    );
+                }
+            }
         }
 
         // R6 & R7: Map parent
@@ -3001,7 +3161,7 @@ impl GraphNode {
                 .and_then(LinkSetBy::from_str)
                 .unwrap_or(LinkSetBy::Migrated);
             let prob = p_obj
-                .and_then(|o| o.get("probability"))
+                .and_then(|o| o.get("probability").or_else(|| o.get("certainty")))
                 .and_then(|v| parse_probability_word_or_float(v).ok().flatten())
                 .unwrap_or(1.0);
             let eff = p_obj
