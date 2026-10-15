@@ -2263,27 +2263,6 @@ impl PkbSearchServer {
             updates.insert("parent".to_string(), serde_json::Value::Null);
         }
 
-        // Reject unknown update fields instead of silently writing them into
-        // frontmatter (mirrors the `create_task` guard below). Without this,
-        // a caller's typo'd or invented field name — e.g. `body_append`,
-        // guessing at append-like semantics that don't exist on this tool —
-        // lands verbatim as a YAML key in the task header.
-        // Allowlist lives at `document_crud::UPDATE_KNOWN_KEYS`, shared with
-        // `batch_update` — see `mem_84b21efc`.
-        if let Err(unknown) = crate::document_crud::validate_update_keys(&updates) {
-            return Err(McpError {
-                code: ErrorCode::INVALID_PARAMS,
-                message: Cow::from(format!(
-                    "Unknown keys in update_task: {:?}. These are not recognized task fields \
-                     and would otherwise be written verbatim into the YAML header. Use `append` \
-                     to add content to the document body, or extend the update_task schema if \
-                     this is meant to be a real field.",
-                    unknown
-                )),
-                data: None,
-            });
-        }
-
         for (k, v) in &updates {
             crate::document_crud::validate_update_field(k, v).map_err(|e| McpError {
                 code: ErrorCode::INVALID_PARAMS,
