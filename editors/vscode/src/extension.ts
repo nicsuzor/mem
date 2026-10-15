@@ -159,7 +159,7 @@ export function expandPathVariables(
 }
 
 /**
- * Resolve the `pkb` binary path, logging candidate checks.
+ * Resolve the `pkb` binary path, logging PATH checks.
  */
 export function resolvePkbExecutable(
   configured: string,
@@ -174,23 +174,25 @@ export function resolvePkbExecutable(
     return expanded;
   }
 
-  const home = process.env.HOME || os.homedir() || '';
-  const candidates = [
-    '/opt/suzor/bin/pkb',
-    path.join(home, '.cargo', 'bin', 'pkb'),
-    '/opt/suzor/lib/cargo/bin/pkb',
-    '/usr/local/bin/pkb',
-  ];
+  const pathEnv = process.env.PATH || '';
+  const pathDirs = pathEnv
+    .split(path.delimiter)
+    .map((d) => d.trim())
+    .filter(Boolean);
+  const binNames = process.platform === 'win32' ? ['pkb.exe', 'pkb'] : ['pkb'];
 
-  for (const candidate of candidates) {
-    log(`Checking pkb executable candidate: ${candidate}`);
-    if (candidate && fs.existsSync(candidate)) {
-      log(`Resolved pkb executable: ${candidate}`);
-      return candidate;
+  for (const dir of pathDirs) {
+    for (const binName of binNames) {
+      const candidate = path.join(dir, binName);
+      log(`Checking pkb executable candidate on PATH: ${candidate}`);
+      if (fs.existsSync(candidate)) {
+        log(`Resolved pkb executable on PATH: ${candidate}`);
+        return candidate;
+      }
     }
   }
 
-  const warnMsg = `Could not find pkb binary in standard paths (${candidates.join(', ')}); falling back to bare 'pkb' on PATH`;
+  const warnMsg = `Could not find pkb binary on PATH (${pathEnv}); falling back to bare 'pkb'`;
   logWarn(warnMsg);
   if (log !== logInfo) {
     log(`[WARN] ${warnMsg}`);

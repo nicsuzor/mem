@@ -184,6 +184,58 @@ describe('VS Code Extension - Unit & Behavior Tests', () => {
     }
   });
 
+  it('resolves pkb from PATH before /usr/local/bin/pkb, while an explicit user setting still wins', () => {
+    const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'mem-pkb-exec-test-'));
+    const origPath = process.env.PATH;
+    const origHome = process.env.HOME;
+    try {
+      const pathDir = path.join(tmpRoot, 'opt-nic-bin');
+      const usrLocalBin = path.join(tmpRoot, 'usr-local-bin');
+      const customBinDir = path.join(tmpRoot, 'custom-bin');
+      const emptyHome = path.join(tmpRoot, 'empty-home');
+      fs.mkdirSync(pathDir, { recursive: true });
+      fs.mkdirSync(usrLocalBin, { recursive: true });
+      fs.mkdirSync(customBinDir, { recursive: true });
+      fs.mkdirSync(emptyHome, { recursive: true });
+
+      const newerPathPkb = path.join(pathDir, 'pkb');
+      const explicitPkb = path.join(customBinDir, 'pkb-custom');
+      fs.writeFileSync(newerPathPkb, '#!/bin/sh\necho "pkb 0.3.104"\n', { mode: 0o755 });
+      fs.writeFileSync(explicitPkb, '#!/bin/sh\necho "pkb custom"\n', { mode: 0o755 });
+
+      // Ensure /usr/local/bin/pkb also exists on disk (as in the container/host environment)
+      assert.ok(
+        fs.existsSync('/usr/local/bin/pkb'),
+        'Precondition: /usr/local/bin/pkb exists on disk'
+      );
+
+      process.env.HOME = emptyHome;
+      process.env.PATH = `${pathDir}${path.delimiter}/usr/local/bin${path.delimiter}${origPath || ''}`;
+
+      // Case 1: Default setting ('pkb' or '') resolves the first pkb on PATH rather than /usr/local/bin/pkb
+      const logsPath: string[] = [];
+      const resolvedFromPath = resolvePkbExecutable('pkb', (m) => logsPath.push(m));
+      assert.strictEqual(
+        resolvedFromPath,
+        newerPathPkb,
+        `Expected pkb from first PATH entry (${newerPathPkb}), not /usr/local/bin/pkb; got: ${resolvedFromPath}`
+      );
+
+      // Case 2: Explicit user setting for mem.lsp.executable wins over PATH
+      const logsExplicit: string[] = [];
+      const resolvedExplicit = resolvePkbExecutable(explicitPkb, (m) => logsExplicit.push(m));
+      assert.strictEqual(
+        resolvedExplicit,
+        explicitPkb,
+        `Explicit user setting (${explicitPkb}) must win over PATH (${newerPathPkb}); got: ${resolvedExplicit}`
+      );
+    } finally {
+      process.env.PATH = origPath;
+      process.env.HOME = origHome;
+      fs.rmSync(tmpRoot, { recursive: true, force: true });
+    }
+  });
+
   it('renders PKB references in Markdown Preview windows with hover preview cards and file:// links that open in a new tab', async () => {
     const tmpPkb = fs.mkdtempSync(path.join(os.tmpdir(), 'mem-preview-unit-'));
     try {
