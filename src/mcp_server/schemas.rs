@@ -700,11 +700,11 @@ impl PkbSearchServer {
             .with_annotations(ToolAnnotations::new().read_only(true)),
             Tool::new(
                 "graph_excalidraw",
-                "Generates an Excalidraw JSON diagram for an ego neighborhood around node_id or the full knowledge graph. Returns valid Excalidraw V2 JSON.",
+                "Generates an Excalidraw JSON diagram for an ego neighborhood around node_id, or the union of the top-10 focus picks' ego neighborhoods when node_id is omitted. Returns valid Excalidraw V2 JSON.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
-                        "node_id": { "type": "string", "description": "Focus node ID, filename, or title (uses flexible resolution). If omitted, exports the entire graph." },
+                        "node_id": { "type": "string", "description": "Focus node ID, filename, or title (uses flexible resolution). If omitted, exports the union of the top-10 focus picks' ego neighborhoods." },
                         "hops": { "type": "integer", "description": "Neighborhood depth in hops (1 to 5, default: 2)" }
                     }
                 }))

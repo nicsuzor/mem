@@ -252,16 +252,29 @@ impl CanvasReader {
 
             let parent = custom_pkb.and_then(|p| p.parent.clone());
 
-            let mut tags = tags_from_text;
-            if let Some(pkb) = custom_pkb {
-                for t in &pkb.tags {
-                    if !tags.contains(t) {
-                        tags.push(t.clone());
-                    }
+            let tags = if let Some(pkb) = custom_pkb {
+                if !pkb.tags.is_empty() || pkb.is_pkb_managed == Some(true) {
+                    pkb.tags.clone()
+                } else {
+                    tags_from_text
                 }
-            }
+            } else {
+                tags_from_text
+            };
 
-            let title = if !parsed_title.is_empty() {
+            let title = if let Some(custom_title) = custom_pkb
+                .and_then(|p| p.title.as_deref())
+                .filter(|s| !s.is_empty())
+            {
+                if !parsed_title.is_empty()
+                    && parsed_title != custom_title
+                    && parsed_title != crate::excalidraw::layout::truncate_title(custom_title, 36)
+                {
+                    parsed_title
+                } else {
+                    custom_title.to_string()
+                }
+            } else if !parsed_title.is_empty() {
                 parsed_title
             } else if let Some(ref nid) = node_id {
                 nid.clone()
@@ -514,14 +527,14 @@ fn parse_arrow_edge_type(custom_edge_type: Option<&str>, label: Option<&str>) ->
 
 fn extract_id_from_text(text: &str) -> Option<String> {
     static ID_RE: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(r"(?:task|epic|mem|target|goal)-[a-zA-Z0-9]{4,16}").unwrap()
+        Regex::new(r"\b(?:[a-z][a-z0-9]{1,15}_[0-9a-fA-F]{8}|(?:task|epic|mem|target|goal|targ|kb|note|ins|obs)[_-][a-zA-Z0-9]{4,16})\b").unwrap()
     });
     ID_RE.find(text).map(|m| m.as_str().to_string())
 }
 
 fn extract_id_from_frame_name(name: &str) -> Option<String> {
     static FRAME_ID_RE: LazyLock<Regex> = LazyLock::new(|| {
-        Regex::new(r"(?:epic|area|project)-[a-zA-Z0-9_-]+").unwrap()
+        Regex::new(r"(?:epic|area|project|targ|target|goal)[_-][a-zA-Z0-9_-]+").unwrap()
     });
     FRAME_ID_RE.find(name).map(|m| m.as_str().to_string())
 }

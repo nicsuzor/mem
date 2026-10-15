@@ -231,9 +231,13 @@ impl DiffEngine {
                 let mut parent_update = None;
                 let mut tags_update = None;
 
-                // Title check
+                // Title check: suppress spurious updates when card.title is merely the
+                // exporter's truncated prefix-with-ellipsis of the live node label.
+                let is_truncated_live_label =
+                    card.title == crate::excalidraw::layout::truncate_title(&ln.label, 36);
                 if !card.title.is_empty()
                     && card.title != ln.label
+                    && !is_truncated_live_label
                     && card.title != node_id
                     && card.title != "Untitled"
                 {
@@ -377,9 +381,49 @@ impl DiffEngine {
             }
         }
 
-        // Added edges
+        // Detect retargeted arrows via customData.pkb.{sourceId, targetId} first
+        let mut retargeted_old: HashSet<EdgeMutation> = HashSet::new();
+        let mut retargeted_new: HashSet<EdgeMutation> = HashSet::new();
+        for arrow in &canvas.arrows {
+            let (Some(ref new_s), Some(ref new_t)) = (&arrow.source_node_id, &arrow.target_node_id) else {
+                continue;
+            };
+            if let Some(pkb) = arrow.custom_data.as_ref().and_then(|c| c.pkb.as_ref()) {
+                if let (Some(ref orig_s), Some(ref orig_t)) = (&pkb.source_id, &pkb.target_id) {
+                    if orig_s != new_s || orig_t != new_t {
+                        let old_em = EdgeMutation {
+                            source: orig_s.clone(),
+                            target: orig_t.clone(),
+                            edge_type: arrow.edge_type.clone(),
+                        };
+                        let new_em = EdgeMutation {
+                            source: new_s.clone(),
+                            target: new_t.clone(),
+                            edge_type: arrow.edge_type.clone(),
+                        };
+                        // Only treat as a retarget if the original edge wasn't also kept on the canvas
+                        if !canvas_edges.contains(&old_em)
+                            && (live_edges.contains(&old_em)
+                                || base.is_some_and(|b| b.edges.contains(&old_em)))
+                        {
+                            retargeted_old.insert(old_em);
+                            retargeted_new.insert(new_em);
+                            diff.retargeted_edges.push(RetargetedEdgeMutation {
+                                edge_type: arrow.edge_type.clone(),
+                                old_source: orig_s.clone(),
+                                old_target: orig_t.clone(),
+                                new_source: new_s.clone(),
+                                new_target: new_t.clone(),
+                            });
+                        }
+                    }
+                }
+            }
+        }
+
+        // Added edges (excluding retargeted new endpoints)
         for ce in &canvas_edges {
-            if !live_edges.contains(ce) {
+            if !live_edges.contains(ce) && !retargeted_new.contains(ce) {
                 diff.added_edges.push(ce.clone());
             }
         }
@@ -390,11 +434,50 @@ impl DiffEngine {
                 if canvas_node_ids.contains(&be.source)
                     && canvas_node_ids.contains(&be.target)
                     && !canvas_edges.contains(be)
+                    && !retargeted_old.contains(be)
                 {
                     diff.removed_edges.push(be.clone());
                 }
             }
         }
+
+        // Fallback: pair remaining removed_edges and added_edges that share edge_type and one endpoint
+        let mut matched_removed = vec![false; diff.removed_edges.len()];
+        let mut matched_added = vec![false; diff.added_edges.len()];
+        for (ri, rem) in diff.removed_edges.iter().enumerate() {
+            for (ai, add) in diff.added_edges.iter().enumerate() {
+                if matched_added[ai] {
+                    continue;
+                }
+                if rem.edge_type == add.edge_type
+                    && ((rem.source == add.source && rem.target != add.target)
+                        || (rem.target == add.target && rem.source != add.source))
+                {
+                    matched_removed[ri] = true;
+                    matched_added[ai] = true;
+                    diff.retargeted_edges.push(RetargetedEdgeMutation {
+                        edge_type: rem.edge_type.clone(),
+                        old_source: rem.source.clone(),
+                        old_target: rem.target.clone(),
+                        new_source: add.source.clone(),
+                        new_target: add.target.clone(),
+                    });
+                    break;
+                }
+            }
+        }
+        let mut r_idx = 0;
+        diff.removed_edges.retain(|_| {
+            let keep = !matched_removed[r_idx];
+            r_idx += 1;
+            keep
+        });
+        let mut a_idx = 0;
+        diff.added_edges.retain(|_| {
+            let keep = !matched_added[a_idx];
+            a_idx += 1;
+            keep
+        });
 
         diff
     }
