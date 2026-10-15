@@ -314,7 +314,7 @@ impl PkbSearchServer {
                         "deadline_class": { "type": "string", "enum": ["fake", "soft", "hard"] },
                         "branch": { "type": "string" },
                         "container": { "type": "string" },
-                        "alias": { "type": "string" },
+                        "alias": { "anyOf": [{ "type": "string" }, { "type": "array", "items": { "type": "string" } }] },
                         "unparent": { "type": "boolean" },
                         "allow_missing_parent": { "type": "boolean" },
                         "force": { "type": "boolean" },

@@ -31,24 +31,6 @@ pub fn batch_update(
 
     let updates_map = match updates.as_object() {
         Some(m) => {
-            // Reject unknown update fields — mirrors `update_task`'s guard.
-            // Without this, `batch_update` was a second, unguarded entry
-            // point onto `update_document`: any frontmatter key `update_task`
-            // refuses (e.g. `released_at`, before it was added to the shared
-            // allowlist) was still writable, and null-clearable, through this
-            // path. See `mem_84b21efc`.
-            if let Err(unknown) = crate::document_crud::validate_update_keys(m) {
-                summary.errors.push(TaskError {
-                    id: "".to_string(),
-                    error: format!(
-                        "Unknown keys in batch_update: {:?}. These are not recognized task \
-                         fields and would otherwise be written verbatim into the YAML header.",
-                        unknown
-                    ),
-                });
-                return summary;
-            }
-
             // Evidence-or-failure-reason contract, bulk half: `release_task`
             // refuses to release a single node to a handback status
             // (blocked/cancelled/review/partial) without a non-empty

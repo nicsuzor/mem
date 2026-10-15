@@ -1,17 +1,12 @@
-//! Regression tests for `mem_84b21efc`: `batch_update` bypassed `update_task`'s
-//! `UPDATE_KNOWN_KEYS` allowlist. Any frontmatter key `update_task` refuses to
-//! write was still writable — and null-clearable — through `batch_update`,
-//! because `batch_update` enforced no allowlist of its own before handing the
-//! updates map to `document_crud::update_document`.
+//! Tests for `mem_c9bbddaf` / `mem_84b21efc`: `update_task` and `batch_update`
+//! accept unrecognised frontmatter keys without checking or refusing them,
+//! leaving unmentioned keys untouched while still enforcing known-key field
+//! format validation (`validate_update_field`) and handback status rules.
 //!
 //! These tests exercise both entry points side by side through the real MCP
 //! handlers (`handle_update_task` / `handle_batch_update`), not the bare
 //! library functions, so they catch drift at the layer a caller actually
-//! hits. Note `handle_batch_update` never returns `Err` for a per-node
-//! rejection — a batch operation reports per-item failures inside its JSON
-//! `errors` array while the call itself still returns `Ok` (it only returns
-//! `Err` for whole-request validation, e.g. "no filters"), so these tests
-//! parse the summary JSON rather than expecting a top-level `Err`.
+//! hits.
 
 use super::*;
 
@@ -98,95 +93,135 @@ fn create_task(server: &PkbSearchServer, title: &str) -> String {
         .to_string()
 }
 
-/// A key `update_task` refuses (never on `UPDATE_KNOWN_KEYS`) must be refused
-/// through `batch_update` too, at write-time — not silently written to disk.
-///
-/// Before the fix: `update_task` rejects this with "Unknown keys in
-/// update_task", but `batch_update` writes it straight through with no
-/// validation and reports `changed: 1`.
+/// Acceptance criterion (mem_c9bbddaf): `pkb_update_task` (and `pkb_batch_update`)
+/// writes a key it does not recognise without refusing it, and leaves unrecognised
+/// keys alone when they are not mentioned.
 #[test]
-fn batch_update_rejects_the_same_unknown_key_update_task_rejects() {
+fn update_task_and_batch_update_write_unrecognised_keys_and_leave_unmentioned_keys_alone() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path();
     let server = make_server(root);
-    let id = create_task(&server, "Allowlist parity fixture A");
+    let id = create_task(&server, "Unrecognised key fixture");
 
-    let update_task_err = server
+    // 1. Write an unrecognised key via update_task (nested form)
+    let update_res = server
         .handle_update_task(&json!({
             "id": id,
-            "updates": { "totally_bogus_field": "sneaky" },
+            "updates": { "custom_unrecognised_key": "custom_value_1" },
         }))
-        .expect_err("update_task must refuse an unrecognized frontmatter key");
-    assert!(
-        update_task_err.message.contains("Unknown keys in update_task"),
-        "unexpected update_task error: {}",
-        update_task_err.message
-    );
+        .expect("update_task must write an unrecognised key without refusing it");
+    assert!(!update_res.is_error.unwrap_or(false));
 
-    let batch_res = server
-        .handle_batch_update(&json!({
-            "ids": [id],
-            "updates": { "totally_bogus_field": "sneaky" },
-            "dry_run": false,
-        }))
-        .expect("handle_batch_update itself returns Ok; per-item rejection is in the JSON body");
-    assert_eq!(
-        batch_changed(&batch_res),
-        0,
-        "batch_update must not report the write as applied"
-    );
-    let errors = batch_errors(&batch_res);
-    assert!(
-        errors.iter().any(|e| e.contains("Unknown keys in batch_update")),
-        "batch_update must refuse the same unrecognized key update_task refuses — it must not \
-         be a second, unguarded entry point onto update_document. Got errors: {errors:?}"
-    );
-
-    // And the field must genuinely not have landed on disk.
     let doc = server
         .handle_get_task(&json!({ "id": id }))
         .expect("get_task should succeed");
-    assert!(
-        !frontmatter_has_key(&doc, "totally_bogus_field"),
-        "rejected key must not appear in frontmatter"
+    let fm = json_of(&doc);
+    let frontmatter = fm.get("frontmatter").and_then(|v| v.as_object()).unwrap();
+    assert_eq!(
+        frontmatter
+            .get("custom_unrecognised_key")
+            .and_then(|v| v.as_str()),
+        Some("custom_value_1"),
+        "unrecognised key must be written to frontmatter"
     );
-}
 
-/// The reachable exploit from `mem_84b21efc`/GitHub `nicsuzor/mem#574`:
-/// `batch_update` null-clearing a field `update_task` refuses to touch at
-/// all. A null value is not a no-op fast-path around the allowlist — it must
-/// be rejected exactly like a non-null write of the same key.
-#[test]
-fn batch_update_rejects_null_clear_of_an_unknown_key() {
-    let tmp = tempfile::tempdir().unwrap();
-    let root = tmp.path();
-    let server = make_server(root);
-    let id = create_task(&server, "Allowlist parity fixture B");
-
-    // `created` is a system-stamped field, never on UPDATE_KNOWN_KEYS.
+    // 2. Write a second unrecognised key via batch_update while leaving the first unmentioned
     let batch_res = server
         .handle_batch_update(&json!({
             "ids": [id],
-            "updates": { "created": null },
+            "updates": { "second_unrecognised_key": "custom_value_2" },
             "dry_run": false,
         }))
-        .expect("handle_batch_update itself returns Ok; per-item rejection is in the JSON body");
-    assert_eq!(batch_changed(&batch_res), 0);
-    let errors = batch_errors(&batch_res);
-    assert!(
-        errors.iter().any(|e| e.contains("Unknown keys in batch_update")),
-        "batch_update must refuse a null-clear of a key update_task refuses — \
-         update_document's null-removes-the-key behavior is what made the original defect \
-         reachable. Got errors: {errors:?}"
+        .expect("handle_batch_update must succeed");
+    assert_eq!(
+        batch_errors(&batch_res),
+        Vec::<String>::new(),
+        "batch_update must not refuse unrecognised keys"
     );
+    assert_eq!(batch_changed(&batch_res), 1);
+
+    // 3. Subsequent update to a known key leaves both unrecognised keys untouched
+    server
+        .handle_update_task(&json!({
+            "id": id,
+            "status": "ready",
+        }))
+        .expect("update_task on status must succeed");
+
+    let doc_after = server
+        .handle_get_task(&json!({ "id": id }))
+        .expect("get_task should succeed");
+    let fm_after = json_of(&doc_after);
+    let frontmatter_after = fm_after
+        .get("frontmatter")
+        .and_then(|v| v.as_object())
+        .unwrap();
+    assert_eq!(
+        frontmatter_after
+            .get("custom_unrecognised_key")
+            .and_then(|v| v.as_str()),
+        Some("custom_value_1"),
+        "unmentioned unrecognised key 1 must be left alone"
+    );
+    assert_eq!(
+        frontmatter_after
+            .get("second_unrecognised_key")
+            .and_then(|v| v.as_str()),
+        Some("custom_value_2"),
+        "unmentioned unrecognised key 2 must be left alone"
+    );
+}
+
+/// Acceptance criterion (mem_c9bbddaf): `branch`, `container`, and `alias` still write
+/// (and `alias` can be updated as string or array and cleared with null).
+#[test]
+fn update_task_still_writes_branch_container_and_alias() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    let server = make_server(root);
+    let id = create_task(&server, "Branch container alias fixture");
+
+    let res = server
+        .handle_update_task(&json!({
+            "id": id,
+            "updates": {
+                "branch": "pr-2735",
+                "container": "polecat-0a9f8a5d",
+                "alias": ["custom_alias_1", "custom_alias_2"]
+            }
+        }))
+        .expect("update_task must write branch, container, and alias");
+    assert!(!res.is_error.unwrap_or(false));
+
+    let doc = server
+        .handle_get_task(&json!({ "id": id }))
+        .expect("get_task should succeed");
+    let fm = json_of(&doc);
+    let frontmatter = fm.get("frontmatter").and_then(|v| v.as_object()).unwrap();
+    assert_eq!(
+        frontmatter.get("branch").and_then(|v| v.as_str()),
+        Some("pr-2735"),
+        "frontmatter must carry branch: pr-2735"
+    );
+    assert_eq!(
+        frontmatter.get("container").and_then(|v| v.as_str()),
+        Some("polecat-0a9f8a5d"),
+        "frontmatter must carry container: polecat-0a9f8a5d"
+    );
+    let alias_arr = frontmatter
+        .get("alias")
+        .and_then(|v| v.as_array())
+        .expect("alias should be written as array");
+    assert_eq!(alias_arr.len(), 2);
+    assert_eq!(alias_arr[0].as_str(), Some("custom_alias_1"));
+    assert_eq!(alias_arr[1].as_str(), Some("custom_alias_2"));
 }
 
 /// `released_at` decision (mem_84b21efc): the field is not permanently
 /// sticky — GitHub #574 documents a legitimate need to clear it when a
 /// release was wrong, and `release_task`'s sibling fields (`release_summary`,
 /// `pr_url`, `session_id`) were already freely settable via `update_task`
-/// with no such restriction. `released_at` now joins the shared allowlist on
-/// the same terms, so both entry points accept it identically.
+/// with no such restriction. Both entry points accept and clear it identically.
 #[test]
 fn released_at_is_clearable_through_both_update_task_and_batch_update() {
     let tmp = tempfile::tempdir().unwrap();
@@ -199,7 +234,7 @@ fn released_at_is_clearable_through_both_update_task_and_batch_update() {
             "id": id1,
             "updates": { "released_at": "2026-08-27T05:15:39Z" },
         }))
-        .expect("update_task must accept released_at now that it is on the shared allowlist");
+        .expect("update_task must accept released_at");
     let after_set = server.handle_get_task(&json!({ "id": id1 })).unwrap();
     assert!(
         frontmatter_has_key(&after_set, "released_at"),
