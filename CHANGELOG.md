@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.105](https://github.com/nicsuzor/mem/compare/mem-v0.3.104...mem-v0.3.105) (2026-10-15)
+
+
+### Features
+
+* **flow:** apply certainty/probability discount on contributes_to edges ([f828b2d](https://github.com/nicsuzor/mem/commit/f828b2dd9eb3733c247d68355cb87a807ffbeece))
+* **lsp,vscode:** improve debugging/error logging and support markdown preview windows ([0db0a73](https://github.com/nicsuzor/mem/commit/0db0a736c993e604458b6ce3b27fa7be7f0fa2ff))
+* **mcp:** publish convert_document in MCP tools/list catalog ([7abf1c0](https://github.com/nicsuzor/mem/commit/7abf1c0a29bffe2b3fb7d90db3642c3c1b70b8d2)), closes [#732](https://github.com/nicsuzor/mem/issues/732)
+* **mcp:** publish convert_document in the MCP catalog ([6117a53](https://github.com/nicsuzor/mem/commit/6117a53c1ceaaf72d3d17852d52a733e02b2d8bb))
+* **mcp:** remove update_task/batch_update unknown-key allowlist (mem_c9bbddaf) ([c5f4652](https://github.com/nicsuzor/mem/commit/c5f465293039537583dd9979318a7d197f48f76e))
+
+
+### Bug Fixes
+
+* **excalidraw:** make export/diff/sync round-trip idempotent and close 5 sync gaps ([22e2f95](https://github.com/nicsuzor/mem/commit/22e2f9513dd7aef19aad46b7ba1871febaf8a7a8))
+* **vscode:** resolve pkb executable via PATH instead of hardcoded paths ([#735](https://github.com/nicsuzor/mem/issues/735)) ([e3ebb02](https://github.com/nicsuzor/mem/commit/e3ebb02137e984bf63aac4fd9160ad1adbbf5bb2))
+
 ## [0.3.104](https://github.com/nicsuzor/mem/compare/mem-v0.3.103...mem-v0.3.104) (2026-10-14)
 
 
