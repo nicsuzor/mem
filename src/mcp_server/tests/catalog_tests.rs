@@ -98,7 +98,7 @@ fn test_all_retired_tools_resolve_through_shims() {
     let server = make_test_server(root);
 
     let retired_tools = PkbSearchServer::get_retired_tools();
-    assert_eq!(retired_tools.len(), 23, "Must have 23 retired tools");
+    assert_eq!(retired_tools.len(), 22, "Must have 22 retired tools");
 
     for tool in &retired_tools {
         let res = server.dispatch_tool_sync(tool.name.as_ref(), &serde_json::json!({}));

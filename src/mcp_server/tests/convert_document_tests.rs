@@ -286,3 +286,96 @@ fn convert_document_over_limit_filename_rejected_and_writes_nothing() {
         );
     }
 }
+
+#[tokio::test]
+async fn mcp_catalog_lists_convert_document_and_dispatches_mobile_capture_conversion() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    let old_path = write_capture(root, "");
+    let server = make_server(root);
+
+    // 1. Verify convert_document is present in server.list_tools_result().tools (tools/list)
+    let list_res = server.list_tools_result();
+    let tool = list_res
+        .tools
+        .iter()
+        .find(|t| t.name == "convert_document")
+        .expect("convert_document must be published in tools/list");
+
+    let schema = tool
+        .output_schema
+        .as_ref()
+        .expect("convert_document must declare an outputSchema");
+    let props = schema
+        .get("properties")
+        .and_then(|p| p.as_object())
+        .expect("outputSchema must have properties");
+    for key in [
+        "ok", "id", "title", "old_type", "type", "status", "old_path", "path", "retyped", "moved",
+    ] {
+        assert!(
+            props.contains_key(key),
+            "convert_document outputSchema missing property '{key}'"
+        );
+    }
+
+    // 2. Dispatch convert_document on a note in notes/mobile-captures/
+    let res = server
+        .dispatch_tool_sync(
+            "convert_document",
+            &json!({ "id": CAPTURE_STEM, "type": "task" }),
+        )
+        .expect("dispatch_tool_sync(convert_document) must succeed");
+
+    let structured = res
+        .structured_content
+        .as_ref()
+        .expect("dispatch_tool_sync must populate structured_content");
+    let new_rel = format!("tasks/{CAPTURE_STEM}_ring_the_registrar.md");
+    assert_eq!(structured["ok"], true);
+    assert_eq!(structured["id"], CAPTURE_STEM);
+    assert_eq!(structured["title"], "Ring the registrar");
+    assert_eq!(structured["old_type"], "note");
+    assert_eq!(structured["type"], "task");
+    assert_eq!(structured["status"], "inbox");
+    assert_eq!(
+        structured["old_path"],
+        format!("notes/mobile-captures/{CAPTURE_STEM}.md")
+    );
+    assert_eq!(structured["path"], new_rel.as_str());
+    assert_eq!(structured["retyped"], true);
+    assert_eq!(structured["moved"], true);
+
+    // Verify file moved into tasks/, kept its id, and set type: task
+    let new_path = root.join(&new_rel);
+    assert!(
+        !old_path.exists(),
+        "capture must be moved out of notes/mobile-captures/"
+    );
+    assert!(new_path.exists(), "converted task must exist in tasks/");
+    let fm = frontmatter(&new_path);
+    assert_eq!(fm["id"], CAPTURE_STEM);
+    assert_eq!(fm["type"], "task");
+    assert_eq!(fm["status"], "inbox");
+
+    // 3. Also verify execute_tool_call("pkb_convert_document", ...) works as an idempotent rerun
+    let exec_res = server
+        .execute_tool_call(
+            "pkb_convert_document",
+            &json!({ "id": CAPTURE_STEM, "type": "task" }),
+            None,
+            None,
+        )
+        .await
+        .expect("execute_tool_call(pkb_convert_document) must succeed");
+    let exec_structured = exec_res
+        .structured_content
+        .expect("execute_tool_call must populate structured_content");
+    assert_eq!(exec_structured["ok"], true);
+    assert_eq!(exec_structured["id"], CAPTURE_STEM);
+    assert_eq!(exec_structured["type"], "task");
+    assert_eq!(exec_structured["path"], new_rel.as_str());
+    assert_eq!(exec_structured["moved"], false);
+    assert_eq!(exec_structured["retyped"], false);
+}
+

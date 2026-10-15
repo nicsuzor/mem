@@ -394,6 +394,23 @@ impl PkbSearchServer {
             .with_title("Delete Document")
             .with_annotations(ToolAnnotations::new().destructive(true)),
             Tool::new(
+                "convert_document",
+                "Convert document in place (keeps ID): retype frontmatter, rename to `<dir>/<id>_<slug>.md`, reindex.",
+                serde_json::from_value::<JsonObject>(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "id": { "type": "string", "description": "Document ID, stem, or title" },
+                        "type": { "type": "string", "description": "Target type (e.g. 'task')" },
+                        "dir": { "type": "string", "description": "Target subdir (default by type)" },
+                        "status": { "type": "string", "description": "Status to set (default 'inbox' for tasks)" }
+                    },
+                    "required": ["id", "type"]
+                }))
+                .unwrap(),
+            )
+            .with_title("Convert Document")
+            .with_annotations(ToolAnnotations::new().read_only(false).destructive(false)),
+            Tool::new(
                 "claim_task",
                 "Claim a task or instantiate a template. Tasks are claimed in place (status: in_progress). Templates instantiate a datestamped copy.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
@@ -560,23 +577,6 @@ impl PkbSearchServer {
             )
             .with_title("Top N Nodes by Centrality Metric")
             .with_annotations(ToolAnnotations::new().read_only(true)),
-            Tool::new(
-                "convert_document",
-                "Convert an existing document in place, keeping its ID: replace its frontmatter `type`, then move and rename the same file to `<dir>/<id>_<title-slug>.md` and reindex it. Use to turn a note or capture into a task (or any other retype) without creating a new file. The ID is written into frontmatter before the rename, so a document whose ID was only its filename stem keeps it. Converting to a task type sets a valid task status (`status`, else the existing status, else `inbox`). Re-running with the same arguments is a no-op. Set parent, project, and other fields afterwards with update_task.",
-                serde_json::from_value::<JsonObject>(serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "id": { "type": "string", "description": "Document ID (task ID, memory ID, filename stem, or title). Uses flexible resolution." },
-                        "type": { "type": "string", "description": "New frontmatter type, e.g. 'task'." },
-                        "dir": { "type": "string", "description": "Target subdirectory relative to the PKB root. Default by type: task/learn → tasks, target → targets, memory → memories, everything else → notes." },
-                        "status": { "type": "string", "description": "Status to set in the same write. Required when converting to a task type and the existing status is not a valid task status." }
-                    },
-                    "required": ["id", "type"]
-                }))
-                .unwrap(),
-            )
-            .with_title("Convert Document In Place")
-            .with_annotations(ToolAnnotations::new().read_only(false).destructive(false)),
             Tool::new(
                 "nested_tasks",
                 "List tasks in a hierarchical tree view grouped by project and epic (metadata only), mirroring the `pkb tasks` CLI command. Supports ASCII tree or brief JSON output. Ideal for understanding work hierarchy and structure without heavy body text or signal payloads.",
@@ -1093,14 +1093,16 @@ impl PkbSearchServer {
             "convert_document" => serde_json::json!({
                 "type": "object",
                 "properties": {
+                    "ok": { "type": "boolean" },
                     "id": { "type": "string" },
                     "title": { "type": "string" },
+                    "old_type": { "type": "string" },
                     "type": { "type": "string" },
-                    "status": { "type": "string" },
-                    "path": { "type": "string" },
+                    "status": { "type": ["string", "null"] },
                     "old_path": { "type": "string" },
-                    "message": { "type": "string" },
-                    "modified": { "type": "string" }
+                    "path": { "type": "string" },
+                    "retyped": { "type": "boolean" },
+                    "moved": { "type": "boolean" }
                 }
             }),
             "release_task" => serde_json::json!({
