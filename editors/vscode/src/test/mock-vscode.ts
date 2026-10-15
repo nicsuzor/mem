@@ -72,9 +72,54 @@ export class MockDisposable {
 }
 
 export class MockEventEmitter {
-  event = () => ({ dispose: () => {} });
-  fire(_data?: any) {}
-  dispose() {}
+  private listeners: ((data?: any) => any)[] = [];
+  event = (listener: (data?: any) => any) => {
+    this.listeners.push(listener);
+    return { dispose: () => {} };
+  };
+  fire(data?: any) {
+    for (const l of this.listeners) {
+      l(data);
+    }
+  }
+  dispose() {
+    this.listeners = [];
+  }
+}
+
+export class MockOutputChannel {
+  public lines: string[] = [];
+  public shown: boolean = false;
+  public preserveFocusLast?: boolean;
+
+  constructor(public name: string) {}
+
+  append(value: string): void {
+    this.lines.push(value);
+  }
+
+  appendLine(value: string): void {
+    this.lines.push(value);
+  }
+
+  replace(value: string): void {
+    this.lines = [value];
+  }
+
+  clear(): void {
+    this.lines = [];
+  }
+
+  show(preserveFocus?: boolean): void {
+    this.shown = true;
+    this.preserveFocusLast = preserveFocus;
+  }
+
+  hide(): void {
+    this.shown = false;
+  }
+
+  dispose(): void {}
 }
 
 export class MockUri {
@@ -108,6 +153,10 @@ export class MockUri {
   }
 }
 
+export const createdOutputChannels: Map<string, MockOutputChannel> = new Map();
+export const registeredCommands: Map<string, (...args: any[]) => any> = new Map();
+export const activeEditorListeners: ((editor: any) => any)[] = [];
+
 const baseMock: Record<string, any> = {
   Uri: MockUri,
   Position: MockPosition,
@@ -128,6 +177,7 @@ const baseMock: Record<string, any> = {
   InlayHint: MockInlayHint,
   Disposable: MockDisposable,
   EventEmitter: MockEventEmitter,
+  OutputChannel: MockOutputChannel,
   DiagnosticSeverity: {
     Error: 0,
     Warning: 1,
@@ -149,6 +199,7 @@ const baseMock: Record<string, any> = {
       get: (_key: string, defaultValue?: any) => defaultValue,
     }),
     workspaceFolders: [] as any[],
+    onDidChangeConfiguration: (_listener: any) => ({ dispose: () => {} }),
     createFileSystemWatcher: () => ({
       onDidChange: () => ({ dispose: () => {} }),
       onDidCreate: () => ({ dispose: () => {} }),
@@ -163,11 +214,24 @@ const baseMock: Record<string, any> = {
   },
   window: {
     activeTextEditor: undefined as any,
+    onDidChangeActiveTextEditor: (listener: (editor: any) => any) => {
+      activeEditorListeners.push(listener);
+      return { dispose: () => {} };
+    },
+    createOutputChannel: (name: string) => {
+      let channel = createdOutputChannels.get(name);
+      if (!channel) {
+        channel = new MockOutputChannel(name);
+        createdOutputChannels.set(name, channel);
+      }
+      return channel;
+    },
     showTextDocument: async (doc: any, options?: any) => ({
       document: doc,
       options,
     }),
-    showErrorMessage: async (_msg: string) => {},
+    showErrorMessage: async (_msg: string, ..._items: string[]) => undefined,
+    showWarningMessage: async (_msg: string, ..._items: string[]) => undefined,
     showInformationMessage: async (_msg: string, ..._actions: any[]) => undefined,
     createStatusBarItem: (_alignment?: any, _priority?: number) => ({
       text: '',
@@ -179,10 +243,21 @@ const baseMock: Record<string, any> = {
     }),
   },
   commands: {
-    registerCommand: (_command: string, _callback: (...args: any[]) => any) => ({
-      dispose: () => {},
-    }),
-    executeCommand: async (_command: string, ..._args: any[]) => {},
+    registerCommand: (command: string, callback: (...args: any[]) => any) => {
+      registeredCommands.set(command, callback);
+      return {
+        dispose: () => {
+          registeredCommands.delete(command);
+        },
+      };
+    },
+    executeCommand: async (command: string, ...args: any[]) => {
+      const handler = registeredCommands.get(command);
+      if (handler) {
+        return await handler(...args);
+      }
+      return undefined;
+    },
   },
   env: {
     clipboard: {

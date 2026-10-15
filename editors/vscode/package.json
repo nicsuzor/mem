@@ -16,10 +16,23 @@
     "Other"
   ],
   "activationEvents": [
-    "onLanguage:markdown"
+    "onLanguage:markdown",
+    "onStartupFinished",
+    "onCommand:mem.showVersion",
+    "onCommand:mem.showLogs",
+    "onCommand:mem.restartServer",
+    "onCommand:mem.openReference",
+    "onCommand:mem.openReferenceAtCursor"
   ],
   "main": "./out/extension.js",
   "contributes": {
+    "markdown.markdownItPlugins": true,
+    "markdown.previewStyles": [
+      "./media/preview.css"
+    ],
+    "markdown.previewScripts": [
+      "./media/preview.js"
+    ],
     "commands": [
       {
         "command": "mem.openReference",
@@ -36,6 +49,10 @@
       {
         "command": "mem.showVersion",
         "title": "Mem: Show PKB Version & Status"
+      },
+      {
+        "command": "mem.showLogs",
+        "title": "Mem: Show PKB LSP Logs"
       }
     ],
     "configuration": {
@@ -50,6 +67,11 @@
           "type": "string",
           "default": "",
           "description": "Path to the PKB root directory (defaults to workspace folder or ACA_DATA)"
+        },
+        "mem.lsp.debug": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable verbose debug logging in the Mem PKB LSP OutputChannel"
         },
         "mem.lsp.trace.server": {
           "type": "string",

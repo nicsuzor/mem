@@ -3544,8 +3544,32 @@ async fn main() -> Result<()> {
 
         Commands::Lsp { .. } => {
             let lsp_root = pkb_root;
+            let pid = std::process::id();
             eprintln!("🔍 PKB LSP Server starting over stdio...");
+            eprintln!(
+                "   Version:  {} ({})",
+                env!("CARGO_PKG_VERSION"),
+                env!("BUILD_GIT_HASH")
+            );
+            eprintln!("   PID:      {}", pid);
             eprintln!("   PKB root: {}", lsp_root.display());
+            tracing::info!(
+                version = env!("CARGO_PKG_VERSION"),
+                git_hash = env!("BUILD_GIT_HASH"),
+                pid = pid,
+                pkb_root = %lsp_root.display(),
+                "PKB LSP Server starting over stdio"
+            );
+            if !lsp_root.exists() {
+                eprintln!(
+                    "   warning: PKB root directory does not exist: {}",
+                    lsp_root.display()
+                );
+                tracing::warn!(
+                    pkb_root = %lsp_root.display(),
+                    "PKB root directory does not exist"
+                );
+            }
             let server = mem::lsp::LspServer::new(lsp_root);
             server.run_stdio()?;
         }
