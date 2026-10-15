@@ -242,10 +242,12 @@ pub fn merge_live_into_canvas(
                     let color_style = node_color_style(ln.status.as_deref(), ln.node_type.as_deref());
                     existing_card.background_color = color_style.bg_color.to_string();
                     existing_card.stroke_color = color_style.stroke_color.to_string();
-                    if let Some(ref mut cd) = existing_card.custom_data {
-                        if let Some(ref mut pkb) = cd.pkb {
-                            pkb.status = ln.status.clone();
-                        }
+                }
+                if let Some(ref mut cd) = existing_card.custom_data {
+                    if let Some(ref mut pkb) = cd.pkb {
+                        pkb.status = ln.status.clone();
+                        pkb.title = Some(ln.label.clone());
+                        pkb.tags = ln.tags.clone();
                     }
                 }
                 if is_red_ring(ln.stakeholder.is_some(), ln.status.as_deref()) {
@@ -374,10 +376,12 @@ pub fn merge_live_into_canvas(
             card_elem.custom_data = Some(CustomData {
                 pkb: Some(PkbCustomData {
                     node_id: Some(nid.clone()),
+                    title: Some(ln.label.clone()),
                     node_type: ln.node_type.clone(),
                     status: ln.status.clone(),
                     intent: ln.intent,
                     parent: ln.parent.clone(),
+                    tags: ln.tags.clone(),
                     is_pkb_managed: Some(true),
                     ..Default::default()
                 }),
@@ -644,7 +648,7 @@ pub fn sync_diff_to_disk(
             };
 
             let mut updates = HashMap::new();
-            match edge.edge_type {
+            match &edge.edge_type {
                 EdgeType::DependsOn => {
                     let mut deps = source_node.depends_on.clone();
                     if !deps.contains(&edge.target) {
@@ -665,7 +669,14 @@ pub fn sync_diff_to_disk(
                         serde_json::Value::String(edge.target.clone()),
                     );
                 }
-                _ => {}
+                other => {
+                    report.warnings.push(format!(
+                        "Unsupported edge type '{}' for edge {} -> {} (not synced to frontmatter)",
+                        other.as_str(),
+                        edge.source,
+                        edge.target
+                    ));
+                }
             }
 
             if !updates.is_empty() {

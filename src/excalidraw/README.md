@@ -58,13 +58,13 @@ Every exported scene is a plain Excalidraw V2 file (`type: "excalidraw"`, `versi
 One shape plus one container-bound text element per node ([`layout.rs:623-761`](layout.rs#L623-L761)):
 
 - **Shape** — `diamond` for `target`/`goal`, `ellipse` for `area`, otherwise `rectangle` ([L640-L644](layout.rs#L640-L644)). Element id = node id; text id = `text-{node_id}`.
-- **`customData.pkb`** on the shape ([L665-L676](layout.rs#L665-L676)):
+- **`customData.pkb`** on the shape ([L665-L678](layout.rs#L665-L678)):
   ```json
-  { "nodeId": "aops_1234abcd", "nodeType": "task", "status": "ready",
-    "intent": 2, "parent": "epic_id", "tags": ["a", "b"], "isPkbManaged": true }
+  { "nodeId": "aops_1234abcd", "nodeType": "task", "title": "Full node title",
+    "status": "ready", "intent": 2, "parent": "epic_id", "tags": ["a", "b"], "isPkbManaged": true }
   ```
-  The reader accepts the snake_case aliases `node_id`, `priority`, etc. ([`schema.rs:630-688`](schema.rs#L630-L688)).
-- **Bound text** — a header line `[STATUS · P{intent} · now]`, an optional markers line (`START` when `focus_score ≥ 1000`, `LSL`, `WORK`, and the node's `effort`; [L697-L720](layout.rs#L697-L720)), the title **truncated to 36 characters**, then tags as `#a #b` **truncated to 32 characters** ([L679-L738](layout.rs#L679-L738)). See *Known limitations* for why the truncation matters.
+  The reader accepts the snake_case aliases `node_id`, `priority`, etc. ([`schema.rs:630-693`](schema.rs#L630-L693)).
+- **Bound text** — a header line `[STATUS · P{intent} · now]`, an optional markers line (`START` when `focus_score ≥ 1000`, `LSL`, `WORK`, and the node's `effort`; [L697-L720](layout.rs#L697-L720)), the title **truncated to 36 characters**, then whole `#tag` tokens fitting within **32 characters** (with `...` appended if additional tags exist, never splitting a tag token in half) ([L465-L495](layout.rs#L465-L495), [L722-L740](layout.rs#L722-L740)). Because full `title` and `tags` are preserved in `customData.pkb`, unmodified exports round-trip idempotently without writing truncated text back to frontmatter.
 - **Size** — widths S 200 / M 240 / L 300 / A 380, height 84, chosen by type and intent, bumped one tier when `focus_score ≥ 1000` ([`schema.rs:83-128`](schema.rs#L83-L128)).
 - **Colour** — by type first (epic, target/goal, area, learn, memory/note), then by status (ready, queued/active, blocked/waiting, review/testing, done, cancelled, default inbox/draft) ([`schema.rs:196-235`](schema.rs#L196-L235)). A red `#e03131` ring marks stakeholder-flagged or in-review nodes ([`schema.rs:75-80`](schema.rs#L75-L80)).
 - **Not drawn** — nodes whose status is `someday`, `cancelled` or `abandoned`, and their edges ([`schema.rs:67-72`](schema.rs#L67-L72), [`layout.rs:519-530`](layout.rs#L519-L530)).
@@ -96,7 +96,7 @@ Neighbourhood traversal follows structural edges only — `parent`, `depends_on`
 
 The reader also understands cards and arrows that were never exported:
 
-- A shape with no `customData.pkb.nodeId` is a **new node**. If its text contains an id matching `(task|epic|mem|target|goal)-[a-zA-Z0-9]{4,16}` that id is used; otherwise it becomes an `added_node` with `node_type: "task"`, `status: "inbox"` ([`reader.rs:517`](reader.rs#L517), [`diff.rs:206-218`](diff.rs#L206-L218)). That regex requires a **hyphen**, but ids minted by `mem` are `{prefix}_{8 hex}` with an underscore ([`graph.rs:609-615`](../graph.rs#L609-L615)), so typing a real id such as `task_1a2b3c4d` into a hand-drawn card does **not** link it — sync will create a duplicate node. Link hand-drawn cards by setting `customData.pkb.nodeId` instead.
+- A shape with no `customData.pkb.nodeId` is a **new node** unless its text contains a recognized ID matching `[a-z][a-z0-9]{1,15}_[0-9a-fA-F]{8}` (minted `{prefix}_{8 hex}` IDs) or `(task|epic|mem|target|goal|targ|kb|note|ins|obs)[_-][a-zA-Z0-9]{4,16}`, in which case that ID is extracted and linked to the existing node; otherwise it becomes an `added_node` with `node_type: "task"`, `status: "inbox"` ([`reader.rs:528-533`](reader.rs#L528-L533), [`diff.rs:206-218`](diff.rs#L206-L218)).
 - An arrow's edge type comes from `customData.pkb.edgeType`, else from a label prefix — `dep:`/`depends_on:`, `soft:`, `parent:`/`child:`, `contrib:`/`weight:`, `close:`, `super:`, `sim:` — else `link` ([`reader.rs:472-513`](reader.rs#L472-L513)). Arrows with an unresolved endpoint are treated as annotations, not edges.
 
 ## Server side: export → edit → diff → sync
@@ -155,7 +155,7 @@ Typical agent loop: `graph_excalidraw` → save the JSON as both `canvas.excalid
 ### Export semantics
 
 - `hops` is clamped to 1–5 ([`layout.rs:52`](layout.rs#L52)); the neighbourhood is capped at **100 nodes** ([L57](layout.rs#L57), enforced at [L88](layout.rs#L88)).
-- With `node_id` omitted the exporter does **not** emit the entire graph, despite the tool description. It takes the top 10 focus picks and unions their neighbourhoods ([`graph_store.rs:2246-2255`](../graph_store.rs#L2246-L2255)). The 100-node cap is per focus, so the default export can reach ~1000 nodes.
+- With `node_id` omitted the exporter takes the top 10 focus picks and unions their neighbourhoods ([`graph_store.rs:2650-2659`](../graph_store.rs#L2650-L2659)), as described in `graph_excalidraw`. The 100-node cap is per focus, so the default export can reach ~1000 nodes.
 - Focus resolution goes through `GraphStore::resolve` (id, filename stem or title); an unresolvable focus errors with `Focus node '…' not found in graph` ([`mod.rs:53`](mod.rs#L53)).
 - Measured on a live PKB (epic `aops-41e428a6`, `hops: 1`): 269 elements, ~300 KB of JSON, 174 ms.
 
@@ -170,34 +170,33 @@ Canvases with pre-existing drift that is not structurally broken are accepted ([
 
 ### Diff semantics
 
-`GraphDiff` ([`diff.rs:84-93`](diff.rs#L84-L93)) classifies, per [`diff.rs:184-405`](diff.rs#L184-L405):
+`GraphDiff` ([`diff.rs:84-93`](diff.rs#L84-L93)) classifies, per [`diff.rs:184-475`](diff.rs#L184-L475):
 
 | Field | Meaning |
 |-------|---------|
 | `added_nodes` | Cards with no resolvable node id, or an id absent from the live graph |
-| `updated_nodes` | Title (when non-empty and ≠ live label / id / `Untitled`), status, intent, parent, tags (set compare; only when the card has tags) |
+| `updated_nodes` | Title (when non-empty and ≠ live label / id / `Untitled` / truncated live label), status, intent, parent, tags (set compare; only when the card has tags) |
 | `removed_from_canvas` | Node ids in `base` that are no longer on the canvas. Informational — files are never deleted |
 | `added_edges` | Canvas arrows (both ends resolved) not present in the live graph |
 | `removed_edges` | `base` edges missing from the canvas (both ends still on canvas). Only computed when `base` is given |
-| `retargeted_edges` | Declared but never populated |
+| `retargeted_edges` | Arrows whose source or target endpoint changed relative to `customData.pkb.{sourceId, targetId}` or paired `base` removal + addition sharing `edge_type` and one endpoint |
 | `visual_mutations` | Only with `base`: position delta > 0.5 px or stroke/background change |
 | `conflicts` | Only with `base`, for title and status: live ≠ base **and** canvas ≠ base **and** live ≠ canvas. The canvas value is still recorded as the update |
 
 ### Sync semantics
 
-`sync_diff_to_disk` ([`merge.rs:515-750`](merge.rs#L515-L750)) is additive: it never deletes files and never removes edges unless told to.
+`sync_diff_to_disk` ([`merge.rs:515-755`](merge.rs#L515-L755)) is additive: it never deletes files and never removes edges unless told to. Both `diff_excalidraw` and `sync_excalidraw` call `ensure_graph_fresh()` before diffing.
 
 - **New cards** become markdown files via `document_crud::create_task` (when `node_type == "task"` and a parent is set) or `create_document`. Written fields: `title`, `status`, `intent`, `parent`, `tags`. Filename `{id}_{slug}.md` with a generated `{prefix}_{8 hex}` id, placed in `tasks/`, `memories/` or `notes/` by type. Canvas coordinates are not persisted.
 - **Updated cards** write `title`, `status`, `intent`, `parent`, `tags` to frontmatter ([`merge.rs:582-606`](merge.rs#L582-L606)). Writes go through `document_crud::update_document`, whose policies can refuse them — and a refusal is reported only as a `warnings` entry, not an error ([`merge.rs:610-619`](merge.rs#L610-L619)). **Read `warnings` after every sync.**
-- **Added edges** are checked for cycles first (over `depends_on` and `parent` only, [`merge.rs:41-107`](merge.rs#L41-L107)) and reported in `rejected_cycles` if they close one. Then, on the **source** node's file: `depends_on` → appended to `depends_on`; `soft_depends_on` → `soft_depends_on`; `parent` → `parent`. **All other edge types (`contributes_to`, `closes`, `supersedes`, `similar_to`, `link`) are silently not written** ([`merge.rs:646-668`](merge.rs#L646-L668)).
+- **Added edges** are checked for cycles first (over `depends_on` and `parent` only, [`merge.rs:41-107`](merge.rs#L41-L107)) and reported in `rejected_cycles` if they close one. Then, on the **source** node's file: `depends_on` → appended to `depends_on`; `soft_depends_on` → `soft_depends_on`; `parent` → `parent`. **All other edge types (`contributes_to`, `closes`, `supersedes`, `similar_to`, `link`) are not synced to frontmatter and emit an explicit entry in `warnings`** ([`merge.rs:672-679`](merge.rs#L672-L679)).
 - **`sync_edge_removals: true`** removes `depends_on` entries (and only `depends_on`) whose target arrow was deleted, matching bare ids, `[[id]]` and `…/id.md` forms ([`merge.rs:685-742`](merge.rs#L685-L742)).
 - All writes go through `atomic_write_file` (temp file, fsync, rename) in `document_crud.rs`. After a live sync the MCP handler re-embeds the touched documents and schedules a graph rebuild ([`handlers_batch.rs:581-594`](../mcp_server/handlers_batch.rs#L581-L594)).
 
 ### Known limitations
 
-- **Round trips are not idempotent.** Titles are truncated to 36 characters and tag lines to 32 on export ([`layout.rs:723-738`](layout.rs#L723-L738)); the reader takes the card text back as the title and re-extracts `#tags` ([`reader.rs:466`](reader.rs#L466), [L449-L452](reader.rs#L449-L452)); the diff sees a mismatch ([`diff.rs:235-254`](diff.rs#L235-L254), [L288-L294](diff.rs#L288-L294)); and `sync` writes it to frontmatter ([`merge.rs:582-606`](merge.rs#L582-L606)). Feeding an unmodified export straight back into `diff_excalidraw` on a real PKB produced 14+ spurious `updated_nodes` with titles like `Restore and make effective the strat...` and tags like `cleanu`. Tags read back from card text are **unioned** with `customData.pkb.tags` ([`reader.rs:255-262`](reader.rs#L255-L262)), so a truncated fragment is added rather than replacing anything: a live (non-dry) sync during review wrote a bogus tag `inf` (from `#information-theory` cut at 32 chars) into a real note. **Always review `updated_nodes` in the diff, and never run a non-dry `sync` on a canvas whose cards carry long titles or tag lines.**
-- `sync_excalidraw` does not refresh the graph before diffing (compare [`handlers_batch.rs:456`](../mcp_server/handlers_batch.rs#L456) with [L503](../mcp_server/handlers_batch.rs#L503)); run `diff_excalidraw` first if the PKB may have changed.
-- `retargeted_edges` is never populated; a retargeted arrow shows up as one `removed_edge` plus one `added_edge`.
+- Only `depends_on`, `soft_depends_on`, and `parent` edges are synced to frontmatter; other edge types (`contributes_to`, `closes`, `supersedes`, `similar_to`, `link`) emit a warning in `SyncReport.warnings` rather than modifying frontmatter.
+- `retargeted_edges` is reported in `GraphDiff` for inspection, while `sync_diff_to_disk` only writes `added_edges` and (when `sync_edge_removals: true`) `removed_edges`.
 - There are no size or time caps on the canvas string itself; the only limits are the hop clamp and the 100-node neighbourhood cap.
 
 ## Companion binary: `pkb-excalidraw`

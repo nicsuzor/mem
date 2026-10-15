@@ -454,12 +454,44 @@ fn calculate_barycenter(
 // ===========================================================================
 
 /// Safely truncate title using `floor_char_boundary`.
-fn truncate_title(s: &str, max_len: usize) -> String {
+pub(crate) fn truncate_title(s: &str, max_len: usize) -> String {
     if s.len() <= max_len {
         s.to_string()
     } else {
         let boundary = s.floor_char_boundary(max_len);
         format!("{}...", &s[..boundary])
+    }
+}
+
+/// Format `#tag1 #tag2 ...` within `max_len` without splitting a tag across the truncation boundary.
+pub(crate) fn format_tags_line(tags: &[String], max_len: usize) -> String {
+    let full = tags
+        .iter()
+        .map(|t| format!("#{}", t))
+        .collect::<Vec<_>>()
+        .join(" ");
+    if full.len() <= max_len {
+        return full;
+    }
+    let mut fitted = Vec::new();
+    let mut current_len = 0usize;
+    for tag in tags {
+        let token = format!("#{}", tag);
+        let next_len = if fitted.is_empty() {
+            token.len()
+        } else {
+            current_len + 1 + token.len()
+        };
+        if next_len > max_len {
+            break;
+        }
+        fitted.push(token);
+        current_len = next_len;
+    }
+    if fitted.is_empty() {
+        String::from("...")
+    } else {
+        format!("{}...", fitted.join(" "))
     }
 }
 
@@ -673,6 +705,7 @@ pub fn generate_excalidraw_scene(
         card_elem.custom_data = Some(CustomData {
             pkb: Some(PkbCustomData {
                 node_id: Some(node.id.clone()),
+                title: Some(node.label.clone()),
                 node_type: node.node_type.clone(),
                 status: node.status.clone(),
                 intent: node.intent,
@@ -732,18 +765,7 @@ pub fn generate_excalidraw_scene(
         let tag_str = if node.tags.is_empty() {
             String::new()
         } else {
-            format!(
-                "\n{}",
-                truncate_title(
-                    &node
-                        .tags
-                        .iter()
-                        .map(|t| format!("#{}", t))
-                        .collect::<Vec<_>>()
-                        .join(" "),
-                    32
-                )
-            )
+            format!("\n{}", format_tags_line(&node.tags, 32))
         };
         let text_content = format!("{}{}\n{}{}", header, markers_line, title_line, tag_str);
 

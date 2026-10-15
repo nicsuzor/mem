@@ -2634,7 +2634,7 @@ impl GraphStore {
 
     /// Export graph or ego network to Excalidraw JSON canvas format.
     /// If `focus_id` is provided, exports an ego-network with given `hops`.
-    /// Otherwise exports all nodes.
+    /// Otherwise exports the union of the top-10 focus picks' ego neighborhoods.
     pub fn output_excalidraw(
         &self,
         focus_id: Option<&str>,

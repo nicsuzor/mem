@@ -668,7 +668,7 @@ pub enum ExcalidrawCommands {
         /// Destination file path for Excalidraw JSON canvas
         output_path: PathBuf,
 
-        /// Focus node ID for ego network layout (omit to export entire graph)
+        /// Focus node ID for ego network layout (omit to export the union of the top-10 focus picks' ego neighborhoods)
         #[arg(short, long)]
         focus: Option<String>,
 

@@ -643,6 +643,12 @@ pub struct PkbCustomData {
     )]
     pub node_id: Option<String>,
     #[serde(
+        rename = "title",
+        alias = "label",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub title: Option<String>,
+    #[serde(
         rename = "nodeType",
         alias = "node_type",
         skip_serializing_if = "Option::is_none"
@@ -712,6 +718,7 @@ mod tests {
         elem.custom_data = Some(CustomData {
             pkb: Some(PkbCustomData {
                 node_id: Some("task-123".to_string()),
+                title: None,
                 node_type: Some("task".to_string()),
                 status: Some("ready".to_string()),
                 intent: Some(1),

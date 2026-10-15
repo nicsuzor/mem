@@ -2163,3 +2163,292 @@ fn test_personal_projects_live_consumer_roundtrip() {
     assert_eq!(gs_rebuilt.get_node("task-a").unwrap().status.as_deref(), Some("in_progress"));
     assert_eq!(gs_rebuilt.get_node("task-b").unwrap().status.as_deref(), Some("ready"));
 }
+
+// ===========================================================================
+// Test 15: Round-Trip Idempotency & Related Gaps (mem_excalidraw_roundtrip_idempotent)
+// ===========================================================================
+
+/// Exporting a node with a long title (>36 chars) and long tags (>32 chars),
+/// then running diff on the unmodified file, reports no `updated_nodes`,
+/// and a live sync leaves the frontmatter byte-identical.
+#[test]
+fn test_roundtrip_long_title_and_tags_idempotent() {
+    let ws = tempfile::tempdir().expect("tempdir");
+    let pkb_root = ws.path();
+
+    fs::write(pkb_root.join("polecat.yaml"), "projects:\n  testproj: {}\n").unwrap();
+    fs::create_dir_all(pkb_root.join("tasks")).unwrap();
+
+    let task_path = pkb_root.join("tasks/task_1a2b3c4d.md");
+    let initial_md = "---\n\
+id: task_1a2b3c4d\n\
+title: \"Make the pkb-excalidraw round trip idempotent and stop writing truncated titles\"\n\
+type: task\n\
+status: ready\n\
+priority: 1\n\
+project: testproj\n\
+tags:\n\
+  - excalidraw-canvas\n\
+  - information-theory\n\
+  - data-integrity-check\n\
+---\n\n# Long Title Task\n";
+    fs::write(&task_path, initial_md).unwrap();
+    let initial_bytes = fs::read(&task_path).unwrap();
+
+    let mut gs = GraphStore::build_from_directory(pkb_root);
+    let (excal_json, _, _) = gs
+        .output_excalidraw(Some("task_1a2b3c4d"), 1)
+        .expect("export excalidraw");
+
+    let canvas = parse_canvas(&excal_json).expect("parse canvas");
+    let base_snap = BaseSnapshot::from_canvas(&canvas);
+
+    // 1. Diff without base and with base must report zero updated_nodes
+    let diff_no_base = diff_canvas(None, &gs, &canvas).expect("diff without base");
+    assert!(
+        diff_no_base.updated_nodes.is_empty(),
+        "Unmodified export diff (no base) must report no updated_nodes, got: {:?}",
+        diff_no_base.updated_nodes
+    );
+    assert!(diff_no_base.is_empty(), "Unmodified export diff must be completely empty");
+
+    let diff_with_base = diff_canvas(Some(&base_snap), &gs, &canvas).expect("diff with base");
+    assert!(
+        diff_with_base.updated_nodes.is_empty(),
+        "Unmodified export diff (with base) must report no updated_nodes, got: {:?}",
+        diff_with_base.updated_nodes
+    );
+
+    // 2. Live sync must leave the markdown file byte-identical
+    let report = sync_canvas(pkb_root, &mut gs, &diff_no_base, false).expect("sync canvas");
+    assert!(report.updated_nodes.is_empty(), "Live sync must not update any nodes");
+    let after_bytes = fs::read(&task_path).unwrap();
+    assert_eq!(
+        initial_bytes, after_bytes,
+        "Live sync on unmodified export must leave frontmatter byte-identical"
+    );
+}
+
+/// `sync_excalidraw` must call `ensure_graph_fresh` before diffing so external disk
+/// writes since server startup are seen rather than overwritten or mis-diffed.
+#[test]
+fn test_sync_excalidraw_refreshes_graph_before_diffing() {
+    let ws = create_test_pkb_workspace();
+    let db_path = ws.path().join("pkb_vectors.bin");
+    let store = Arc::new(parking_lot::RwLock::new(VectorStore::new(1024)));
+    let graph = Arc::new(parking_lot::RwLock::new(GraphStore::build_from_directory(
+        ws.path(),
+    )));
+    let server = PkbSearchServer::new(
+        store,
+        Arc::new(mem::embeddings::Embedder::new_dummy()),
+        ws.path().to_path_buf(),
+        db_path,
+        graph,
+    );
+
+    // Externally write a new task to disk AFTER server initialization
+    let ext_task_path = ws.path().join("tasks/task_deadbeef.md");
+    let ext_md = "---\n\
+id: task_deadbeef\n\
+title: \"Externally Created Task\"\n\
+type: task\n\
+status: ready\n\
+priority: 1\n\
+project: testproj\n\
+---\n\n# External\n";
+    fs::write(&ext_task_path, ext_md).unwrap();
+
+    // Build a canvas containing a card for task_deadbeef with the same title/status
+    let mut file = ExcalidrawFile::default();
+    let mut card = ExcalidrawElement::default();
+    card.id = "task_deadbeef".to_string();
+    card.element_type = "rectangle".to_string();
+    card.x = 100.0;
+    card.y = 100.0;
+    card.width = CARD_WIDTH;
+    card.height = CARD_HEIGHT;
+    card.bound_elements = Some(vec![BoundElement {
+        id: "text-task_deadbeef".to_string(),
+        element_type: "text".to_string(),
+    }]);
+    card.custom_data = Some(CustomData {
+        pkb: Some(PkbCustomData {
+            node_id: Some("task_deadbeef".to_string()),
+            node_type: Some("task".to_string()),
+            status: Some("ready".to_string()),
+            intent: Some(1),
+            is_pkb_managed: Some(true),
+            ..Default::default()
+        }),
+        extra: HashMap::new(),
+    });
+    let mut text = ExcalidrawElement::default();
+    text.id = "text-task_deadbeef".to_string();
+    text.element_type = "text".to_string();
+    text.container_id = Some("task_deadbeef".to_string());
+    text.text = Some("[READY · P1]\nExternally Created Task".to_string());
+    text.original_text = text.text.clone();
+    file.elements.push(card);
+    file.elements.push(text);
+
+    let canvas_json = serde_json::to_string(&file).unwrap();
+
+    // Without calling diff_excalidraw or graph_excalidraw first, call sync_excalidraw (dry_run: true).
+    // If sync_excalidraw refreshes the graph first, task_deadbeef is in the live graph and added_nodes is empty.
+    let res = server
+        .handle_sync_excalidraw(&json!({
+            "canvas": canvas_json,
+            "dry_run": true
+        }))
+        .expect("sync_excalidraw dry_run");
+    let res_text = res.content[0].as_text().unwrap().text.as_str();
+    let parsed: serde_json::Value = serde_json::from_str(res_text).unwrap();
+    let added = parsed["diff"]["added_nodes"].as_array().unwrap();
+    assert!(
+        added.is_empty(),
+        "sync_excalidraw must refresh graph before diffing so external disk node is recognized, got added_nodes: {:?}",
+        added
+    );
+}
+
+/// Retargeting an existing edge on the canvas is reported in `retargeted_edges`
+/// rather than as separate `removed_edges` + `added_edges`.
+#[test]
+fn test_diff_populates_retargeted_edges() {
+    let ws = create_test_pkb_workspace();
+    let gs = GraphStore::build_from_directory(ws.path());
+
+    // Export initial scene (task-t2 depends on task-t1)
+    let (excal_json, _, _) = gs.output_excalidraw(None, 2).expect("export");
+    let mut file: ExcalidrawFile = serde_json::from_str(&excal_json).unwrap();
+    let base_snap = BaseSnapshot::from_file(&file);
+
+    // Retarget arrow `arrow-task-t2-task-t1-depends_on` from target `task-t1` to `epic-core`
+    let mut found_arrow = false;
+    for elem in &mut file.elements {
+        if elem.id == "arrow-task-t2-task-t1-depends_on" {
+            found_arrow = true;
+            elem.end_binding = Some(PointBinding {
+                element_id: "epic-core".to_string(),
+                focus: 0.0,
+                gap: 1.0,
+                fixed_point: None,
+            });
+        }
+    }
+    assert!(found_arrow, "Expected arrow-task-t2-task-t1-depends_on in export");
+
+    let canvas = CanvasReader::parse_file(file);
+    let diff = diff_canvas(Some(&base_snap), &gs, &canvas).expect("diff");
+
+    assert_eq!(
+        diff.retargeted_edges.len(),
+        1,
+        "Retargeted arrow must be reported in retargeted_edges, got diff: {:#?}",
+        diff
+    );
+    assert_eq!(diff.retargeted_edges[0].edge_type, EdgeType::DependsOn);
+    assert_eq!(diff.retargeted_edges[0].old_source, "task-t2");
+    assert_eq!(diff.retargeted_edges[0].old_target, "task-t1");
+    assert_eq!(diff.retargeted_edges[0].new_source, "task-t2");
+    assert_eq!(diff.retargeted_edges[0].new_target, "epic-core");
+    assert!(
+        diff.added_edges.is_empty() && diff.removed_edges.is_empty(),
+        "Retargeted edge must not also appear in added_edges or removed_edges"
+    );
+}
+
+/// Unsupported arrow types (`contributes_to`, `closes`, `supersedes`, `similar_to`, `link`)
+/// must emit a warning in `SyncReport.warnings` instead of being silently dropped.
+#[test]
+fn test_sync_warns_on_unsupported_arrow_types() {
+    let ws = create_test_pkb_workspace();
+    let mut gs = GraphStore::build_from_directory(ws.path());
+
+    let unsupported = [
+        EdgeType::ContributesTo,
+        EdgeType::Closes,
+        EdgeType::Supersedes,
+        EdgeType::SimilarTo,
+        EdgeType::Link,
+    ];
+
+    let mut diff = GraphDiff::default();
+    for et in &unsupported {
+        diff.added_edges.push(EdgeMutation {
+            source: "task-t1".to_string(),
+            target: "target-v1".to_string(),
+            edge_type: et.clone(),
+        });
+    }
+
+    let report = sync_canvas(ws.path(), &mut gs, &diff, false).expect("sync");
+    assert_eq!(report.updated_edges, 0);
+    assert_eq!(
+        report.warnings.len(),
+        unsupported.len(),
+        "Each unsupported edge type must produce a warning rather than being dropped silently, got warnings: {:?}",
+        report.warnings
+    );
+    for et in &unsupported {
+        assert!(
+            report.warnings.iter().any(|w| w.contains(et.as_str())),
+            "Warnings must name unsupported edge type '{}', got: {:?}",
+            et.as_str(),
+            report.warnings
+        );
+    }
+}
+
+/// Hand-drawn cards whose text contains a real PKB ID with underscore (e.g. `task_1a2b3c4d`,
+/// `kb_deadbeef`, `targ_8f16a7c2`, `mem_12345678`) link to their existing node rather than
+/// creating a duplicate.
+#[test]
+fn test_typed_real_underscore_id_links_to_node() {
+    let ws = tempfile::tempdir().expect("tempdir");
+    let pkb_root = ws.path();
+    fs::write(pkb_root.join("polecat.yaml"), "projects:\n  testproj: {}\n").unwrap();
+    fs::create_dir_all(pkb_root.join("tasks")).unwrap();
+
+    fs::write(
+        pkb_root.join("tasks/task_1a2b3c4d.md"),
+        "---\n\
+id: task_1a2b3c4d\n\
+title: \"Real Underscore Task\"\n\
+type: task\n\
+status: ready\n\
+project: testproj\n\
+---\n\n# Real Task\n",
+    )
+    .unwrap();
+
+    let gs = GraphStore::build_from_directory(pkb_root);
+
+    // Hand-drawn card (random element ID, no customData) containing `task_1a2b3c4d` in text
+    let json = r#"{"type":"excalidraw","version":2,"elements":[
+      {"type":"rectangle","id":"hand-drawn-rect-1","x":100,"y":100,"width":240,"height":84,
+       "boundElements":[{"id":"hand-drawn-text-1","type":"text"}]},
+      {"type":"text","id":"hand-drawn-text-1","x":108,"y":108,"width":224,"height":68,
+       "containerId":"hand-drawn-rect-1",
+       "text":"Real Underscore Task\ntask_1a2b3c4d",
+       "originalText":"Real Underscore Task\ntask_1a2b3c4d"}
+    ]}"#;
+
+    let canvas = parse_canvas(json).expect("parse canvas");
+    assert_eq!(canvas.cards.len(), 1);
+    assert_eq!(
+        canvas.cards[0].node_id.as_deref(),
+        Some("task_1a2b3c4d"),
+        "Reader must extract real underscore ID task_1a2b3c4d from card text"
+    );
+    assert!(!canvas.cards[0].is_new, "Card with recovered real ID must not be marked is_new");
+
+    let diff = diff_canvas(None, &gs, &canvas).expect("diff");
+    assert!(
+        diff.added_nodes.is_empty(),
+        "Hand-drawn card with typed real ID must link to existing node, not be added: {:?}",
+        diff.added_nodes
+    );
+}
+
