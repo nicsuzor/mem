@@ -834,3 +834,171 @@ fn test_write_tools_reject_invalid_links() {
         "File content must not change on error"
     );
 }
+
+/// Acceptance 1 (overwhelm_dashboard_e0191453):
+/// In live flow ranking, an edge with probability p contributes p × its undiscounted strength,
+/// and an edge with no probability contributes at 1.00.
+#[test]
+fn test_contributes_to_probability_discount_in_live_flow_ranking() {
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+
+    let target = make_doc(
+        "targ_main",
+        json!({
+            "id": "targ_main",
+            "title": "Main Priced Target",
+            "type": "target",
+            "status": "open",
+            "worth": 0.80
+        }),
+    );
+
+    // 1. contributes_to edge with no probability -> defaults to 1.00 (undiscounted: 0.80 * 0.50 * 1.00 = 0.40)
+    let task_unp = make_doc(
+        "task_no_prob",
+        json!({
+            "id": "task_no_prob",
+            "title": "Task Without Probability",
+            "type": "task",
+            "status": "ready",
+            "contributes_to": [
+                { "to": "targ_main", "quantum": 0.50 }
+            ]
+        }),
+    );
+
+    // 2. contributes_to edge with probability p = 0.25 -> contributes p * undiscounted (0.80 * 0.50 * 0.25 = 0.10)
+    let task_prob = make_doc(
+        "task_with_prob",
+        json!({
+            "id": "task_with_prob",
+            "title": "Task With Probability 0.25",
+            "type": "task",
+            "status": "ready",
+            "contributes_to": [
+                { "to": "targ_main", "quantum": 0.50, "probability": 0.25 }
+            ]
+        }),
+    );
+
+    // 3. contributes_to edge with certainty alias p = 0.50 -> contributes 0.50 * undiscounted (0.80 * 0.50 * 0.50 = 0.20)
+    let task_cert = make_doc(
+        "task_with_certainty",
+        json!({
+            "id": "task_with_certainty",
+            "title": "Task With Certainty Alias 0.50",
+            "type": "task",
+            "status": "ready",
+            "contributes_to": [
+                { "to": "targ_main", "quantum": 0.50, "certainty": 0.50 }
+            ]
+        }),
+    );
+
+    let store = GraphStore::build(&[target, task_unp, task_prob, task_cert], root);
+
+    let gain_no_prob = store
+        .get_node("task_no_prob")
+        .unwrap()
+        .flow
+        .as_ref()
+        .unwrap()
+        .gain
+        .unwrap();
+    let gain_with_prob = store
+        .get_node("task_with_prob")
+        .unwrap()
+        .flow
+        .as_ref()
+        .unwrap()
+        .gain
+        .unwrap();
+    let gain_with_cert = store
+        .get_node("task_with_certainty")
+        .unwrap()
+        .flow
+        .as_ref()
+        .unwrap()
+        .gain
+        .unwrap();
+
+    assert!(
+        (gain_no_prob - 0.40).abs() < 1e-9,
+        "Edge with no probability must contribute at 1.00 (expected 0.40, got {gain_no_prob})"
+    );
+    assert!(
+        (gain_with_prob - 0.25 * gain_no_prob).abs() < 1e-9,
+        "Edge with probability 0.25 must contribute 0.25 * undiscounted strength (expected 0.10, got {gain_with_prob})"
+    );
+    assert!(
+        (gain_with_cert - 0.50 * gain_no_prob).abs() < 1e-9,
+        "Edge with certainty 0.50 must contribute 0.50 * undiscounted strength (expected 0.20, got {gain_with_cert})"
+    );
+}
+
+/// Acceptance 2 (overwhelm_dashboard_e0191453):
+/// The odds words on existing edges (certain, probable, expected …) resolve to probabilities.
+#[test]
+fn test_contributes_to_odds_words_resolve_to_probabilities() {
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+
+    let target = make_doc(
+        "targ_odds",
+        json!({
+            "id": "targ_odds",
+            "title": "Odds Target",
+            "type": "target",
+            "status": "open",
+            "worth": 1.00
+        }),
+    );
+
+    let cases = [
+        ("certain", 1.00),
+        ("probable", 0.85),
+        ("expected", 0.75),
+        ("fifty-fifty", 0.50),
+        ("uncertain", 0.25),
+        ("improbable", 0.15),
+        ("impossible", 0.00),
+    ];
+
+    let mut docs = vec![target];
+    for (word, _) in &cases {
+        let id = format!("task_{}", word.replace('-', "_"));
+        docs.push(make_doc(
+            &id,
+            json!({
+                "id": id,
+                "title": format!("Task {word}"),
+                "type": "task",
+                "status": "ready",
+                "contributes_to": [
+                    { "to": "targ_odds", "quantum": 0.60, "probability": word }
+                ]
+            }),
+        ));
+    }
+
+    let store = GraphStore::build(&docs, root);
+
+    for (word, expected_p) in &cases {
+        let id = format!("task_{}", word.replace('-', "_"));
+        let node = store.get_node(&id).unwrap();
+        assert_eq!(node.links.len(), 1);
+        assert!(
+            (node.links[0].probability - expected_p).abs() < 1e-9,
+            "Odds word '{word}' on contributes_to must resolve to probability {expected_p}, got {}",
+            node.links[0].probability
+        );
+        let gain = node.flow.as_ref().unwrap().gain.unwrap();
+        let expected_gain = 0.60 * expected_p;
+        assert!(
+            (gain - expected_gain).abs() < 1e-9,
+            "Task with odds word '{word}' must have flow gain {expected_gain}, got {gain}"
+        );
+    }
+}
+
