@@ -241,6 +241,18 @@ const baseMock: Record<string, any> = {
       hide: () => {},
       dispose: () => {},
     }),
+    createTextEditorDecorationType: (options: any) => ({
+      key: `dec-${Math.random()}`,
+      options,
+      dispose: () => {},
+    }),
+  },
+  languages: {
+    registerInlayHintsProvider: (_selector: any, _provider: any) => ({ dispose: () => {} }),
+    registerCodeLensProvider: (_selector: any, _provider: any) => ({ dispose: () => {} }),
+    registerDocumentSemanticTokensProvider: (_selector: any, _provider: any, _legend: any) => ({
+      dispose: () => {},
+    }),
   },
   commands: {
     registerCommand: (command: string, callback: (...args: any[]) => any) => {

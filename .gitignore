@@ -3,6 +3,7 @@ models/
 mem
 .claude/settings.json
 *.png
+!editors/vscode/media/*.png
 .playwright-mcp
 graph.json
 

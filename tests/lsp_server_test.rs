@@ -906,3 +906,385 @@ fn test_lsp_cli_warns_on_missing_root_directory() {
         stderr
     );
 }
+
+#[test]
+fn test_inlay_hints_shows_target_title_status_and_weight() {
+    let dir = tempdir().unwrap();
+    let pkb_root = dir.path().to_path_buf();
+
+    let tasks_dir = pkb_root.join("tasks");
+    fs::create_dir_all(&tasks_dir).unwrap();
+    let task_path = tasks_dir.join("task-inline.md");
+    let task_content = r#"---
+id: task-inline
+title: Implement Editor Features
+type: task
+status: ready
+intent: 2
+weight: 3.5
+---
+Task description.
+"#;
+    fs::write(&task_path, task_content).unwrap();
+
+    let mut server = LspServer::new(pkb_root.clone());
+
+    let doc_path = pkb_root.join("notes").join("index.md");
+    let doc_uri: Uri = format!("file://{}", doc_path.to_string_lossy())
+        .parse()
+        .unwrap();
+    let doc_text = "See [[task-inline]] for more.\n";
+    server.handle_did_open(DidOpenTextDocumentParams {
+        text_document: TextDocumentItem {
+            uri: doc_uri.clone(),
+            language_id: "markdown".to_string(),
+            version: 1,
+            text: doc_text.to_string(),
+        },
+    });
+
+    let hints = server.handle_inlay_hint(&InlayHintParams {
+        text_document: TextDocumentIdentifier { uri: doc_uri },
+        range: Range {
+            start: Position {
+                line: 0,
+                character: 0,
+            },
+            end: Position {
+                line: 0,
+                character: 30,
+            },
+        },
+        work_done_progress_params: Default::default(),
+    });
+
+    assert_eq!(hints.len(), 1, "Expected 1 inlay hint for [[task-inline]]");
+    let hint = &hints[0];
+    assert_eq!(hint.position.line, 0);
+    assert_eq!(hint.position.character, 19);
+
+    let label_str = match &hint.label {
+        InlayHintLabel::String(s) => s.as_str(),
+        InlayHintLabel::LabelParts(parts) => parts[0].value.as_str(),
+    };
+    assert!(
+        label_str.contains("Implement Editor Features"),
+        "Hint should contain title, got: {label_str}"
+    );
+    assert!(
+        label_str.contains("ready"),
+        "Hint should contain status 'ready', got: {label_str}"
+    );
+    assert!(
+        label_str.contains("3.5") || label_str.contains("w:"),
+        "Hint should contain weight, got: {label_str}"
+    );
+}
+
+#[test]
+fn test_semantic_tokens_status_and_type_colouring() {
+    let dir = tempdir().unwrap();
+    let pkb_root = dir.path().to_path_buf();
+
+    let tasks_dir = pkb_root.join("tasks");
+    fs::create_dir_all(&tasks_dir).unwrap();
+
+    // 1. Ready task
+    fs::write(
+        tasks_dir.join("task-ready.md"),
+        "---\nid: task-ready\ntitle: Ready Task\ntype: task\nstatus: ready\n---\nBody\n",
+    )
+    .unwrap();
+
+    // 2. Done task
+    fs::write(
+        tasks_dir.join("task-done.md"),
+        "---\nid: task-done\ntitle: Done Task\ntype: task\nstatus: done\n---\nBody\n",
+    )
+    .unwrap();
+
+    // 3. Blocked task
+    fs::write(
+        tasks_dir.join("task-blocked.md"),
+        "---\nid: task-blocked\ntitle: Blocked Task\ntype: task\nstatus: blocked\n---\nBody\n",
+    )
+    .unwrap();
+
+    // 4. Info node
+    fs::write(
+        tasks_dir.join("info-node.md"),
+        "---\nid: info-node\ntitle: Architecture Info\ntype: info\n---\nBody\n",
+    )
+    .unwrap();
+
+    // 5. Index node
+    fs::write(
+        tasks_dir.join("index-node.md"),
+        "---\nid: index-node\ntitle: Project Index\ntype: index\n---\nBody\n",
+    )
+    .unwrap();
+
+    let mut server = LspServer::new(pkb_root.clone());
+
+    let doc_path = pkb_root.join("notes").join("overview.md");
+    let doc_uri: Uri = format!("file://{}", doc_path.to_string_lossy())
+        .parse()
+        .unwrap();
+    let doc_text = "[[task-ready]] [[task-done]] [[task-blocked]] [[info-node]] [[index-node]]\n";
+    server.handle_did_open(DidOpenTextDocumentParams {
+        text_document: TextDocumentItem {
+            uri: doc_uri.clone(),
+            language_id: "markdown".to_string(),
+            version: 1,
+            text: doc_text.to_string(),
+        },
+    });
+
+    let res = server.handle_semantic_tokens_full(&SemanticTokensParams {
+        text_document: TextDocumentIdentifier { uri: doc_uri },
+        work_done_progress_params: Default::default(),
+        partial_result_params: Default::default(),
+    });
+
+    assert!(res.is_some(), "Semantic tokens should be returned");
+    let tokens = match res.unwrap() {
+        SemanticTokensResult::Tokens(t) => t.data,
+        SemanticTokensResult::Partial(p) => p.data,
+    };
+
+    assert_eq!(tokens.len(), 5, "Expected 5 semantic tokens for 5 wikilinks");
+
+    let legend = LspServer::semantic_tokens_legend();
+    let ready_type_idx = legend
+        .token_types
+        .iter()
+        .position(|t| t.as_str() == "pkbTaskReady")
+        .unwrap() as u32;
+    let done_type_idx = legend
+        .token_types
+        .iter()
+        .position(|t| t.as_str() == "pkbTaskDone")
+        .unwrap() as u32;
+    let blocked_type_idx = legend
+        .token_types
+        .iter()
+        .position(|t| t.as_str() == "pkbTaskBlocked")
+        .unwrap() as u32;
+    let info_type_idx = legend
+        .token_types
+        .iter()
+        .position(|t| t.as_str() == "pkbNodeInfo")
+        .unwrap() as u32;
+    let index_type_idx = legend
+        .token_types
+        .iter()
+        .position(|t| t.as_str() == "pkbNodeIndex")
+        .unwrap() as u32;
+
+    assert_eq!(
+        tokens[0].token_type, ready_type_idx,
+        "First token should be pkbTaskReady"
+    );
+    assert_eq!(
+        tokens[1].token_type, done_type_idx,
+        "Second token should be pkbTaskDone"
+    );
+    assert_eq!(
+        tokens[2].token_type, blocked_type_idx,
+        "Third token should be pkbTaskBlocked"
+    );
+    assert_eq!(
+        tokens[3].token_type, info_type_idx,
+        "Fourth token should be pkbNodeInfo"
+    );
+    assert_eq!(
+        tokens[4].token_type, index_type_idx,
+        "Fifth token should be pkbNodeIndex"
+    );
+}
+
+#[test]
+fn test_code_lens_header_bar() {
+    let dir = tempdir().unwrap();
+    let pkb_root = dir.path().to_path_buf();
+
+    let tasks_dir = pkb_root.join("tasks");
+    fs::create_dir_all(&tasks_dir).unwrap();
+
+    // 1. Parent task
+    fs::write(
+        tasks_dir.join("parent-epic.md"),
+        "---\nid: parent-epic\ntitle: Super Important Parent\ntype: task\nstatus: in_progress\n---\nParent body\n",
+    )
+    .unwrap();
+
+    // 2. Subtasks
+    fs::write(
+        tasks_dir.join("sub-1.md"),
+        "---\nid: sub-1\ntitle: Subtask 1\ntype: task\nstatus: ready\nparent: note-main\n---\nBody\n",
+    )
+    .unwrap();
+    fs::write(
+        tasks_dir.join("sub-2.md"),
+        "---\nid: sub-2\ntitle: Subtask 2\ntype: task\nstatus: done\nparent: note-main\n---\nBody\n",
+    )
+    .unwrap();
+
+    // 3. Referencing note that links to note-main (to create a backlink)
+    fs::write(
+        tasks_dir.join("other-note.md"),
+        "---\nid: other-note\ntitle: Other Note\ntype: note\n---\nMentions [[note-main]].\n",
+    )
+    .unwrap();
+
+    // 4. Main note
+    let main_path = tasks_dir.join("note-main.md");
+    let main_content = r#"---
+id: note-main
+title: Main Note With Header
+type: task
+status: in_progress
+parent: parent-epic
+---
+Main note body.
+"#;
+    fs::write(&main_path, main_content).unwrap();
+
+    let mut server = LspServer::new(pkb_root.clone());
+
+    let doc_uri: Uri = format!("file://{}", main_path.to_string_lossy())
+        .parse()
+        .unwrap();
+    server.handle_did_open(DidOpenTextDocumentParams {
+        text_document: TextDocumentItem {
+            uri: doc_uri.clone(),
+            language_id: "markdown".to_string(),
+            version: 1,
+            text: main_content.to_string(),
+        },
+    });
+
+    let lenses = server.handle_code_lens(&CodeLensParams {
+        text_document: TextDocumentIdentifier { uri: doc_uri },
+        work_done_progress_params: Default::default(),
+        partial_result_params: Default::default(),
+    });
+
+    assert!(!lenses.is_empty(), "CodeLens header bar should be returned");
+
+    let titles: Vec<String> = lenses
+        .iter()
+        .filter_map(|l| l.command.as_ref().map(|c| c.title.clone()))
+        .collect();
+
+    // Must show parent by title
+    assert!(
+        titles
+            .iter()
+            .any(|t| t.contains("Parent: Super Important Parent")),
+        "Header bar should show parent by title 'Super Important Parent', got: {:?}",
+        titles
+    );
+
+    // Must show backlink count
+    assert!(
+        titles.iter().any(|t| t.contains("backlink")),
+        "Header bar should show backlink count, got: {:?}",
+        titles
+    );
+
+    // Must show subtask counts by status
+    assert!(
+        titles
+            .iter()
+            .any(|t| t.contains("Subtasks:") && t.contains("ready") && t.contains("done")),
+        "Header bar should show subtask counts by status, got: {:?}",
+        titles
+    );
+
+    // Must show dispatch action
+    let dispatch_lens = lenses.iter().find(|l| {
+        l.command
+            .as_ref()
+            .map(|c| c.command == "mem.dispatch")
+            .unwrap_or(false)
+    });
+    assert!(
+        dispatch_lens.is_some(),
+        "Header bar should include dispatch action via CodeLens, got: {:?}",
+        titles
+    );
+}
+
+#[test]
+fn test_gutter_badges_for_task_links() {
+    let dir = tempdir().unwrap();
+    let pkb_root = dir.path().to_path_buf();
+
+    let tasks_dir = pkb_root.join("tasks");
+    fs::create_dir_all(&tasks_dir).unwrap();
+
+    // 1. Ready task with weight
+    fs::write(
+        tasks_dir.join("task-gutter-ready.md"),
+        "---\nid: task-gutter-ready\ntitle: Ready Task\ntype: task\nstatus: ready\nintent: 2\nweight: 4.0\n---\nBody\n",
+    )
+    .unwrap();
+
+    // 2. Blocked task
+    fs::write(
+        tasks_dir.join("task-gutter-blocked.md"),
+        "---\nid: task-gutter-blocked\ntitle: Blocked Task\ntype: task\nstatus: blocked\n---\nBody\n",
+    )
+    .unwrap();
+
+    // 3. Info node (not a task)
+    fs::write(
+        tasks_dir.join("info-node-only.md"),
+        "---\nid: info-node-only\ntitle: Some Architecture\ntype: info\n---\nBody\n",
+    )
+    .unwrap();
+
+    let mut server = LspServer::new(pkb_root.clone());
+
+    let doc_path = pkb_root.join("notes").join("gutter_doc.md");
+    let doc_uri: Uri = format!("file://{}", doc_path.to_string_lossy())
+        .parse()
+        .unwrap();
+
+    // Line 0: task-gutter-ready
+    // Line 1: info-node-only (should have NO gutter badge)
+    // Line 2: task-gutter-blocked
+    // Line 3: plain text (should have NO gutter badge)
+    let doc_text = "Line 0 has [[task-gutter-ready]].\nLine 1 has [[info-node-only]].\nLine 2 has [[task-gutter-blocked]].\nLine 3 is plain text.\n";
+    server.handle_did_open(DidOpenTextDocumentParams {
+        text_document: TextDocumentItem {
+            uri: doc_uri.clone(),
+            language_id: "markdown".to_string(),
+            version: 1,
+            text: doc_text.to_string(),
+        },
+    });
+
+    let badges = server.handle_gutter_badges(&doc_uri);
+    assert_eq!(
+        badges.len(),
+        2,
+        "Expected exactly 2 gutter badges (for lines 0 and 2), got: {:?}",
+        badges
+    );
+
+    assert_eq!(badges[0].line, 0);
+    assert_eq!(badges[0].task_id, "task-gutter-ready");
+    assert_eq!(badges[0].status.as_deref(), Some("ready"));
+    assert_eq!(badges[0].badge, "ready");
+
+    assert_eq!(badges[1].line, 2);
+    assert_eq!(badges[1].task_id, "task-gutter-blocked");
+    assert_eq!(badges[1].status.as_deref(), Some("blocked"));
+    assert_eq!(badges[1].badge, "blocked");
+}
+
+
+
+

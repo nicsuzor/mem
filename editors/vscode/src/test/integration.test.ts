@@ -117,6 +117,9 @@ It must be shown in hover preview and opened in a new tab.
     assert.strictEqual(initResp.id, 1);
     assert.ok(initResp.result.capabilities.hoverProvider, 'Server must advertise hover capability');
     assert.ok(initResp.result.capabilities.definitionProvider, 'Server must advertise definition capability');
+    assert.ok(initResp.result.capabilities.inlayHintProvider, 'Server must advertise inlay hint capability');
+    assert.ok(initResp.result.capabilities.semanticTokensProvider, 'Server must advertise semantic tokens capability');
+    assert.ok(initResp.result.capabilities.codeLensProvider, 'Server must advertise code lens capability');
 
     // Send initialized
     writeLspMessage(pkbProc.stdin, {
@@ -308,5 +311,88 @@ It must be shown in hover preview and opened in a new tab.
 
     assert.strictEqual(editor.document.getText(), fullContent);
     assert.strictEqual(mockShowOptions[0].preview, false);
+  });
+
+  it('Live LSP returns inlay hints showing target title, status, and weight', async () => {
+    const docUri = `file://${path.join(tmpDir, 'notes', 'referencing.md')}`;
+    writeLspMessage(pkbProc.stdin, {
+      jsonrpc: '2.0',
+      id: 4,
+      method: 'textDocument/inlayHint',
+      params: {
+        textDocument: { uri: docUri },
+        range: {
+          start: { line: 0, character: 0 },
+          end: { line: 10, character: 0 },
+        },
+      },
+    });
+
+    const resp = await reader.nextMessage();
+    assert.strictEqual(resp.id, 4);
+    assert.ok(Array.isArray(resp.result), 'Inlay hints result must be an array');
+    assert.strictEqual(resp.result.length, 1);
+    const hint = resp.result[0];
+    assert.strictEqual(hint.position.line, 2);
+    assert.ok(hint.label.includes('E2E Integration Task'), `Hint label must include title, got: ${hint.label}`);
+    assert.ok(hint.label.includes('ready'), `Hint label must include status 'ready', got: ${hint.label}`);
+    assert.ok(hint.label.includes('w:'), `Hint label must include weight 'w:', got: ${hint.label}`);
+  });
+
+  it('Live LSP returns semantic tokens for PKB link nodes', async () => {
+    const docUri = `file://${path.join(tmpDir, 'notes', 'referencing.md')}`;
+    writeLspMessage(pkbProc.stdin, {
+      jsonrpc: '2.0',
+      id: 5,
+      method: 'textDocument/semanticTokens/full',
+      params: {
+        textDocument: { uri: docUri },
+      },
+    });
+
+    const resp = await reader.nextMessage();
+    assert.strictEqual(resp.id, 5);
+    assert.ok(resp.result && Array.isArray(resp.result.data), 'Semantic tokens result must contain data array');
+    assert.ok(resp.result.data.length >= 5, 'Must contain at least 1 encoded semantic token');
+  });
+
+  it('Live LSP returns CodeLens header bar with parent, backlinks, subtasks, and dispatch action', async () => {
+    const docUri = `file://${path.join(tmpDir, 'notes', 'referencing.md')}`;
+    writeLspMessage(pkbProc.stdin, {
+      jsonrpc: '2.0',
+      id: 6,
+      method: 'textDocument/codeLens',
+      params: {
+        textDocument: { uri: docUri },
+      },
+    });
+
+    const resp = await reader.nextMessage();
+    assert.strictEqual(resp.id, 6);
+    assert.ok(Array.isArray(resp.result), 'CodeLens result must be an array');
+    assert.ok(resp.result.length >= 2, 'Should have header bar lens and dispatch lens');
+    const titles = resp.result.map((cl: any) => cl.command?.title);
+    assert.ok(titles.some((t: string) => t && t.includes('Dispatch')), `Must include Dispatch lens, got: ${titles}`);
+  });
+
+  it('Live LSP returns gutter badges for lines containing task links', async () => {
+    const docUri = `file://${path.join(tmpDir, 'notes', 'referencing.md')}`;
+    writeLspMessage(pkbProc.stdin, {
+      jsonrpc: '2.0',
+      id: 7,
+      method: 'mem/gutterBadges',
+      params: {
+        textDocument: { uri: docUri },
+      },
+    });
+
+    const resp = await reader.nextMessage();
+    assert.strictEqual(resp.id, 7);
+    assert.ok(Array.isArray(resp.result), 'Gutter badges result must be an array');
+    assert.strictEqual(resp.result.length, 1);
+    const badge = resp.result[0];
+    assert.strictEqual(badge.line, 2);
+    assert.strictEqual(badge.status, 'ready');
+    assert.strictEqual(badge.taskId || badge.task_id, 'task-integration');
   });
 });
