@@ -45,6 +45,33 @@ fn path_to_uri(path: &Path) -> Option<Uri> {
     Uri::from_str(&format!("file://{}", path.to_string_lossy())).ok()
 }
 
+pub fn type_codicon(node_type: &str) -> &'static str {
+    match node_type {
+        "task" | "subtask" => "$(checklist)",
+        "note" => "$(note)",
+        "knowledge" | "doc" | "reference" => "$(book)",
+        "memory" => "$(history)",
+        "project" | "epic" => "$(project)",
+        "pr" => "$(git-pull-request)",
+        "spec" | "template" => "$(file-code)",
+        _ => "$(symbol-misc)",
+    }
+}
+
+pub fn status_codicon(status: &str) -> &'static str {
+    match status {
+        "ready" => "$(play)",
+        "in_progress" => "$(sync~spin)",
+        "blocked" => "$(circle-slash)",
+        "done" => "$(check)",
+        "review" => "$(eye)",
+        "paused" => "$(debug-pause)",
+        "inbox" => "$(inbox)",
+        "cancelled" | "failed" => "$(close)",
+        _ => "$(circle-outline)",
+    }
+}
+
 pub struct LspServer {
     pub pkb_root: PathBuf,
     pub graph: Arc<RwLock<GraphStore>>,
@@ -256,6 +283,94 @@ impl LspServer {
         Some((node, abs_path))
     }
 
+    /// Resolve all `[[id]]` and `[[id|alias]]` in a text snippet to human title links.
+    pub fn resolve_wikilinks_to_human_titles(&self, text: &str) -> String {
+        WIKILINK_RE
+            .replace_all(text, |caps: &regex::Captures| {
+                let target = caps.get(1).map(|m| m.as_str().trim()).unwrap_or("");
+                let explicit_alias = caps.get(2).map(|m| m.as_str().trim());
+                if let Some((target_node, target_path)) = self.resolve_node(target) {
+                    let label = explicit_alias.unwrap_or(&target_node.label);
+                    let uri = path_to_uri(&target_path)
+                        .map(|u| u.to_string())
+                        .unwrap_or_else(|| format!("file://{}", target_path.to_string_lossy()));
+                    format!("[{}]({})", label, uri)
+                } else if let Some(alias) = explicit_alias {
+                    alias.to_string()
+                } else {
+                    target.to_string()
+                }
+            })
+            .to_string()
+    }
+
+    pub fn format_body_micro_headers(body: &str) -> String {
+        let lines: Vec<&str> = body.lines().collect();
+        let mut out_lines = Vec::new();
+        let mut i = 0;
+
+        while i < lines.len() {
+            let line = lines[i];
+            let trimmed = line.trim();
+
+            if trimmed.starts_with('#') {
+                let hashes = trimmed.chars().take_while(|&c| c == '#').count();
+                if hashes > 0 && trimmed[hashes..].starts_with(' ') {
+                    let heading_text = trimmed[hashes..].trim();
+                    let micro_header = format!("**{}:**", heading_text);
+
+                    // Find next non-empty line
+                    let mut next_idx = i + 1;
+                    while next_idx < lines.len() && lines[next_idx].trim().is_empty() {
+                        next_idx += 1;
+                    }
+
+                    if next_idx < lines.len() {
+                        let next_trimmed = lines[next_idx].trim();
+                        let is_block_item = next_trimmed.starts_with('-')
+                            || next_trimmed.starts_with('*')
+                            || next_trimmed.starts_with('+')
+                            || next_trimmed.starts_with('>')
+                            || next_trimmed.starts_with("```")
+                            || (next_trimmed
+                                .chars()
+                                .next()
+                                .is_some_and(|c| c.is_ascii_digit())
+                                && next_trimmed.contains(". "));
+
+                        if is_block_item {
+                            out_lines.push(micro_header);
+                            i = next_idx;
+                            continue;
+                        } else if !next_trimmed.starts_with('#') {
+                            out_lines.push(format!("{} {}", micro_header, next_trimmed));
+                            i = next_idx + 1;
+                            continue;
+                        }
+                    }
+
+                    out_lines.push(micro_header);
+                    i = next_idx;
+                    continue;
+                }
+            }
+
+            if trimmed.is_empty() {
+                if let Some(last) = out_lines.last() {
+                    if !last.is_empty() {
+                        out_lines.push(String::new());
+                    }
+                }
+            } else {
+                out_lines.push(line.to_string());
+            }
+
+            i += 1;
+        }
+
+        out_lines.join("\n")
+    }
+
     /// Format a Markdown preview for a node.
     pub fn format_hover_preview(&self, node: &GraphNode, abs_path: &Path) -> String {
         let mut lines = Vec::new();
@@ -263,36 +378,46 @@ impl LspServer {
         // Title and ID header
         lines.push(format!("### {} (`{}`)\n", node.label, node.id));
 
-        // Metadata badges
-        let mut meta = Vec::new();
+        // Top bar: type, status, weight/intent, tags as codicons with compact labels
+        let mut top_bar_items = Vec::new();
         if let Some(ref t) = node.node_type {
-            meta.push(format!("**Type:** `{}`", t));
+            top_bar_items.push(format!("{} {}", type_codicon(t), t));
         }
         if let Some(ref s) = node.status {
-            meta.push(format!("**Status:** `{}`", s));
+            top_bar_items.push(format!("{} {}", status_codicon(s), s));
         }
         if let Some(i) = node.intent {
-            meta.push(format!("**Intent:** `{}`", i));
+            top_bar_items.push(format!("$(flame) intent {}", i));
+        } else if node.downstream_weight > 0.0 {
+            top_bar_items.push(format!("$(flame) w:{:.1}", node.downstream_weight));
         }
-        if !meta.is_empty() {
-            lines.push(meta.join("  |  "));
-            lines.push(String::new());
-        }
-
         if !node.tags.is_empty() {
-            lines.push(format!(
-                "**Tags:** {}",
-                node.tags
-                    .iter()
-                    .map(|t| format!("`#{}`", t))
-                    .collect::<Vec<_>>()
-                    .join(" ")
-            ));
+            let tags_str = node
+                .tags
+                .iter()
+                .map(|t| format!("#{}", t))
+                .collect::<Vec<_>>()
+                .join(" ");
+            top_bar_items.push(format!("$(tag) {}", tags_str));
+        }
+
+        if !top_bar_items.is_empty() {
+            lines.push(top_bar_items.join("  ·  "));
             lines.push(String::new());
         }
 
-        if let Some(ref parent) = node.parent {
-            lines.push(format!("**Parent:** `[[{}]]`", parent));
+        if let Some(ref parent_id) = node.parent {
+            if let Some((parent_node, parent_path)) = self.resolve_node(parent_id) {
+                let parent_uri = path_to_uri(&parent_path)
+                    .map(|u| u.to_string())
+                    .unwrap_or_else(|| format!("file://{}", parent_path.to_string_lossy()));
+                lines.push(format!(
+                    "**Parent:** [{}]({})",
+                    parent_node.label, parent_uri
+                ));
+            } else {
+                lines.push(format!("**Parent:** {}", parent_id));
+            }
             lines.push(String::new());
         }
 
@@ -301,19 +426,33 @@ impl LspServer {
             let body_trimmed = doc.body.trim();
             if !body_trimmed.is_empty() {
                 lines.push("---\n".to_string());
-                let body_preview: Vec<&str> = body_trimmed.lines().take(12).collect();
+                let resolved_body = self.resolve_wikilinks_to_human_titles(body_trimmed);
+                let compact_body = Self::format_body_micro_headers(&resolved_body);
+                let body_preview: Vec<&str> = compact_body.lines().take(12).collect();
                 lines.push(body_preview.join("\n"));
-                if body_trimmed.lines().count() > 12 {
+                if compact_body.lines().count() > 12 {
                     lines.push("\n_..._".to_string());
                 }
                 lines.push(String::new());
             }
         }
 
-        // Action links
-        let path_str = abs_path.to_string_lossy();
+        // Action footer: command links running extension commands on this node
         lines.push("---\n".to_string());
-        lines.push(format!("[Open in editor tab](file://{})", path_str));
+        let json_arg =
+            serde_json::to_string(&[&node.id]).unwrap_or_else(|_| format!("[\"{}\"]", node.id));
+        let encoded_arg: String = url::form_urlencoded::byte_serialize(json_arg.as_bytes())
+            .collect::<String>()
+            .replace('+', "%20");
+        let open_link = format!(
+            "[$(go-to-file) Open](command:mem.openReference?{})",
+            encoded_arg
+        );
+        let subtree_link = format!(
+            "[$(type-hierarchy-sub) Subtree](command:mem.showSubtree?{})",
+            encoded_arg
+        );
+        lines.push(format!("{}  ·  {}", open_link, subtree_link));
 
         lines.join("\n")
     }
