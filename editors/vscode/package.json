@@ -2,7 +2,7 @@
   "name": "mem-vscode",
   "displayName": "Mem PKB Language Server",
   "description": "VS Code extension backed by pkb lsp for previewing PKB references on mouseover and opening referenced files in a new tab",
-  "version": "0.1.3",
+  "version": "0.1.5",
   "publisher": "nicsuzor",
   "repository": {
     "type": "git",
