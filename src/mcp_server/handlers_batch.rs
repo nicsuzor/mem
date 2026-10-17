@@ -221,6 +221,13 @@ impl PkbSearchServer {
             });
         }
 
+        if let Some(body) = updates.get("body").and_then(|v| v.as_str()) {
+            self.reject_machine_paths(body, None)?;
+        }
+        if let Some(content) = updates.get("content").and_then(|v| v.as_str()) {
+            self.reject_machine_paths(content, None)?;
+        }
+
         let dry_run = args
             .get("dry_run")
             .and_then(|v| v.as_bool())
@@ -783,6 +790,12 @@ impl PkbSearchServer {
             });
         }
 
+        for epic in &epics {
+            if let Some(ref body) = epic.body {
+                self.reject_machine_paths(body, None)?;
+            }
+        }
+
         let graph = self.graph.read();
         let summary = crate::batch_ops::epics::batch_create_epics(
             &graph,
@@ -1037,6 +1050,15 @@ impl PkbSearchServer {
                 message: Cow::from("Parameter 'updates' must be a non-empty object"),
                 data: None,
             });
+        }
+
+        for (_, node_updates) in &updates {
+            if let Some(body) = node_updates.get("body").and_then(|v| v.as_str()) {
+                self.reject_machine_paths(body, None)?;
+            }
+            if let Some(content) = node_updates.get("content").and_then(|v| v.as_str()) {
+                self.reject_machine_paths(content, None)?;
+            }
         }
         
         let dry_run = args
