@@ -1077,7 +1077,7 @@ pub struct GraphNode {
     /// retires the key (specs/flow-migration.md).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub standing_weight: Option<f64>,
-    /// Edge template for `type: prototype` nodes (spec multi-parent-edges §1.6).
+    /// Edge template for `type: prototype` nodes (specs/multi-parent.md §1.5).
     /// Resolved at edge-creation time per §2.5.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub edge_template: Option<EdgeTemplate>,
@@ -1107,7 +1107,7 @@ pub struct Assumption {
     pub status: String,
 }
 
-/// Edge template for `type: prototype` nodes (spec multi-parent-edges §1.6).
+/// Edge template for `type: prototype` nodes (specs/multi-parent.md §1.5).
 ///
 /// A prototype is class-like: at edge-creation time, fields are inherited
 /// onto the freshly-created edge and may be overridden at the call site.
@@ -3176,7 +3176,7 @@ impl GraphNode {
 
 #[cfg(test)]
 mod target_prototype_tests {
-    //! Tests for spec multi-parent-edges §1.1 (target nodes) and §1.6 (prototype nodes).
+    //! Tests for specs/multi-parent.md §1.1 (target nodes) and §1.5 (prototype nodes).
     use super::*;
     use crate::pkb::PkbDocument;
     use serde_json::json;

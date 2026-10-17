@@ -660,7 +660,7 @@ Every measure of the removed legacy ranking is mapped to one of three outcomes:
 | `effective_intent` | dropped | no intent in the maths |
 | `scope` | moved | display (size of a `part_of` tree) |
 | `pagerank`, `betweenness`, degrees | moved | already diagnostics only; stay as gardening lenses |
-| `criticality` | moved | diagnostic only |
+| `criticality` | dropped | removed from the engine and every output; `pagerank`, `betweenness` and degrees stay as diagnostics (E11) |
 | `unlock_breadth` | dropped | a blocker carries the full worth of what it unblocks (I5) |
 | `affordable_loss` filter | moved | agent logic (effectuation), not maths |
 | standing weight | produced | the target worth input, now signed |
@@ -677,7 +677,7 @@ Every measure of the removed legacy ranking is mapped to one of three outcomes:
 | `focus_cmp`, `queue_rank` | moved | ordering is display |
 | severity ladder | dropped | severity is not read; it prompts pricing (Q24) |
 | `blocking_urgency` (a pipeline stage) | dropped | a blocker carries the full worth of what it unblocks (I5); urgency by date is the cliff lane |
-| `stakeholder_exposure` (input to criticality) | moved | display, with `criticality` |
+| `stakeholder_exposure` (input to criticality) | dropped | removed with `criticality`; `stakeholder` stays as a stored field |
 | `deadline_pressure_active` flag | dropped | no date term in the maths (I11); display reads `due` and `deadline_class` directly |
 | `has_real_stakes` gates | dropped | they gate terms this spec removes (courtesy decay, stakeholder waiting); gate detection is agent logic |
 | committed-SEV4 overdue pin guard | moved | the cliff lane for hard deadlines (S13) |

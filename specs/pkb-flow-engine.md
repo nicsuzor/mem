@@ -520,7 +520,7 @@ When `flow_status ≠ ok`, the three figures are `null` and a `loop: [ids]` key 
 
 | Spec | Outcome |
 |---|---|
-| `specs/multi-parent.md` | **superseded**; multi-parent relationships are modelled via `part_of` and `serves` edges at quantum 0 / stated quantum |
+| `specs/multi-parent.md` | the stored-schema spec for multiple parents: target nodes, prototype nodes and their edge templates, and `contributes_to` entries. The flow reads multi-parent relationships as `part_of` and `serves` links (quantum 0 / stated quantum, R6, R7) |
 | `specs/ranking.md` | rewritten to the parts that sit around the rule: build pipeline and determinism (R17 extends it to `FlowOutput`), the ready/blocked/roots predicates (R20), the surfaces of `display_cmp` (R19), the display fields `scope` and `uncertainty`, the centrality diagnostics and their standing doctrine, and the "mechanism, not validation" caution |
 
 ---
