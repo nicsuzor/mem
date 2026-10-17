@@ -404,7 +404,9 @@ function render() {
         fill="${color}" fill-opacity="0.5" stroke="${color}"
         class="node-el" data-idx="${i}"/>`;
     } else {
-      const r = Math.max(2, (n.downstream_weight || 1) * 0.5 + 2);
+      const fl = n.flow || {};
+      const fig = Math.max(fl.gain || 0, Math.abs(fl.loss_averted || 0));
+      const r = Math.max(2, (fig || 1) * 0.5 + 2);
       html += `<circle cx="${px}" cy="${py}" r="${r}"
         fill="${color}" fill-opacity="0.8"
         class="node-el" data-idx="${i}"/>`;
@@ -448,7 +450,8 @@ function setupTooltip(coords) {
     let info = `<b>${escapeHtml(n.label || n.id)}</b><br>`;
     info += `type: ${n.node_type || '-'} | status: ${n.status || '-'}<br>`;
     info += `project: ${n.project || '-'}<br>`;
-    if (n.downstream_weight) info += `downstream weight: ${n.downstream_weight}<br>`;
+    if (n.flow && n.flow.gain) info += `gain: ${n.flow.gain}<br>`;
+    if (n.flow && n.flow.loss_averted) info += `loss averted: ${n.flow.loss_averted}<br>`;
     if (c.w) info += `size: ${c.w.toFixed(0)} x ${c.h?.toFixed(0)}<br>`;
     if (c.r) info += `radius: ${c.r.toFixed(1)}<br>`;
 

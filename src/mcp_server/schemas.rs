@@ -576,7 +576,7 @@ impl PkbSearchServer {
             .with_annotations(ToolAnnotations::new().read_only(true)),
             Tool::new(
                 "nested_tasks",
-                "List tasks in a hierarchical tree view grouped by project and epic (metadata only), mirroring the `pkb tasks` CLI command. Supports ASCII tree or brief JSON output. Ideal for understanding work hierarchy and structure without heavy body text or signal payloads.",
+                "List tasks in a hierarchical tree view grouped by project and epic (metadata only), mirroring the `pkb tasks` CLI command. Supports ASCII tree or brief JSON output. Ideal for understanding work hierarchy and structure without heavy body text.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
