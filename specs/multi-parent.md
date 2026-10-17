@@ -1,9 +1,9 @@
 ---
 id: multi-parent
-title: "Multi-parent edges, target-node severity propagation, and focus scoring"
+title: "Multi-parent edges: target nodes, prototypes and contributes_to"
 type: spec
 created: 2026-05-04T06:32:47.344677231+00:00
-modified: 2026-06-03T00:00:00.000000000+00:00
+modified: 2026-10-17T00:00:00.000000000+00:00
 alias:
   - "multi-parent-multi-parent-edges-target-node-severity-propagation-and-focus-scoring"
   - "multi-parent"
@@ -13,19 +13,19 @@ tags:
   - spec
   - pkb
   - graph
-  - scoring
   - weights
 ---
 
-# Multi-parent edges, target-node severity propagation, and focus scoring
+# Multi-parent edges: target nodes, prototypes and contributes_to
 
-SSoT for the PKB ranking pipeline: how nodes and edges are shaped, how urgency propagates from terminal obligations to contributing tasks, and how a single composite `focus_score` drives the ready queue.
+The stored schema for target nodes, prototype nodes and the multi-parent `contributes_to` edge: what each field holds and means.
+
+These fields are stored and parsed. The ranking is the flow engine ([`flow-rule.md`](flow-rule.md), [`pkb-flow-engine.md`](pkb-flow-engine.md)), which reads `links` and target `worth`, not the fields here (`pkb-flow-engine.md` §3.4). `contributes_to` entries are mapped into flow `serves` links until the data migration retires the key (`pkb-flow-engine.md` R7).
 
 ## Design philosophy
 
-- **One signal.** Every ranking surface sorts by `focus_score`. Component fields (`urgency`, `downstream_weight`, `criticality`) are visible on metadata for filter/debug only — never the primary sort.
-- **Dumb server, smart agent.** `mem` computes Brier scores, decay, LST slack, transitivity diffs as numbers. Agents decide whether a task was necessary, whether prose is sufficient, when to re-rank.
-- **Surface, don't gate.** Anomalies, cap breaches, and missing justifications surface in `/daily`, `/maintain`, `/sleep`. They do not block tool use.
+- **Dumb server, smart agent.** `mem` parses and stores these fields. Agents decide whether a task was necessary and whether prose is sufficient.
+- **Surface, don't gate.** Anomalies and missing justifications surface in `/daily`, `/maintain`, `/sleep`. They do not block tool use.
 - **MVP first.** Only fields and behaviours the pilot exercises are normative. Future extensions are tracked as separate tasks (see §References).
 
 ## Status
@@ -33,26 +33,13 @@ SSoT for the PKB ranking pipeline: how nodes and edges are shaped, how urgency p
 | Component | State | Reference |
 |-----------|-------|-----------|
 | `contributes_to` schema (read+write) | ✅ Implemented | mem PR #210 (2026-04-20) |
-| `compute_urgency` BFS | ✅ Implemented | `mem/src/graph_store.rs:1902` |
-| `focus_score` composition (incl. urgency term) | ✅ Implemented | mem PR #303 (2026-05-04) |
-| Doc surfaces (skills, specs, README) | ✅ Aligned | task-d997a904 (2026-05-04) |
-| Calibration ritual (Brier, side-log) | 🟡 Deferred | See §References |
-| Stated-vs-revealed divergence detector | 🟡 Deferred | See §References |
-| Daily-note presentation overlay | 🟡 Deferred | See §References |
+| Mapping of `contributes_to` into flow links | ✅ Implemented | `pkb-flow-engine.md` R7 |
 
 ## User stories
 
-**US-1 — As a user with a deadline-bound obligation,** I want tasks contributing to that obligation to surface above unrelated work as the deadline approaches, without manually adjusting their priority.
+**US-1 — As a user with recurring class-like obligations** (peer review, OSB voting), I want to declare the obligation once as a *prototype* and have new instance tasks inherit severity/weight/consequence at creation, rather than re-typing them.
 
-**US-2 — As a user with a Severity-4 (terminal) commitment,** I want any task contributing to it to outrank every non-SEV4 task in the ready queue, regardless of its own priority. Catastrophic-loss obligations are incommensurable with ordinary work.
-
-**US-3 — As a user with recurring class-like obligations** (peer review, OSB voting), I want to declare the obligation once as a *prototype* and have new instance tasks inherit severity/weight/consequence at creation, rather than re-typing them.
-
-**US-4 — As a user reviewing an old plan,** I want to see *why* a task was thought to contribute to a target — a justification sentence captured at edge creation — so I can audit drift.
-
-**US-5 — As a user scanning the morning queue,** I want one number (`focus_score`) to sort by, not a dashboard of competing metrics. Component fields exist for diagnosis, not selection.
-
-**US-6 — As an agent triaging tasks,** I want to read `focus_score` from `list_tasks` / `focus_picks` and trust it as the canonical ordering — without re-implementing ranking logic in skills.
+**US-2 — As a user reviewing an old plan,** I want to see *why* a task was thought to contribute to a target — a justification sentence captured at edge creation — so I can audit drift.
 
 ## Acceptance criteria
 
@@ -60,37 +47,16 @@ SSoT for the PKB ranking pipeline: how nodes and edges are shaped, how urgency p
 Given a node with `type: target`, `severity: 0-4`, `due:` (ISO-8601), `consequence:` (prose), and `goal_type: committed | aspirational | learning`, the graph builder MUST treat it as a target and exclude it from being executed as a task.
 
 **AC-2 — `contributes_to` edges parse and resolve.**
-Given a task with `contributes_to: [{to: <target-id>, weight: <verbal-term>, why: <prose>}]`, the edge MUST be visible in `get_task` output, in `pkb_context`, and consumed by `compute_urgency`. Invalid targets surface as parse warnings (not hard errors).
+Given a task with `contributes_to: [{to: <target-id>, weight: <verbal-term>, why: <prose>}]`, the edge MUST be visible in `get_task` output and in `pkb_context`, and MUST be mapped into a flow link (`pkb-flow-engine.md` R7). Invalid targets surface as parse warnings (not hard errors).
 
-**AC-3 — Lexicographic override fires only for SEV4-committed.**
-A task contributing to a `severity: 4, goal_type: committed` target with `Slack ≤ 0` MUST have `urgency ≥ 10_000`. SEV0–3 targets and `aspirational`/`learning` SEV4 targets MUST NOT trigger the override.
-
-**AC-4 — `urgency` composes additively into `cost_of_delay`.**
-No `severity_bonus` term exists (drift item 5, `mem_537e44a9`; superseded by `severity_gate`, a binary admission — §1). `cost_of_delay` MUST equal `round((intent_pressure + stakeholder_waiting + value_lineage_term) × deadline_pressure_multiplier) + round(urgency) + round(voi_value)` (`ranking.md` §2, §2.3, §2.9; `deadline_score` no longer exists as a free-standing additive term — ruling, Nic, 2026-09-12, `mem_537e44a9` "deadline pressure is a multiplier on value, not a tier", `mem_fix_deadline_multiplier`). `age_staleness_bonus` and `downstream_weight × 10` are tie-breakers, not `cost_of_delay` inputs (`ranking.md` §2, tuple element 3). The `voi_value` and `value_lineage` terms are `0` on any graph with no dependency topology and no priced targets respectively, and `deadline_pressure_multiplier` is the neutral `1.0` on any graph with no `due` dates, so this reduces to the legacy additive form (AC-9) only on a graph with none of those three inputs.
-
-**AC-5 — Single sort signal, now a tuple.**
-The ranking signal is `focus_tuple = (severity_gate, cost_of_delay, tie_breakers)`, compared lexicographically (`ranking.md` §1, §6) — not the scalar `focus_score`, which is a derived display number and is never the sort key. `deadline_band` was removed from the tuple entirely (ruling, Nic, 2026-09-12, `mem_537e44a9`; `mem_fix_deadline_multiplier`) — deadline pressure now enters `cost_of_delay` as a multiplier (§2.1's courtesy-review decay note; `ranking.md` §2.3), not as a separate tuple element. `focus_picks`, `list_tasks` default sort, and the TUI Focus view MUST sort by `focus_tuple`. Filtering by component fields (e.g. `urgency_gte`) is permitted; sorting by them individually is not.
-
-**AC-6 — Imminent deadlines surface regardless of status.**
-The ready-queue candidate set MUST include tasks with `Slack ≤ safe_horizon` even if their status is `in_progress` or `blocked`, before applying any status-based filter.
-
-**AC-7 — Verbal weight terms only.**
+**AC-3 — Verbal weight terms only.**
 `weight` (and its canonical alias `stated_weight`) on a `contributes_to` edge MUST be one of: `Impossible`, `Improbable`, `Uncertain`, `Fifty-Fifty`, `Expected`, `Probable`, `Certain`. Raw decimals MUST be rejected at parse time.
 
-**AC-8 — Prototype inheritance is one-time copy.**
+**AC-4 — Prototype inheritance is one-time copy.**
 When a task is created with `contributes_to: [{to: <prototype-id>, inherits_from: <prototype-id>}]`, the prototype's `edge_template` fields MUST be copied into the materialised edge YAML at creation. Editing the prototype later MUST NOT retroactively rewrite existing edges.
 
-**AC-9 — Backwards compatibility.**
-A graph with no targets, prototypes, or `contributes_to` edges MUST produce identical `focus_score` values as before this spec landed (urgency contribution = 0). **The VoI zero-condition is keyed on the dependency channel, not the contribution channel:** `voi_value = 0` for any node with **no dependents** (no task `depends_on` it), so a graph carrying no `depends_on`/`blocks` topology scores `voi_value = 0` everywhere — the legacy behaviour. (Pre-[[mem-830588f3]] the zero-condition was "no `contributes_to` edges"; the VoI Σ-domain was re-keyed from `contributes_to` targets to `depends_on`/`blocks` dependents, so the backwards-compat condition moves with it.)
-
-**AC-10 — Mandatory consequence prose.**
+**AC-5 — Mandatory consequence prose.**
 Target nodes MUST have `consequence:` populated. Surface (don't block) missing prose via `/maintain`.
-
-**AC-11 — VoI is capped to preserve lexicographic dominance.**
-`voi_term` (`round(node.voi_value)`) MUST be ≤ 5 000 for every node, enforced via a hard clamp (e.g., `min(5000, round(voi_value))`). `K_voi` MUST be calibrated to target this range, but the hard cap guarantees the value-of-information premium stays below the SEV4-committed urgency floor of 10 000, preserving the AC-3 lexicographic override: a VoI-heavy leaf task can never outrank a SEV4-committed obligation.
-
-**AC-12 — VoI accrues only to leaf nodes.**
-`voi_value` MUST be 0 for any node with `leaf = false`. Undecomposed epics and projects MUST NOT accumulate value-of-information credit; the term gates on `leaf` (TAXONOMY.md §Core Computed Properties) so only actionable, decomposed work earns it.
 
 ## 1. Schema
 
@@ -101,7 +67,7 @@ A **target node** represents a non-negotiable obligation or terminal consequence
 ```yaml
 type: target
 severity: 0-4              # SRE-style ladder
-due: <ISO-8601>            # absolute deadline; triggers slack calc
+due: <ISO-8601>            # absolute deadline
 consequence: <prose>       # mandatory; forces deliberative articulation
 goal_type: committed | aspirational | learning
 ```
@@ -116,11 +82,11 @@ goal_type: committed | aspirational | learning
 | 3 | High | Serious consequence; hard to recover |
 | **4** | **Terminal** | **Job loss, bankruptcy, severe health, legal** |
 
-SEV0–3 are compensatory (standard scalar math). **SEV4 is lexicographic**: it gets `S_lex = 10_000`, dwarfing standard priority weights. Any SEV4-adjacent task outranks any SEV0–3 task regardless of other factors.
+`severity` is a stored field. The flow engine does not read it (`pkb-flow-engine.md` §3.4).
 
 ### 1.3 `goal_type`
 
-Only `committed` targets receive the lexicographic override. `aspirational` and `learning` use linear propagation. This prevents moonshots from hijacking the focus queue.
+Stored category of the target: `committed`, `aspirational` or `learning`. The flow engine does not read it (`pkb-flow-engine.md` §3.4).
 
 For `aspirational` targets, `consequence:` is reused as **opportunity cost** prose (e.g., "miss publication window; finding becomes stale").
 
@@ -175,7 +141,9 @@ contributes_to:
 
 **Canonical fields**: `stated_weight` and `justification`. The shorter aliases `weight` and `why` are accepted on read for backward compatibility (serde aliases as of mem PR #265). New edges should prefer canonical names.
 
-**Destination (`to:`) may be a `target` OR a `goal`.** Both are out-of-tree strategic nodes (reference tier — never parents, never parented). The typical chain is `task/epic → target → goal`, but work may also contribute directly to a goal (`to: <goal-id>`). **Severity lives only on `target` nodes** and propagates down `contributes_to` (Birnbaum, §1.8). **Goals carry no `severity` (and no `consequence`/`due`)** — a goal is an unquantifiable identity-level commitment, so a `contributes_to` edge whose `to:` resolves to a goal contributes no severity-driven urgency, only structural connection. See [[pkb-type-taxonomy]] §"Goals, Targets, and Work — the three tiers" and [[TAXONOMY]].
+Until the data migration retires the key, each entry is mapped into a flow link `{to, label: serves, quantum: min(1, numeric_weight(stated_weight)), set_by: migrated}` (`pkb-flow-engine.md` R7).
+
+**Destination (`to:`) may be a `target` OR a `goal`.** Both are out-of-tree strategic nodes (reference tier — never parents, never parented). The typical chain is `task/epic → target → goal`, but work may also contribute directly to a goal (`to: <goal-id>`). **Severity lives only on `target` nodes.** **Goals carry no `severity` (and no `consequence`/`due`)** — a goal is an unquantifiable identity-level commitment. See [[pkb-type-taxonomy]] §"Goals, Targets, and Work — the three tiers" and [[TAXONOMY]].
 
 ### 1.7 Weight scale — Renooij-Witteman
 
@@ -201,17 +169,17 @@ The `justification` field follows intelligence tradecraft ICD 203. A single sent
 
 ### 1.9 Belief semantics
 
-Every edge is a **belief**, not a fact: "I currently think task T contributes to O with weight W, as of this edit, because `why`." This framing is load-bearing for calibration: drift, audit, fallibility, prototype inheritance, and the side-log all derive from treating edges as dated estimates.
+Every edge is a **belief**, not a fact: "I currently think task T contributes to O with weight W, as of this edit, because `why`." Drift, audit, fallibility and prototype inheritance all derive from treating edges as dated estimates.
 
-History does **not** live on the edge itself. Edges stay as lightweight YAML list items on the source task. Belief-drift history (Brier scores, decay checkpoints) lives in a side-log, written only when the calibration ritual fires (defers the calibration ritual, not the decay computation — see §References).
+History does **not** live on the edge itself. Edges stay as lightweight YAML list items on the source task.
 
-Reified edges-as-nodes rejected: breaks Obsidian's markdown grain, noisies the graph view, pays calibration cost before the ritual earns its keep.
+Reified edges-as-nodes rejected: breaks Obsidian's markdown grain and noisies the graph view.
 
 ### 1.10 Pattern: deliverable-producing tasks wire to a class-level production target
 
 When a task's deliverable is one instance of a recurring class of outputs (a release, a report, a dashboard, an external piece, etc.), wire it via `contributes_to` to a dedicated **class-level production target** for that deliverable type — not directly to a higher-level goal, to a project, or to a vague aggregate. The production target itself `contributes_to` upward toward broader goals.
 
-Why: routing through a dedicated production target (a) preserves per-instance judgment on contribution × ship-risk; (b) prevents double-counting when one output touches multiple higher-level narratives; (c) lets the target's severity propagate cleanly back to instance-tasks via focus_score; (d) models continuous production correctly — the target is durable; individual deliverables come and go.
+Why: routing through a dedicated production target (a) preserves per-instance judgment on contribution × ship-risk; (b) prevents double-counting when one output touches multiple higher-level narratives; (c) models continuous production correctly — the target is durable; individual deliverables come and go.
 
 Weighting: combine **potential contribution** (the axes that matter for this deliverable class — reach, impact, prestige, novelty, durability, whichever apply) with **ship risk** (current state, dependencies, stall indicators, credible path to completion) into a single `stated_weight` from the Renooij-Witteman scale (§1.7). The `why:` field names both axes explicitly in one sentence.
 
@@ -227,151 +195,19 @@ contributes_to:
 
 What does NOT wire here: micro-tasks that produce parts of a single deliverable (they wire to their parent deliverable-task), review or critique tasks for others' deliverables, ad-hoc one-offs that don't belong to a recurring class, projects that *might* yield an instance someday but have no current concrete artefact.
 
-## 2. Formula
-
-### 2.1 Urgency propagation
-
-Implemented as `compute_urgency` (`mem/src/graph_store.rs:1902`).
-
-```
-urgency_contribution(task → target) = S_lex(target.severity, target.goal_type)
-                                     × W_edge(contributes_to.weight)
-                                     × f(Slack(target))
-```
-
-**`S_lex(s, g)`** — step function (drift item 4, `mem_537e44a9`; corrected to match shipped code and `ranking.md` §4.3 — this file previously read `1/2/3/5/5`):
-- `s == 4 && g == "committed"` → `10_000`
-- else → `10^min(s, 3)`: SEV0=1, SEV1=10, SEV2=100, SEV3=1000 (and SEV4-non-committed also caps at 1000, since `min(s,3)` clamps SEV4 to the SEV3 rung when `goal_type` isn't `committed`).
-
-**`W_edge`** — numeric anchor from the verbal term (§1.7).
-
-**`Slack`** = `due - now - effort_days`, where `effort_days` is the node's own parsed `effort` field, defaulting to `3` days when absent (drift item 2, `mem_537e44a9`; this file previously described `e'` as a descendant-scope-and-uncertainty estimate cached per target — that mechanism does not exist in code). Least Slack Time, not Earliest Deadline First — the effort estimate is what prevents starvation of large critical tasks. `min_slack` is then found by relaxation along the same propagation chain as `S_lex` (§4.3a in `ranking.md`), not a separate per-target cache.
-
-**`f(Slack)`** — a single continuous exponential for all positive slack, not a step at `safe_horizon`:
-- `Slack > 0` → `e^(k × (safe_horizon - Slack))`, floored at `0.001` (`k = ln(10) / safe_horizon`; the floor binds only around `Slack = 120`, not at `Slack = safe_horizon = 30` — see `ranking.md` §4.3)
-- `Slack ≤ 0` → `10.0` (drift item 1, `mem_537e44a9`; this file previously read `1.0` — the shipped ramp and `ranking.md` §4.3/§6 both use `10.0`, "full unlock")
-
-The function pre-computes `S_lex` and own slack per node, then relaxes `S_lex × edge_weight` by propagation from contributing tasks toward targets (not a single-pass BFS — see `ranking.md` §4.3a's V9 relaxation fix). Result written to `node.urgency: f64`. When a committed SEV4 target is itself overdue (`Slack ≤ 0`), both the target's own node AND any contributor whose strongest path derives from it are pinned to exactly `10,000` rather than the product running unbounded (`ranking.md` §4.3; ruling, Nic, 2026-09-12, `mem_537e44a9` "SEV4 overdue pin reaches contributors").
-
-**Courtesy-review decay** (`ranking.md` §2.3a; re-homed as decay of the deadline pressure multiplier — ruling, Nic, 2026-09-12, `mem_537e44a9` "deadline pressure is a multiplier on value, not a tier"; `mem_fix_deadline_multiplier`). Without it, an overdue `due` presses harder without limit, forever, so a standing courtesy review-invitation nobody ever closes out outranks live work forever. When a node has no real stakes — `downstream_weight == 0`, no `stakeholder`, `urgency <= 50`, and `intent >= 2` — the *excess* of `deadline_pressure_multiplier` above the neutral `1.0` decays smoothly over the 100 days following the first 20 days overdue, reaching exactly `1.0` — what a task with no `due` at all gets — at 120 days overdue. A node with any real stake is unaffected regardless of how overdue it is.
-
-**`children` propagation (removed from urgency).** Prior revisions of this file and the code propagated `S_lex` from a child to its parent at factor `0.5` (parent inherits from children). That edge no longer exists: a parent absorbing its child's urgency was the wrong direction (ruling, Nic, 2026-09-12, `mem_537e44a9` "Verdict: value flow to children"). A container instead receives zero urgency of its own and passes the value it would have kept down to its nearest ready, unblocked leaf descendant — see `ranking.md` §4.3's conduit pass.
-
-### 2.2 Focus score composition
-
-**Superseded by the lexicographic tuple — see `ranking.md` §1-3 for the current, authoritative mechanism.** The flat additive sum below (including its `deadline_score` row) is retained as historical context for how `urgency_term` composes into a larger whole, but the ranking signal is no longer a single additive `focus_score`: it is `focus_tuple = (severity_gate, cost_of_delay, tie_breakers)`, a three-element tuple, compared lexicographically — `deadline_band` was removed from it entirely (ruling, Nic, 2026-09-12, `mem_537e44a9`; `mem_fix_deadline_multiplier`), and `deadline_score` no longer exists as a free-standing additive term inside `cost_of_delay` either, replaced by `deadline_pressure_multiplier` (`ranking.md` §2.3). `focus_score` still exists as a derived *display* number (`synthetic_display_score`) but is never the sort key (`ranking.md` §6, "`focus_score` is a display number, never the ranking"). No additive `severity_bonus` term exists in either model — severity enters only as the binary `severity_gate` admission (§1, drift item 5, `mem_537e44a9`) or, compensatorily, via `urgency_term` below. The current per-term composition, including `value_lineage_term` (absent from the table below) and the tuple's tie-breaker/gate structure, is `ranking.md` §2 and §4.11.
-
-Implemented as `compute_focus_scores` in `mem/src/graph_store.rs` (companion: `compute_voi_term`). Cite by function name — line anchors drift.
-
-```
-focus_score =
-    intent_pressure
-  + deadline_score
-  + age_staleness_bonus (P2+ only)
-  + downstream_weight × 10
-  + stakeholder_waiting_bonus
-  + urgency_term
-  + voi_term
-```
-
-| Component | Range | Notes |
-|-----------|-------|-------|
-| `intent_pressure` | 0 / 5 000 / 10 000 | Bands `effective_intent` (`ranking.md` §4.6), not raw `intent`: `effective_intent` 0 → 10 000, 1 → 5 000, else → 0. There is no `priority_base`/`own_priority` field; `effective_intent` is two independently gated channels (blocker + ancestor-pressure), not a `min` over a downstream cone containing `children` — see `ranking.md` §4.6. |
-| `deadline_score` | 0 – 12 000 | Overdue: 8 000 + min(days × 200, 4 000). Tight (effort ≥ days_until): 6 000. Near-tight: linear interp 2 000–6 000. ≤30 days: 1 000. `consequence` is explanatory prose and applies **no** multiplier — stakes reach a task via target `severity` through `contributes_to`. Decays toward the no-`due` values on a no-real-stakes node past 20 days overdue — see the courtesy-review decay note in §2.1. |
-| `age_staleness_bonus` | 0 – 200 | min(days_since_created, 200), P2+ only. Prevents old low-priority items being buried. |
-| `downstream_weight × 10` | 0 – ∞ | downstream_weight float × 10 to land in same magnitude as base scores. Not a count of dependents — see §2.2 and TAXONOMY.md §criticality. |
-| `stakeholder_waiting_bonus` | 0 / 2 000 – 8 000 | Fires only when `stakeholder` is named (ruling, Nic, 2026-09-11, `mem_537e44a9` "Verdict: stakeholder_waiting / human gate" — a structurally-identified human gate with nobody named is not this term's job). 2 000 + min(days × 200, 6 000). Anchor: `waiting_since` or `created`. **When a hard `due` already fired a positive `deadline_score`, only the +2 000 base applies** — the per-day growth is suppressed so deadline lateness is not counted twice (the ramp's distinct job is the no-formal-deadline "I promised" case; [[mem-830588f3]]). |
-| `urgency_term` | 0 – 10 000+ | `round(node.urgency)`. SEV4-committed contribution drives this to exactly 10 000 (pinned; both the target itself and any contributor whose value derives from it — `mem_537e44a9` "SEV4 overdue pin reaches contributors"). A container never keeps this value — it is zeroed and pushed down to the nearest ready, unblocked leaf descendant (§2.1's `children`-propagation note; `ranking.md` §4.3 conduit pass). A blocked leaf does **not** inherit this pushed-down value either, but — unlike `value_lineage_term`, which has no concept of an intrinsic value and zeroes outright — it keeps its own intrinsic `S_lex`-based baseline (its own severity/due, ungated by any inherited boost via `blocks`/`soft_blocks`/`contributes_to`); a committed-SEV4 node that happens to carry an unmet `depends_on` must still show its own deadline pressure rather than reading as 0 (`ranking.md` §4.3). |
-| `voi_term` | 0 – 5 000 | `round(node.voi_value)`. Value-of-information premium for a leaf task that **unblocks a downstream cone** (tasks that `depends_on` it, and what lies beyond them); keyed off dependents, not `contributes_to` targets ([[mem-830588f3]]). Accumulated by the same deduped cone walk as `downstream_weight`, so a subtree reachable from two dependents counts once. Capped at 5 000 to stay below the SEV4-committed urgency floor (AC-11); zero for non-leaf nodes (AC-12). |
-
-`urgency_term` composes additively (into `cost_of_delay`, per the current tuple model) because `S_lex × W_edge × f(Slack)` produces values in the same integer-magnitude scale as the other terms (~0.001 to 10 000+). The lexicographic-override property survives: a SEV4-committed contribution with `Slack ≤ 0` pushes `urgency_term` to exactly `10,000`, at the same admission the `severity_gate` gives the target itself — not by mirroring a `severity_bonus` value, which does not exist.
-
-`voi_term` adds a **value-of-information** premium so that uncertainty-resolving work (spikes, probes, prototypes) is not starved by a purely exploitative signal — a leaf task whose own exploitation utility is low but which **unblocks a downstream cone of uncertain work** earns ranking credit it would otherwise be denied. It is `round(node.voi_value)`, where:
-
-```
-voi_value = K_voi · leaf(x) · dep_resolution_ratio(x)
-          · sum_downstream(x)
-          / max(effort_days(x), VOI_EFFORT_NEUTRAL_DAYS)
-
-sum_downstream(x) = Σ over DISTINCT t ∈ unblocking_cone(x) of
-                      (1 / depth(t)) × base_weight(t) × edge_factor(t) × uncertainty(t)
-```
-
-- `leaf(x)` and `uncertainty(d)` are the computed properties defined in TAXONOMY.md §Core Computed Properties. `leaf` gates the term to actionable nodes — a node with `leaf = false` scores `voi_value = 0` (AC-12), so undecomposed epics never accumulate VoI.
-- **`cone(x)` is the Σ-domain: the set of nodes reachable downstream from x — the tasks that `depends_on` x (materialised as `x.blocks` by `compute_inverses`; a `DependsOn` edge `d → x` yields `x.blocks ∋ d`) and everything reachable beyond them.** It is walked ONCE, deduped: a node reachable by several routes is counted a single time, at its shortest discovery depth. The direct dependents are themselves part of the sum — unblocking a valuable leaf is worth something even when that leaf leads nowhere further. This is the **information channel**: completing `x` resolves uncertainty that lets that downstream work proceed. VoI deliberately does **NOT** range over `contributes_to` targets. A pure deliverable wired to a busy, slightly-uncertain target (e.g. a peer review feeding a "review obligations" target) resolves no downstream uncertainty for the user's own work; its importance is already carried by the **severity/criticality channel** (target `severity` reaching the task through `contributes_to`). Keying VoI off the *target's* `downstream_weight` re-counted that same importance and made every deliverable inherit near-cap VoI — the defect fixed in [[mem-830588f3]].
-- `dep_resolution_ratio(x)` keys on **x's own `depends_on`** (fraction of its upstream dependencies resolved) — *upstream readiness*. A still-blocked `x` cannot realise its VoI yet, so the premium is discounted. This is the **opposite dependency direction** from the Σ-sum (which ranges over x's *dependents*, downstream); the two directions are kept distinct and never conflated.
-- Edge weight is **1**: `depends_on`/`blocks` are hard binary dependency edges with no verbal-scale weight (unlike `contributes_to`, which carries a Renooij-Witteman weight). The old formula's per-edge Birnbaum `edge_weight(x→d)` term is therefore dropped from the dependent-sum.
-- `base_weight(t)`, `edge_factor(t)` and the `1/depth(t)` decay are exactly those used by `downstream_weight` (TAXONOMY.md §criticality); the two metrics share one walk implementation (`walk_cone`) and differ in the per-node accumulator (VoI additionally multiplies by `uncertainty(t)`) and in the edge channel they traverse.
-- **Edge channel.** `downstream_weight` walks the *structural* channel — `blocks` 1.0, `soft_blocks` 0.3, parent→child 0.5, and the reverse `contributes_to` edge — because a target legitimately carries the weight of the contributors riding on it. VoI walks the *unblocking* channel only: `blocks`, `soft_blocks`, parent→child. The reverse `contributes_to` edge is excluded because a target's contributors are not unblocked by the target; counting them would re-import the severity/criticality that `contributes_to` already carries ([[mem-830588f3]]). Concretely: a target accumulates `downstream_weight` from its contributors and scores no VoI from them.
-- `uncertainty(t)` is read from **each visited node**, not from the direct dependent it was reached through. Attributing a shared node's uncertainty to whichever dependent's traversal reached it first would depend on unpinned adjacency order; reading it per node is order-independent and is what VoI means — the uncertainty resolved across the cone that x unlocks.
-- **Bound.** For x whose sole successor is y, `sum_downstream(x) ≤ base_weight(y)·uncertainty(y) + sum_downstream(y)`: the value of a node that unlocks an epic can never exceed the epic's own value plus everything the epic leads to. The `1/depth` decay is what makes this hold — every term shared between x's cone and y's cone is scaled by `d/(d+1) < 1` — and it holds only because each node is counted once.
-- `/ max(effort_days(x), VOI_EFFORT_NEUTRAL_DAYS)` is the cost normalization (information-gap-ratio form, kb-9230ba76 §5): it prevents a long probe from outranking a short one with the same downstream uncertainty. `VOI_EFFORT_NEUTRAL_DAYS` (3 days) is **both** the default for unestimated work and the floor on the divisor, and the two are required to be the same constant. Were they to differ, the presence of an `effort` estimate would move the score by itself: `parse_effort_days` ceils every sub-day estimate to 1 day, so a lower floor than the default would let `effort: 1h` divide by less than an unestimated task does and inflate a task that had not changed. Because the two are equal, **an `effort` estimate can only ever lower VoI**, and only when it genuinely exceeds the neutral point. Effort is self-reported and ungoverned, so optimistic self-report earns nothing while honest largeness is still discounted. Two consequences follow and are intended: all estimates at or below 3 days are equivalent for VoI (effort is inert below the neutral point), and no estimate can raise a task above where it would sit unestimated.
-- `K_voi` is a calibration constant (`pub const K_VOI: f64 = 5000.0` in `graph_store.rs`, not a config field) chosen so `voi_value` typically remains ≤ 5 000, with a hard clamp at 5 000 (AC-11) to guarantee it stays below the SEV4-committed urgency floor of 10 000, preserving the lexicographic override (AC-3).
-
-The term reduces to 0 when `x` has **no dependents** (no task `depends_on` x), keeping backwards compatibility (AC-9): a graph with no dependency topology scores `voi_value = 0` everywhere, the legacy behaviour. `voi_value` is surfaced on metadata for filter/debug only; ranking is always via `focus_score`. Canonical definitions of the inputs `uncertainty` and `downstream_weight` live in TAXONOMY.md §Core Computed Properties.
-
-### 2.3 Compute order
-
-`compute_urgency` MUST run before `compute_focus_scores` during graph build. Verified by current pipeline.
-
-`compute_voi_term` MUST run **after** `compute_inverses` (which materialises `x.blocks` — the dependents that form the VoI Σ-domain) **and after** `compute_uncertainty` — it consumes every cone node's `uncertainty`, plus `leaf` and `dep_resolution_ratio` — and **before** `compute_focus_scores`, which sums `voi_term` into the composite. The Phase 1 dependency chain is therefore `compute_inverses` → `compute_downstream_metrics` → `compute_uncertainty` → `compute_voi_term` → `compute_focus_scores`; `compute_urgency` likewise runs before `compute_focus_scores`.
-
-Scores are stored on `GraphNode.urgency`, `GraphNode.voi_value`, and `GraphNode.focus_score`, recomputed on every full rebuild (~300ms). No TTL cache needed at current scale.
-
-## 3. Invariants
-
-- **No targets, no propagation.** When no target nodes exist, urgency reduces to 0; `focus_score` reduces to its legacy 5-component form. Backwards compatible.
-- **SEV4 trigger requires both severity and goal_type.** A task with `contributes_to` but no SEV4-committed target never triggers the lexicographic override.
-- **Completed targets are excluded.** BFS skips targets in `COMPLETED_STATUSES`.
-- **Status independence for imminent deadlines.** Tasks with `Slack ≤ safe_horizon` are included in candidate set regardless of status, before status-based filters apply.
-
-## 4. Consumers
-
-| Consumer | Reads | Notes |
-|----------|-------|-------|
-| `focus_picks(max)` | `focus_score` desc | Top-N ready tasks |
-| `list_tasks` default sort | `focus_score` desc | Ready-queue ranking |
-| TUI Focus view | `focus_score` desc | Ordered display |
-| `/pull` skill | `focus_score` desc | Worker task selection |
-| `/daily` skill | `focus_score` desc | Morning briefing |
-| Diagnostic filters | `urgency_gte`, etc. | Permitted; sorting still by focus_score |
-
-MCP tool descriptions (`list_tasks`, `get_task`) describe `focus_score` as the composite signal including target propagation.
-
-## Appendix A — Cancelled signals (audit trail)
-
-The retired `task-focus-scoring` spec listed five "deferred" signals. After 2026-04-26, three are formally cancelled because the new edge-weight model in [[task-18da4781]] subsumes them:
-
-| Signal | Disposition | Cancelled task |
-|--------|-------------|----------------|
-| `intention_alignment` | Subsumed — verbal-scale edges + revealed-preference signals replace explicit intentions | [[task-fe5fa11a]] |
-| `project_activity` | Subsumed — edge decay + revealed preference handle activity | [[task-b9f60d18]] |
-| `user_boost` | Subsumed — edge weight elicitation with justification + decay | [[task-4c210ad9]] |
-| `recency_signal` | Building block survives — pure function exists ([[task-fa47db90]] merged); not currently called from accumulator | n/a |
-| `blocking_urgency` | Building block survives — field computed ([[task-6b3d7f3b]] merged); reinterpreted under Birnbaum semantics | n/a |
-
 ## References
 
 ### Code
 
 Cite by function name — line anchors drift.
 
-- `compute_focus_scores` — `mem/src/graph_store.rs`
-- `compute_urgency` — `mem/src/graph_store.rs`
-- Shared cone walk (`walk_cone`, `build_cone_adjacency`, `compute_cone_base_weights`) — `mem/src/graph_store.rs`
-- `compute_downstream_metrics` and `compute_voi_term` — `mem/src/graph_store.rs`
-- Ready-list sort (`sort_by_focus` / `focus_cmp`) — `mem/src/graph_store.rs`
+- `ContributesTo`, `EdgeTemplate`, `numeric_weight` — `mem/src/graph.rs`
 
 ### Research briefs
 
 - [[pkb-weight-98c1dd30]] — target nodes
 - [[pkb-weight-2e455095]] — weight elicitation
 - [[pkb-weight-9fe4d8f9]] — calibration & gaming resistance
-
-### Phase 1 synthesis
-
-- [[kb-9230ba76]] — literature survey synthesizing expected-utility ranking with value-of-information (Bayesian decision theory + Knowledge Gradient, effectuation/affordable-loss, real options, SRCPSP information-gap ratio, severity-ladder reconciliation). Source for the `voi_term` formulation in §2.2.
-- [[aops-9f5bfbe2]] — parent epic "Reconcile focus_score with planning-under-uncertainty". §Synthesis defines the Phase 1 additive VoI term and AC-11/AC-12; Phase 2 extensions (effectuation gate, real-options multiplier, severity utility curve) are tracked separately there.
 
 ### Pilot
 
@@ -383,10 +219,6 @@ Cite by function name — line anchors drift.
 
 Open tasks tagged `multi-parent`. Use `task_search` with that tag for the live list. Categories:
 
-- Calibration ritual + Brier scoring + side-log (was §4 of pre-2026-05-07 draft)
+- Calibration ritual + side-log
 - Stated-vs-revealed divergence detector
 - Transitivity audit (AHP-style)
-- Severity ↔ priority isomorphism review
-- `e'` (estimated execution time) source decision
-- SEV4 concurrency cap surfacing in `/daily`
-- Daily-note presentation overlay for urgency-propagated tasks
