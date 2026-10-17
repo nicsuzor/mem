@@ -22,6 +22,7 @@ Combined CLI + MCP server for personal knowledge base operations.
 - [[knowledge-management-philosophy]] — foundational design principles
 - [[work-management]] — task lifecycle and graph insertion
 - [[mcp-decomposition-tools]] — "Dumb Server, Smart Agent" principle
+- [[caller-session]] — attributing every MCP call to the agent session that made it
 
 ## Users
 
@@ -346,6 +347,8 @@ In-memory graph built from frontmatter relationships and wikilinks on each start
 | `AOPS_DUMMY_EMBEDDER` | `false`   | Use zero-vector dummy embedder (for tests/offline)  |
 | `AOPS_POLECAT_CONFIG` | unset     | Explicit path to polecat.yaml (project registry)    |
 | `AOPS_SESSIONS`       | unset     | Sessions repo; fallback home of polecat.yaml        |
+| `PKB_SESSION_MODE`    | `warn`    | `warn` or `enforce` for unattributed writes ([[caller-session]]) |
+| `PKB_GATEWAY_CLIENTS` | unset     | Comma-separated `initialize` client names that multiplex agents; never bound ([[caller-session]]) |
 
 ### Logging
 

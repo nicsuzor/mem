@@ -3,12 +3,15 @@ import * as path from 'path';
 import * as fs from 'fs';
 import * as os from 'os';
 import {
+  activate,
+  collectDescendants,
   computeGutterBadges,
   computeHeaderCodeLenses,
   computeInlayHints,
   computeSemanticTokens,
   createMarkdownItPlugin,
   extractReferenceAtPosition,
+  formatBodyMicroHeadersHtml,
   getOutputChannel,
   handleActiveEditorChanged,
   logDebug,
@@ -17,11 +20,16 @@ import {
   logWarn,
   openReferencedFile,
   PkbPreviewIndex,
+  PkbPreviewNode,
+  renderHoverCardHtml,
+  renderSubtreeText,
   resetOutputChannelsForTesting,
   resolvePkbExecutable,
   resolvePkbRoot,
+  statusCodicon,
+  typeCodicon,
 } from '../extension';
-import { createdOutputChannels, MockUri } from './mock-vscode';
+import { createdOutputChannels, mockVscode, MockUri } from './mock-vscode';
 
 describe('VS Code Extension - Unit & Behavior Tests', () => {
   it('extracts wikilinks, aliased wikilinks, markdown links, and bare IDs at cursor position', () => {
@@ -322,8 +330,8 @@ Detailed architecture notes for PKB preview.
       assert.ok(html.includes('Markdown Preview Feature Task'), 'Hover card must include node title');
       assert.ok(html.includes('task-preview-1'), 'Hover card must include node ID');
       assert.ok(html.includes('in_progress'), 'Hover card must include node status');
-      assert.ok(html.includes('#vscode'), 'Hover card must include tags');
-      assert.ok(html.includes('[[proj-mem]]'), 'Hover card must include parent');
+      assert.ok(html.includes('proj-mem'), 'Hover card must include parent reference');
+      assert.ok(!html.includes('[[proj-mem]]'), 'Hover card must not contain raw [[id]] wikilink syntax');
       assert.ok(
         html.includes('First line of the task body for Markdown Preview.'),
         'Hover card must include body excerpt'
@@ -390,6 +398,243 @@ Detailed architecture notes for PKB preview.
     const channel: any = getOutputChannel();
     assert.strictEqual(channel.shown, false, 'Channel should not be shown initially');
     channel.show(true);
+    assert.strictEqual(channel.shown, true, 'mem.showLogs reveals the OutputChannel');
+  });
+
+  it('typeCodicon and statusCodicon map node types and states to VS Code theme codicons', () => {
+    assert.strictEqual(typeCodicon('task'), '$(checklist)');
+    assert.strictEqual(typeCodicon('note'), '$(note)');
+    assert.strictEqual(typeCodicon('epic'), '$(project)');
+    assert.strictEqual(typeCodicon('project'), '$(project)');
+    assert.strictEqual(typeCodicon('memory'), '$(history)');
+    assert.strictEqual(typeCodicon('unknown_type'), '$(symbol-misc)');
+
+    assert.strictEqual(statusCodicon('in_progress'), '$(sync~spin)');
+    assert.strictEqual(statusCodicon('ready'), '$(play)');
+    assert.strictEqual(statusCodicon('done'), '$(check)');
+    assert.strictEqual(statusCodicon('blocked'), '$(circle-slash)');
+    assert.strictEqual(statusCodicon('inbox'), '$(inbox)');
+    assert.strictEqual(statusCodicon('unknown_status'), '$(circle-outline)');
+  });
+
+  it('formatBodyMicroHeadersHtml formats markdown headings into inline bold micro-headers', () => {
+    const input1 = '## Context\nHere is the context paragraph.';
+    const out1 = formatBodyMicroHeadersHtml(input1);
+    assert.strictEqual(out1, '<strong>Context:</strong> Here is the context paragraph.');
+
+    const input2 = '### Acceptance Criteria\n- First requirement\n- Second requirement';
+    const out2 = formatBodyMicroHeadersHtml(input2);
+    assert.strictEqual(
+      out2,
+      '<strong>Acceptance Criteria:</strong>\n- First requirement\n- Second requirement'
+    );
+  });
+
+  it('renderHoverCardHtml renders compact interactive card with codicons, human titles, micro-headers, and action footer', () => {
+    const parentNode: PkbPreviewNode = {
+      id: 'proj-card-parent',
+      label: 'Parent Project',
+      type: 'project',
+      status: 'in_progress',
+      tags: ['parent'],
+      aliases: [],
+      bodyExcerpt: 'Parent node body',
+      hasMoreBody: false,
+      absPath: '/tmp/proj-card-parent.md',
+      relPath: 'tasks/proj-card-parent.md',
+    };
+
+    const node: PkbPreviewNode = {
+      id: 'task-card-child',
+      label: 'Child Task Card',
+      type: 'task',
+      status: 'in_progress',
+      intent: 3,
+      tags: ['ui', 'compact'],
+      parent: 'proj-card-parent',
+      aliases: [],
+      bodyExcerpt: '## Summary\nCompact card design.\n### Criteria\n- AC1\n- AC2',
+      hasMoreBody: false,
+      absPath: '/tmp/task-card-child.md',
+      relPath: 'tasks/task-card-child.md',
+    };
+
+    const mockIndex: any = {
+      resolve: (ref: string) => (ref === 'proj-card-parent' ? parentNode : undefined),
+    };
+
+    const cardHtml = renderHoverCardHtml(node, mockIndex);
+
+    // 1. Top bar codicons & compact labels
+    assert.ok(cardHtml.includes('$(checklist) task'), 'Top bar must contain type codicon and compact label');
+    assert.ok(cardHtml.includes('$(sync~spin) in_progress'), 'Top bar must contain status codicon and compact label');
+    assert.ok(cardHtml.includes('$(flame) intent 3'), 'Top bar must contain intent codicon');
+    assert.ok(cardHtml.includes('$(tag)'), 'Top bar must contain tag codicon');
+    assert.ok(cardHtml.includes('#ui') && cardHtml.includes('#compact'), 'Top bar must contain styled tags');
+
+    // 2. Human title for parent link, no raw [[id]]
+    assert.ok(cardHtml.includes('Parent Project'), 'Card must resolve parent to human title');
+    assert.ok(cardHtml.includes('href="file:///tmp/proj-card-parent.md"'), 'Parent title must link to file URI');
+    assert.ok(!cardHtml.includes('[[proj-card-parent]]'), 'Card must not contain raw [[id]] syntax');
+
+    // 3. Body headings formatted as inline micro-headers
+    assert.ok(
+      cardHtml.includes('<strong>Summary:</strong> Compact card design.'),
+      'Body heading must render as inline bold micro-header'
+    );
+    assert.ok(
+      cardHtml.includes('<strong>Criteria:</strong>\n- AC1\n- AC2'),
+      'List heading must render as compact bold inline micro-header'
+    );
+
+    // 4. Action footer with extension command links
+    const encId = encodeURIComponent(JSON.stringify(['task-card-child']));
+    assert.ok(
+      cardHtml.includes(`href="command:mem.openReference?${encId}"`),
+      'Action footer must contain command:mem.openReference link'
+    );
+    assert.ok(
+      cardHtml.includes(`href="command:mem.showSubtree?${encId}"`),
+      'Action footer must contain command:mem.showSubtree link'
+    );
+    assert.ok(cardHtml.includes('$(go-to-file) Open'), 'Open command link must use $(go-to-file) icon');
+    assert.ok(cardHtml.includes('$(type-hierarchy-sub) Subtree'), 'Subtree command link must use $(type-hierarchy-sub) icon');
+  });
+
+  it('collectDescendants and renderSubtreeText build child hierarchy and tree structure', () => {
+    const rootNode: PkbPreviewNode = {
+      id: 'epic-root',
+      label: 'Root Epic',
+      type: 'epic',
+      status: 'in_progress',
+      tags: [],
+      aliases: [],
+      bodyExcerpt: '',
+      hasMoreBody: false,
+      absPath: '/tmp/epic-root.md',
+      relPath: 'tasks/epic-root.md',
+    };
+
+    const childNode1: PkbPreviewNode = {
+      id: 'task-child-1',
+      label: 'Child Task One',
+      type: 'task',
+      status: 'done',
+      parent: 'epic-root',
+      tags: [],
+      aliases: [],
+      bodyExcerpt: '',
+      hasMoreBody: false,
+      absPath: '/tmp/task-child-1.md',
+      relPath: 'tasks/task-child-1.md',
+    };
+
+    const childNode2: PkbPreviewNode = {
+      id: 'task-child-2',
+      label: 'Child Task Two',
+      type: 'task',
+      status: 'ready',
+      parent: 'epic-root',
+      tags: [],
+      aliases: [],
+      bodyExcerpt: '',
+      hasMoreBody: false,
+      absPath: '/tmp/task-child-2.md',
+      relPath: 'tasks/task-child-2.md',
+    };
+
+    const mockIndex: any = {
+      resolve: (ref: string) => {
+        if (ref === 'epic-root') return rootNode;
+        if (ref === 'task-child-1') return childNode1;
+        if (ref === 'task-child-2') return childNode2;
+        return undefined;
+      },
+      getAllNodes: () => [rootNode, childNode1, childNode2],
+    };
+
+    const descendants = collectDescendants('epic-root', mockIndex);
+    assert.strictEqual(descendants.length, 2, 'Should find 2 descendant nodes');
+    assert.strictEqual(descendants[0].id, 'task-child-1');
+    assert.strictEqual(descendants[1].id, 'task-child-2');
+
+    const treeText = renderSubtreeText('epic-root', mockIndex);
+    assert.ok(treeText.includes('Root Epic (epic-root)'), 'Tree text must contain root node');
+    assert.ok(treeText.includes('Child Task One (task-child-1)'), 'Tree text must contain child 1');
+    assert.ok(treeText.includes('Child Task Two (task-child-2)'), 'Tree text must contain child 2');
+    assert.ok(treeText.includes('└── ') || treeText.includes('├── '), 'Tree text must have tree branch indentation');
+  });
+
+  it('mem.showSubtree and mem.openReference command handlers can be executed via vscode commands', async () => {
+    resetOutputChannelsForTesting();
+    createdOutputChannels.clear();
+
+    const tmpPkb = fs.mkdtempSync(path.join(os.tmpdir(), 'mem-cmd-test-'));
+    try {
+      const tasksDir = path.join(tmpPkb, 'tasks');
+      fs.mkdirSync(tasksDir, { recursive: true });
+
+      const rootTaskPath = path.join(tasksDir, 'cmd-root.md');
+      fs.writeFileSync(
+        rootTaskPath,
+        `---
+id: cmd-root
+title: Command Root Task
+type: task
+status: in_progress
+---
+Root body.
+`
+      );
+
+      const childTaskPath = path.join(tasksDir, 'cmd-child.md');
+      fs.writeFileSync(
+        childTaskPath,
+        `---
+id: cmd-child
+title: Command Child Task
+type: task
+status: ready
+parent: [[cmd-root]]
+---
+Child body.
+`
+      );
+
+      const mockContext: any = {
+        subscriptions: [],
+        extensionUri: MockUri.file(tmpPkb),
+        asAbsolutePath: (rel: string) => path.join(tmpPkb, rel),
+      };
+
+      // Set environment and workspace configuration to use tmpPkb
+      process.env.ACA_DATA = tmpPkb;
+      process.env.MEM_TEST_NO_LSP_CLIENT = '1';
+      activate(mockContext);
+
+      // Execute mem.showSubtree with string nodeId
+      const subtreeRes: any = await mockVscode.commands.executeCommand('mem.showSubtree', 'cmd-root');
+      assert.ok(subtreeRes, 'mem.showSubtree must return execution result');
+      assert.strictEqual(subtreeRes.nodeId, 'cmd-root');
+      assert.ok(subtreeRes.treeOutput.includes('Command Root Task'), 'Output channel must contain root node');
+
+      // Execute mem.showSubtree with array nodeId (as generated by VS Code command URIs)
+      const subtreeArrayRes: any = await mockVscode.commands.executeCommand('mem.showSubtree', ['cmd-root']);
+      assert.ok(subtreeArrayRes, 'mem.showSubtree must accept array arguments from command URIs');
+      assert.strictEqual(subtreeArrayRes.nodeId, 'cmd-root');
+
+      // Execute mem.openReference with array nodeId
+      const openResult: any = await mockVscode.commands.executeCommand('mem.openReference', ['cmd-child']);
+      assert.ok(openResult, 'mem.openReference must open target file');
+      assert.strictEqual(openResult.options?.preview, false, 'Must open with preview: false in new tab');
+    } finally {
+      delete process.env.ACA_DATA;
+      delete process.env.MEM_TEST_NO_LSP_CLIENT;
+      fs.rmSync(tmpPkb, { recursive: true, force: true });
+    }
+  });
+
+);
     assert.strictEqual(channel.shown, true, 'mem.showLogs reveals the OutputChannel');
   });
 
@@ -550,4 +795,5 @@ Body text.
       fs.rmSync(tmpPkb, { recursive: true, force: true });
     }
   });
+
 });

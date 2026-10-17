@@ -72,10 +72,25 @@ describe('VS Code Extension - End-to-End LSP & Markdown Preview Integration', ()
 
   before(async () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'mem-lsp-e2e-'));
-
-    // Create a referenced task file
+    // Create tasks directory
     const tasksDir = path.join(tmpDir, 'tasks');
     fs.mkdirSync(tasksDir, { recursive: true });
+
+    // Create a parent project task
+    const projPath = path.join(tasksDir, 'proj-integration.md');
+    fs.writeFileSync(
+      projPath,
+      `---
+id: proj-integration
+title: Project Integration Parent
+type: task
+status: in_progress
+---
+Parent project description.
+`
+    );
+
+    // Create a referenced task file
     const taskPath = path.join(tasksDir, 'task-integration.md');
     fs.writeFileSync(
       taskPath,
@@ -85,9 +100,11 @@ title: E2E Integration Task
 type: task
 status: ready
 intent: 2
+parent: [[proj-integration]]
 tags: [integration, lsp]
 ---
-This is the complete text of the integration task.
+## Context
+This is the complete text of the integration task. Referencing [[proj-integration]].
 It must be shown in hover preview and opened in a new tab.
 `
     );
@@ -174,6 +191,10 @@ It must be shown in hover preview and opened in a new tab.
     const hoverContents = hoverResp.result.contents;
     const hoverMarkdown = typeof hoverContents === 'string' ? hoverContents : hoverContents.value;
 
+    console.log('\n--- SPECIMEN RENDER OF LSP HOVER PREVIEW ---');
+    console.log(hoverMarkdown);
+    console.log('--- END SPECIMEN RENDER ---\n');
+
     assert.ok(
       hoverMarkdown.includes('E2E Integration Task'),
       `Hover preview must contain title 'E2E Integration Task', got: ${hoverMarkdown}`
@@ -182,13 +203,51 @@ It must be shown in hover preview and opened in a new tab.
       hoverMarkdown.includes('task-integration'),
       `Hover preview must contain ID 'task-integration', got: ${hoverMarkdown}`
     );
+
+    // Criterion 1: Top bar shows type, status, weight/intent, and tags as theme icons (codicons) with compact labels
     assert.ok(
-      hoverMarkdown.includes('ready'),
-      `Hover preview must contain status 'ready', got: ${hoverMarkdown}`
+      hoverMarkdown.includes('$(checklist) task'),
+      `Hover preview top bar must contain type codicon, got: ${hoverMarkdown}`
     );
     assert.ok(
-      hoverMarkdown.includes('This is the complete text of the integration task'),
-      `Hover preview must contain body snippet, got: ${hoverMarkdown}`
+      hoverMarkdown.includes('$(play) ready'),
+      `Hover preview top bar must contain status codicon, got: ${hoverMarkdown}`
+    );
+    assert.ok(
+      hoverMarkdown.includes('$(flame) intent 2'),
+      `Hover preview top bar must contain intent, got: ${hoverMarkdown}`
+    );
+    assert.ok(
+      hoverMarkdown.includes('$(tag)') &&
+        hoverMarkdown.includes('#integration') &&
+        hoverMarkdown.includes('#lsp'),
+      `Hover preview top bar must contain tags, got: ${hoverMarkdown}`
+    );
+
+    // Criterion 2: Every node id referenced in the card renders as target human title linked to open that node; no raw [[id]]
+    assert.ok(
+      hoverMarkdown.includes('Project Integration Parent'),
+      `Hover preview must contain parent human title, got: ${hoverMarkdown}`
+    );
+    assert.ok(
+      !hoverMarkdown.includes('[[proj-integration]]'),
+      `Hover preview must not contain raw [[proj-integration]], got: ${hoverMarkdown}`
+    );
+
+    // Criterion 3: Body headings render as bold inline micro-headers
+    assert.ok(
+      hoverMarkdown.includes('**Context:** This is the complete text'),
+      `Hover preview must render bold inline micro-header, got: ${hoverMarkdown}`
+    );
+
+    // Criterion 4: Action footer of command links (mem.openReference and mem.showSubtree)
+    assert.ok(
+      hoverMarkdown.includes('command:mem.openReference?%5B%22task-integration%22%5D'),
+      `Hover preview action footer must have openReference command link, got: ${hoverMarkdown}`
+    );
+    assert.ok(
+      hoverMarkdown.includes('command:mem.showSubtree?%5B%22task-integration%22%5D'),
+      `Hover preview action footer must have showSubtree command link, got: ${hoverMarkdown}`
     );
   });
 

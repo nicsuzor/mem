@@ -908,6 +908,372 @@ fn test_lsp_cli_warns_on_missing_root_directory() {
 }
 
 #[test]
+fn test_hover_top_bar_renders_codicons_and_compact_labels() {
+    let dir = tempdir().unwrap();
+    let pkb_root = dir.path().to_path_buf();
+
+    let tasks_dir = pkb_root.join("tasks");
+    fs::create_dir_all(&tasks_dir).unwrap();
+    let task_path = tasks_dir.join("task-compact.md");
+    let task_content = r#"---
+id: task-compact
+title: Compact Card Task
+type: task
+status: ready
+intent: 1
+tags:
+  - lsp
+  - vscode
+---
+Body content here.
+"#;
+    fs::write(&task_path, task_content).unwrap();
+
+    let mut server = LspServer::new(pkb_root.clone());
+    let doc_path = pkb_root.join("notes").join("ref.md");
+    let doc_uri: Uri = format!("file://{}", doc_path.to_string_lossy())
+        .parse()
+        .unwrap();
+    let doc_text = "See [[task-compact]].\n";
+    server.handle_did_open(DidOpenTextDocumentParams {
+        text_document: TextDocumentItem {
+            uri: doc_uri.clone(),
+            language_id: "markdown".to_string(),
+            version: 1,
+            text: doc_text.to_string(),
+        },
+    });
+
+    let hover_params = HoverParams {
+        text_document_position_params: TextDocumentPositionParams {
+            text_document: TextDocumentIdentifier { uri: doc_uri },
+            position: Position {
+                line: 0,
+                character: 8,
+            },
+        },
+        work_done_progress_params: Default::default(),
+    };
+
+    let hover = server
+        .handle_hover(&hover_params)
+        .expect("Hover must resolve");
+    let hover_text = match hover.contents {
+        HoverContents::Markup(MarkupContent { value, .. }) => value,
+        other => panic!("Expected MarkupContent, got {:?}", other),
+    };
+
+    // Assert top bar contains codicons and compact labels
+    assert!(
+        hover_text.contains("$(checklist) task"),
+        "Top bar must contain type codicon and compact label '$(checklist) task', got:\n{hover_text}"
+    );
+    assert!(
+        hover_text.contains("$(play) ready"),
+        "Top bar must contain status codicon and compact label '$(play) ready', got:\n{hover_text}"
+    );
+    assert!(
+        hover_text.contains("$(flame) intent 1"),
+        "Top bar must contain intent/weight codicon and compact label '$(flame) intent 1', got:\n{hover_text}"
+    );
+    assert!(
+        hover_text.contains("$(tag)") && hover_text.contains("#lsp") && hover_text.contains("#vscode"),
+        "Top bar must contain tag codicon and compact labels '$(tag)' with tags, got:\n{hover_text}"
+    );
+
+    // Assert raw legacy labels are replaced
+    assert!(
+        !hover_text.contains("Type:"),
+        "Top bar must not contain raw 'Type:' text, got:\n{hover_text}"
+    );
+    assert!(
+        !hover_text.contains("Status:"),
+        "Top bar must not contain raw 'Status:' text, got:\n{hover_text}"
+    );
+    assert!(
+        !hover_text.contains("Intent:"),
+        "Top bar must not contain raw 'Intent:' text, got:\n{hover_text}"
+    );
+    assert!(
+        !hover_text.contains("Tags:"),
+        "Top bar must not contain raw 'Tags:' text, got:\n{hover_text}"
+    );
+}
+
+#[test]
+fn test_hover_referenced_nodes_render_as_human_titles_linked() {
+    let dir = tempdir().unwrap();
+    let pkb_root = dir.path().to_path_buf();
+
+    let tasks_dir = pkb_root.join("tasks");
+    fs::create_dir_all(&tasks_dir).unwrap();
+
+    // 1. Create parent task
+    let parent_path = tasks_dir.join("parent-epic.md");
+    fs::write(
+        &parent_path,
+        r#"---
+id: parent-epic
+title: Parent Epic Title
+type: task
+status: ready
+---
+Parent description.
+"#,
+    )
+    .unwrap();
+
+    // 2. Create dependency task
+    let dep_path = tasks_dir.join("dep-task.md");
+    fs::write(
+        &dep_path,
+        r#"---
+id: dep-task
+title: Dependency Human Title
+type: task
+status: ready
+---
+Dependency description.
+"#,
+    )
+    .unwrap();
+
+    // 3. Create hovered task with parent and wikilink in body
+    let task_path = tasks_dir.join("task-referencing.md");
+    fs::write(
+        &task_path,
+        r#"---
+id: task-referencing
+title: Referencing Task
+type: task
+parent: parent-epic
+status: ready
+---
+Check out [[dep-task]] for implementation details.
+"#,
+    )
+    .unwrap();
+
+    let mut server = LspServer::new(pkb_root.clone());
+    let doc_path = pkb_root.join("notes").join("ref.md");
+    let doc_uri: Uri = format!("file://{}", doc_path.to_string_lossy())
+        .parse()
+        .unwrap();
+    let doc_text = "See [[task-referencing]].\n";
+    server.handle_did_open(DidOpenTextDocumentParams {
+        text_document: TextDocumentItem {
+            uri: doc_uri.clone(),
+            language_id: "markdown".to_string(),
+            version: 1,
+            text: doc_text.to_string(),
+        },
+    });
+
+    let hover_params = HoverParams {
+        text_document_position_params: TextDocumentPositionParams {
+            text_document: TextDocumentIdentifier { uri: doc_uri },
+            position: Position {
+                line: 0,
+                character: 8,
+            },
+        },
+        work_done_progress_params: Default::default(),
+    };
+
+    let hover = server
+        .handle_hover(&hover_params)
+        .expect("Hover must resolve");
+    let hover_text = match hover.contents {
+        HoverContents::Markup(MarkupContent { value, .. }) => value,
+        other => panic!("Expected MarkupContent, got {:?}", other),
+    };
+
+    // Assert parent rendered with human title linked to open node
+    let parent_expected_link = format!("[Parent Epic Title](file://{})", parent_path.display());
+    assert!(
+        hover_text.contains(&parent_expected_link),
+        "Hover card must contain parent human title linked to file: {parent_expected_link}, got:\n{hover_text}"
+    );
+
+    // Assert body wikilink rendered with target human title linked to open node
+    let dep_expected_link = format!("[Dependency Human Title](file://{})", dep_path.display());
+    assert!(
+        hover_text.contains(&dep_expected_link),
+        "Hover card must contain dep human title linked to file: {dep_expected_link}, got:\n{hover_text}"
+    );
+
+    // Assert no raw [[id]] appears in the card
+    assert!(
+        !hover_text.contains("[[parent-epic]]"),
+        "Hover card must not contain raw '[[parent-epic]]', got:\n{hover_text}"
+    );
+    assert!(
+        !hover_text.contains("[[dep-task]]"),
+        "Hover card must not contain raw '[[dep-task]]', got:\n{hover_text}"
+    );
+}
+
+#[test]
+fn test_hover_body_headings_render_as_bold_inline_micro_headers() {
+    let dir = tempdir().unwrap();
+    let pkb_root = dir.path().to_path_buf();
+
+    let tasks_dir = pkb_root.join("tasks");
+    fs::create_dir_all(&tasks_dir).unwrap();
+
+    let task_path = tasks_dir.join("task-headings.md");
+    fs::write(
+        &task_path,
+        r#"---
+id: task-headings
+title: Headings Task
+type: task
+status: ready
+---
+## Goal
+
+Deliver a compact card layout for the PKB hover.
+
+## Acceptance criteria
+
+- [ ] Item 1
+- [ ] Item 2
+"#,
+    )
+    .unwrap();
+
+    let mut server = LspServer::new(pkb_root.clone());
+    let doc_path = pkb_root.join("notes").join("ref.md");
+    let doc_uri: Uri = format!("file://{}", doc_path.to_string_lossy())
+        .parse()
+        .unwrap();
+    let doc_text = "See [[task-headings]].\n";
+    server.handle_did_open(DidOpenTextDocumentParams {
+        text_document: TextDocumentItem {
+            uri: doc_uri.clone(),
+            language_id: "markdown".to_string(),
+            version: 1,
+            text: doc_text.to_string(),
+        },
+    });
+
+    let hover_params = HoverParams {
+        text_document_position_params: TextDocumentPositionParams {
+            text_document: TextDocumentIdentifier { uri: doc_uri },
+            position: Position {
+                line: 0,
+                character: 8,
+            },
+        },
+        work_done_progress_params: Default::default(),
+    };
+
+    let hover = server
+        .handle_hover(&hover_params)
+        .expect("Hover must resolve");
+    let hover_text = match hover.contents {
+        HoverContents::Markup(MarkupContent { value, .. }) => value,
+        other => panic!("Expected MarkupContent, got {:?}", other),
+    };
+
+    // Assert headings render as bold inline micro-headers
+    assert!(
+        hover_text.contains("**Goal:** Deliver a compact card layout for the PKB hover."),
+        "Heading ## Goal followed by text must render as bold inline micro-header '**Goal:** <text>', got:\n{hover_text}"
+    );
+    assert!(
+        hover_text.contains("**Acceptance criteria:**"),
+        "Heading ## Acceptance criteria must render as bold inline micro-header '**Acceptance criteria:**', got:\n{hover_text}"
+    );
+    assert!(
+        hover_text.contains("- [ ] Item 1"),
+        "Checklist items must be preserved, got:\n{hover_text}"
+    );
+
+    // Assert raw markdown headings ## are replaced
+    assert!(
+        !hover_text.contains("## Goal"),
+        "Hover card must not contain raw '## Goal', got:\n{hover_text}"
+    );
+    assert!(
+        !hover_text.contains("## Acceptance criteria"),
+        "Hover card must not contain raw '## Acceptance criteria', got:\n{hover_text}"
+    );
+}
+
+#[test]
+fn test_hover_action_footer_contains_extension_command_links() {
+    let dir = tempdir().unwrap();
+    let pkb_root = dir.path().to_path_buf();
+
+    let tasks_dir = pkb_root.join("tasks");
+    fs::create_dir_all(&tasks_dir).unwrap();
+
+    let task_path = tasks_dir.join("task-footer.md");
+    fs::write(
+        &task_path,
+        r#"---
+id: task-footer
+title: Action Footer Task
+type: task
+status: ready
+---
+Footer test content.
+"#,
+    )
+    .unwrap();
+
+    let mut server = LspServer::new(pkb_root.clone());
+    let doc_path = pkb_root.join("notes").join("ref.md");
+    let doc_uri: Uri = format!("file://{}", doc_path.to_string_lossy())
+        .parse()
+        .unwrap();
+    let doc_text = "See [[task-footer]].\n";
+    server.handle_did_open(DidOpenTextDocumentParams {
+        text_document: TextDocumentItem {
+            uri: doc_uri.clone(),
+            language_id: "markdown".to_string(),
+            version: 1,
+            text: doc_text.to_string(),
+        },
+    });
+
+    let hover_params = HoverParams {
+        text_document_position_params: TextDocumentPositionParams {
+            text_document: TextDocumentIdentifier { uri: doc_uri },
+            position: Position {
+                line: 0,
+                character: 8,
+            },
+        },
+        work_done_progress_params: Default::default(),
+    };
+
+    let hover = server
+        .handle_hover(&hover_params)
+        .expect("Hover must resolve");
+    let hover_text = match hover.contents {
+        HoverContents::Markup(MarkupContent { value, .. }) => value,
+        other => panic!("Expected MarkupContent, got {:?}", other),
+    };
+
+    // Assert action footer has command links for open and subtree view
+    assert!(
+        hover_text.contains("command:mem.openReference?"),
+        "Hover footer must contain command:mem.openReference link, got:\n{hover_text}"
+    );
+    assert!(
+        hover_text.contains("command:mem.showSubtree?"),
+        "Hover footer must contain command:mem.showSubtree link, got:\n{hover_text}"
+    );
+    assert!(
+        hover_text.contains("task-footer"),
+        "Command links must target the hovered node id 'task-footer', got:\n{hover_text}"
+    );
+}
+
+
+#[test]
 fn test_inlay_hints_shows_target_title_status_and_weight() {
     let dir = tempdir().unwrap();
     let pkb_root = dir.path().to_path_buf();

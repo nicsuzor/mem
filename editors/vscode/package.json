@@ -22,7 +22,8 @@
     "onCommand:mem.showLogs",
     "onCommand:mem.restartServer",
     "onCommand:mem.openReference",
-    "onCommand:mem.openReferenceAtCursor"
+    "onCommand:mem.openReferenceAtCursor",
+    "onCommand:mem.showSubtree"
   ],
   "main": "./out/extension.js",
   "contributes": {
@@ -41,6 +42,10 @@
       {
         "command": "mem.openReferenceAtCursor",
         "title": "Mem: Open Reference at Cursor in New Tab"
+      },
+      {
+        "command": "mem.showSubtree",
+        "title": "Mem: Show PKB Subtree View"
       },
       {
         "command": "mem.restartServer",

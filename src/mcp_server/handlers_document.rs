@@ -1298,7 +1298,7 @@ impl PkbSearchServer {
                 return Err(McpError {
                     code: ErrorCode::INVALID_PARAMS,
                     message: Cow::from(format!(
-                        "Document {id} does not match type guard '{guard}' (actual type: {:?})",
+                        "Failed: type guard mismatch for document {id}: expected '{guard}', got {:?}",
                         node.node_type
                     )),
                     data: None,

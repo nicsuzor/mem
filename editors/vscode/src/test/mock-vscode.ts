@@ -177,6 +177,7 @@ const baseMock: Record<string, any> = {
   InlayHint: MockInlayHint,
   Disposable: MockDisposable,
   EventEmitter: MockEventEmitter,
+  version: '1.91.0',
   OutputChannel: MockOutputChannel,
   DiagnosticSeverity: {
     Error: 0,
@@ -200,6 +201,10 @@ const baseMock: Record<string, any> = {
     }),
     workspaceFolders: [] as any[],
     onDidChangeConfiguration: (_listener: any) => ({ dispose: () => {} }),
+    onDidOpenTextDocument: (_listener: any) => ({ dispose: () => {} }),
+    onDidCloseTextDocument: (_listener: any) => ({ dispose: () => {} }),
+    onDidChangeTextDocument: (_listener: any) => ({ dispose: () => {} }),
+    onDidSaveTextDocument: (_listener: any) => ({ dispose: () => {} }),
     createFileSystemWatcher: () => ({
       onDidChange: () => ({ dispose: () => {} }),
       onDidCreate: () => ({ dispose: () => {} }),
@@ -233,6 +238,8 @@ const baseMock: Record<string, any> = {
     showErrorMessage: async (_msg: string, ..._items: string[]) => undefined,
     showWarningMessage: async (_msg: string, ..._items: string[]) => undefined,
     showInformationMessage: async (_msg: string, ..._actions: any[]) => undefined,
+    showQuickPick: async (items: any[], _options?: any) => (Array.isArray(items) ? items[0] : undefined),
+    showInputBox: async (_options?: any) => undefined,
     createStatusBarItem: (_alignment?: any, _priority?: number) => ({
       text: '',
       tooltip: '',
