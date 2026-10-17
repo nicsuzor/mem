@@ -388,8 +388,6 @@ impl LspServer {
         }
         if let Some(i) = node.intent {
             top_bar_items.push(format!("$(flame) intent {}", i));
-        } else if node.downstream_weight > 0.0 {
-            top_bar_items.push(format!("$(flame) w:{:.1}", node.downstream_weight));
         }
         if !node.tags.is_empty() {
             let tags_str = node

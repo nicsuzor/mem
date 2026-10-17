@@ -45,7 +45,7 @@ This deliverable is the **reviewed strategy and capability specification**; no i
 - **Findings**:
   - `pkb new --due`: `document_crud::TaskFields` already contains `pub due: Option<String>` (`src/document_crud.rs:91`), and `create_task` already writes `due: ...` to YAML frontmatter (`src/document_crud.rs:287`). The CLI dispatch omitted `due` from `Commands::New` (`src/cli.rs:200`) and defaulted it via `..Default::default()` (`src/cli.rs:2016`). **Basis: Pure CLI clap plumbing gap.**
   - `pkb new --contributes-to`: `document_crud::TaskFields` already contains `pub contributes_to: Vec<serde_json::Value>` (`src/document_crud.rs:99`), and `create_task` already invokes `materialise_edge_inheritance` and serializes the edge list (`src/document_crud.rs:302-312`). MCP parses JSON directly (`src/mcp_server.rs:1803`), while CLI omitted the CLI parameter. **Basis: Pure CLI parsing plumbing gap.**
-  - `pkb focus`: Both CLI `select_focus_picks` (`src/cli.rs:4411-4423`) and MCP `list_tasks` (`src/mcp_server.rs:5395`) share the exact same underlying `GraphStore::sort_by_focus` and `GraphStore::compute_focus_scores` in `src/graph_store.rs`.
+  - `pkb focus`: Both CLI `pkb focus` (`GraphStore::focus_picks`) and MCP `list_tasks` share the exact same underlying ordering, `GraphStore::sort_by_display` over `display_rank::display_cmp` (`specs/ranking.md` §3).
 - **Conclusion**: Both surfaces sit on an already unified Rust core (`src/document_crud.rs`, `src/graph_store.rs`, `src/graph.rs`). Parity gaps are entirely in adapter parameter bindings.
 
 ---
@@ -137,7 +137,7 @@ Audited from source at `nicsuzor/mem` HEAD `41d82fe` on `main`:
 2. `get_document`: Unified document fetcher by ID or path, with `detail` and `max_bytes` truncation.
 3. `list_documents`: Universal catalog browse with filters (`type`, `tag`, `project`, `status`). Consolidates `list_documents` and `list_memories`.
 4. `find_duplicates`: Semantic and title-based similarity clustering across nodes. Consolidates `find_duplicates` and `get_semantic_neighbors`.
-5. `list_tasks`: Dedicated task state query tool with status filters (`ready`, `blocked`, `queued`, `in_progress`), sorting by `focus_score`, and inline blocker details.
+5. `list_tasks`: Dedicated task state query tool with status filters (`ready`, `blocked`, `queued`, `in_progress`), ordered by `display_cmp`, and inline blocker details.
 6. `get_task`: Full task detail with complete relationship context (parent, children, blockers, dependents). Consolidates `get_task`, `get_dependency_tree`, `get_task_children`.
 7. `claim_task`: Agent task claim primitive (in-place for tasks, instantiated for templates).
 8. `complete_task`: Mark task done with mandatory non-whitespace `completion_evidence` validation.
@@ -149,7 +149,7 @@ Audited from source at `nicsuzor/mem` HEAD `41d82fe` on `main`:
 14. `delete`: Safe deletion by ID with orphan checks.
 15. `append`: Timestamped content addition with optional section header targeting.
 16. `graph_context`: Subgraph traversal, ego-networks, and shortest path tracing. Consolidates `pkb_context` and `pkb_trace`.
-17. `graph_metrics`: Topological metrics (PageRank, betweenness, downstream weight, weight divergence). Consolidates `get_network_metrics`, `top_n_by_metric`, `detect_weight_divergence`.
+17. `graph_metrics`: Topological metrics (PageRank, betweenness, degree, weight divergence). Consolidates `get_network_metrics`, `top_n_by_metric`, `detect_weight_divergence`.
 18. `batch_ops`: Unified batch mutation tool with `action: update|reparent|archive|merge|reclassify|create_epics` and `dry_run: true` default. Consolidates 7 separate `batch_*` tools.
 19. `canvas_ops`: Excalidraw visual canvas generator. Consolidates `graph_excalidraw`, `diff_excalidraw`, `sync_excalidraw`.
 20. `system_info`: Build info, health status, and tool telemetry. Consolidates `status` and `get_stats` (resolving the name collision).

@@ -1797,12 +1797,7 @@ fn test_real_export_encoding_registry_conformance() {
     )
     .unwrap();
 
-    let mut gs = GraphStore::build_from_directory(pkb_root);
-    // Wire focus score >= 1000 for START marker and 1-tier bump on task-p4
-    if let Some(mut n) = gs.get_node("task-p4").cloned() {
-        n.focus_score = Some(1500);
-        gs.replace_node(n);
-    }
+    let gs = GraphStore::build_from_directory(pkb_root);
 
     // Export scene to Excalidraw JSON
     let all_ids: Vec<String> = gs.nodes().map(|n| n.id.clone()).collect();
@@ -1850,19 +1845,15 @@ fn test_real_export_encoding_registry_conformance() {
     assert!(raw_text_p2.contains("[READY · P2]"));
     assert!(raw_text_p2.contains("2h"), "Effort badge must be present");
 
-    // 4. P4 Task, child of a P2 epic, with focus_score >= 1000: mem_intent_ready_weight's
-    // ancestor-pressure channel means task-p4's effective_intent is the parent
-    // epic's P2, not its own stated P4 (it is unblocked, so the channel applies) --
-    // base tier is therefore already M (240px), and the focus_score >= 1000 bump
-    // takes it one tier further, to L (300px), deep green (#a3d3a3), now chip, START marker.
+    // 4. P4 Task, child of a P2 epic: its card tier comes from its own stated
+    // intent (P4 leaf -> Tier S, 200px); deep green (#a3d3a3), now chip.
     let card_p4 = find_card("task-p4");
     assert_eq!(card_p4.id, "task-p4", "Element ID must equal node ID");
-    assert_eq!(card_p4.width, CARD_WIDTH_L, "P4 child of a P2 epic with focus_score >= 1000 must be bumped to Tier L (300px)");
+    assert_eq!(card_p4.width, CARD_WIDTH_S, "P4 leaf task must use Tier S");
     assert_eq!(card_p4.background_color, "#a3d3a3", "In-progress fill must be deep green #a3d3a3");
     let text_p4 = find_text("task-p4");
     let raw_text_p4 = text_p4.text.as_deref().unwrap();
     assert!(raw_text_p4.contains("now"), "In-progress card must carry 'now' chip");
-    assert!(raw_text_p4.contains("START"), "Focus score >= 1000 card must carry START marker");
 
     // 5. Stakeholder task: Red ring (#e03131, strokeWidth 2.5)
     let card_stakeholder = find_card("task-stakeholder");

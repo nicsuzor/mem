@@ -183,22 +183,15 @@ impl PkbSearchServer {
                 if !node.depends_on.is_empty() {
                     output.push_str(&format!("**Depends on:** {}\n", node.depends_on.join(", ")));
                 }
-                if graph.ranking_mode() == crate::polecat_config::RankingMode::Flow {
-                    if let Some(ref flow) = node.flow {
-                        let g = flow.gain.unwrap_or(0.0);
-                        let l = flow.loss_averted.unwrap_or(0.0);
-                        if g > 0.0 || l > 0.0 {
-                            output.push_str(&format!(
-                                "**Flow:** gain={:.2} loss_averted={:.2}\n",
-                                g, l
-                            ));
-                        }
+                if let Some(ref flow) = node.flow {
+                    let g = flow.gain.unwrap_or(0.0);
+                    let l = flow.loss_averted.unwrap_or(0.0);
+                    if g > 0.0 || l > 0.0 {
+                        output.push_str(&format!(
+                            "**Flow:** gain={:.2} loss_averted={:.2}\n",
+                            g, l
+                        ));
                     }
-                } else if node.uncertainty > 0.0 || node.criticality > 0.0 || node.scope > 0 {
-                    output.push_str(&format!(
-                        "**Metrics:** scope={} uncertainty={:.2} criticality={:.2}\n",
-                        node.scope, node.uncertainty, node.criticality
-                    ));
                 }
             } else if let Some(node) = graph.resolve(&r.id) {
                 let id = node.task_id.as_deref().unwrap_or(&node.id);
@@ -1208,8 +1201,8 @@ mod title_match_ranking_tests {
 
 /// AC2 for the semantic-search surfaces (`search`, `task_search`): every task/
 /// node hit must carry a `status` field in the DEFAULT projection. These methods
-/// are exempt from AC1's focus_score reordering (their intrinsic sort is semantic
-/// relevance — reordering by focus_score would defeat retrieval), but status
+/// are exempt from AC1's display-order reordering (their intrinsic sort is semantic
+/// relevance — reordering by flow display order would defeat retrieval), but status
 /// projection is required regardless. Driven in-process with a dummy embedder so
 /// the assertions run without the ONNX model: tasks are created through the real
 /// handler (which seeds the vector store), then searched through the real handler.

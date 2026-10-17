@@ -118,7 +118,7 @@ All frontmatter fields are optional. Files without frontmatter are indexed by fi
 | Category | Types | Role |
 |----------|-------|------|
 | **Actionable** | `goal`, `project`, `subproject`, `epic`, `task`, `action`, `bug`, `feature`, `milestone`, `learn` | Executed; appear in ready/blocked queues |
-| **Obligation** | `target`, `prototype` | Declared deadline-bound obligations or class templates; not executed but propagate urgency to contributing tasks (see Focus Scoring) |
+| **Obligation** | `target`, `prototype` | Priced outcomes or class templates; not executed. A target's `worth` flows to the work that serves it (see Ranking) |
 | **Reference** | `note`, `knowledge`, `memory`, `contact` | Knowledge content; searchable but excluded from task workflows |
 
 `target` represents a one-shot terminal obligation (a deadline you must not miss). `prototype` is a class template for recurring obligations (e.g. peer review load) whose instances inherit `severity`, `goal_type`, and edge defaults at creation.
@@ -133,70 +133,59 @@ All frontmatter fields are optional. Files without frontmatter are indexed by fi
 | `3` | P3 — Low | Background; pick up when capacity exists |
 | `4` | P4 — Backlog | May never happen; keep visible |
 
-Priority propagates upward via `effective_priority`: a P3 task blocking a P0 inherits P0 weighting in scoring even though its own field stays P3. See Focus Scoring for how priority composes with severity and urgency.
+Priority is a stored field for filtering and display (`list_tasks intent=N` keeps tasks with intent ≤ N). It is not a ranking input; see Ranking.
 
 ### Edge types
 
 The knowledge graph has seven edge types. Some are derived from frontmatter, others are computed automatically.
 
-| Edge type | Source | Affects ready/blocked? | Affects importance propagation? | Notes |
+| Edge type | Source | Affects ready/blocked? | Carries worth in the flow? | Notes |
 |-----------|--------|-------------------------|----------------------------------|-------|
 | `parent` | `parent:` frontmatter or `children:` list | ✅ (via unfinished children) | ✅ | Hierarchy |
 | `depends_on` | `depends_on:` list | ✅ blocks task | ✅ | Hard dependency |
 | `soft_depends_on` | `soft_depends_on:` list | ❌ | ✅ | Informational ordering |
 | `link` | `[[wikilinks]]` and markdown links in body | ❌ | ❌ | Cross-references; counted as backlinks |
 | `supersedes` | `supersedes:` frontmatter | ❌ | ❌ | This node replaces the target |
-| `contributes_to` | `contributes_to:` list with verbal weights | ❌ | ✅ | Strategic priority (verbal contribution weights with Renooij-Witteman terms) |
+| `contributes_to` | `contributes_to:` list with verbal weights | ❌ | ✅ (read as a `serves` link) | Strategic contribution (verbal contribution weights with Renooij-Witteman terms) |
 | `similar_to` | Computed from BGE-M3 embeddings (cosine ≥ 0.85) | ❌ | ❌ | Auto-discovered semantic similarity; appears in `pkb_trace` |
 
 `similar_to` edges are materialised when the graph is built with the vector store available (e.g. via the MCP server). They participate in pathfinding (`pkb_trace`) but are deliberately excluded from blocking analysis and ready/blocked classification — semantic similarity is informational, not causal.
 
-## Focus Scoring
+## Ranking
 
-Tasks are ranked by one composite integer, **`focus_score`** — the sum of priority, severity, deadline pressure, age, structural blast radius, urgency (target propagation), and a value-of-information premium. Sort by it; ignore the components unless you're debugging a ranking.
+`mem` ranks work with the flow engine ([`specs/flow-rule.md`](specs/flow-rule.md), [`specs/pkb-flow-engine.md`](specs/pkb-flow-engine.md)). For every open node it computes three figures from the links between nodes and the `worth` of targets:
 
-For deadline-bound obligations that aren't tasks themselves (ARC submissions, contract signings, anything you must not fail), declare a **target node** and link contributing tasks to it:
+- **gain**: what you would fail to gain if the work were never done;
+- **loss averted**: what loss you would fail to avert (negative, "loss caused", when the work harms something you want);
+- **decision value**: what finding out is worth, for work that settles an open decision.
+
+Nothing else feeds the maths: not dates, type, tags, severity, stakeholders or priority. A target carries a `worth`; work carries `links` that say what it serves or needs, and how much:
 
 ```yaml
-# The obligation
+# A priced target
 type: target
-severity: 3                      # see severity ladder below
-goal_type: committed             # committed | aspirational | learning
+worth: high                       # a float, or an anchor word (flow-rule §5.6)
 due: 2026-05-07
-consequence: "Late review damages standing with the panel."
+deadline_class: hard              # fake | soft | hard; an unclassed date reads as fake
 
-# A task contributing to it
-contributes_to:
+# Work that serves it
+links:
   - to: <target-id>
-    weight: Certain              # see weight scale below
-    why: "contractual obligation as assigned assessor"
+    label: serves                 # serves | needs | part_of | supports | alternative | settles
+    quantum: 0.6                  # how much of the target this delivers (0.0..=1.0, or a word)
+    probability: probable         # how likely it delivers (0.0..=1.0, or a word)
+    justification: "contractual obligation as assigned assessor"
 ```
 
-`mem` propagates `severity × edge_weight × deadline-slack` back from each target to its contributors, writing `node.urgency` and folding it into `focus_score`. A P2 task blocking a SEV3-committed deadline rises automatically as the deadline approaches — no priority bumping.
+`depends_on`, `soft_depends_on`, `contributes_to` and `parent` are still accepted and read as `needs`, `supports`, `serves` and `part_of` links until the flow migration retires them.
 
-### Severity ladder
+**Display order.** Every list (`list_tasks`, `nested_tasks`, `pkb tasks`, `pkb focus`, `export_graph`'s `display_rank`) uses one comparator, `display_cmp`: the hard-deadline cliff lane first (a `deadline_class: hard` task whose days left are within its effort plus 7 days), then work carrying figures by `gain + loss_averted` descending, then figureless work, then id. `list_tasks sort=` picks another key (`gain`, `loss_averted`, `decision_value`, `gain_per_effort`, `loss_averted_per_effort`, `due`, `id`). See [`specs/ranking.md`](specs/ranking.md) for the ready/blocked predicates and the graph diagnostics (PageRank, betweenness), which never enter the ranking.
 
-| Level | Label | Example |
-|-------|-------|---------|
-| 0 | Negligible | Minor annoyance; no consequence beyond self |
-| 1 | Low | Small reputational or time cost |
-| 2 | Moderate | Meaningful commitment; recoverable if missed |
-| 3 | High | Serious consequence; hard to recover |
-| **4** | **Terminal** | **Job loss, bankruptcy, severe health, legal** |
-
-SEV0–3 are compensatory (standard scalar math). **SEV4 + `goal_type: committed` is lexicographic** — it gets a 10 000× multiplier so any SEV4-adjacent task outranks any non-SEV4 task regardless of priority, deadline, or anything else. Use sparingly; the cognitive speedbump of writing `consequence:` prose is part of the design.
-
-### `goal_type`
-
-| Value | Effect |
-|-------|--------|
-| `committed` | Receives the lexicographic override at SEV4. Standard contractual / non-negotiable obligations. |
-| `aspirational` | Linear propagation only. `consequence:` is reused as opportunity-cost prose. Prevents moonshots from hijacking the queue. |
-| `learning` | Linear propagation only. Marks targets where the value is the attempt, not the outcome. |
+`severity`, `goal_type`, `consequence`, `stakeholder`, `waiting_since` and `intent` stay as stored frontmatter for filtering and display; the ranking does not read them.
 
 ### Weight scale (Renooij-Witteman)
 
-`contributes_to.weight` accepts only verbal terms — raw decimals are rejected at parse time. Weights represent a **verbal contribution-weight scale** (Renooij-Witteman elicitation anchors), not "percent contribution":
+`contributes_to.weight` accepts only verbal terms — raw decimals are rejected at parse time. Weights represent a **verbal contribution-weight scale** (Renooij-Witteman elicitation anchors), not "percent contribution". A `contributes_to` entry is read as a `serves` link at `quantum = min(1, weight)`:
 
 | Term | Anchor | Reading |
 |------|--------|---------|
@@ -209,21 +198,6 @@ SEV0–3 are compensatory (standard scalar math). **SEV4 + `goal_type: committed
 | Impossible | 0.00 | No contribution |
 
 Non-linearity defeats the spacing and centring biases that corrupt linear scales.
-
-### `focus_score` components
-
-| Term | Range | Trigger |
-|------|-------|---------|
-| `priority_base` | 0 / 5 000 / 10 000 | P0 = 10 000, P1 = 5 000, P2+ = 0 |
-| `severity_bonus` | 0 – 100 000 | SEV0–4 on the task itself; SEV4 lexicographic |
-| `deadline_score` | 0 – 12 000 | Overdue / tight / near-tight. `consequence` applies no multiplier — stakes reach a task via target `severity` |
-| `age_staleness_bonus` | 0 – 200 | P2+ only; min(days_since_created, 200) |
-| `downstream_weight × 10` | 0 – ∞ | Structural blast radius: depth-decayed, edge-weighted sum of base weights over the **distinct** nodes reachable via `blocks` / `soft_blocks` / children / reverse `contributes_to` — not a count |
-| `stakeholder_waiting_bonus` | 0 | Removed (informational only; see specs/ranking.md §2.6) |
-| `urgency_term` | 0 – 10 000+ | `round(node.urgency)` — target propagation |
-| `voi_term` | 0 – 5 000 | `round(node.voi_value)` — value-of-information premium for a leaf task that unblocks an uncertain cone; 0 for non-leaf nodes |
-
-The formula lives in `compute_urgency`, `compute_voi_term` and `compute_focus_scores` in `src/graph_store.rs`; `downstream_weight` and the VoI sum are both accumulated by the shared `walk_cone` traversal. Prototype nodes (for recurring obligations like peer review) and the deferred calibration ritual extend the model — see the source for current behaviour.
 
 ## CLI Commands
 
@@ -240,7 +214,7 @@ The formula lives in `compute_urgency`, `compute_voi_term` and `compute_focus_sc
 
 | Command | Description |
 |---------|-------------|
-| `pkb tasks [ready\|blocked\|all] [--project P] [--sort S]` | List tasks sorted by priority + downstream weight |
+| `pkb tasks [ready\|blocked\|all] [--project P] [--sort S]` | List tasks in display order (`--sort` takes a flow sort key) |
 | `pkb task <id>` | Show task details and relationships |
 | `pkb new <title> [--parent ID] [--priority N] [--project P] [--tags T] [--depends-on ID]` | Create a new task |
 | `pkb done <id>` | Mark a task as done |
@@ -387,7 +361,7 @@ Read-only export of the knowledge/task graph as GraphViz DOT syntax (`digraph PK
 
 | Parameter | Type | Description |
 |-----------|------|--------------|
-| `format` | string, optional | Output format: `"dot"` (GraphViz DOT digraph syntax, default) or `"json"` (structured graph JSON with nodes, edges, ready, blocked, roots, and focus). |
+| `format` | string, optional | Output format: `"dot"` (GraphViz DOT digraph syntax, default) or `"json"` (structured graph JSON with nodes, edges, ready, blocked, roots, and cliff; each node carries `flow`, `display` and `display_rank`). |
 | `focus` | string, optional | Focus node ID, filename, or title (flexible resolution). Omit for the full active graph. |
 | `max_depth` | integer, optional | Traversal depth in hops from `focus` (1–5, default 2). Ignored if `focus` is omitted. |
 | `project` | string, optional | Filter to nodes whose `project` field matches exactly. |

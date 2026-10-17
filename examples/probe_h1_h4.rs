@@ -351,8 +351,8 @@ fn probe_h2() {
     println!("Inspecting serialized payload for task-bench-00001:");
 
     let always_null_keys = [
-        "stakeholder_exposure", "stakeholder", "waiting_since", "due", "effort",
-        "consequence", "severity", "goal_type", "edge_template", "days_until_due", "urgency_ratio"
+        "stakeholder", "waiting_since", "due", "effort",
+        "consequence", "severity", "goal_type", "edge_template", "days_until_due"
     ];
 
     println!("\n1. Optional/null fields serialized unconditionally:");
