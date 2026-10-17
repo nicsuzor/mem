@@ -37,8 +37,7 @@ impl PkbSearchServer {
             Some(other) => Err(McpError {
                 code: ErrorCode::INVALID_PARAMS,
                 message: Cow::from(format!(
-                    "Node '{id}' has type '{other}', not 'template' or 'task'. \
-                     claim_task only works on template or task nodes."
+                    "Failed: claim_task only works on template or task nodes, got type '{other}' for '{id}' (not 'template' or 'task')"
                 )),
                 data: None,
             }),
@@ -85,8 +84,7 @@ impl PkbSearchServer {
         self.handle_get_task(&get_args).map_err(|e| McpError {
             code: ErrorCode::INTERNAL_ERROR,
             message: Cow::from(format!(
-                "claim_task set '{id}' to in_progress but the update is not yet visible in \
-                 the graph. Underlying error: {}. Retry get_task in a moment.",
+                "Failed: claim_task update not visible in graph for '{id}': {}. Retry get_task in a moment.",
                 e.message,
             )),
             data: None,
@@ -122,10 +120,9 @@ impl PkbSearchServer {
                 return Err(McpError {
                     code: ErrorCode::INVALID_PARAMS,
                     message: Cow::from(format!(
-                        "Node '{}' has type '{}', not 'template'. \
-                         claim_task only works on template nodes.",
-                        id,
-                        node.node_type.as_deref().unwrap_or("unknown")
+                        "Failed: claim_task only works on template nodes, got type '{}' for '{}'",
+                        node.node_type.as_deref().unwrap_or("unknown"),
+                        id
                     )),
                     data: None,
                 });
@@ -270,8 +267,7 @@ impl PkbSearchServer {
         self.handle_get_task(&get_args).map_err(|e| McpError {
             code: ErrorCode::INTERNAL_ERROR,
             message: Cow::from(format!(
-                "claim_task created '{}' from template '{}' but the instance is not \
-                 yet visible in the graph. Underlying error: {}. Retry get_task in a moment.",
+                "Failed: claim_task instance not visible in graph for '{}' (from template '{}'): {}. Retry get_task in a moment.",
                 instance_id, template_id, e.message,
             )),
             data: None,
@@ -470,7 +466,7 @@ impl PkbSearchServer {
                     |e| McpError {
                         code: ErrorCode::INTERNAL_ERROR,
                         message: Cow::from(format!(
-                            "Failed to recursively close child task '{desc_id}': {e}"
+                            "Failed: recursively close child task {e} for '{desc_id}'"
                         )),
                         data: None,
                     },
@@ -970,7 +966,7 @@ impl PkbSearchServer {
             return Err(McpError {
                 code: ErrorCode::INVALID_PARAMS,
                 message: Cow::from(format!(
-                    "Task \"{id}\" is already \"{current_status}\". Cannot release a completed task.\n\
+                    "Failed: cannot release completed task \"{id}\" (already \"{current_status}\").\n\
                      To update a completed task's fields, use update_task."
                 )),
                 data: None,
@@ -1093,7 +1089,7 @@ impl PkbSearchServer {
                     |e| McpError {
                         code: ErrorCode::INTERNAL_ERROR,
                         message: Cow::from(format!(
-                            "Failed to recursively close child task '{desc_id}': {e}"
+                            "Failed: recursively close child task {e} for '{desc_id}'"
                         )),
                         data: None,
                     },
@@ -1437,7 +1433,7 @@ impl PkbSearchServer {
                     code: ErrorCode::INVALID_PARAMS,
                     message: Cow::from(format!(
                         "Duplicate subtask title: '{}'. Sibling titles must be unique for cross-referencing.",
-                        title
+                        Self::brief_subject(title)
                     )),
                     data: None,
                 });
@@ -1664,7 +1660,10 @@ impl PkbSearchServer {
             let path = crate::document_crud::create_task(&self.pkb_root, fields).map_err(|e| {
                 McpError {
                     code: ErrorCode::INTERNAL_ERROR,
-                    message: Cow::from(format!("Failed to create subtask '{title}': {e}")),
+                    message: Cow::from(format!(
+                        "Failed: subtask {e} for '{}'",
+                        Self::brief_subject(&title)
+                    )),
                     data: None,
                 }
             })?;

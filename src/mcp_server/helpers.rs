@@ -177,6 +177,22 @@ impl PkbSearchServer {
         }
     }
 
+    /// Format a subject string (title, id, or description) briefly for error reporting,
+    /// capping at 36 characters and appending " ..." if truncated.
+    pub(crate) fn brief_subject(subject: &str) -> String {
+        const MAX_SUBJECT_CHARS: usize = 36;
+        let trimmed = subject.trim();
+        let single_line = trimmed.replace('\n', " ");
+        let mut chars = single_line.chars();
+        let exc: String = chars.by_ref().take(MAX_SUBJECT_CHARS).collect();
+        if chars.next().is_some() {
+            format!("{} ...", exc.trim_end())
+        } else {
+            exc
+        }
+    }
+
+
     pub(crate) fn prune_null_and_empty(val: &mut JsonValue) -> bool {
         match val {
             JsonValue::Null => true,

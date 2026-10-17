@@ -558,6 +558,7 @@ pub(crate) fn build_disk_backed_server(
     use std::fs;
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path().to_path_buf();
+    write_test_polecat_yaml(&root);
     for (rel, contents) in files {
         let path = root.join(rel);
         fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -3003,3 +3004,192 @@ fn test_adhoc_release_with_uuid_session_id_and_long_summary_succeeds() {
         res.err()
     );
 }
+
+#[test]
+fn test_decompose_subtask_create_error_leads_with_reason_and_brief_subject() {
+    let (_tmp, server) = build_disk_backed_server(&[(
+        "tasks/epic-parent.md",
+        "---\nid: epic-parent\ntitle: Epic Parent\ntype: epic\nstatus: ready\n---\n\n# Epic Parent\n",
+    )]);
+
+    let err = server
+        .handle_decompose_task(&json!({
+            "parent_id": "epic-parent",
+            "subtasks": [
+                {
+                    "title": "Make the reasoning-steps design note the single source for the report-arguments",
+                    "status": "invalid_status_xyz"
+                }
+            ]
+        }))
+        .unwrap_err();
+
+    let msg = err.message.to_string();
+    assert!(
+        msg.starts_with("Failed: subtask "),
+        "error must start with 'Failed: subtask ', got: {msg}"
+    );
+    let reason_pos = msg
+        .find("Invalid status: invalid_status_xyz")
+        .expect("error must include reason");
+    let subject_pos = msg
+        .find("Make the reasoning-steps")
+        .expect("error must include subject");
+    assert!(
+        reason_pos < subject_pos,
+        "reason ({reason_pos}) must precede subject ({subject_pos}) in: {msg}"
+    );
+    assert!(
+        msg.contains("for 'Make the reasoning-steps design note ...'"),
+        "subject must be named briefly with ellipsis, got: {msg}"
+    );
+}
+
+#[test]
+fn test_claim_task_wrong_type_leads_with_reason() {
+    let (_tmp, server) = build_disk_backed_server(&[(
+        "notes/note-123.md",
+        "---\nid: note-123\ntitle: Some Note\ntype: note\nstatus: ready\n---\n\n# Some Note\n",
+    )]);
+
+    let err = server
+        .handle_claim_task(&json!({"id": "note-123"}))
+        .unwrap_err();
+
+    let msg = err.message.to_string();
+    assert!(
+        msg.starts_with("Failed: claim_task only works on template or task nodes"),
+        "error must lead with operation and reason, got: {msg}"
+    );
+    assert!(
+        msg.contains("got type 'note' for 'note-123'"),
+        "error must report actual type and id, got: {msg}"
+    );
+}
+
+#[test]
+fn test_claim_template_wrong_type_leads_with_reason() {
+    let (_tmp, server) = build_disk_backed_server(&[(
+        "tasks/task-regular.md",
+        "---\nid: task-regular\ntitle: Regular Task\ntype: task\nstatus: ready\n---\n\n# Regular Task\n",
+    )]);
+
+    let err = server.claim_template_instance("task-regular").unwrap_err();
+
+    let msg = err.message.to_string();
+    assert!(
+        msg.starts_with("Failed: claim_task only works on template nodes"),
+        "error must lead with operation and reason, got: {msg}"
+    );
+    assert!(
+        msg.contains("got type 'task' for 'task-regular'"),
+        "error must report actual type and id, got: {msg}"
+    );
+}
+
+#[test]
+fn test_release_completed_task_leads_with_reason() {
+    let (_tmp, server) = build_disk_backed_server(&[(
+        "tasks/task-done.md",
+        "---\nid: task-done\ntitle: Done Task\ntype: task\nstatus: done\n---\n\n# Done Task\n",
+    )]);
+
+    let err = server
+        .handle_release_task(&json!({
+            "id": "task-done",
+            "status": "done",
+            "summary": "Trying to release again",
+            "completion_evidence": "already done",
+        }))
+        .unwrap_err();
+
+    let msg = err.message.to_string();
+    assert!(
+        msg.starts_with("Failed: cannot release completed task"),
+        "error must lead with operation and reason, got: {msg}"
+    );
+}
+
+#[test]
+fn test_decompose_duplicate_subtask_title_brief_subject() {
+    let (_tmp, server) = build_disk_backed_server(&[(
+        "tasks/epic-parent.md",
+        "---\nid: epic-parent\ntitle: Epic Parent\ntype: epic\nstatus: ready\n---\n\n# Epic Parent\n",
+    )]);
+
+    let long_title = "Make the reasoning-steps design note the single source for the report-arguments";
+    let err = server
+        .handle_decompose_task(&json!({
+            "parent_id": "epic-parent",
+            "subtasks": [
+                { "title": long_title },
+                { "title": long_title }
+            ]
+        }))
+        .unwrap_err();
+
+    let msg = err.message.to_string();
+    assert!(
+        msg.starts_with("Duplicate subtask title: 'Make the reasoning-steps design note ...'"),
+        "duplicate title must name the subject briefly, got: {msg}"
+    );
+}
+
+#[test]
+fn test_recursive_close_child_failure_leads_with_reason() {
+    let (tmp, server) = build_disk_backed_server(&[
+        (
+            "tasks/parent-task.md",
+            "---\nid: parent-task\ntitle: Parent\ntype: task\nstatus: ready\n---\n\n# Parent\n",
+        ),
+        (
+            "tasks/child-task.md",
+            "---\nid: child-task\ntitle: Child\ntype: task\nstatus: ready\nparent: parent-task\n---\n\n# Child\n",
+        ),
+    ]);
+
+    // Remove child file from disk so that child update_document fails
+    let child_path = tmp.path().join("tasks/child-task.md");
+    std::fs::remove_file(&child_path).unwrap();
+
+    let err = server
+        .handle_complete_task(&json!({
+            "id": "parent-task",
+            "completion_evidence": "Parent done",
+            "recursive": true,
+        }))
+        .unwrap_err();
+
+    let msg = err.message.to_string();
+    assert!(
+        msg.starts_with("Failed: recursively close child task"),
+        "error must lead with operation and reason, got: {msg}"
+    );
+    assert!(
+        msg.contains("for 'child-task'"),
+        "error must name target child task, got: {msg}"
+    );
+}
+
+#[test]
+fn test_delete_type_guard_mismatch_leads_with_reason() {
+    let (_tmp, server) = build_disk_backed_server(&[(
+        "tasks/task-test.md",
+        "---\nid: task-test\ntitle: Task Test\ntype: task\nstatus: ready\n---\n\n# Task Test\n",
+    )]);
+
+    let err = server
+        .handle_delete_document(&json!({
+            "id": "task-test",
+            "type": "memory",
+        }))
+        .unwrap_err();
+
+    let msg = err.message.to_string();
+    assert!(
+        msg.starts_with("Failed: type guard mismatch for document task-test"),
+        "error must lead with operation and reason, got: {msg}"
+    );
+}
+
+
