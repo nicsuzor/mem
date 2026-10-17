@@ -585,9 +585,7 @@ impl PkbSearchServer {
         let mut res = self.handle_get_task(&get_args).map_err(|e| McpError {
             code: ErrorCode::INTERNAL_ERROR,
             message: Cow::from(format!(
-                "create_task wrote {task_id} but the new node is not yet visible in the graph \
-                 (id={task_id}). Underlying lookup error: {}. \
-                 The file is on disk — retry get_task in a moment.",
+                "Failed: create_task node not yet visible in graph for '{task_id}': {}. The file is on disk — retry get_task in a moment.",
                 e.message,
             )),
             data: None,
@@ -717,8 +715,8 @@ impl PkbSearchServer {
             return Err(McpError {
                 code: ErrorCode::INTERNAL_ERROR,
                 message: Cow::from(format!(
-                    "'{id}' resolves to a directory, not a file, at '{rel}' — a document/directory \
-                     name collision. There is no file to read for this id. Rename or remove the \
+                    "Failed: document/directory name collision — '{id}' resolves to directory '{rel}'. \
+                     There is no file to read for this id. Rename or remove the \
                      colliding directory, or repair the index entry for '{id}'."
                 )),
                 data: None,
@@ -2460,7 +2458,7 @@ impl PkbSearchServer {
                             .map_err(|e| McpError {
                                 code: ErrorCode::INTERNAL_ERROR,
                                 message: Cow::from(format!(
-                                    "Failed to recursively close child task '{desc_id}': {e}"
+                                    "Failed: recursively close child task {e} for '{desc_id}'"
                                 )),
                                 data: None,
                             })?;
