@@ -32,6 +32,7 @@ pub mod pkb;
 pub mod polecat_config;
 pub mod rerank;
 pub mod rrf;
+pub mod salience;
 pub mod task_index;
 pub mod telemetry;
 pub mod udiff;
