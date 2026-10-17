@@ -26,6 +26,7 @@ mod output_shape_tests;
 mod slow_tail_tests;
 mod catalog_tests;
 mod field_format_validation_tests;
+mod salience_mcp_tests;
 
 
 pub(crate) fn make_doc(
