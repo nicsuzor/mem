@@ -36,7 +36,7 @@ sys.path.insert(0, os.path.join(HERE, "..", "flow-rule"))
 
 import flow  # noqa: E402
 
-FIXTURE = os.path.join(HERE, "..", "flow-rule", "fixtures", "live-2026-10-05.json")
+FIXTURE = os.path.join(HERE, "..", "flow-rule", "fixtures", "synthetic.json")
 
 
 def load(price_all: bool, wikilinks: bool = False) -> tuple[flow.Graph, dict]:

@@ -153,7 +153,7 @@ markdown files ──► pass 1: field checks (per file) ───────�
 
 Every check has a rule id beginning `flow-`. An **observed** example is on the live graph:
 
-- fixture ids come from `flow-rule/fixtures/live-2026-10-05.json` and are reproduced by `python3 specs/graph-lint/examples.py`;
+- fixture ids come from `flow-rule/fixtures/synthetic.json` and are reproduced by `python3 specs/graph-lint/examples.py`;
 - live ids and counts were observed against the live PKB via `export_graph` on 2026-10-06. They are not reproducible from the committed fixture or from `examples.py`.
 
 An **assumed** example edits a real node hypothetically, because the live graph does not carry the field yet. This is the convention of `flow-rule.md` §10.
