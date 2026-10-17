@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.106](https://github.com/nicsuzor/mem/compare/mem-v0.3.105...mem-v0.3.106) (2026-10-17)
+
+
+### Features
+
+* **lsp:** redesign hover preview as compact interactive card ([3bb6233](https://github.com/nicsuzor/mem/commit/3bb62330af98de36bd8d338cea8505552eb93eab))
+* **lsp:** redesign hover preview as compact interactive card ([14aef64](https://github.com/nicsuzor/mem/commit/14aef647c65ee1861c07bc6bbea95ba0dad3089f))
+
+
+### Bug Fixes
+
+* **mcp:** lead error messages with reason and name subjects briefly ([#739](https://github.com/nicsuzor/mem/issues/739)) ([976dc03](https://github.com/nicsuzor/mem/commit/976dc03a98a680a3cd057a4af644c0d329b16f0e))
+* **mcp:** remove needless borrow on title in decompose_task error handler ([61d4210](https://github.com/nicsuzor/mem/commit/61d42101915df7cf306e0ac274c344b59acf6189))
+* **mcp:** remove needless borrow on title in decompose_task error handler ([aea3749](https://github.com/nicsuzor/mem/commit/aea37497f15330965978079935cd2fd015cac9af))
+
 ## [0.3.105](https://github.com/nicsuzor/mem/compare/mem-v0.3.104...mem-v0.3.105) (2026-10-15)
 
 
