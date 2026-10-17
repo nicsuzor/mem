@@ -64,6 +64,7 @@ pub struct FlowMigrationLedger {
     pub migration: String,
     pub created_at: String,
     pub snapshot_commit: Option<String>,
+    /// Ranking when the migration ran: (task id, 1-based display position).
     pub today_rank: Vec<(String, i64)>,
     pub rows: Vec<FlowMigrationRow>,
     pub statusless_tasks: Vec<StatuslessTaskRow>,
@@ -648,11 +649,12 @@ pub fn apply_flow_migration(pkb_root: &Path) -> Result<FlowMigrationLedger> {
         }
     }
 
-    // Collect today's ranking
+    // Collect today's ranking: (task id, 1-based flow display position)
     let today_rank: Vec<(String, i64)> = gs
         .all_tasks()
         .iter()
-        .map(|t| (t.id.clone(), t.focus_score.unwrap_or(0)))
+        .enumerate()
+        .map(|(i, t)| (t.id.clone(), i as i64 + 1))
         .collect();
 
     // Scan all markdown files in pkb_root

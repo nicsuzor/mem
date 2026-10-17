@@ -344,5 +344,5 @@ pub(crate) fn extract_task_objects(result: &CallToolResult) -> Vec<serde_json::V
             .unwrap_or_default()
     }
 
-    // ── mem-e394a6d0 AC1/AC2/AC6: default focus_score-DESC ordering + status ──
+    // ── mem-e394a6d0 AC1/AC2/AC6: default display ordering + status ──
 

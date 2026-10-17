@@ -28,10 +28,10 @@ pub const DISPLAY_CLIFF_BUFFER_DAYS: i64 = CLIFF_BUFFER_DAYS;
 /// Re-export DEFAULT_EFFORT_DAYS (3 days, display.py:14).
 pub const DISPLAY_DEFAULT_EFFORT_DAYS: f64 = DEFAULT_EFFORT_DAYS;
 
-/// Actionable node types for classification and views (ranking.md:499, display.py:21).
+/// Actionable node types for classification and views (display.py:21).
 pub const ACTIONABLE_TYPES: &[&str] = &["task", "learn", "pr"];
 
-/// Claimable node types eligible for the ready list (ranking.md:500, §8.1).
+/// Claimable node types eligible for the ready list.
 pub const CLAIMABLE_TYPES: &[&str] = &["task"];
 
 // ── Deadline Class (R10) ─────────────────────────────────────────────────────

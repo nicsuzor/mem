@@ -63,131 +63,6 @@ impl EdgeType {
     }
 }
 
-/// Severity gate for catastrophic-obligation overrides.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-pub enum SeverityGate {
-    Normal = 0,
-    Catastrophic = 1,
-}
-
-/// Deterministic tie-breaker signals for ranking.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct FocusTieBreakers {
-    pub downstream_weight_x10: i64,
-    /// Cost-of-delay-weighted mass of what completing this node would
-    /// directly unblock (`node.unlock_breadth`), scaled ×10 for the same
-    /// integer-tuple reason `downstream_weight_x10` is. Deliberately a
-    /// tie-breaker, not a `cost_of_delay` term: it is a shallow, one-hop
-    /// signal (parent plan Phase 2, "one shallow metric kept"), unlike
-    /// `value_lineage`, which the sanctioned importance channel needs inside
-    /// `cost_of_delay` itself to move rankings at all.
-    pub unlock_breadth_x10: i64,
-    pub age_staleness: i64,
-    pub effective_intent: i32,
-    pub order: i32,
-    pub id: String,
-}
-
-/// Canonical explicit sort tuple for task ranking.
-///
-/// Under the derived ordering: `(severity gate, cost-of-delay index, tie-breakers)`.
-///
-/// `deadline_band` was removed from this tuple by ruling (Nic, 2026-09-12,
-/// `mem_537e44a9` "Ruling: deadline pressure is a multiplier on value, not a
-/// tier"; see [`mem_fix_deadline_multiplier`]): neither spec nor doctrine ever
-/// justified a deadline tier ranking above value, and a due date alone no
-/// longer buys a node a rung above every non-overdue task regardless of
-/// `cost_of_delay` magnitude. Deadline pressure now multiplies a node's own
-/// value points (`intent_pressure + value_lineage_term`)
-/// inside `cost_of_delay` itself — see `compute_cost_of_delay` in
-/// `graph_store.rs` — so a node with no value has nothing for a deadline to
-/// amplify, and a node with real value is pressed harder the bigger its
-/// effort against the days left.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct FocusTuple {
-    pub severity_gate: SeverityGate,
-    pub cost_of_delay: i64,
-    pub tie_breakers: FocusTieBreakers,
-}
-
-impl FocusTuple {
-    /// Explain which tuple component decides the pairwise ordering against another tuple.
-    pub fn explain_diff(&self, other: &Self) -> &'static str {
-        if self.severity_gate != other.severity_gate {
-            "severity_gate"
-        } else if self.cost_of_delay != other.cost_of_delay {
-            "cost_of_delay"
-        } else if self.tie_breakers.downstream_weight_x10
-            != other.tie_breakers.downstream_weight_x10
-        {
-            "tie_breakers.downstream_weight"
-        } else if self.tie_breakers.unlock_breadth_x10 != other.tie_breakers.unlock_breadth_x10 {
-            "tie_breakers.unlock_breadth"
-        } else if self.tie_breakers.age_staleness != other.tie_breakers.age_staleness {
-            "tie_breakers.age_staleness"
-        } else if self.tie_breakers.effective_intent != other.tie_breakers.effective_intent {
-            "tie_breakers.effective_intent"
-        } else if self.tie_breakers.order != other.tie_breakers.order {
-            "tie_breakers.order"
-        } else if self.tie_breakers.id != other.tie_breakers.id {
-            "tie_breakers.id"
-        } else {
-            "identical"
-        }
-    }
-
-    /// Synthetic display score for UI and legacy rendering.
-    pub fn synthetic_display_score(&self) -> i64 {
-        let gate_pts = match self.severity_gate {
-            SeverityGate::Catastrophic => 100000,
-            SeverityGate::Normal => 0,
-        };
-        gate_pts
-            + self.cost_of_delay
-            + self.tie_breakers.downstream_weight_x10
-            + self.tie_breakers.unlock_breadth_x10
-            + self.tie_breakers.age_staleness
-    }
-}
-
-impl Ord for FocusTuple {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.severity_gate
-            .cmp(&other.severity_gate)
-            .then_with(|| self.cost_of_delay.cmp(&other.cost_of_delay))
-            .then_with(|| {
-                self.tie_breakers
-                    .downstream_weight_x10
-                    .cmp(&other.tie_breakers.downstream_weight_x10)
-            })
-            .then_with(|| {
-                self.tie_breakers
-                    .unlock_breadth_x10
-                    .cmp(&other.tie_breakers.unlock_breadth_x10)
-            })
-            .then_with(|| {
-                self.tie_breakers
-                    .age_staleness
-                    .cmp(&other.tie_breakers.age_staleness)
-            })
-            // Inverted for higher-is-better tuple Ord
-            .then_with(|| {
-                other
-                    .tie_breakers
-                    .effective_intent
-                    .cmp(&self.tie_breakers.effective_intent)
-            })
-            .then_with(|| other.tie_breakers.order.cmp(&self.tie_breakers.order))
-            .then_with(|| other.tie_breakers.id.cmp(&self.tie_breakers.id))
-    }
-}
-
-impl PartialOrd for FocusTuple {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
 /// A directed edge in the knowledge graph.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Edge {
@@ -1089,7 +964,7 @@ pub struct GraphNode {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub assignee: Option<String>,
     /// Who is waiting on this task (e.g. "Jacob", "funding-committee").
-    /// Informational field (stakeholder-waiting ranking term removed per spec_866ee53d point 21).
+    /// Informational field; not a ranking input.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stakeholder: Option<String>,
     /// When the stakeholder started waiting (ISO date). Informational field.
@@ -1115,7 +990,7 @@ pub struct GraphNode {
     pub effort: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub consequence: Option<String>,
-    /// Severity ladder (0-4) for target nodes. SEV4 is lexicographic.
+    /// Severity ladder (0-4) for target nodes, as stored in frontmatter.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub severity: Option<i32>,
     /// Goal classification: committed | aspirational | learning.
@@ -1157,27 +1032,10 @@ pub struct GraphNode {
     #[serde(skip)]
     pub weak_keys: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub focus_score: Option<i64>,
-    /// Explicit sort tuple computed by `compute_focus_scores` for canonical ranking.
-    /// (severity gate, deadline band, cost-of-delay index, tie-breakers).
-    #[serde(skip)]
-    pub focus_tuple: Option<FocusTuple>,
-    /// Whether this task satisfies the affordable-loss constraint.
-    /// If Some(false), the non-compensatory affordable-loss filter fires and zeroes out the task.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub affordable_loss: Option<bool>,
-    /// Flag indicating the non-compensatory affordable-loss filter fired on this task.
-    #[serde(default, skip_serializing_if = "is_false")]
-    pub affordable_loss_filtered: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub voi_value: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub task_id: Option<String>,
     /// Computed status group: "active", "blocked", or "completed"
     #[serde(skip_serializing_if = "Option::is_none")]
     pub status_group: Option<String>,
-    #[serde(default, skip_serializing_if = "is_zero_f64")]
-    pub downstream_weight: f64,
     #[serde(default, skip_serializing_if = "is_zero_f64")]
     pub pagerank: f64,
     #[serde(default, skip_serializing_if = "is_zero_f64")]
@@ -1188,8 +1046,6 @@ pub struct GraphNode {
     pub outdegree: i32,
     #[serde(default, skip_serializing_if = "is_zero_i32")]
     pub backlink_count: i32,
-    #[serde(default, skip_serializing_if = "is_false")]
-    pub stakeholder_exposure: bool,
     /// True if this node is reachable from an active leaf task via upstream BFS
     /// (parent, depends_on, soft_depends_on edges). Used by renderers to show
     /// only the planning-relevant subgraph.
@@ -1216,59 +1072,11 @@ pub struct GraphNode {
     /// Driven by explicit elicited confidence (1.0 - confidence) or open question signal.
     #[serde(default, skip_serializing_if = "is_zero_f64")]
     pub uncertainty: f64,
-    /// Normalized impact score [0.0–1.0]. Derived from downstream_weight, pagerank,
-    /// and stakeholder_exposure, normalized across all nodes in the graph.
-    #[serde(default, skip_serializing_if = "is_zero_f64")]
-    pub criticality: f64,
-    /// Computed: urgency signal based on status of blocked tasks.
-    /// 1.0 if blocking any in_progress, 0.5 if blocking any active, else 0.0.
-    #[serde(skip)]
-    pub blocking_urgency: f64,
-    /// Computed: own intent lowered by the blocker channel (blocks, soft_blocks,
-    /// contributes_to — not children) and the ancestor-pressure channel; a blocked
-    /// node keeps its own intent (specs/ranking.md §4.6). A P2 blocker of a P0 gets
-    /// effective_intent=0. Never written back to frontmatter; `export_graph` emits it
-    /// via `ExportNode` instead (§8.5).
-    #[serde(skip)]
-    pub effective_intent: Option<i32>,
-    /// Computed: lexicographic urgency propagation.
-    /// Formula: Urgency = S_lex * W_edge * f(Slack)
-    #[serde(default, skip_serializing_if = "is_zero_f64")]
-    pub urgency: f64,
-    /// Standing weight elicited on a committed target/goal node (Phase 2,
-    /// `pkb-standing-weight-elicitation-instrument`). `None` means unpriced —
-    /// value lineage propagates zero from an unpriced target rather than
-    /// inferring a default ("Zero Defaults / Zero Inference" doctrine). Only
-    /// honoured when `goal_type == "committed"` (the instrument's scope
-    /// guard); see `compute_value_lineage`.
+    /// Pre-flow `standing_weight` frontmatter (float 0.0..=1.0). Read as
+    /// [`GraphNode::worth`] when `worth` is absent, until the flow migration
+    /// retires the key (specs/flow-migration.md).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub standing_weight: Option<f64>,
-    /// CPM-style chain slack, in days: the minimum slack found anywhere in
-    /// this node's blocking chain (`blocks`, `soft_blocks`, `children`,
-    /// `contributes_to`), computed by relaxation in `compute_urgency` (the
-    /// same traversal `urgency`'s S_lex propagation uses — no separate
-    /// computation). 100.0 is the "unconstrained" sentinel: no due date is
-    /// reachable within `MAX_URGENCY_PROPAGATION_DEPTH` hops. Always
-    /// serialized (unlike the other derived f64 fields below) because 0.0 is
-    /// itself a load-bearing value here (due today, zero float) that must
-    /// never be silently dropped from output.
-    #[serde(default)]
-    pub chain_slack: f64,
-    /// Cost-of-delay-weighted mass of what completing this node would
-    /// directly (one hop) unblock. **NOT a count of unblocked nodes** — see
-    /// `compute_unlock_breadth`. Deliberately shallow; multi-hop propagation
-    /// is `downstream_weight`'s job, not this one's.
-    #[serde(default, skip_serializing_if = "is_zero_f64")]
-    pub unlock_breadth: f64,
-    /// Value lineage: standing target weight flowing multiplicatively to
-    /// this node via its own `contributes_to` edges — `contribution size
-    /// (edge stated_weight) × confidence discount × target standing_weight`,
-    /// already scaled into cost-of-delay points (see `compute_value_lineage`
-    /// for the scale constant and rationale). One hop only: propagates from
-    /// a priced target directly to its contributors, not transitively
-    /// through further `contributes_to` chains.
-    #[serde(default, skip_serializing_if = "is_zero_f64")]
-    pub value_lineage: f64,
     /// Edge template for `type: prototype` nodes (spec multi-parent-edges §1.6).
     /// Resolved at edge-creation time per §2.5.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -2606,7 +2414,7 @@ impl GraphNode {
         // used to also accept a bare frontmatter `open_question` / `has_open_question`
         // boolean, or a non-empty `open_questions` array, as an alternate route that
         // skipped body detection entirely — letting a single frontmatter line with an
-        // empty body earn the same VoI bonus as a genuinely documented spike (the
+        // empty body earn the same uncertainty as a genuinely documented spike (the
         // cheapest of the confirmed gaming attacks: zero body edits required).
         let has_open_question = detect_open_question(&doc.body);
         let supersedes = fm
@@ -2617,9 +2425,6 @@ impl GraphNode {
         // reverse index of `supersedes` edges, materialised in
         // `compute_inverses` (mem_8035b002).
         let superseded_by: Vec<String> = Vec::new();
-        let affordable_loss = fm
-            .as_ref()
-            .and_then(|f| f.get("affordable_loss").and_then(|v| v.as_bool()));
 
         let word_count = doc.body.split_whitespace().count() as i32;
         let has_acceptance_criteria = detect_acceptance_criteria(&doc.body);
@@ -3341,33 +3146,19 @@ impl GraphNode {
             weak_keys,
             status_group: sg,
             task_id,
-            downstream_weight: 0.0,
-            blocking_urgency: 0.0,
             pagerank: 0.0,
             betweenness: 0.0,
             indegree: 0,
             outdegree: 0,
             backlink_count: 0,
-            stakeholder_exposure: false,
             reachable: false,
             assumptions,
-            focus_score: None,
-            focus_tuple: None,
-            affordable_loss,
-            affordable_loss_filtered: false,
-            voi_value: None,
             classification,
             has_acceptance_criteria,
             has_open_question,
             scope: 0,
             uncertainty: 0.0,
-            criticality: 0.0,
-            effective_intent: None,
-            urgency: 0.0,
             standing_weight,
-            chain_slack: 100.0,
-            unlock_breadth: 0.0,
-            value_lineage: 0.0,
             edge_template,
             links,
             worth,

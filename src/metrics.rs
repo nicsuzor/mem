@@ -12,10 +12,6 @@ pub struct NetworkMetrics {
     pub id: String,
     pub in_degree: usize,
     pub out_degree: usize,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub downstream_weight: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub stakeholder_exposure: Option<bool>,
     pub betweenness: f64,
     pub pagerank: f64,
 }
@@ -191,8 +187,6 @@ pub fn compute_network_metrics(
     node_id: &str,
     node_ids: &[String],
     edges: &[Edge],
-    downstream_weight: Option<f64>,
-    stakeholder_exposure: Option<bool>,
 ) -> Option<NetworkMetrics> {
     if !node_ids.contains(&node_id.to_string()) {
         return None;
@@ -208,8 +202,6 @@ pub fn compute_network_metrics(
         id: node_id.to_string(),
         in_degree: in_deg,
         out_degree: out_deg,
-        downstream_weight,
-        stakeholder_exposure,
         betweenness: betweenness.get(node_id).copied().unwrap_or(0.0),
         pagerank: pagerank.get(node_id).copied().unwrap_or(0.0),
     })

@@ -276,9 +276,6 @@ pub fn merge_live_into_canvas(
                     };
 
                     let mut markers = Vec::new();
-                    if ln.focus_score.unwrap_or(0) >= 1000 {
-                        markers.push("START".to_string());
-                    }
                     if ln.contributes_to.iter().any(|c| {
                         c.to == "targ_4e2cc92a"
                             || c.resolved_to.as_deref() == Some("targ_4e2cc92a")
@@ -403,9 +400,6 @@ pub fn merge_live_into_canvas(
             };
 
             let mut markers = Vec::new();
-            if ln.focus_score.unwrap_or(0) >= 1000 {
-                markers.push("START".to_string());
-            }
             if ln.contributes_to.iter().any(|c| {
                 c.to == "targ_4e2cc92a"
                     || c.resolved_to.as_deref() == Some("targ_4e2cc92a")

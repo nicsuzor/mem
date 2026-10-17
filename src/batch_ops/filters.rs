@@ -46,8 +46,6 @@ pub struct FilterSet {
     pub project: Option<String>,
     /// Include tasks without a project when filtering by project
     pub include_untagged: Option<bool>,
-    /// Downstream weight >= N
-    pub weight_gte: Option<u32>,
 }
 
 impl FilterSet {
@@ -69,7 +67,6 @@ impl FilterSet {
             && self.complexity.is_none()
             && self.project.is_none()
             && self.include_untagged.is_none()
-            && self.weight_gte.is_none()
     }
 
     /// Resolve against graph, return matching node IDs.
@@ -167,9 +164,6 @@ impl FilterSet {
             if self.include_untagged == Some(true) {
                 parts.push("include_untagged=true".to_string());
             }
-        }
-        if let Some(w) = self.weight_gte {
-            parts.push(format!("weight>={w}"));
         }
         if parts.is_empty() {
             "all tasks".to_string()
@@ -301,13 +295,6 @@ impl FilterSet {
             }
         }
 
-        // Downstream weight >= N
-        if let Some(weight_gte) = self.weight_gte {
-            if node.downstream_weight < weight_gte as f64 {
-                return false;
-            }
-        }
-
         true
     }
 }
@@ -363,9 +350,6 @@ pub fn parse_filter_set(args: &serde_json::Value) -> FilterSet {
             .get("project")
             .and_then(|v| v.as_str().map(String::from)),
         include_untagged: args.get("include_untagged").and_then(|v| v.as_bool()),
-        weight_gte: args
-            .get("weight_gte")
-            .and_then(|v| v.as_u64().map(|n| n as u32)),
     }
 }
 

@@ -79,7 +79,7 @@ pub fn is_red_ring(has_stakeholder: bool, status: Option<&str>) -> bool {
         })
 }
 
-/// Computes card width and height dimensions based on size tiers and focus score bump.
+/// Computes card width and height dimensions based on size tiers (node type and intent).
 pub fn compute_card_dimensions(node: &crate::graph::GraphNode) -> (f64, f64) {
     let t = node
         .raw_node_type
@@ -98,7 +98,7 @@ pub fn compute_card_dimensions(node: &crate::graph::GraphNode) -> (f64, f64) {
         return (CARD_WIDTH_A, CARD_HEIGHT);
     }
 
-    let p = node.effective_intent.or(node.intent).unwrap_or(4);
+    let p = node.intent.unwrap_or(4);
     let is_container = t == "epic"
         || t == "area"
         || t == "project"
@@ -116,19 +116,7 @@ pub fn compute_card_dimensions(node: &crate::graph::GraphNode) -> (f64, f64) {
         "S"
     };
 
-    // Focus score >= 1000 bump
-    let focus_score = node.focus_score.unwrap_or(0);
-    let bumped_tier = if focus_score >= 1000 {
-        match base_tier {
-            "S" => "M",
-            "M" => "L",
-            _ => "A",
-        }
-    } else {
-        base_tier
-    };
-
-    let w = match bumped_tier {
+    let w = match base_tier {
         "A" => CARD_WIDTH_A,
         "L" => CARD_WIDTH_L,
         "M" => CARD_WIDTH_M,
@@ -794,13 +782,6 @@ mod tests {
         n_task_p4.node_type = Some("task".to_string());
         n_task_p4.intent = Some(4);
         assert_eq!(compute_card_dimensions(&n_task_p4), (CARD_WIDTH_S, CARD_HEIGHT));
-
-        // Focus score bump >= 1000: S -> M, M -> L
-        n_task_p4.focus_score = Some(1200);
-        assert_eq!(compute_card_dimensions(&n_task_p4), (CARD_WIDTH_M, CARD_HEIGHT));
-
-        n_task_p2.focus_score = Some(1500);
-        assert_eq!(compute_card_dimensions(&n_task_p2), (CARD_WIDTH_L, CARD_HEIGHT));
 
         assert!(is_red_ring(true, Some("ready")));
         assert!(is_red_ring(false, Some("review")));
