@@ -26,7 +26,7 @@ use std::path::Path;
 
 fn load_fixture() -> (FlowInput, Value) {
     let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let fixture_path = manifest_dir.join("specs/flow-rule/fixtures/live-2026-10-05.json");
+    let fixture_path = manifest_dir.join("specs/flow-rule/fixtures/synthetic.json");
     let content = fs::read_to_string(&fixture_path)
         .unwrap_or_else(|e| panic!("failed to read fixture at {:?}: {}", fixture_path, e));
     let json_val: Value = serde_json::from_str(&content).expect("invalid json fixture");
@@ -164,7 +164,7 @@ fn test_t_i17_display_inv17_cliff_lane() {
     }
 }
 
-/// T-I17 on the live fixture nodes: task_d5f610e6 (hard, worth 0), n_c2e542fd02 (fake), n_2dcb93a9c8 (soft).
+/// T-I17 on the synthetic fixture nodes: syn_task_hard_cliff (hard, worth 0), syn_task_fake_cliff (fake), syn_task_soft_cliff (soft).
 #[test]
 fn test_t_i17_fixture_inv17_nodes() {
     let (input, json_val) = load_fixture();
@@ -177,9 +177,9 @@ fn test_t_i17_fixture_inv17_nodes() {
         .collect();
 
     let classes = [
-        ("task_d5f610e6", DeadlineClass::Hard),
-        ("n_c2e542fd02", DeadlineClass::Fake),
-        ("n_2dcb93a9c8", DeadlineClass::Soft),
+        ("syn_task_hard_cliff", DeadlineClass::Hard),
+        ("syn_task_fake_cliff", DeadlineClass::Fake),
+        ("syn_task_soft_cliff", DeadlineClass::Soft),
     ];
 
     let test_dates = [
@@ -210,9 +210,9 @@ fn test_t_i17_fixture_inv17_nodes() {
             items.push(item);
         }
 
-        let hard_item = items.iter().find(|i| i.id == "task_d5f610e6").unwrap();
-        let fake_item = items.iter().find(|i| i.id == "n_c2e542fd02").unwrap();
-        let soft_item = items.iter().find(|i| i.id == "n_2dcb93a9c8").unwrap();
+        let hard_item = items.iter().find(|i| i.id == "syn_task_hard_cliff").unwrap();
+        let fake_item = items.iter().find(|i| i.id == "syn_task_fake_cliff").unwrap();
+        let soft_item = items.iter().find(|i| i.id == "syn_task_soft_cliff").unwrap();
 
         assert_eq!(
             hard_item.on_cliff, exp_hard_cliff,
@@ -225,7 +225,7 @@ fn test_t_i17_fixture_inv17_nodes() {
         // When hard item is on cliff, it must sort ahead of fake and soft items
         items.sort_by(display_cmp);
         if exp_hard_cliff {
-            assert_eq!(items[0].id, "task_d5f610e6");
+            assert_eq!(items[0].id, "syn_task_hard_cliff");
         }
     }
 }

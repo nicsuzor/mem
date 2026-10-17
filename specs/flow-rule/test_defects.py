@@ -18,7 +18,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import flow
 
-FIXTURE = os.path.join(HERE, "fixtures", "live-2026-10-05.json")
+FIXTURE = os.path.join(HERE, "fixtures", "synthetic.json")
 
 
 class TestDefect1HarmsGuarantees(unittest.TestCase):
