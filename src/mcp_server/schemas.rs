@@ -62,7 +62,7 @@ impl PkbSearchServer {
             .with_annotations(ToolAnnotations::new().read_only(true)),
             Tool::new(
                 "get_task",
-                "Retrieve full task details, metadata, body, and graph context. Top-level focus_score combines intent, severity, deadline urgency, age staleness, downstream weight, urgency, and VoI. Signals nested under signals: {}.",
+                "Retrieve full task details, metadata, body, and graph context. Ranking figures come from the flow engine: `flow` carries gain, loss_averted, decision_value, flow_status and per-target stake; `display` carries ready, blocked, on_cliff, cliff_enters_on, deadline_class and days_until_due. With include_routes (default true), `routes` lists the paths to each served target, with `routes_truncated` and a one-sentence `explanation`.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -72,7 +72,6 @@ impl PkbSearchServer {
                         "budget_ms": { "type": "integer" },
                         "max_bytes": { "type": "integer" },
                         "metadata_only": { "type": "boolean" },
-                        "include_signals": { "type": "boolean" },
                         "include_routes": { "type": "boolean" },
                         "fields": {
                             "anyOf": [
@@ -113,7 +112,7 @@ impl PkbSearchServer {
             .with_annotations(ToolAnnotations::new().read_only(true)),
             Tool::new(
                 "list_tasks",
-                "List tasks with smart filtering in focus_score-descending order. Top-level focus_score combines intent, severity, deadline urgency, age staleness, downstream weight, urgency, and VoI. Signals nested under signals: {}.",
+                "List tasks with smart filtering, in flow display order: the hard-deadline cliff lane first, then tasks carrying flow figures by gain + loss_averted descending. `sort` picks another key. JSON rows carry gain, loss_averted, decision_value, flow_status and on_cliff.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -131,7 +130,6 @@ impl PkbSearchServer {
                         "assignee": { "type": "string" },
                         "type": { "type": "string" },
                         "title_contains": { "type": "string" },
-                        "weight_gte": { "type": "integer" },
                         "gain_gte": { "type": "number" },
                         "loss_averted_gte": { "type": "number" },
                         "sort": {
@@ -140,7 +138,6 @@ impl PkbSearchServer {
                         },
                         "tags": { "type": "array", "items": { "type": "string" } },
                         "has_superseded_by": { "type": "boolean" },
-                        "focus_score_gte": { "type": "integer" },
                         "since": { "type": "string" },
                         "before": { "type": "string" },
                         "limit": { "type": "integer" },
@@ -579,7 +576,7 @@ impl PkbSearchServer {
             .with_annotations(ToolAnnotations::new().read_only(true)),
             Tool::new(
                 "nested_tasks",
-                "List tasks in a hierarchical tree view grouped by project and epic (metadata only), mirroring the `pkb tasks` CLI command. Supports ASCII tree or brief JSON output. Ideal for understanding work hierarchy and structure without heavy body text or signal payloads.",
+                "List tasks in a hierarchical tree view grouped by project and epic (metadata only), mirroring the `pkb tasks` CLI command. Supports ASCII tree or brief JSON output. Ideal for understanding work hierarchy and structure without heavy body text.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -591,14 +588,13 @@ impl PkbSearchServer {
                             ],
                             "description": "Filter by task status (e.g. 'ready', 'blocked', 'in_progress')."
                         },
-                        "intent": { "type": "integer", "description": "Filter to tasks whose effective intent ≤ N." },
+                        "intent": { "type": "integer", "description": "Filter to tasks whose intent ≤ N." },
                         "severity": { "type": "integer", "description": "Filter by exact severity" },
                         "goal_type": { "type": "string", "description": "Filter by goal type" },
                         "assignee": { "type": "string", "description": "Filter by assignee" },
                         "type": { "type": "string", "description": "Filter by document type (e.g. 'task', 'epic')" },
                         "title_contains": { "type": "string", "description": "Filter by title substring (case-insensitive)" },
                         "complexity": { "type": "string", "description": "Filter by complexity (e.g. 'low', 'medium', 'high')" },
-                        "weight_gte": { "type": "integer", "description": "Filter to tasks with downstream weight ≥ N" },
                         "tags": { "type": "array", "items": { "type": "string" }, "description": "Filter by tags (all must match)." },
                         "since": { "type": "string", "description": "Filter: return only tasks whose modified date is on or after YYYY-MM-DD or RFC 3339 timestamp." },
                         "before": { "type": "string", "description": "Filter: return only tasks whose modified date is on or before YYYY-MM-DD or RFC 3339 timestamp." },
@@ -675,7 +671,6 @@ impl PkbSearchServer {
                         "stale_days": { "type": "integer", "description": "Filter: not modified in N days" },
                         "orphan": { "type": "boolean", "description": "Filter: no parent and no project" },
                         "title_contains": { "type": "string", "description": "Filter: title substring (case-insensitive)" },
-                        "weight_gte": { "type": "integer", "description": "Filter: downstream weight >= N" },
                         "updates": { "type": "object", "description": "Fields to set (null to remove). Special keys: _add_tags, _remove_tags, _add_depends_on, _remove_depends_on. Accepts `links`, `worth`, `deadline_class`. An `intent` or `priority` key is accepted under Nic's standing delegation to agents — set only from Nic's strategic context read across the graph, never a self-assessment of the batch's own importance, and never propagated from one node onto its siblings." },
                         "dry_run": { "type": "boolean", "description": "Preview only (default: true — must explicitly set false to execute)" }
                     },
@@ -721,7 +716,7 @@ impl PkbSearchServer {
                         "format": {
                             "type": "string",
                             "enum": ["dot", "json"],
-                            "description": "Output format: 'dot' (GraphViz DOT digraph syntax, default) or 'json' (structured graph JSON with nodes, edges, ready, blocked, roots, and focus)."
+                            "description": "Output format: 'dot' (GraphViz DOT digraph syntax, default) or 'json' (structured graph JSON with nodes, edges, ready, blocked, roots, and cliff; each node carries its flow figures, display metadata and display_rank)."
                         },
                         "focus": { "type": "string", "description": "Focus node ID, filename, or title (flexible resolution). If omitted, exports the full active graph." },
                         "max_depth": { "type": "integer", "description": "Traversal depth in hops from focus (1 to 5, default: 2). Ignored if focus is omitted." },
@@ -1166,16 +1161,13 @@ impl PkbSearchServer {
                     "subtasks": { "type": "array", "items": { "type": "object" } },
                     "parent": { "type": "object" },
                     "closes": { "type": "array", "items": { "type": "object" } },
-                    "target_ancestors": { "type": "array", "items": { "type": "string" } },
                     "goals": { "type": "array", "items": { "type": "object" } },
                     "contributes_to": { "type": "array", "items": { "type": "object" } },
                     "contributed_by": { "type": "array", "items": { "type": "string" } },
                     "follow_up_tasks": { "type": "array", "items": { "type": "string" } },
-                    "focus_score": { "type": "integer" },
                     "blocked": { "type": "boolean" },
                     "parse_warnings": { "type": "array", "items": { "type": "string" } },
                     "days_until_due": { "type": "integer" },
-                    "urgency_ratio": { "type": "number" },
                     "links_out": { "type": "array", "items": { "type": "object" } },
                     "links_in": { "type": "array", "items": { "type": "object" } },
                     "flow": { "type": "object" },
@@ -1185,7 +1177,6 @@ impl PkbSearchServer {
                     "routes": { "type": "object" },
                     "explanation": { "type": "string" },
                     "body": { "type": "string" },
-                    "signals": { "type": "object" },
                     "items": { "type": "array", "items": { "type": "object" } },
                     "not_found": { "type": "array", "items": { "type": "string" } },
                     "timed_out": { "type": "array", "items": { "type": "string" } }

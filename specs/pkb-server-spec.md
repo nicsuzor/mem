@@ -121,7 +121,7 @@ The server computes deterministic metrics (counts, depths, degrees). It does NOT
   - **Actionable types** (epic, task, learn, pr) live in a *tree* whose backbone is the `parent` field. One is an orphan iff its `parent` is absent or dangling — dependency or link edges do not excuse a missing hierarchy parent. (Keeps `pkb_orphans`'s actionable default in step with `graph_stats.orphan_count`.)
   - **All other types** — knowledge nodes (memory, note), out-of-tree strategic nodes (goal, target), and untyped documents — live in a *web* of associations. One is an orphan only if it has no valid parent **and** no deliberate structural edge to another node, in either direction (an inbound link rescues a node just as an outbound one does — connectivity, not authorship, is what is being measured). Body `[[wikilinks]]` are auto-extracted into `link` edges, so a memory carrying one wikilink to a related concept is *not* an orphan; likewise a parentless goal that work `contributes_to` is *not* an orphan. Auto-computed `similar_to` (similarity) edges are excluded — only deliberate links rescue a node. Note that “not an orphan” means *graph-reachable*; it does not certify compliance with the `/remember` curation contract (which requires an outbound wikilink on every note).
 - **Relationship Transparency**: Every task retrieval (`get_task`) includes its immediate neighborhood (parents, children, dependencies, blockers) by default.
-- **Deterministic Metrics**: Centrality and weight metrics (PageRank, downstream weight) are stable and reproducible.
+- **Deterministic Metrics**: Centrality metrics (PageRank, betweenness, degree) and flow figures are stable and reproducible.
 
 ### Capture & Friction
 
@@ -140,7 +140,7 @@ Target: 18 tools across 6 groups. Each tool has one clear purpose.
 | 4  | `list_documents`      | Search     | Browse/filter documents by tag, type, status, project                                                                                                                                                                                                                                           |
 | 5  | `list_tasks`          | Task read  | List tasks with filters (project, status, priority, assignee). Status filter supports `ready` (no unmet deps) and `blocked` (has unmet deps, includes blocker info).                                                                                                                            |
 | 6  | `get_task`            | Task read  | Single task detail + all relationships (parent, children, depends_on, blocks). Always includes relationship context.                                                                                                                                                                            |
-| 7  | `get_network_metrics` | Task read  | Centrality metrics for a node: PageRank, betweenness, degree, downstream weight                                                                                                                                                                                                                 |
+| 7  | `get_network_metrics` | Task read  | Centrality metrics for a node: PageRank, betweenness, degree                                                                                                                                                                                                                                    |
 | 8  | `create_task`         | Task write | Create a new task. Params: title (required), id, parent, priority, project, tags, depends_on, assignee, complexity, body. **body** is markdown content (context, AC, rationale) — not frontmatter. Avoid `- [ ]` checklists in body when items will be tracked as subtasks (causes divergence). |
 | 9  | `update_task`         | Task write | Update frontmatter fields on existing task. Params: id or path, updates (object)                                                                                                                                                                                                                |
 | 10 | `complete_task`       | Task write | Mark task as done. Sets status=done, re-indexes.                                                                                                                                                                                                                                                |
@@ -201,7 +201,7 @@ Track work across sessions. "What needs doing? What's blocked?"
 | Update task   | `update <id>`                 | `update_task`         | Change status, priority, etc.                                 |
 | Complete task | `done <id>`                   | `complete_task`       | Mark done                                                     |
 | Dependencies  | `deps <id>`                   | (via `get_task`)      | Dependency tree                                               |
-| Metrics       | `metrics [id]`                | `get_network_metrics` | PageRank, betweenness, downstream weight                      |
+| Metrics       | `metrics [id]`                | `get_network_metrics` | PageRank, betweenness, degree                                 |
 
 **Task lifecycle**:
 
@@ -252,7 +252,7 @@ Understand relationships and structure. "What depends on what? What's disconnect
 | Context  | `context <id>`      | `pkb_context`         | Full neighbourhood: backlinks, nearby nodes      |
 | Trace    | `trace <from> <to>` | `pkb_trace`           | Shortest paths between nodes                     |
 | Orphans  | `orphans`           | `pkb_orphans`         | Disconnected nodes                               |
-| Metrics  | `metrics [id]`      | `get_network_metrics` | PageRank, betweenness, degree, downstream weight |
+| Metrics  | `metrics [id]`      | `get_network_metrics` | PageRank, betweenness, degree                    |
 | Export   | `graph --format F`  | —                     | Export graph (JSON, GraphML, DOT)                |
 
 **Edge types**: `DependsOn` (hard blocking), `SoftDependsOn` (informational), `Parent` (hierarchy), `Link` (wikilink references)

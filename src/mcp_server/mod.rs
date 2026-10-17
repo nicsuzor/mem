@@ -527,15 +527,15 @@ impl PkbSearchServer {
     /// Patches the node in place under the graph write lock (microseconds),
     /// runs cheap classification so `list_tasks(status="ready")` membership
     /// reflects the new status, and schedules a coalesced background
-    /// rebuild that refreshes derived metrics (downstream_weight,
-    /// effective_priority, focus_score, target_ancestors, similarity edges).
+    /// rebuild that refreshes derived metrics (flow figures, centrality,
+    /// target_ancestors, similarity edges).
     ///
     /// Consistency: after this returns, `resolve(id)` finds the node, its
     /// `status`/`parent`/`priority` are fresh, and ready/blocked membership
-    /// is fresh. Derived metric *values* (downstream_weight, focus_score,
-    /// urgency ordering) lag by 1–3s until the background rebuild lands —
-    /// the prior values are carried over from the existing node so they
-    /// don't reset to defaults.
+    /// is fresh. Derived metric *values* (flow figures, centrality) lag by
+    /// 1–3s until the background rebuild lands; structural inverses and
+    /// centrality are carried over from the existing node so they don't
+    /// reset to defaults.
     ///
     /// Concurrency: the graph write lock serialises concurrent writers
     /// safely (each patch is a HashMap insert; no clone-and-swap race).

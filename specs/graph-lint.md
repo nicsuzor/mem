@@ -238,7 +238,7 @@ A loop is a set of nodes that reach each other along flow edges (§3.2). The bri
 
 **Volume.** In text output `flow-no-route` prints one summary line: the count, plus the first ten node ids. JSON output lists every node (L6). This changes how lint output is shown, not how the graph is shown.
 
-**Migration lifecycle.** `flow-legacy-field` is emitted as a warning during migration phases R1–R7 while legacy and flow models run side by side; it is promoted to an error at migration R8 (cleanup) after Nic's explicit `--confirm` (`flow-migration.md:499`).
+**Migration lifecycle.** `flow-legacy-field` is emitted as a warning while retired fields stay on disk before cleanup; it is promoted to an error at migration R8 (cleanup) after Nic's explicit `--confirm` (`flow-migration.md` §9).
 
 ---
 

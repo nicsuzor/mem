@@ -21,7 +21,7 @@ impl PkbSearchServer {
             })?;
 
         let graph = self.graph.read();
-        let node = graph.get_node(id).ok_or_else(|| McpError {
+        graph.get_node(id).ok_or_else(|| McpError {
             code: ErrorCode::INVALID_PARAMS,
             message: Cow::from(format!("Node not found: {id}")),
             data: None,
@@ -30,20 +30,7 @@ impl PkbSearchServer {
         let node_ids: Vec<String> = graph.nodes().map(|n| n.id.clone()).collect();
         let edges = graph.edges();
 
-        let (downstream_weight, stakeholder_exposure) =
-            if graph.ranking_mode() == crate::polecat_config::RankingMode::Flow {
-                (None, None)
-            } else {
-                (Some(node.downstream_weight), Some(node.stakeholder_exposure))
-            };
-
-        let m = crate::metrics::compute_network_metrics(
-            id,
-            &node_ids,
-            edges,
-            downstream_weight,
-            stakeholder_exposure,
-        );
+        let m = crate::metrics::compute_network_metrics(id, &node_ids, edges);
 
         match m {
             Some(metrics) => {
@@ -65,7 +52,7 @@ impl PkbSearchServer {
 
         if let Some(id) = args.get("id").and_then(|v| v.as_str()) {
             let graph = self.graph.read();
-            let node = graph.get_node(id).ok_or_else(|| McpError {
+            graph.get_node(id).ok_or_else(|| McpError {
                 code: ErrorCode::INVALID_PARAMS,
                 message: Cow::from(format!("Node not found: {id}")),
                 data: None,
@@ -74,20 +61,7 @@ impl PkbSearchServer {
             let node_ids: Vec<String> = graph.nodes().map(|n| n.id.clone()).collect();
             let edges = graph.edges();
 
-            let (downstream_weight, stakeholder_exposure) =
-                if graph.ranking_mode() == crate::polecat_config::RankingMode::Flow {
-                    (None, None)
-                } else {
-                    (Some(node.downstream_weight), Some(node.stakeholder_exposure))
-                };
-
-            let m = crate::metrics::compute_network_metrics(
-                id,
-                &node_ids,
-                edges,
-                downstream_weight,
-                stakeholder_exposure,
-            );
+            let m = crate::metrics::compute_network_metrics(id, &node_ids, edges);
 
             return match m {
                 Some(metrics) => {
@@ -686,7 +660,6 @@ impl PkbSearchServer {
 
         let graph = self.graph.read();
         let divergences = graph.detect_weight_divergences(threshold_days);
-        let is_flow_mode = graph.ranking_mode() == crate::polecat_config::RankingMode::Flow;
         drop(graph);
 
         let total = divergences.len();
@@ -702,45 +675,27 @@ impl PkbSearchServer {
             total, threshold_days
         );
 
-        if is_flow_mode {
-            out.push_str("| Source Task | Label | Quantum | Prob | Strength | Target | Inactive | Justification |\n");
-            out.push_str("| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |\n");
+        out.push_str("| Source Task | Label | Quantum | Prob | Strength | Target | Inactive | Justification |\n");
+        out.push_str("| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |\n");
 
-            for div in &divergences {
-                let label_str = div.label.as_deref().unwrap_or("serves");
-                let q_str = div.quantum.map(|q| format!("{:.2}", q)).unwrap_or_else(|| "-".to_string());
-                let p_str = div.probability.map(|p| format!("{:.2}", p)).unwrap_or_else(|| "-".to_string());
-                let s_str = div.strength.map(|s| format!("{:.2}", s)).unwrap_or_else(|| div.stated_weight.clone());
-                out.push_str(&format!(
-                    "| {} (`{}`) | {} | {} | {} | **{}** | {} (`{}`) | {}d | {} |\n",
-                    div.source_label,
-                    div.source_id,
-                    label_str,
-                    q_str,
-                    p_str,
-                    s_str,
-                    div.target_label,
-                    div.target_id,
-                    div.days_since_interaction,
-                    div.justification
-                ));
-            }
-        } else {
-            out.push_str("| Source Task | Weight | Target | Inactive | Justification |\n");
-            out.push_str("| :--- | :--- | :--- | :--- | :--- |\n");
-
-            for div in &divergences {
-                out.push_str(&format!(
-                    "| {} (`{}`) | **{}** | {} (`{}`) | {}d | {} |\n",
-                    div.source_label,
-                    div.source_id,
-                    div.stated_weight,
-                    div.target_label,
-                    div.target_id,
-                    div.days_since_interaction,
-                    div.justification
-                ));
-            }
+        for div in &divergences {
+            let label_str = div.label.as_deref().unwrap_or("serves");
+            let q_str = div.quantum.map(|q| format!("{:.2}", q)).unwrap_or_else(|| "-".to_string());
+            let p_str = div.probability.map(|p| format!("{:.2}", p)).unwrap_or_else(|| "-".to_string());
+            let s_str = div.strength.map(|s| format!("{:.2}", s)).unwrap_or_else(|| div.stated_weight.clone());
+            out.push_str(&format!(
+                "| {} (`{}`) | {} | {} | {} | **{}** | {} (`{}`) | {}d | {} |\n",
+                div.source_label,
+                div.source_id,
+                label_str,
+                q_str,
+                p_str,
+                s_str,
+                div.target_label,
+                div.target_id,
+                div.days_since_interaction,
+                div.justification
+            ));
         }
 
         out.push_str("\n\n**Resolution surface:** For each divergence, consider if the contribution weight is still accurate given the lack of recent activity on the source task.");

@@ -1,15 +1,15 @@
-//! Tests proving that focus picks and courtesy decay no longer depend on
-//! status `review`, gate tags, or title prefixes, and that a `review` task
-//! is still never claimable as ready work (task mem_7f20951e).
+//! Tests proving that focus picks no longer depend on status `review`, gate
+//! tags, or title prefixes, and that a `review` task is still never claimable
+//! as ready work (task mem_7f20951e).
 //!
 //! Acceptance criteria:
 //! 1. Human gate paths and every caller's dependence on them are gone.
-//! 2. Tests prove focus picks and the decay rule no longer depend on status `review`,
+//! 2. Tests prove focus picks no longer depend on status `review`,
 //!    gate tags or title prefixes, and that a `review` task is still never claimable as ready work.
 //! 3. Test suite and lint pass; PR open against main.
 
 use chrono::Utc;
-use mem::graph_store::{ExportGraph, GraphStore};
+use mem::graph_store::GraphStore;
 use std::fs;
 
 #[test]
@@ -126,72 +126,5 @@ fn test_review_task_is_never_claimable_as_ready_work() {
     assert!(
         !ready_ids.contains(&"review-task".to_string()),
         "review-task MUST NOT be in ready_tasks() (never claimable as ready work), got: {ready_ids:?}"
-    );
-}
-
-#[test]
-fn test_courtesy_decay_does_not_exempt_review_status_gate_tags_or_title_prefixes() {
-    let tmp = tempfile::tempdir().unwrap();
-    let root = tmp.path();
-    fs::create_dir_all(root.join("targets")).unwrap();
-    fs::create_dir_all(root.join("tasks")).unwrap();
-
-    // Target priced at standing_weight 0.40 (value_lineage = 4000)
-    fs::write(
-        root.join("targets/target-core.md"),
-        "---\nid: target-core\ntitle: Core Target\ntype: target\nstatus: ready\nstanding_weight: 0.40\n---\n",
-    ).unwrap();
-
-    let today = Utc::now().date_naive();
-    let due_81d_ago = (today - chrono::Duration::days(81))
-        .format("%Y-%m-%d")
-        .to_string();
-
-    // 1. Task in review status: 81 days overdue, contributes to target-core (value_lineage = 4000)
-    fs::write(
-        root.join("tasks/decay-review.md"),
-        format!("---\nid: decay-review\ntitle: \"Review draft proposal\"\ntype: task\nstatus: review\ndue: {due_81d_ago}\neffort: 3d\ncontributes_to:\n  - to: target-core\n    weight: 1.0\n---\n"),
-    ).unwrap();
-
-    // 2. Task with gate tags: 81 days overdue, contributes to target-core
-    fs::write(
-        root.join("tasks/decay-tag.md"),
-        format!("---\nid: decay-tag\ntitle: \"Architecture decision\"\ntype: task\nstatus: in_progress\ndue: {due_81d_ago}\neffort: 3d\ntags:\n  - decision\n  - human-approval\ncontributes_to:\n  - to: target-core\n    weight: 1.0\n---\n"),
-    ).unwrap();
-
-    // 3. Task with gate title prefix: 81 days overdue, contributes to target-core
-    fs::write(
-        root.join("tasks/decay-prefix.md"),
-        format!("---\nid: decay-prefix\ntitle: \"DECISION: choose framework\"\ntype: task\nstatus: in_progress\ndue: {due_81d_ago}\neffort: 3d\ncontributes_to:\n  - to: target-core\n    weight: 1.0\n---\n"),
-    ).unwrap();
-
-    let graph = GraphStore::build_from_directory(root);
-    let json = graph.output_json_filtered(None, 0, None, true).unwrap();
-    let export: ExportGraph = serde_json::from_str(&json).unwrap();
-
-    let rev_node = export.nodes.iter().find(|n| n.node.id == "decay-review").unwrap();
-    let tag_node = export.nodes.iter().find(|n| n.node.id == "decay-tag").unwrap();
-    let pfx_node = export.nodes.iter().find(|n| n.node.id == "decay-prefix").unwrap();
-
-    // Undecayed cost_of_delay is round(4000 * 19.4391) + 10 = 77766.
-    // Decayed cost_of_delay is 32765 + 10 (urgency) = 32775.
-    // None of review status, gate tags, or title prefixes may escape decay.
-    assert_eq!(
-        rev_node.cost_of_delay,
-        Some(32775),
-        "review status task must not escape decay; expected Some(32775), got {:?}",
-        rev_node.cost_of_delay
-    );
-    assert_eq!(
-        tag_node.cost_of_delay,
-        Some(32775),
-        "gate tagged task must not escape decay; expected Some(32775), got {:?}",
-        tag_node.cost_of_delay
-    );
-    assert_eq!(
-        pfx_node.cost_of_delay,
-        Some(32775),
-        "gate title prefix task must not escape decay; expected Some(32775), got {:?}",
-        pfx_node.cost_of_delay
     );
 }

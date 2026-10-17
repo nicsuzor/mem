@@ -175,7 +175,8 @@ enum Commands {
         #[arg(long)]
         flat: bool,
 
-        /// Sort order: intent (default), weight, due
+        /// Sort order: default (flow display order), gain, loss_averted,
+        /// decision_value, gain_per_effort, loss_averted_per_effort, due, id
         #[arg(short, long)]
         sort: Option<String>,
     },
@@ -934,10 +935,6 @@ pub struct BatchFilterArgs {
     /// Filter by complexity
     #[arg(long)]
     complexity: Option<String>,
-
-    /// Filter by minimum downstream weight
-    #[arg(long)]
-    weight_gte: Option<u32>,
 }
 
 fn default_pkb_root() -> String {
@@ -1538,59 +1535,21 @@ async fn main() -> Result<()> {
 
             // Apply --sort if specified
             let mut tasks: Vec<&graph::GraphNode> = tasks;
-            let is_flow = gs.ranking_mode() == mem::polecat_config::RankingMode::Flow;
             let today = chrono::Utc::now().date_naive();
             let buffer_days = mem::display_rank::DISPLAY_CLIFF_BUFFER_DAYS;
 
-            if is_flow {
-                if let Some(ref sort_key) = sort {
-                    let task_sort = mem::display_rank::TaskSort::from_str_loose(sort_key)
-                        .unwrap_or(mem::display_rank::TaskSort::Default);
-                    graph_store::GraphStore::sort_by_display_with_sort(
-                        &mut tasks,
-                        task_sort,
-                        today,
-                        buffer_days,
-                    );
-                } else {
-                    graph_store::GraphStore::sort_by_display(&mut tasks, today, buffer_days);
-                }
-            } else if let Some(ref sort_key) = sort {
-                match sort_key.as_str() {
-                    // Honour explicit sort keys verbatim (AC4 — explicit args unaffected).
-                    "weight" => {
-                        tasks.sort_by(|a, b| {
-                            b.downstream_weight
-                                .partial_cmp(&a.downstream_weight)
-                                .unwrap_or(std::cmp::Ordering::Equal)
-                                .then(a.intent.unwrap_or(4).cmp(&b.intent.unwrap_or(4)))
-                        });
-                    }
-                    "due" => {
-                        tasks.sort_by(|a, b| {
-                            let a_due = a.due.as_deref().unwrap_or("9999-99-99");
-                            let b_due = b.due.as_deref().unwrap_or("9999-99-99");
-                            a_due.cmp(b_due)
-                        });
-                    }
-                    "intent" | "priority" => {
-                        tasks.sort_by(|a, b| {
-                            a.intent.unwrap_or(4).cmp(&b.intent.unwrap_or(4)).then(
-                                b.downstream_weight
-                                    .partial_cmp(&a.downstream_weight)
-                                    .unwrap_or(std::cmp::Ordering::Equal),
-                            )
-                        });
-                    }
-                    // Unknown sort key: leave ordering unchanged
-                    _ => {}
-                }
-            } else {
-                // Default ordering (AC1/AC6): focus_score DESC via the same
-                // comparator the MCP `list_tasks` handler uses, so the CLI and
-                // MCP surfaces agree for the same query.
-                graph_store::GraphStore::sort_by_focus(&mut tasks);
-            }
+            // Ordering (AC1/AC6): flow display order via the same comparator the
+            // MCP `list_tasks` handler uses, or the explicit `--sort` key.
+            let task_sort = sort
+                .as_deref()
+                .and_then(mem::display_rank::TaskSort::from_str_loose)
+                .unwrap_or(mem::display_rank::TaskSort::Default);
+            graph_store::GraphStore::sort_by_display_with_sort(
+                &mut tasks,
+                task_sort,
+                today,
+                buffer_days,
+            );
 
             if tasks.is_empty() {
                 println!("No {} tasks found.", filter);
@@ -1603,83 +1562,48 @@ async fn main() -> Result<()> {
                 println!();
                 print_dashboard(&tasks, &filter);
                 println!();
-                if is_flow {
-                    println!(
-                        "  {}PRI  {:<45}  {:>7}  {:>7}  {:>10}  {:<14}{}",
-                        colors::BOLD,
-                        "TITLE",
-                        "GAIN",
-                        "LOSS",
-                        "DUE",
-                        "ID",
-                        colors::RESET
-                    );
-                    println!("  {}", "\u{2500}".repeat(width.saturating_sub(4)));
+                println!(
+                    "  {}PRI  {:<45}  {:>7}  {:>7}  {:>10}  {:<14}{}",
+                    colors::BOLD,
+                    "TITLE",
+                    "GAIN",
+                    "LOSS",
+                    "DUE",
+                    "ID",
+                    colors::RESET
+                );
+                println!("  {}", "\u{2500}".repeat(width.saturating_sub(4)));
 
-                    for task in &tasks {
-                        let pri = task.intent.unwrap_or(4);
-                        let color = pri_color(pri);
-                        let gain_str = task
-                            .flow
-                            .as_ref()
-                            .and_then(|f| f.gain)
-                            .map(|g| format!("{:.2}", g))
-                            .unwrap_or_else(|| "-".to_string());
-                        let loss_str = task
-                            .flow
-                            .as_ref()
-                            .and_then(|f| f.loss_averted)
-                            .map(|l| format!("{:.2}", l))
-                            .unwrap_or_else(|| "-".to_string());
-                        let due_str = task.due.as_deref().unwrap_or("-");
-                        let tid = task.task_id.as_deref().unwrap_or(&task.id);
-                        let age = days_since_created(task.created.as_deref())
-                            .map(|d| format!("  {}", format_staleness(d)))
-                            .unwrap_or_default();
-                        println!(
-                            "  {color}P{pri}{}   {:<45}  {:>7}  {:>7}  {:>10}  {}[{tid}]{}{age}",
-                            colors::RESET,
-                            task.label,
-                            gain_str,
-                            loss_str,
-                            due_str,
-                            colors::DIM_GRAY,
-                            colors::RESET,
-                        );
-                    }
-                } else {
+                for task in &tasks {
+                    let pri = task.intent.unwrap_or(4);
+                    let color = pri_color(pri);
+                    let gain_str = task
+                        .flow
+                        .as_ref()
+                        .and_then(|f| f.gain)
+                        .map(|g| format!("{:.2}", g))
+                        .unwrap_or_else(|| "-".to_string());
+                    let loss_str = task
+                        .flow
+                        .as_ref()
+                        .and_then(|f| f.loss_averted)
+                        .map(|l| format!("{:.2}", l))
+                        .unwrap_or_else(|| "-".to_string());
+                    let due_str = task.due.as_deref().unwrap_or("-");
+                    let tid = task.task_id.as_deref().unwrap_or(&task.id);
+                    let age = days_since_created(task.created.as_deref())
+                        .map(|d| format!("  {}", format_staleness(d)))
+                        .unwrap_or_default();
                     println!(
-                        "  {}PRI  {:<50}  {:>6}  {:<14}{}",
-                        colors::BOLD,
-                        "TITLE",
-                        "WEIGHT",
-                        "ID",
-                        colors::RESET
+                        "  {color}P{pri}{}   {:<45}  {:>7}  {:>7}  {:>10}  {}[{tid}]{}{age}",
+                        colors::RESET,
+                        task.label,
+                        gain_str,
+                        loss_str,
+                        due_str,
+                        colors::DIM_GRAY,
+                        colors::RESET,
                     );
-                    println!("  {}", "\u{2500}".repeat(width.saturating_sub(4)));
-
-                    for task in &tasks {
-                        let pri = task.intent.unwrap_or(4);
-                        let color = pri_color(pri);
-                        let weight = if task.downstream_weight > 0.0 {
-                            format!("{:.1}", task.downstream_weight)
-                        } else {
-                            "-".to_string()
-                        };
-                        let exposure = if task.stakeholder_exposure { "!" } else { "" };
-                        let tid = task.task_id.as_deref().unwrap_or(&task.id);
-                        let age = days_since_created(task.created.as_deref())
-                            .map(|d| format!("  {}", format_staleness(d)))
-                            .unwrap_or_default();
-                        println!(
-                            "  {color}P{pri}{exposure}{} {:<50}  {:>5}  {}[{tid}]{}{age}",
-                            colors::RESET,
-                            task.label,
-                            weight,
-                            colors::DIM_GRAY,
-                            colors::RESET,
-                        );
-                    }
                 }
                 println!(
                     "\n  {}{} {} tasks{}",
@@ -1698,7 +1622,7 @@ async fn main() -> Result<()> {
 
                 // ── Focus picks (only for default ready view) ──
                 if matches!(filter, TaskFilter::Ready) {
-                    let pick_ids = gs.focus_picks_active(5);
+                    let pick_ids = gs.focus_picks(5);
                     let picks: Vec<&graph::GraphNode> =
                         pick_ids.iter().filter_map(|id| gs.get_node(id)).collect();
                     if !picks.is_empty() {
@@ -1742,7 +1666,7 @@ async fn main() -> Result<()> {
 
         Commands::Focus { limit } => {
             let gs = load_graph(&pkb_root, &db_path, None);
-            let pick_ids = gs.focus_picks_active(limit);
+            let pick_ids = gs.focus_picks(limit);
 
             if pick_ids.is_empty() {
                 println!("No focus tasks.");
@@ -1803,44 +1727,32 @@ async fn main() -> Result<()> {
                         println!("    {line}");
                     }
 
-                    // --- Weight / Metrics ---
-                    if gs.ranking_mode() == mem::polecat_config::RankingMode::Flow {
-                        if let Some(ref flow) = node.flow {
-                            println!("\n  \x1b[1mFlow:\x1b[0m");
-                            if let Some(gain) = flow.gain {
-                                println!("    Gain:            {:.2}", gain);
-                            }
-                            if let Some(loss) = flow.loss_averted {
-                                println!("    Loss averted:    {:.2}", loss);
-                            }
-                            if let Some(dec) = flow.decision_value {
-                                println!("    Decision value:  {:.2}", dec);
-                            }
-                            println!("    Status:          {:?}", flow.flow_status);
-                            for (target, val) in &flow.stake {
-                                println!("    Stake [{}]:      {:.2}", target, val);
-                            }
-                            for (target, val) in &flow.loop_extra {
-                                println!("    Loop extra [{}]: {:.2}", target, val);
-                            }
-                            if let Some((_routes, _trunc, explanation)) =
-                                gs.routes_for_node(&node.id)
-                            {
-                                if !explanation.is_empty() {
-                                    println!("    Explanation:     {explanation}");
-                                }
+                    // --- Flow figures ---
+                    if let Some(ref flow) = node.flow {
+                        println!("\n  \x1b[1mFlow:\x1b[0m");
+                        if let Some(gain) = flow.gain {
+                            println!("    Gain:            {:.2}", gain);
+                        }
+                        if let Some(loss) = flow.loss_averted {
+                            println!("    Loss averted:    {:.2}", loss);
+                        }
+                        if let Some(dec) = flow.decision_value {
+                            println!("    Decision value:  {:.2}", dec);
+                        }
+                        println!("    Status:          {:?}", flow.flow_status);
+                        for (target, val) in &flow.stake {
+                            println!("    Stake [{}]:      {:.2}", target, val);
+                        }
+                        for (target, val) in &flow.loop_extra {
+                            println!("    Loop extra [{}]: {:.2}", target, val);
+                        }
+                        if let Some((_routes, _trunc, explanation)) =
+                            gs.routes_for_node(&node.id)
+                        {
+                            if !explanation.is_empty() {
+                                println!("    Explanation:     {explanation}");
                             }
                         }
-                    } else if node.downstream_weight > 0.0 {
-                        println!(
-                            "\n  Weight: {:.2}{}",
-                            node.downstream_weight,
-                            if node.stakeholder_exposure {
-                                " (stakeholder exposure)"
-                            } else {
-                                ""
-                            }
-                        );
                     }
 
                     // --- Body ---
@@ -1922,34 +1834,18 @@ async fn main() -> Result<()> {
                         std::process::exit(1);
                     }
                     let node = node.unwrap();
-                    let is_flow = gs.ranking_mode() == mem::polecat_config::RankingMode::Flow;
-                    let (dw, se) = if is_flow {
-                        (None, None)
-                    } else {
-                        (
-                            Some(node.downstream_weight),
-                            Some(node.stakeholder_exposure),
-                        )
-                    };
-                    let m = metrics::compute_network_metrics(nid, &node_ids, edges, dw, se);
+                    let m = metrics::compute_network_metrics(nid, &node_ids, edges);
                     if let Some(m) = m {
                         println!();
                         println!("  \x1b[1m{}\x1b[0m", node.label);
                         println!("  In-degree:           {}", m.in_degree);
                         println!("  Out-degree:          {}", m.out_degree);
-                        if let Some(dw) = m.downstream_weight {
-                            println!("  Downstream weight:   {:.2}", dw);
-                        }
-                        if let Some(se) = m.stakeholder_exposure {
-                            println!("  Stakeholder:         {}", se);
-                        }
                         println!("  Betweenness:         {:.4}", m.betweenness);
                         println!("  PageRank:            {:.4}", m.pagerank);
                         println!();
                     }
                 }
                 None => {
-                    let is_flow = gs.ranking_mode() == mem::polecat_config::RankingMode::Flow;
                     let pr = metrics::compute_pagerank(&node_ids, edges);
                     let bc = metrics::compute_betweenness_centrality(&node_ids, edges);
                     let degrees = metrics::compute_degrees(&node_ids, edges);
@@ -1991,55 +1887,25 @@ async fn main() -> Result<()> {
                     let print_ready = |title: &str, nodes: &[&graph::GraphNode]| {
                         println!();
                         println!("  \x1b[1m=== Top 20 {} ===\x1b[0m", title);
-                        if is_flow {
+                        println!(
+                            "  {:<35} {:>4} {:>8} {:>8}",
+                            "TASK", "PRI", "PAGERANK", "BETWEEN"
+                        );
+                        println!("  {}", "-".repeat(59));
+                        for node in nodes.iter().take(20) {
+                            let p = pr.get(node.id.as_str()).copied().unwrap_or(0.0);
+                            let b = bc.get(node.id.as_str()).copied().unwrap_or(0.0);
                             println!(
-                                "  {:<35} {:>4} {:>8} {:>8}",
-                                "TASK", "PRI", "PAGERANK", "BETWEEN"
+                                "  {:<35} P{:<3} {:>8.4} {:>8.4}",
+                                trunc(&node.label, 35),
+                                node.intent.unwrap_or(4),
+                                p,
+                                b
                             );
-                            println!("  {}", "-".repeat(59));
-                            for node in nodes.iter().take(20) {
-                                let p = pr.get(node.id.as_str()).copied().unwrap_or(0.0);
-                                let b = bc.get(node.id.as_str()).copied().unwrap_or(0.0);
-                                println!(
-                                    "  {:<35} P{:<3} {:>8.4} {:>8.4}",
-                                    trunc(&node.label, 35),
-                                    node.intent.unwrap_or(4),
-                                    p,
-                                    b
-                                );
-                            }
-                        } else {
-                            println!(
-                                "  {:<35} {:>4} {:>6} {:>8} {:>8}",
-                                "TASK", "PRI", "D.WT", "PAGERANK", "BETWEEN"
-                            );
-                            println!("  {}", "-".repeat(65));
-                            for node in nodes.iter().take(20) {
-                                let p = pr.get(node.id.as_str()).copied().unwrap_or(0.0);
-                                let b = bc.get(node.id.as_str()).copied().unwrap_or(0.0);
-                                let exposure = if node.stakeholder_exposure { "!" } else { "" };
-                                println!(
-                                    "  {:<35} P{:<3} {:>5.1}{} {:>8.4} {:>8.4}",
-                                    trunc(&node.label, 35),
-                                    node.intent.unwrap_or(4),
-                                    node.downstream_weight,
-                                    exposure,
-                                    p,
-                                    b
-                                );
-                            }
                         }
                     };
 
-                    let mut ready_nodes = gs.ready_tasks();
-                    if !is_flow {
-                        ready_nodes.sort_by(|a, b| {
-                            b.downstream_weight
-                                .partial_cmp(&a.downstream_weight)
-                                .unwrap_or(std::cmp::Ordering::Equal)
-                        });
-                        print_ready("Ready Tasks by Downstream Weight", &ready_nodes);
-                    }
+                    let ready_nodes = gs.ready_tasks();
 
                     let mut ready_by_pr: Vec<_> = ready_nodes
                         .iter()
@@ -3756,7 +3622,6 @@ fn to_filter_set(args: &BatchFilterArgs) -> mem::batch_ops::filters::FilterSet {
         } else {
             None
         },
-        weight_gte: args.weight_gte,
     }
 }
 
@@ -4805,16 +4670,8 @@ fn format_complexity(complexity: &str) -> String {
 fn format_task_line(task: &graph::GraphNode, width: usize) -> String {
     let pri = task.intent.unwrap_or(4);
     let color = pri_color(pri);
-    let exposure = if task.flow.is_some() {
-        " "
-    } else if task.stakeholder_exposure {
-        "!"
-    } else {
-        " "
-    };
-
     // Left: priority + label
-    let left = format!("{color}P{pri}{exposure}{} {}", colors::RESET, task.label);
+    let left = format!("{color}P{pri} {} {}", colors::RESET, task.label);
 
     // Right: metadata pieces
     let mut right_parts: Vec<String> = Vec::new();
@@ -4826,13 +4683,6 @@ fn format_task_line(task: &graph::GraphNode, width: usize) -> String {
         if let Some(loss) = flow.loss_averted {
             right_parts.push(format!("{}l:{:.2}{}", colors::DIM, loss, colors::RESET));
         }
-    } else if task.downstream_weight > 0.0 {
-        right_parts.push(format!(
-            "{}wt:{:.1}{}",
-            colors::DIM,
-            task.downstream_weight,
-            colors::RESET
-        ));
     }
     if let Some(ref cx) = task.complexity {
         right_parts.push(format_complexity(cx));

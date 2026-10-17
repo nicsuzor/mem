@@ -361,16 +361,11 @@ fn migration_applies_converts_parent_to_contributes_to() {
         .count();
     assert_eq!(dup, 1, "idempotent merge must not duplicate the edge");
 
-    // Weight still flows: the target accrues downstream_weight from its contributors.
+    // The target still sees the migrated task as a contributor.
     let target = graph.resolve("targ-strategy").expect("targ-strategy");
     assert!(
         target.contributed_by.contains(&"task-child".to_string()),
         "target.contributed_by must include the migrated task"
-    );
-    assert!(
-        target.downstream_weight > 0.0,
-        "weight must propagate to the target, got {}",
-        target.downstream_weight
     );
 
     // Regression: the legitimately-parented task is untouched.

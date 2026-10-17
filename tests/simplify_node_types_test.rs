@@ -205,45 +205,6 @@ fn test_contributes_to_float_multiplier_and_weight_propagation() {
 }
 
 #[test]
-fn test_contributes_to_multiplier_graph_store_propagation() {
-    let tmp = tempfile::tempdir().unwrap();
-    let root = tmp.path().to_path_buf();
-    fs::create_dir_all(root.join("targets")).unwrap();
-    fs::create_dir_all(root.join("tasks")).unwrap();
-
-    // Target targ_001
-    fs::write(
-        root.join("targets/targ_001.md"),
-        "---\nid: targ_001\ntitle: Goal Target\ntype: target\nstatus: ready\nstanding_weight: 1.0\n---\nTarget.\n",
-    )
-    .unwrap();
-
-    // Task 1: multiplier 0.5
-    fs::write(
-        root.join("tasks/task_mult_half.md"),
-        "---\nid: task_mult_half\ntitle: Half Multiplier Task\ntype: task\nstatus: ready\ncontributes_to:\n  - target: targ_001\n    weight: \"fifty-fifty\"\n    multiplier: 0.5\n---\n## Acceptance criteria\n- Done\n",
-    )
-    .unwrap();
-
-    // Task 2: multiplier 1.0 (default)
-    fs::write(
-        root.join("tasks/task_mult_one.md"),
-        "---\nid: task_mult_one\ntitle: Full Multiplier Task\ntype: task\nstatus: ready\ncontributes_to:\n  - target: targ_001\n    weight: \"fifty-fifty\"\n---\n## Acceptance criteria\n- Done\n",
-    )
-    .unwrap();
-
-    let store = GraphStore::build_from_directory(&root);
-    let target = store.get_node("targ_001").expect("target must exist");
-    assert!(target.downstream_weight > 0.0);
-
-    let task_half = store.get_node("task_mult_half").unwrap();
-    let task_one = store.get_node("task_mult_one").unwrap();
-    // task_one has double the value lineage of task_half because of the 0.5 multiplier (0.5 vs 0.25 effective weight)
-    assert!(task_half.value_lineage > 0.0);
-    assert!((task_one.value_lineage - 2.0 * task_half.value_lineage).abs() < 1e-4);
-}
-
-#[test]
 fn test_bounded_float_weights_and_multiplier_reject_nan_inf() {
     assert!(!ContributesTo::is_recognized_weight("NaN"));
     assert!(!ContributesTo::is_recognized_weight("inf"));
