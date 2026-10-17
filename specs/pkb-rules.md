@@ -21,7 +21,7 @@ Companion specifications hold the mechanisms these rules sit on, and this docume
 
 | Mechanism | Where |
 | --- | --- |
-| Ranking engine: `focus_tuple`, `cost_of_delay`, `urgency`, `effective_intent`, the severity ladder and verbal weight scale as computed | `specs/ranking.md` |
+| Ranking engine: the flow rule (`gain`, `loss_averted`, `decision_value` from links and target `worth`), the stored fields it reads, and the `display_cmp` ordering | `specs/flow-rule.md`, `specs/pkb-flow-engine.md`, `specs/ranking.md` |
 | Node types and the two-tier target/work taxonomy | `specs/pkb-type-taxonomy.md`, `references/TAXONOMY.md` |
 | Status values, transitions and the task tool surface | `references/TAXONOMY.md` §Status Values and Transitions, `specs/work-management.md` |
 | Write-path mechanics (in-place patch, deferred re-embed, compare-and-swap) | `specs/pkb-server-spec.md`, `.agent/CORE.md` |
@@ -225,7 +225,7 @@ Nic, 2026-09-11: "consolidate related tasks under a single epic where possible, 
 
 Nic, 2026-09-18, as a standing mandate for every session:
 
-- Related tasks never sit flat under a parent without internal structure. Intermediate epics compress complexity and distribute downstream weight; avoid flat links from a goal to hundreds of leaves.
+- Related tasks never sit flat under a parent without internal structure. Intermediate epics compress complexity; avoid flat links from a goal to hundreds of leaves.
 - Whenever a task is added, touched or observed, neighbouring tasks are checked for overlap.
 - Curation actions: consolidate overlapping tasks into one task with scoped subtasks; cluster under a parent that cleanly bounds the work; deduplicate; sequence with `depends_on`; weight `contributes_to` edges to reflect real leverage.
 - When capture finds an existing task for the same thing, the new context merges into the existing node rather than creating a twin. Repeatedly hitting the same obstacle is evidence for a higher intent band.
@@ -333,7 +333,7 @@ Status values and transitions are specified in `references/TAXONOMY.md`. The rul
 
 ## 6. Prioritisation
 
-This section holds the rules agents apply when they evaluate stakes, targets and edge weights. The engine that consumes the values is `specs/ranking.md`.
+This section holds the rules agents apply when they evaluate stakes, targets and edge weights. The engine that consumes the values is `specs/flow-rule.md` and `specs/pkb-flow-engine.md`; it reads links and target `worth`, and keeps `intent`, `severity`, `stakeholder`, `waiting_since` and `consequence` as stored fields it never reads (`specs/pkb-flow-engine.md` §3.4).
 
 ### 6.1. The signals are orthogonal
 
@@ -344,7 +344,7 @@ Collapsing intent, stakes, likelihood and deadlines into one "importance" knob b
 | Intent | `intent` (0–4; lower is sooner) | Nic's focus allocation | §6.3 |
 | Severity | `severity` (integer, targets only) | Worst realistic magnitude if the target fails | §6.2 |
 | Contribution | `contributes_to` edge: `stated_weight` and an optional certainty discount | How much of the target this work delivers, and how sure that is | §6.4 |
-| Clock | `due` (ISO date) | A real external or contractual deadline | Never a proxy for urgency. Deadline pressure multiplies a node's value; a node with no value has nothing to amplify. |
+| Clock | `due` (ISO date) | A real external or contractual deadline | Never a proxy for urgency. A date never changes a flow figure; with `deadline_class: hard` it surfaces the node in the cliff lane as the date nears (`specs/flow-rule.md` §7). |
 | Rationale | `consequence` (text) | Why a severity was assigned | Explanatory prose for readers. The ranking engine never parses it. |
 
 ### 6.2. Severity
@@ -352,11 +352,11 @@ Collapsing intent, stakes, likelihood and deadlines into one "importance" knob b
 - **Severity is magnitude and belongs only to targets** (`type: target`). Never write `severity` on a task or epic; work inherits stakes through `contributes_to`.
 - **The worst realistic consequence sets severity.** Likelihood belongs on the edge. Never lower a target's severity because failure seems unlikely: that double-counts the discount the edge already carries.
 - **Severity is the integer field**, never read from `consequence` prose or `severity-*` tags.
-- **Ladder.** SEV4 "Catastrophic": terminal, non-negotiable, existential failure (loss of employment, academic misconduct, bankruptcy, severe health failure), a lexicographic override that applies only with `goal_type: committed` (`specs/ranking.md` §6). SEV3: severe institutional, legal or major compliance failure. SEV2: substantial professional deliverables and core commitments. SEV1: routine operational responsibilities and courtesies. SEV0: negligible.
+- **Ladder.** SEV4 "Catastrophic": terminal, non-negotiable, existential failure (loss of employment, academic misconduct, bankruptcy, severe health failure). SEV3: severe institutional, legal or major compliance failure. SEV2: substantial professional deliverables and core commitments. SEV1: routine operational responsibilities and courtesies. SEV0: negligible.
 - **Calibration anchors** (Nic-confirmed): teaching deliverables (marks owed) SEV4 committed; research compliance (ethics, reporting, governance) SEV3 committed; peer-review obligations SEV2 committed; active collaborations with owed work SEV2; travel and accommodation arranged SEV2 committed; research-student responses SEV1; courtesy to loose contacts SEV1.
 - **Standing targets.** Keep a small reusable set of failure-type targets; do not mint bespoke targets per task.
-- **Uneven severity is not a defect.** SEV1–SEV3 are compensatory; differentiation below SEV4 comes from edge weights, not from spreading severity. An empty SEV4 band means nothing is currently existential, which is the desired state. Never mint a SEV4 target to exercise the gate.
-- **Populate at creation.** A node created with no severity-bearing `contributes_to` edge and no stakeholder scores near zero on every channel. Route creation through the planner.
+- **Uneven severity is not a defect.** Differentiation comes from target `worth` and link values, not from spreading severity. An empty SEV4 band means nothing is currently existential, which is the desired state (`specs/flow-rule.md` §4.5). Never mint a SEV4 target to fill it.
+- **Populate at creation.** A node created with no link to a priced target is worth zero (`specs/flow-rule.md` §0). Route creation through the planner.
 
 ### 6.3. Intent
 
@@ -371,8 +371,8 @@ Collapsing intent, stakes, likelihood and deadlines into one "importance" knob b
 
 ### 6.4. Contribution edges
 
-- **Weight and certainty are separate.** Weight is how much of the target the work delivers or protects; certainty is an optional discount on that contribution, defaulting to 1.00. Edge strength = weight × certainty. Nic, 2026-10-02: "edges must have a way to set uncertainty discount. default to 1.00; if present, edge strength = weight * certainty." The engine's edge fields are `specs/ranking.md` §7 and §7.1.
-- **`stated_weight` uses the verbal contribution-weight scale** (`specs/ranking.md` §7). Type the term from the table exactly: matching forgives case only, and an unrecognised or padded term scores zero.
+- **Weight and certainty are separate.** Weight is how much of the target the work delivers or protects; certainty is an optional discount on that contribution, defaulting to 1.00. Edge strength = weight × certainty. Nic, 2026-10-02: "edges must have a way to set uncertainty discount. default to 1.00; if present, edge strength = weight * certainty." The engine reads a `contributes_to` edge as a `serves` link whose quantum is the stated weight, capped at 1.0, and whose probability is the certainty (`specs/pkb-flow-engine.md` R7).
+- **`stated_weight` uses the verbal contribution-weight scale** (`ContributesTo::numeric_weight` in `src/graph.rs`; `specs/flow-migration.md` §5.2). Type the term from the table exactly: matching forgives case only, and an unrecognised or padded term scores zero.
 - **Elicitation anchors** describe the contributor's real relationship to the target: `certain`, the sole work delivering or unblocking it; `probable`, an owed deliverable with a stakeholder waiting; `expected`, one among several contributing efforts; `uncertain`, a speculative or exploratory contribution. Use `certain` sparingly.
 - **Quick wins get `unlikely` (0.15)**, the scale floor: real but small, visible without competing with substantial epics (Nic, 2026-08-21: "quick wins, give them each a baseline minimum positive weight"). Not `uncertain`, and not an omitted weight.
 - **An omitted weight is a deliberately unstated edge**, scoring zero without warning.
@@ -381,8 +381,8 @@ Collapsing intent, stakes, likelihood and deadlines into one "importance" knob b
 
 ### 6.5. Scoring authority
 
-- **The working agent never values its own work.** `focus_score` and every signal feeding it (`severity`, `stakeholder`, `waiting_since`, `contributes_to.stated_weight`) are derived measures. Nic, 2026-08-22: "i'm happy for a smart agent directly under ida to derive focus measures from my strategic context, but i'm not happy for unsupervised agents to guess at how important their little bit of work is to me." Two tests separate the endorsed case: who (a supervised scorer, never the agent doing the work being scored) and from what (Nic's strategic context read across the graph, never the scorer's impression of the slice in front of it).
-- A working agent may record a fact that feeds the score when the fact has an author outside the agent (a `due` date someone else set, a stakeholder genuinely waiting, a `consequence`). It may not choose those values to move a ranking.
+- **The working agent never values its own work.** The flow figures and every value feeding them (target `worth`, link quanta and probabilities, `contributes_to.stated_weight`) are derived measures. Nic, 2026-08-22: "i'm happy for a smart agent directly under ida to derive focus measures from my strategic context, but i'm not happy for unsupervised agents to guess at how important their little bit of work is to me." Two tests separate the endorsed case: who (a supervised scorer, never the agent doing the work being scored) and from what (Nic's strategic context read across the graph, never the scorer's impression of the slice in front of it).
+- A working agent may record a fact when the fact has an author outside the agent (a `due` date someone else set, a stakeholder genuinely waiting, a `consequence`). It may not choose those values to move a ranking.
 - A working agent asserts contribution, not valuation: a `contributes_to` edge with its justification, leaving `stated_weight` unset unless Nic states it or a supervised scorer derives it.
 - **When a ranking looks wrong**, never self-assign intent or weight as a shortcut. Surface the discrepancy.
 - **There is no `focus:` boost override.** Verbal-scale edge weights carry that job.
@@ -390,9 +390,9 @@ Collapsing intent, stakes, likelihood and deadlines into one "importance" knob b
 
 ### 6.6. One ranking signal
 
-- The queue has exactly one ranking signal, the `focus_tuple` (`specs/ranking.md` §1). Never rank by `focus_score`, compare two tasks with it, or explain a queue position with it; it is a display number.
-- **A visualisation is a projection of the tuple, never a second engine.** If a picture shows a task crossing the severity horizon, the queue already ranks it there.
-- **Urgency is encoded once.** A treemap encodes the ranking through tile size as a projection of queue rank, and nothing else encodes urgency: no deadline borders, countdown badges or colour overrides, which double-count deadline pressure and present a partial measure. Severity is a separate axis and keeps its own emphasis channel.
+- The queue has exactly one ordering, `display_cmp` (`specs/ranking.md` §3): the hard-deadline cliff lane first, then `gain + loss_averted` descending. Never explain a queue position with any other number.
+- **A visualisation is a projection of that ordering and the flow figures, never a second engine.** If a picture shows a task in the cliff lane, the queue already ranks it there.
+- **Urgency is encoded once.** A treemap encodes the ranking through tile size as a projection of the display order, and nothing else encodes urgency: no deadline borders, countdown badges or colour overrides, which double-count the deadline and present a partial measure. Severity is a separate axis and keeps its own emphasis channel.
 
 ### 6.7. Model fidelity before formula tuning
 
@@ -400,7 +400,7 @@ Nic, 2026-09-15: "let's get the model reflecting the world first, and then we ca
 
 No change to the scoring formulas (weights, ladders, multipliers, coefficients) is proposed while the inputs they read are incomplete or wrong. Diagnose a bad ranking as a missing or wrong value first; a formula tuned against an incomplete value layer is fitted to noise and hides the real defect.
 
-- **Proceed (model fidelity):** filling a missing `severity`; supplying a missing standing weight; wiring absent or correcting misplaced `contributes_to` edges; bugs where a computed signal misreads the graph; rendering defects; doc-truth corrections.
+- **Proceed (model fidelity):** filling a missing `severity`; supplying a missing target `worth`; wiring absent or correcting misplaced `contributes_to` edges; bugs where a computed signal misreads the graph; rendering defects; doc-truth corrections.
 - **Parked until the value layer is complete:** rebalancing one term against another, rescaling multipliers, tie-breaker coefficients.
 - **Check readiness before values.** A task missing from the queue is first checked for triage (status, acceptance criteria, leaf, unmet dependencies). An untriaged task stays invisible whatever its value.
 
@@ -408,18 +408,18 @@ No change to the scoring formulas (weights, ladders, multipliers, coefficients) 
 
 These constraints bind every future change to the score.
 
-- **The failure the design replaced was mixing units, not mixing signal types.** Catastrophic consequences are gates, not points (and only that class: a deadline is pressure, not a gate); commensurable pressure denominates in one currency, cost of delay, with deadline pressure multiplying a node's value; personal priorities enter as elicited channels that actually move the ranking.
-- **Three channels of judgment, kept apart.** Standing values are slow and structural: target weights elicited once on verbal anchors and stored on the target; the author prices the destinations and the engine prices the routes. Episodic steering ("this week I want to push X") is a time-boxed boost with an explicit expiry, never a mutation of a stable field. In-the-moment triage (energy, mood, context) stays out of the stored graph: a query-time filter, not a write. Priority bands rot when a transient intention is stored in a permanent field.
+- **The failure the design replaced was mixing units, not mixing signal types.** Catastrophic consequences sit on a floor outside the maths, not in it (`specs/flow-rule.md` §4.5); commensurable value denominates in one currency, target `worth`, flowing to work along links; a deadline never changes a figure and surfaces work only through the hard-deadline cliff lane (`specs/flow-rule.md` §7).
+- **Three channels of judgment, kept apart.** Standing values are slow and structural: target worth elicited once on anchor words and stored on the target; the author prices the destinations and the engine prices the routes. Episodic steering ("this week I want to push X") is a time-boxed boost with an explicit expiry, never a mutation of a stable field. In-the-moment triage (energy, mood, context) stays out of the stored graph: a query-time filter, not a write. Priority bands rot when a transient intention is stored in a permanent field.
 - **Decay belongs only to the episodic boost.** An elicited weight going stale is a prompt to re-elicit at the next planning session, never an automatic decrement.
 - **Uncertainty is elicited, not inferred from formatting.** A node must contain an open question whose answer would change downstream work, and that answer must gate genuinely divergent paths. Structural completeness (acceptance criteria, body length, child count) is a triage lint and may gate inbox-to-ready classification; it never raises a rank.
 - **Deliberately not built**, so not proposed again: Birnbaum importance proper (structure functions, cut sets, partial derivatives), POMDPs, per-item pairwise AHP.
-- **Deliberately impure**, not a defect to normalise away: the severity gate, stakeholder-waiting as its own cost-of-delay component, the affordable-loss filter, and elicited weights wherever outcome data does not exist.
-- **How the model is judged.** By review and reasoning against the shipped code, not a frozen regression corpus. Four properties define good: a documentation-hygiene artefact falls out of the top of the queue; an overdue task outranks its day-before self; honestly recording effort never lowers a task's own rank; the importance channel shows real dynamic range across the corpus. Calibration cases the model must order correctly: an undated P0 above a low-value overdue email; a certain contribution to a well-priced target above an overdue email tied to a barely-priced one; a named-stakeholder task long overdue above both.
+- **Deliberately impure**, not a defect to normalise away: the must-not-miss floor outside the maths (`specs/flow-rule.md` §4.5, §7), and elicited worths and link values wherever outcome data does not exist.
+- **How the model is judged.** By review and reasoning against the shipped code, not a frozen regression corpus. Three properties define good: a documentation-hygiene artefact falls out of the top of the queue; honestly recording effort never lowers a task's own rank; the importance channel shows real dynamic range across the corpus. Calibration case the model must order correctly: a certain contribution to a well-priced target above an overdue email tied to a barely-priced one.
 
 ### 6.9. Closed exclusions
 
-- **Expected utility** is absorbed into the VoI term. No separate expected-utility signal exists.
-- **Nothing infers or defaults a `standing_weight`.** An unpriced target contributes nothing to value lineage.
+- **Expected utility** is absorbed into the flow, which chains link probabilities along each path to a priced target (`specs/flow-rule.md` §4.6). No separate expected-utility signal exists.
+- **Nothing infers or defaults a target's `worth`.** An unpriced target has worth 0 and passes nothing to the work that serves it (`specs/pkb-flow-engine.md` R9).
 
 ---
 

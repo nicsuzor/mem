@@ -23,7 +23,7 @@ tags:
 > 4. **Differing fields accepted empty**:
 >    - `target` accepts empty `severity`, `consequence`, and `due` (subsuming qualitative/aspirational goals alongside quantifiable targets).
 >    - `task` accepts empty `parent` (allowing top-level/root containers without requiring an artificial epic wrapper).
-> 5. **`contributes_to` float multiplier $x$**: Edges support an optional `multiplier` (alias `x`), scaling verbal or raw float weights ($x \times \text{weight}$) into urgency, value lineage, and downstream weight.
+> 5. **`contributes_to` float multiplier $x$**: Edges support an optional `multiplier` (alias `x`), scaling verbal or raw float weights ($x \times \text{weight}$) into the quantum of the flow `serves` link the edge maps to (`specs/pkb-flow-engine.md` R7).
 >
 > **`project` is no longer a node type.** "Project" is the narrow operational name for a polecat-registered repo, carried as the `project: <slug>` metadata field on tasks. See [[TAXONOMY]] §"Project (operational routing field)" and [[areas-not-projects]].
 
@@ -31,7 +31,7 @@ tags:
 
 The PKB simplifies the node taxonomy into two structural categories:
 
-- **`target` — strategic destination (why / what).** An out-of-tree destination (never a parent, never parented, never in "to-do" queues) subsuming former goals, targets, and capabilities. A target may be qualitative/identity-level (empty `severity`, `consequence`, and `due`) or measurable/time-bound (with `severity` SEV0–SEV4, `consequence`, and `due`). Standing value is priced via `standing_weight` (float 0.0..=1.0). Work connects to targets via `contributes_to`.
+- **`target` — strategic destination (why / what).** An out-of-tree destination (never a parent, never parented, never in "to-do" queues) subsuming former goals, targets, and capabilities. A target may be qualitative/identity-level (empty `severity`, `consequence`, and `due`) or measurable/time-bound (with `severity` SEV0–SEV4, `consequence`, and `due`). Standing value is priced via `worth` (`specs/pkb-flow-engine.md` R9; `standing_weight`, float 0.0..=1.0, is read as `worth` until the migration retires it). Work connects to targets via `contributes_to`.
 - **`task` / `learn` / `pr` — actionable work (how).** Actionable work items. `task` subsumes all discrete deliverables and container epics: a task with no `parent` acts as a top-level root; a task with children acts as a container; a task without children acts as an executable leaf. `learn` tracks hypotheses/observations (excluded from `ready`), and `pr` tracks code changes.
 
 Linkage (out-of-tree, via `contributes_to`): `task → target`. Linkage is metadata, not tree structure. Target weight propagates through `contributes_to` edges scaled by the edge's stated weight and float multiplier.
@@ -249,10 +249,7 @@ The decision is grounded in four concrete reasons:
 4. **Ergonomic Simplicity and Clean Propagation**:
    The float `multiplier` (alias `x`) cleanly scales the verbal anchor or raw float:
    $$W_{\text{effective}} = x \times W_{\text{base}}$$
-   This propagates seamlessly across all three engine pipelines:
-   - **Downstream Weight**: Accumulated via reverse BFS edge product: $w = \text{ct.numeric\_weight}()$.
-   - **Urgency Propagation**: Neighbor edge factor: $\text{edge\_factor} = \text{ct.numeric\_weight}()$.
-   - **Value Lineage**: Direct standing weight flow: $\text{lineage} = K_{\text{VL}} \times \text{confidence} \times \text{ct.numeric\_weight}() \times \text{standing\_weight}$.
+   The flow engine reads the scaled weight, $\text{ct.numeric\_weight}()$ capped at 1.0, as the quantum of the `serves` link the edge maps to (`specs/pkb-flow-engine.md` R7).
 
 A single float `multiplier` completely satisfies the requirements without introducing dead schema terms.
 
