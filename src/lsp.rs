@@ -729,8 +729,8 @@ impl LspServer {
                 // Try finding by parsing frontmatter id or stem
                 for line in content.lines() {
                     let trimmed = line.trim();
-                    if trimmed.starts_with("id:") {
-                        let id_val = trimmed["id:".len()..].trim().trim_matches('"').trim_matches('\'');
+                    if let Some(rest) = trimmed.strip_prefix("id:") {
+                        let id_val = rest.trim().trim_matches('"').trim_matches('\'');
                         if !id_val.is_empty() {
                             found = graph.resolve(id_val).cloned();
                             break;
