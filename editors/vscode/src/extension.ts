@@ -562,6 +562,14 @@ export class PkbPreviewIndex {
     return resolved.startsWith(rootResolved + path.sep);
   }
 
+  public getAllNodes(): readonly PkbPreviewNode[] {
+    return this.nodes;
+  }
+
+  public resolveByPath(filePath: string): PkbPreviewNode | undefined {
+    return this.byAbsPath.get(path.resolve(filePath));
+  }
+
   public resolve(rawTarget: string): PkbPreviewNode | undefined {
     if (!rawTarget) {
       return undefined;
@@ -654,29 +662,192 @@ function escapeHtml(text: string): string {
     .replace(/'/g, '&#39;');
 }
 
-function formatPlainTooltip(node: PkbPreviewNode): string {
+export function typeCodicon(nodeType?: string): string {
+  switch (nodeType?.toLowerCase()) {
+    case 'task':
+    case 'subtask':
+      return '$(checklist)';
+    case 'note':
+      return '$(note)';
+    case 'knowledge':
+    case 'doc':
+    case 'reference':
+      return '$(book)';
+    case 'memory':
+      return '$(history)';
+    case 'project':
+    case 'epic':
+      return '$(project)';
+    case 'pr':
+      return '$(git-pull-request)';
+    case 'spec':
+    case 'template':
+      return '$(file-code)';
+    default:
+      return '$(symbol-misc)';
+  }
+}
+
+export function statusCodicon(status?: string): string {
+  switch (status?.toLowerCase()) {
+    case 'ready':
+      return '$(play)';
+    case 'in_progress':
+      return '$(sync~spin)';
+    case 'blocked':
+      return '$(circle-slash)';
+    case 'done':
+      return '$(check)';
+    case 'review':
+      return '$(eye)';
+    case 'paused':
+      return '$(debug-pause)';
+    case 'inbox':
+      return '$(inbox)';
+    case 'cancelled':
+    case 'failed':
+      return '$(close)';
+    default:
+      return '$(circle-outline)';
+  }
+}
+
+export function formatBodyMicroHeadersHtml(body: string): string {
+  const lines = body.split('\n');
+  const outLines: string[] = [];
+  let i = 0;
+
+  while (i < lines.length) {
+    const line = lines[i];
+    const trimmed = line.trim();
+
+    if (trimmed.startsWith('#')) {
+      const hashes = trimmed.match(/^#+/)?.[0]?.length || 0;
+      if (hashes > 0 && trimmed.charAt(hashes) === ' ') {
+        const headingText = trimmed.slice(hashes).trim();
+        const microHeader = `<strong>${escapeHtml(headingText)}:</strong>`;
+
+        let nextIdx = i + 1;
+        while (nextIdx < lines.length && lines[nextIdx].trim() === '') {
+          nextIdx++;
+        }
+
+        if (nextIdx < lines.length) {
+          const nextTrimmed = lines[nextIdx].trim();
+          const isBlock =
+            nextTrimmed.startsWith('-') ||
+            nextTrimmed.startsWith('*') ||
+            nextTrimmed.startsWith('+') ||
+            nextTrimmed.startsWith('>') ||
+            nextTrimmed.startsWith('```') ||
+            /^\d+\.\s/.test(nextTrimmed);
+
+          if (isBlock) {
+            outLines.push(microHeader);
+            i = nextIdx;
+            continue;
+          } else if (!nextTrimmed.startsWith('#')) {
+            outLines.push(`${microHeader} ${escapeHtml(nextTrimmed)}`);
+            i = nextIdx + 1;
+            continue;
+          }
+        }
+
+        outLines.push(microHeader);
+        i = nextIdx;
+        continue;
+      }
+    }
+
+    if (trimmed === '') {
+      if (outLines.length > 0 && outLines[outLines.length - 1] !== '') {
+        outLines.push('');
+      }
+    } else {
+      outLines.push(escapeHtml(line));
+    }
+    i++;
+  }
+
+  return outLines.join('\n');
+}
+
+export function collectDescendants(
+  rootId: string,
+  index?: PkbPreviewIndex
+): PkbPreviewNode[] {
+  if (!index) return [];
+  const allNodes = index.getAllNodes();
+  const descendants: PkbPreviewNode[] = [];
+  const queue: string[] = [rootId];
+  const visited = new Set<string>([rootId]);
+
+  while (queue.length > 0) {
+    const parentId = queue.shift()!;
+    for (const node of allNodes) {
+      if (node.parent === parentId && !visited.has(node.id)) {
+        visited.add(node.id);
+        descendants.push(node);
+        queue.push(node.id);
+      }
+    }
+  }
+  return descendants;
+}
+
+export function renderSubtreeText(
+  rootId: string,
+  index?: PkbPreviewIndex
+): string {
+  if (!index) return `Subtree for ${rootId}`;
+  const rootNode = index.resolve(rootId);
+  const rootLabel = rootNode ? `${rootNode.label} (${rootNode.id})` : rootId;
+  const lines: string[] = [rootLabel];
+
+  function printBranch(parentId: string, prefix: string) {
+    const children = index!.getAllNodes().filter((n) => n.parent === parentId);
+    children.forEach((child, idx) => {
+      const isLast = idx === children.length - 1;
+      const marker = isLast ? '└── ' : '├── ';
+      const statusStr = child.status ? ` [${child.status}]` : '';
+      lines.push(`${prefix}${marker}${child.label} (${child.id})${statusStr}`);
+      const nextPrefix = prefix + (isLast ? '    ' : '│   ');
+      printBranch(child.id, nextPrefix);
+    });
+  }
+
+  printBranch(rootId, '');
+  return lines.join('\n');
+}
+
+export function formatPlainTooltip(node: PkbPreviewNode, index?: PkbPreviewIndex): string {
   const lines: string[] = [`${node.label} (${node.id})`];
   const meta: string[] = [];
-  if (node.type) meta.push(`Type: ${node.type}`);
-  if (node.status) meta.push(`Status: ${node.status}`);
-  if (node.intent !== undefined) meta.push(`Intent: ${node.intent}`);
-  if (meta.length > 0) lines.push(meta.join(' | '));
+  if (node.type) meta.push(`${typeCodicon(node.type)} ${node.type}`);
+  if (node.status) meta.push(`${statusCodicon(node.status)} ${node.status}`);
+  if (node.intent !== undefined) meta.push(`$(flame) intent ${node.intent}`);
   if (node.tags.length > 0) {
-    lines.push(`Tags: ${node.tags.map((t) => `#${t}`).join(' ')}`);
+    meta.push(`$(tag) ${node.tags.map((t) => `#${t}`).join(' ')}`);
   }
+  if (meta.length > 0) lines.push(meta.join(' · '));
   if (node.parent) {
-    lines.push(`Parent: [[${node.parent}]]`);
+    const parentNode = index?.resolve(node.parent);
+    const parentTitle = parentNode ? parentNode.label : node.parent;
+    lines.push(`Parent: ${parentTitle}`);
   }
   if (node.bodyExcerpt) {
     lines.push('');
     lines.push(node.bodyExcerpt);
   }
   lines.push('');
-  lines.push('Click to open in new editor tab');
+  lines.push('Open: mem.openReference · Subtree: mem.showSubtree');
   return lines.join('\n');
 }
 
-function renderHoverCardHtml(node: PkbPreviewNode): string {
+export function renderHoverCardHtml(
+  node: PkbPreviewNode,
+  index?: PkbPreviewIndex
+): string {
   const parts: string[] = [];
   parts.push(
     `<span class="mem-pkb-hover-header">` +
@@ -685,57 +856,68 @@ function renderHoverCardHtml(node: PkbPreviewNode): string {
       `</span>`
   );
 
-  const badges: string[] = [];
+  const topBar: string[] = [];
   if (node.type) {
-    badges.push(
-      `<span class="mem-pkb-hover-badge"><strong>Type:</strong> ${escapeHtml(node.type)}</span>`
+    topBar.push(
+      `<span class="mem-pkb-hover-badge">${typeCodicon(node.type)} ${escapeHtml(node.type)}</span>`
     );
   }
   if (node.status) {
-    badges.push(
-      `<span class="mem-pkb-hover-badge"><strong>Status:</strong> ${escapeHtml(node.status)}</span>`
+    topBar.push(
+      `<span class="mem-pkb-hover-badge">${statusCodicon(node.status)} ${escapeHtml(node.status)}</span>`
     );
   }
   if (node.intent !== undefined) {
-    badges.push(
-      `<span class="mem-pkb-hover-badge"><strong>Intent:</strong> ${escapeHtml(String(node.intent))}</span>`
+    topBar.push(
+      `<span class="mem-pkb-hover-badge">$(flame) intent ${escapeHtml(String(node.intent))}</span>`
     );
   }
-  if (badges.length > 0) {
-    parts.push(`<span class="mem-pkb-hover-meta">${badges.join(' ')}</span>`);
-  }
-
   if (node.tags.length > 0) {
     const tagSpans = node.tags
       .map((t) => `<span class="mem-pkb-hover-tag">#${escapeHtml(t)}</span>`)
       .join(' ');
-    parts.push(`<span class="mem-pkb-hover-tags"><strong>Tags:</strong> ${tagSpans}</span>`);
+    topBar.push(`<span class="mem-pkb-hover-tags">$(tag) ${tagSpans}</span>`);
+  }
+  if (topBar.length > 0) {
+    parts.push(`<span class="mem-pkb-hover-meta">${topBar.join('  ·  ')}</span>`);
   }
 
   if (node.parent) {
+    let parentTitle = node.parent;
+    let parentUri = '#';
+    if (index) {
+      const parentNode = index.resolve(node.parent);
+      if (parentNode) {
+        parentTitle = parentNode.label;
+        parentUri = `file://${parentNode.absPath}`;
+      }
+    }
     parts.push(
-      `<span class="mem-pkb-hover-parent"><strong>Parent:</strong> <code>[[${escapeHtml(node.parent)}]]</code></span>`
+      `<span class="mem-pkb-hover-parent"><strong>Parent:</strong> <a class="mem-pkb-ref" href="${escapeHtml(parentUri)}">${escapeHtml(parentTitle)}</a></span>`
     );
   }
 
   if (node.bodyExcerpt) {
     const suffix = node.hasMoreBody ? '\n...' : '';
-    parts.push(
-      `<span class="mem-pkb-hover-body">${escapeHtml(node.bodyExcerpt + suffix)}</span>`
-    );
+    const compactBody = formatBodyMicroHeadersHtml(node.bodyExcerpt + suffix);
+    parts.push(`<span class="mem-pkb-hover-body">${compactBody}</span>`);
   }
 
+  const encId = encodeURIComponent(JSON.stringify([node.id]));
   parts.push(
-    `<span class="mem-pkb-hover-footer">Click to open in new editor tab (${escapeHtml(node.relPath)})</span>`
+    `<span class="mem-pkb-hover-footer">` +
+      `<a href="command:mem.openReference?${encId}" class="mem-pkb-cmd-link">$(go-to-file) Open</a>  ·  ` +
+      `<a href="command:mem.showSubtree?${encId}" class="mem-pkb-cmd-link">$(type-hierarchy-sub) Subtree</a>` +
+      `</span>`
   );
 
   return `<span class="mem-pkb-hover-card">${parts.join('')}</span>`;
 }
 
-function renderResolvedRefAnchor(node: PkbPreviewNode, displayHtml: string): string {
+function renderResolvedRefAnchor(node: PkbPreviewNode, displayHtml: string, index?: PkbPreviewIndex): string {
   const fileUri = `file://${node.absPath}`;
-  const tooltip = formatPlainTooltip(node);
-  const hoverCard = renderHoverCardHtml(node);
+  const tooltip = formatPlainTooltip(node, index);
+  const hoverCard = renderHoverCardHtml(node, index);
   return (
     `<a class="mem-pkb-ref" href="${escapeHtml(fileUri)}" ` +
     `data-pkb-id="${escapeHtml(node.id)}" ` +
@@ -825,7 +1007,7 @@ export function transformPreviewHtml(html: string, index: PkbPreviewIndex): stri
 
       const node = index.resolve(decodedHref);
       if (node) {
-        return savePlaceholder(renderResolvedRefAnchor(node, innerHtml));
+        return savePlaceholder(renderResolvedRefAnchor(node, innerHtml, index));
       }
       return savePlaceholder(fullMatch);
     }
@@ -841,7 +1023,7 @@ export function transformPreviewHtml(html: string, index: PkbPreviewIndex): stri
       const node = index.resolve(target);
       if (node) {
         return savePlaceholder(
-          renderResolvedRefAnchor(node, `<code>${escapeHtml(alias || target)}</code>`)
+          renderResolvedRefAnchor(node, `<code>${escapeHtml(alias || target)}</code>`, index)
         );
       }
       return savePlaceholder(
@@ -852,7 +1034,7 @@ export function transformPreviewHtml(html: string, index: PkbPreviewIndex): stri
     const node = index.resolveBareId(trimmed);
     if (node) {
       return savePlaceholder(
-        renderResolvedRefAnchor(node, `<code>${escapeHtml(trimmed)}</code>`)
+        renderResolvedRefAnchor(node, `<code>${escapeHtml(trimmed)}</code>`, index)
       );
     }
 
@@ -869,7 +1051,7 @@ export function transformPreviewHtml(html: string, index: PkbPreviewIndex): stri
     const display = alias || target;
     const node = index.resolve(target);
     if (node) {
-      return savePlaceholder(renderResolvedRefAnchor(node, escapeHtml(display)));
+      return savePlaceholder(renderResolvedRefAnchor(node, escapeHtml(display), index));
     }
     return savePlaceholder(renderUnresolvedRefAnchor(target, display, index.pkbRoot));
   });
@@ -895,7 +1077,7 @@ export function transformPreviewHtml(html: string, index: PkbPreviewIndex): stri
     }
     const node = index.resolveBareId(clean);
     if (node) {
-      return savePlaceholder(renderResolvedRefAnchor(node, escapeHtml(clean))) + suffix;
+      return savePlaceholder(renderResolvedRefAnchor(node, escapeHtml(clean), index)) + suffix;
     }
     return token;
   });
@@ -1283,6 +1465,21 @@ export function activate(context: vscode.ExtensionContext): { extendMarkdownIt: 
       configurationSection: 'mem.lsp',
       fileEvents: watcher,
     },
+    middleware: {
+      provideHover: async (document: any, position: any, token: any, next: any) => {
+        const hover = await next(document, position, token);
+        if (hover && hover.contents) {
+          const contents = Array.isArray(hover.contents) ? hover.contents : [hover.contents];
+          for (const item of contents) {
+            if (item && typeof item === 'object') {
+              (item as any).isTrusted = true;
+              (item as any).supportThemeIcons = true;
+            }
+          }
+        }
+        return hover;
+      },
+    },
     errorHandler: {
       error: (error: Error, message: any, count: number | undefined): ErrorHandlerResult => {
         const errMsg = `LSP transport error (count=${count ?? 1}, msg=${message ? JSON.stringify(message) : 'none'})`;
@@ -1313,48 +1510,50 @@ export function activate(context: vscode.ExtensionContext): { extendMarkdownIt: 
     },
   };
 
-  logInfo(`Starting LanguageClient with binary="${currentExecutable}" args=["lsp", "--root", "${currentPkbRoot}"]`);
-  client = new LanguageClient(
-    'mem-lsp',
-    'Mem PKB Language Server',
-    serverOptions,
-    clientOptions
-  );
+  if (!process.env.MEM_TEST_NO_LSP_CLIENT) {
+    logInfo(`Starting LanguageClient with binary="${currentExecutable}" args=["lsp", "--root", "${currentPkbRoot}"]`);
+    client = new LanguageClient(
+      'mem-lsp',
+      'Mem PKB Language Server',
+      serverOptions,
+      clientOptions
+    );
 
-  if (typeof (client as any).onDidChangeState === 'function') {
-    const stateSub = (client as any).onDidChangeState((event: { oldState: State; newState: State }) => {
-      logInfo(`LSP client state transition: ${event.oldState} -> ${event.newState}`);
-      if (event.newState === State.Starting) {
-        serverStatus = 'starting';
-      } else if (event.newState === State.Running) {
+    if (typeof (client as any).onDidChangeState === 'function') {
+      const stateSub = (client as any).onDidChangeState((event: { oldState: State; newState: State }) => {
+        logInfo(`LSP client state transition: ${event.oldState} -> ${event.newState}`);
+        if (event.newState === State.Starting) {
+          serverStatus = 'starting';
+        } else if (event.newState === State.Running) {
+          serverStatus = 'running';
+          lastServerError = undefined;
+        } else if (event.newState === State.Stopped) {
+          if (serverStatus !== 'error') {
+            serverStatus = 'stopped';
+          }
+        }
+        updateStatusBar();
+      });
+      if (stateSub && typeof stateSub.dispose === 'function') {
+        context.subscriptions.push(stateSub);
+      }
+    }
+
+    Promise.resolve(client.start())
+      .then(() => {
         serverStatus = 'running';
         lastServerError = undefined;
-      } else if (event.newState === State.Stopped) {
-        if (serverStatus !== 'error') {
-          serverStatus = 'stopped';
-        }
-      }
-      updateStatusBar();
-    });
-    if (stateSub && typeof stateSub.dispose === 'function') {
-      context.subscriptions.push(stateSub);
-    }
+        logInfo(`Mem PKB LSP server started (pkbRoot=${currentPkbRoot})`);
+        updateStatusBar();
+      })
+      .catch((err: unknown) => {
+        lastServerError = err instanceof Error ? err.message : String(err);
+        serverStatus = 'error';
+        logError(`Failed to start Mem PKB LSP server (binary=${currentExecutable}, pkbRoot=${currentPkbRoot})`, err);
+        updateStatusBar();
+        void promptErrorWithLogs(`Failed to start Mem PKB LSP server: ${lastServerError}`);
+      });
   }
-
-  Promise.resolve(client.start())
-    .then(() => {
-      serverStatus = 'running';
-      lastServerError = undefined;
-      logInfo(`Mem PKB LSP server started (pkbRoot=${currentPkbRoot})`);
-      updateStatusBar();
-    })
-    .catch((err: unknown) => {
-      lastServerError = err instanceof Error ? err.message : String(err);
-      serverStatus = 'error';
-      logError(`Failed to start Mem PKB LSP server (binary=${currentExecutable}, pkbRoot=${currentPkbRoot})`, err);
-      updateStatusBar();
-      void promptErrorWithLogs(`Failed to start Mem PKB LSP server: ${lastServerError}`);
-    });
 
   // Pin PKB files opened via Markdown Preview links as permanent editor tabs (preview: false)
   if (typeof vscode.window.onDidChangeActiveTextEditor === 'function') {
@@ -1366,6 +1565,88 @@ export function activate(context: vscode.ExtensionContext): { extendMarkdownIt: 
     }
   }
 
+  // Register command to display subtree view of a node
+  const subtreeCmd = vscode.commands.registerCommand(
+    'mem.showSubtree',
+    async (target?: string | vscode.Uri | any) => {
+      let nodeId: string | undefined;
+      if (typeof target === 'string') {
+        nodeId = target;
+      } else if (Array.isArray(target) && typeof target[0] === 'string') {
+        nodeId = target[0];
+      } else if (target && typeof target === 'object' && 'fsPath' in target) {
+        const found = getPreviewIndex().resolveByPath(target.fsPath);
+        nodeId = found?.id;
+      }
+
+      if (!nodeId) {
+        const editor = vscode.window.activeTextEditor;
+        if (editor && typeof editor.document?.lineAt === 'function') {
+          const pos = editor.selection?.active;
+          if (pos) {
+            const lineText = editor.document.lineAt(pos.line)?.text || '';
+            const extracted = extractReferenceAtPosition(lineText, pos.character);
+            nodeId = extracted?.target;
+          }
+        }
+      }
+
+      if (!nodeId && typeof vscode.window.showInputBox === 'function') {
+        nodeId = await vscode.window.showInputBox({
+          prompt: 'Enter PKB node ID to display subtree view',
+        });
+      }
+
+      if (!nodeId) {
+        const msg = 'mem.showSubtree called without a target node ID';
+        logWarn(msg);
+        return undefined;
+      }
+
+      logInfo(`Executing mem.showSubtree for node: ${nodeId}`);
+      const channel = getOutputChannel();
+      channel.appendLine(`\n[${new Date().toISOString()}] === PKB Subtree View: ${nodeId} ===`);
+
+      let treeOutput = '';
+      try {
+        const { execSync } = require('child_process');
+        treeOutput = execSync(
+          `"${currentExecutable}" deps --plain "${nodeId}" --root "${currentPkbRoot}"`,
+          { encoding: 'utf8', timeout: 5000, stdio: ['ignore', 'pipe', 'ignore'] }
+        );
+      } catch (err: any) {
+        treeOutput = renderSubtreeText(nodeId, getPreviewIndex());
+      }
+
+      channel.appendLine(treeOutput);
+      channel.show(true);
+
+      const descendants = collectDescendants(nodeId, getPreviewIndex());
+      if (descendants.length > 0 && typeof vscode.window.showQuickPick === 'function') {
+        const items = descendants.map((d) => ({
+          label: `$(chevron-right) ${d.label}`,
+          description: d.id,
+          detail: `${d.type || 'task'} · ${d.status || 'ready'} · ${d.relPath}`,
+          node: d,
+        }));
+        void vscode.window
+          .showQuickPick(items, {
+            placeHolder: `Subtree of ${nodeId} (${descendants.length} descendant nodes) - Select to open`,
+          })
+          .then((selected) => {
+            if (selected?.node?.absPath) {
+              void openReferencedFile(selected.node.absPath, {
+                preview: false,
+                viewColumn: vscode.ViewColumn.Active,
+              });
+            }
+          });
+      }
+
+      return { nodeId, treeOutput, descendants };
+    }
+  );
+
   // Register command to reveal the Mem PKB LSP OutputChannel
   const showLogsCmd = vscode.commands.registerCommand('mem.showLogs', () => {
     logInfo('Showing Mem PKB LSP logs OutputChannel');
@@ -1375,8 +1656,12 @@ export function activate(context: vscode.ExtensionContext): { extendMarkdownIt: 
   // Register command to open referenced file in a new tab
   const openCmd = vscode.commands.registerCommand(
     'mem.openReference',
-    async (target: string | vscode.Uri) => {
-      if (!target) {
+    async (target: string | vscode.Uri | any) => {
+      let unwrappedTarget = target;
+      if (Array.isArray(target) && target.length > 0) {
+        unwrappedTarget = target[0];
+      }
+      if (!unwrappedTarget) {
         const msg = 'mem.openReference called without a target URI or path';
         logWarn(msg);
         await promptErrorWithLogs(msg);
@@ -1384,9 +1669,9 @@ export function activate(context: vscode.ExtensionContext): { extendMarkdownIt: 
       }
       try {
         // Also support resolving a PKB ID via previewIndex if target is not a direct path
-        let resolvedTarget: string | vscode.Uri = target;
-        if (typeof target === 'string' && !target.startsWith('file://') && !fs.existsSync(target)) {
-          const node = getPreviewIndex().resolve(target);
+        let resolvedTarget: string | vscode.Uri = unwrappedTarget;
+        if (typeof unwrappedTarget === 'string' && !unwrappedTarget.startsWith('file://') && !fs.existsSync(unwrappedTarget)) {
+          const node = getPreviewIndex().resolve(unwrappedTarget);
           if (node) {
             resolvedTarget = node.absPath;
           }
@@ -1396,7 +1681,7 @@ export function activate(context: vscode.ExtensionContext): { extendMarkdownIt: 
           viewColumn: vscode.ViewColumn.Active,
         });
       } catch (err) {
-        const msg = `Failed to open PKB reference (${String(target)}): ${err instanceof Error ? err.message : String(err)}`;
+        const msg = `Failed to open PKB reference (${String(unwrappedTarget)}): ${err instanceof Error ? err.message : String(err)}`;
         logError(msg, err);
         await promptErrorWithLogs(msg);
         return undefined;
@@ -1563,6 +1848,7 @@ export function activate(context: vscode.ExtensionContext): { extendMarkdownIt: 
     showLogsCmd,
     openCmd,
     openAtCursorCmd,
+    subtreeCmd,
     restartCmd,
     showVersionCmd
   );
