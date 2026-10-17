@@ -1662,7 +1662,7 @@ impl PkbSearchServer {
                     code: ErrorCode::INTERNAL_ERROR,
                     message: Cow::from(format!(
                         "Failed: subtask {e} for '{}'",
-                        Self::brief_subject(&title)
+                        Self::brief_subject(title)
                     )),
                     data: None,
                 }

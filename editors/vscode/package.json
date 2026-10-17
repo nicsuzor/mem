@@ -58,6 +58,44 @@
       {
         "command": "mem.showLogs",
         "title": "Mem: Show PKB LSP Logs"
+      },
+      {
+        "command": "mem.dispatch",
+        "title": "Mem: Dispatch PKB Task"
+      }
+    ],
+    "semanticTokenTypes": [
+      { "id": "pkbTaskReady", "description": "PKB ready task reference" },
+      { "id": "pkbTaskDone", "description": "PKB completed task reference" },
+      { "id": "pkbTaskBlocked", "description": "PKB blocked task reference" },
+      { "id": "pkbTaskOther", "description": "PKB task reference in other state" },
+      { "id": "pkbNodeInfo", "description": "PKB info/knowledge node reference" },
+      { "id": "pkbNodeIndex", "description": "PKB index/topic node reference" },
+      { "id": "pkbNodeChapter", "description": "PKB chapter/spec node reference" },
+      { "id": "pkbNodeDefault", "description": "Default PKB node reference" }
+    ],
+    "semanticTokenModifiers": [
+      { "id": "ready", "description": "Ready task state" },
+      { "id": "done", "description": "Done task state" },
+      { "id": "blocked", "description": "Blocked task state" },
+      { "id": "inProgress", "description": "In-progress task state" },
+      { "id": "task", "description": "Task node type" },
+      { "id": "info", "description": "Info node type" },
+      { "id": "index", "description": "Index node type" },
+      { "id": "chapter", "description": "Chapter node type" }
+    ],
+    "semanticTokenScopes": [
+      {
+        "language": "markdown",
+        "scopes": {
+          "pkbTaskReady": ["markup.inserted", "entity.name.tag"],
+          "pkbTaskDone": ["comment.line", "markup.strikethrough"],
+          "pkbTaskBlocked": ["invalid.illegal", "markup.deleted"],
+          "pkbTaskOther": ["entity.name.function"],
+          "pkbNodeInfo": ["entity.name.type", "support.type"],
+          "pkbNodeIndex": ["entity.name.section", "variable.other"],
+          "pkbNodeChapter": ["keyword.control"]
+        }
       }
     ],
     "configuration": {

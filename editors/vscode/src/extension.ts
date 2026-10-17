@@ -295,6 +295,11 @@ export interface PkbPreviewNode {
   type?: string;
   status?: string;
   intent?: string | number;
+  weight?: string | number;
+  downstreamWeight?: number;
+  backlinkCount?: number;
+  children?: string[];
+  subtasks?: string[];
   tags: string[];
   parent?: string;
   aliases: string[];
@@ -377,6 +382,12 @@ export function parseMarkdownNode(
     fields.intent !== undefined && fields.intent !== ''
       ? fields.intent
       : undefined;
+  const weight =
+    fields.weight !== undefined && fields.weight !== ''
+      ? fields.weight
+      : (fields.downstream_weight !== undefined && fields.downstream_weight !== ''
+          ? fields.downstream_weight
+          : undefined);
 
   let tags: string[] = [];
   if (Array.isArray(fields.tags)) {
@@ -418,6 +429,7 @@ export function parseMarkdownNode(
     type,
     status,
     intent,
+    weight,
     tags,
     parent,
     aliases,
@@ -506,6 +518,7 @@ export class PkbPreviewIndex {
     };
 
     scanDir(pkbRoot);
+    this.computeGraphRelationships();
 
     if (this.nodes.length === 0) {
       logWarn(`PKB preview index found 0 markdown nodes in pkbRoot: ${pkbRoot}`);
@@ -514,6 +527,44 @@ export class PkbPreviewIndex {
     }
 
     return this.nodes.length;
+  }
+
+  public computeGraphRelationships(): void {
+    for (const node of this.nodes) {
+      node.backlinkCount = 0;
+      node.children = [];
+      node.subtasks = [];
+    }
+
+    const wikiRe = /\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g;
+    for (const node of this.nodes) {
+      if (node.parent) {
+        const pnode = this.resolve(node.parent);
+        if (pnode) {
+          if (!pnode.children) pnode.children = [];
+          if (!pnode.children.includes(node.id)) {
+            pnode.children.push(node.id);
+          }
+          if (node.type === 'subtask') {
+            if (!pnode.subtasks) pnode.subtasks = [];
+            if (!pnode.subtasks.includes(node.id)) {
+              pnode.subtasks.push(node.id);
+            }
+          }
+        }
+      }
+
+      // Count backlinks in bodyExcerpt
+      const text = node.bodyExcerpt || '';
+      let match: RegExpExecArray | null;
+      while ((match = wikiRe.exec(text)) !== null) {
+        const target = match[1].trim();
+        const targetNode = this.resolve(target);
+        if (targetNode) {
+          targetNode.backlinkCount = (targetNode.backlinkCount || 0) + 1;
+        }
+      }
+    }
   }
 
   public indexNode(node: PkbPreviewNode): void {
@@ -652,6 +703,372 @@ export function getPreviewIndex(): PkbPreviewIndex {
   }
   return previewIndex;
 }
+
+export interface PkbInlayHintItem {
+  position: { line: number; character: number };
+  label: string;
+  kind?: number;
+  tooltip?: string;
+}
+
+export function computeInlayHints(
+  documentText: string,
+  index: PkbPreviewIndex
+): PkbInlayHintItem[] {
+  const hints: PkbInlayHintItem[] = [];
+  const lines = documentText.split('\n');
+  const wikiRe = /\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g;
+
+  for (let lineIdx = 0; lineIdx < lines.length; lineIdx++) {
+    const line = lines[lineIdx];
+    let match: RegExpExecArray | null;
+    wikiRe.lastIndex = 0;
+    while ((match = wikiRe.exec(line)) !== null) {
+      const fullMatch = match[0];
+      const target = match[1].trim();
+      const endChar = match.index + fullMatch.length;
+      const node = index.resolve(target);
+      if (node) {
+        let weightStr: string | undefined;
+        if (node.weight !== undefined && node.weight !== '') {
+          weightStr = String(node.weight);
+        } else if (node.intent !== undefined && node.intent !== '') {
+          weightStr = String(node.intent);
+        }
+
+        let label: string;
+        if (node.status && weightStr) {
+          label = `: ${node.label} [${node.status} · w:${weightStr}]`;
+        } else if (node.status) {
+          label = `: ${node.label} [${node.status}]`;
+        } else if (weightStr) {
+          label = `: ${node.label} [w:${weightStr}]`;
+        } else {
+          label = `: ${node.label}`;
+        }
+
+        hints.push({
+          position: { line: lineIdx, character: endChar },
+          label,
+          tooltip: `${node.id}: ${node.label}`,
+        });
+      }
+    }
+  }
+  return hints;
+}
+
+export interface PkbCodeLensItem {
+  range: { start: { line: number; character: number }; end: { line: number; character: number } };
+  command?: { title: string; command: string; arguments?: any[] };
+}
+
+export function computeHeaderCodeLenses(
+  documentUri: string,
+  documentText: string,
+  index: PkbPreviewIndex
+): PkbCodeLensItem[] {
+  let node: PkbPreviewNode | undefined;
+  for (const line of documentText.split('\n')) {
+    const trimmed = line.trim();
+    if (trimmed.startsWith('id:')) {
+      const idVal = trimmed.slice(3).trim().replace(/^['"]|['"]$/g, '');
+      if (idVal) {
+        node = index.resolve(idVal);
+        break;
+      }
+    }
+  }
+  if (!node) {
+    node = index.resolve(documentUri);
+  }
+  if (!node) {
+    return [];
+  }
+
+  const lenses: PkbCodeLensItem[] = [];
+  const range = {
+    start: { line: 0, character: 0 },
+    end: { line: 0, character: 0 },
+  };
+
+  // 1. Parent
+  let parentTitle = 'Parent: none';
+  let parentArgs: any[] | undefined;
+  if (node.parent) {
+    const parentNode = index.resolve(node.parent);
+    if (parentNode) {
+      parentTitle = `Parent: ${parentNode.label}`;
+      parentArgs = [parentNode.absPath || parentNode.id];
+    } else {
+      parentTitle = `Parent: ${node.parent}`;
+      parentArgs = [node.parent];
+    }
+  }
+  lenses.push({
+    range,
+    command: {
+      title: parentTitle,
+      command: parentArgs ? 'mem.openReference' : '',
+      arguments: parentArgs,
+    },
+  });
+
+  // 2. Backlinks
+  const backlinks = node.backlinkCount || 0;
+  lenses.push({
+    range,
+    command: {
+      title: backlinks === 1 ? '1 backlink' : `${backlinks} backlinks`,
+      command: '',
+    },
+  });
+
+  // 3. Subtasks by status
+  const subtaskIds = [...(node.children || []), ...(node.subtasks || [])];
+  const uniqueSubtasks = Array.from(new Set(subtaskIds));
+  const counts: Record<string, number> = {};
+  for (const sid of uniqueSubtasks) {
+    const snode = index.resolve(sid);
+    const st = snode?.status || 'unknown';
+    counts[st] = (counts[st] || 0) + 1;
+  }
+
+  let subtaskTitle = 'Subtasks: 0';
+  if (Object.keys(counts).length > 0) {
+    const order = ['ready', 'in_progress', 'blocked', 'done'];
+    const parts: string[] = [];
+    for (const key of order) {
+      if (counts[key]) {
+        parts.push(`${counts[key]} ${key}`);
+      }
+    }
+    for (const key of Object.keys(counts)) {
+      if (!order.includes(key)) {
+        parts.push(`${counts[key]} ${key}`);
+      }
+    }
+    subtaskTitle = `Subtasks: ${parts.join(' · ')}`;
+  }
+  lenses.push({
+    range,
+    command: {
+      title: subtaskTitle,
+      command: '',
+    },
+  });
+
+  // 4. Dispatch action
+  lenses.push({
+    range,
+    command: {
+      title: 'Dispatch',
+      command: 'mem.dispatch',
+      arguments: [node.id],
+    },
+  });
+
+  return lenses;
+}
+
+export const SEMANTIC_TOKEN_TYPES = [
+  'pkbTaskReady',
+  'pkbTaskDone',
+  'pkbTaskBlocked',
+  'pkbTaskOther',
+  'pkbNodeInfo',
+  'pkbNodeIndex',
+  'pkbNodeChapter',
+  'pkbNodeDefault',
+];
+
+export const SEMANTIC_TOKEN_MODIFIERS = [
+  'ready',
+  'done',
+  'blocked',
+  'inProgress',
+  'task',
+  'info',
+  'index',
+  'chapter',
+];
+
+export interface PkbRawSemanticToken {
+  line: number;
+  start: number;
+  length: number;
+  tokenType: number;
+  tokenModifiers: number;
+}
+
+export function computeSemanticTokens(
+  documentText: string,
+  index: PkbPreviewIndex
+): PkbRawSemanticToken[] {
+  const tokens: PkbRawSemanticToken[] = [];
+  const lines = documentText.split('\n');
+  const wikiRe = /\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g;
+
+  for (let lineIdx = 0; lineIdx < lines.length; lineIdx++) {
+    const line = lines[lineIdx];
+    let match: RegExpExecArray | null;
+    wikiRe.lastIndex = 0;
+    while ((match = wikiRe.exec(line)) !== null) {
+      const fullMatch = match[0];
+      const target = match[1].trim();
+      const start = match.index;
+      const length = fullMatch.length;
+      const node = index.resolve(target);
+      if (node) {
+        const ntype = node.type || 'task';
+        const status = node.status;
+        let tokenType = 7; // pkbNodeDefault
+        let tokenModifiers = 0;
+
+        if (
+          ntype === 'task' ||
+          ntype === 'subtask' ||
+          ntype === 'epic' ||
+          ntype === 'project' ||
+          node.id.startsWith('task-')
+        ) {
+          if (status === 'ready') {
+            tokenType = 0;
+            tokenModifiers = 1 | 16;
+          } else if (status === 'done') {
+            tokenType = 1;
+            tokenModifiers = 2 | 16;
+          } else if (status === 'blocked') {
+            tokenType = 2;
+            tokenModifiers = 4 | 16;
+          } else if (status === 'in_progress') {
+            tokenType = 3;
+            tokenModifiers = 8 | 16;
+          } else {
+            tokenType = 3;
+            tokenModifiers = 16;
+          }
+        } else if (['info', 'knowledge', 'reference'].includes(ntype)) {
+          tokenType = 4;
+          tokenModifiers = 32;
+        } else if (['index', 'topic'].includes(ntype)) {
+          tokenType = 5;
+          tokenModifiers = 64;
+        } else if (['chapter', 'spec'].includes(ntype)) {
+          tokenType = 6;
+          tokenModifiers = 128;
+        }
+
+        tokens.push({
+          line: lineIdx,
+          start,
+          length,
+          tokenType,
+          tokenModifiers,
+        });
+      }
+    }
+  }
+  return tokens;
+}
+
+export interface PkbGutterBadge {
+  line: number;
+  taskId: string;
+  title: string;
+  status?: string;
+  weight?: number;
+  badge: 'ready' | 'done' | 'blocked' | 'in_progress' | 'task';
+}
+
+export function computeGutterBadges(
+  documentText: string,
+  index: PkbPreviewIndex
+): PkbGutterBadge[] {
+  const badges: PkbGutterBadge[] = [];
+  const lines = documentText.split('\n');
+  const wikiRe = /\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g;
+
+  for (let lineIdx = 0; lineIdx < lines.length; lineIdx++) {
+    const line = lines[lineIdx];
+    let match: RegExpExecArray | null;
+    let foundTask: PkbGutterBadge | null = null;
+    wikiRe.lastIndex = 0;
+
+    while ((match = wikiRe.exec(line)) !== null) {
+      const target = match[1].trim();
+      const node = index.resolve(target);
+      if (node) {
+        const ntype = node.type || 'task';
+        if (
+          ntype === 'task' ||
+          ntype === 'subtask' ||
+          ntype === 'epic' ||
+          ntype === 'project' ||
+          node.id.startsWith('task-')
+        ) {
+          let badge: PkbGutterBadge['badge'] = 'task';
+          if (node.status === 'ready') badge = 'ready';
+          else if (node.status === 'done') badge = 'done';
+          else if (node.status === 'blocked') badge = 'blocked';
+          else if (node.status === 'in_progress') badge = 'in_progress';
+
+          foundTask = {
+            line: lineIdx,
+            taskId: node.id,
+            title: node.label,
+            status: node.status,
+            weight: typeof node.weight === 'number' ? node.weight : undefined,
+            badge,
+          };
+          break;
+        }
+      }
+    }
+
+    if (foundTask) {
+      badges.push(foundTask);
+    }
+  }
+
+  return badges;
+}
+
+export function updateEditorGutterBadges(
+  editor: vscode.TextEditor,
+  index: PkbPreviewIndex,
+  decorationTypes: Record<string, vscode.TextEditorDecorationType>
+): void {
+  if (!editor || !editor.document) {
+    return;
+  }
+  const text = editor.document.getText();
+  const badges = computeGutterBadges(text, index);
+
+  const grouped: Record<string, vscode.Range[]> = {
+    ready: [],
+    done: [],
+    blocked: [],
+    in_progress: [],
+    task: [],
+  };
+
+  for (const b of badges) {
+    const range = new vscode.Range(b.line, 0, b.line, 0);
+    if (grouped[b.badge]) {
+      grouped[b.badge].push(range);
+    } else {
+      grouped['task'].push(range);
+    }
+  }
+
+  for (const [badgeKey, decType] of Object.entries(decorationTypes)) {
+    if (decType && typeof editor.setDecorations === 'function') {
+      editor.setDecorations(decType, grouped[badgeKey] || []);
+    }
+  }
+}
+
 
 function escapeHtml(text: string): string {
   return text
@@ -1844,13 +2261,181 @@ export function activate(context: vscode.ExtensionContext): { extendMarkdownIt: 
     }
   );
 
+  // Register command to dispatch PKB tasks
+  const dispatchCmd = vscode.commands.registerCommand(
+    'mem.dispatch',
+    async (taskId?: string) => {
+      const idToDispatch = taskId || 'current';
+      logInfo(`Dispatching PKB task: ${idToDispatch}`);
+      vscode.window.showInformationMessage(`Dispatching task ${idToDispatch}...`);
+    }
+  );
+
+  // Setup gutter badge decorations
+  const badgesDir = path.join(context.extensionPath || __dirname, '..', 'media', 'badges');
+  const getBadgeUri = (name: string) => {
+    const file = path.join(badgesDir, `${name}.svg`);
+    if (fs.existsSync(file)) {
+      return vscode.Uri.file(file);
+    }
+    const altFile = path.join(__dirname, 'media', 'badges', `${name}.svg`);
+    if (fs.existsSync(altFile)) {
+      return vscode.Uri.file(altFile);
+    }
+    return undefined;
+  };
+
+  const decorationTypes: Record<string, vscode.TextEditorDecorationType> = {
+    ready: vscode.window.createTextEditorDecorationType({
+      gutterIconPath: getBadgeUri('ready'),
+      gutterIconSize: 'contain',
+    }),
+    done: vscode.window.createTextEditorDecorationType({
+      gutterIconPath: getBadgeUri('done'),
+      gutterIconSize: 'contain',
+    }),
+    blocked: vscode.window.createTextEditorDecorationType({
+      gutterIconPath: getBadgeUri('blocked'),
+      gutterIconSize: 'contain',
+    }),
+    in_progress: vscode.window.createTextEditorDecorationType({
+      gutterIconPath: getBadgeUri('in_progress'),
+      gutterIconSize: 'contain',
+    }),
+    task: vscode.window.createTextEditorDecorationType({
+      gutterIconPath: getBadgeUri('task'),
+      gutterIconSize: 'contain',
+    }),
+  };
+
+  for (const dec of Object.values(decorationTypes)) {
+    context.subscriptions.push(dec);
+  }
+
+  const triggerGutterUpdate = (editor?: vscode.TextEditor) => {
+    if (editor && editor.document && editor.document.languageId === 'markdown') {
+      updateEditorGutterBadges(editor, getPreviewIndex(), decorationTypes);
+    }
+  };
+
+  if (vscode.window.activeTextEditor) {
+    triggerGutterUpdate(vscode.window.activeTextEditor);
+  }
+
+  if (typeof vscode.window.onDidChangeActiveTextEditor === 'function') {
+    context.subscriptions.push(
+      vscode.window.onDidChangeActiveTextEditor((editor) => {
+        triggerGutterUpdate(editor);
+      })
+    );
+  }
+  if (typeof vscode.workspace.onDidChangeTextDocument === 'function') {
+    context.subscriptions.push(
+      vscode.workspace.onDidChangeTextDocument((event) => {
+        if (
+          vscode.window.activeTextEditor &&
+          event.document === vscode.window.activeTextEditor.document
+        ) {
+          triggerGutterUpdate(vscode.window.activeTextEditor);
+        }
+      })
+    );
+  }
+
+  const markdownSelector: vscode.DocumentSelector = [
+    { scheme: 'file', language: 'markdown' },
+    { scheme: 'untitled', language: 'markdown' },
+  ];
+
+  // Inlay Hints Provider
+  if (vscode.languages && typeof vscode.languages.registerInlayHintsProvider === 'function') {
+    const inlayProvider: vscode.InlayHintsProvider = {
+      provideInlayHints(doc, _range, _token) {
+        const raw = computeInlayHints(doc.getText(), getPreviewIndex());
+        return raw.map((h) => {
+          const hint = new vscode.InlayHint(
+            new vscode.Position(h.position.line, h.position.character),
+            h.label,
+            vscode.InlayHintKind?.Type || 1
+          );
+          if (h.tooltip) {
+            hint.tooltip = h.tooltip;
+          }
+          return hint;
+        });
+      },
+    };
+    context.subscriptions.push(
+      vscode.languages.registerInlayHintsProvider(markdownSelector, inlayProvider)
+    );
+  }
+
+  // CodeLens Provider
+  if (vscode.languages && typeof vscode.languages.registerCodeLensProvider === 'function') {
+    const codeLensProvider: vscode.CodeLensProvider = {
+      provideCodeLenses(doc, _token) {
+        const raw = computeHeaderCodeLenses(doc.uri.toString(), doc.getText(), getPreviewIndex());
+        return raw.map((c) => {
+          const lens = new vscode.CodeLens(
+            new vscode.Range(
+              new vscode.Position(c.range.start.line, c.range.start.character),
+              new vscode.Position(c.range.end.line, c.range.end.character)
+            )
+          );
+          if (c.command) {
+            lens.command = {
+              title: c.command.title,
+              command: c.command.command,
+              arguments: c.command.arguments,
+            };
+          }
+          return lens;
+        });
+      },
+    };
+    context.subscriptions.push(
+      vscode.languages.registerCodeLensProvider(markdownSelector, codeLensProvider)
+    );
+  }
+
+  // Semantic Tokens Provider
+  if (
+    vscode.languages &&
+    typeof vscode.languages.registerDocumentSemanticTokensProvider === 'function' &&
+    (vscode as any).SemanticTokensLegend &&
+    (vscode as any).SemanticTokensBuilder
+  ) {
+    const legend = new (vscode as any).SemanticTokensLegend(
+      SEMANTIC_TOKEN_TYPES,
+      SEMANTIC_TOKEN_MODIFIERS
+    );
+    const semanticTokensProvider: vscode.DocumentSemanticTokensProvider = {
+      provideDocumentSemanticTokens(doc, _token) {
+        const builder = new (vscode as any).SemanticTokensBuilder(legend);
+        const tokens = computeSemanticTokens(doc.getText(), getPreviewIndex());
+        for (const t of tokens) {
+          builder.push(t.line, t.start, t.length, t.tokenType, t.tokenModifiers);
+        }
+        return builder.build();
+      },
+    };
+    context.subscriptions.push(
+      vscode.languages.registerDocumentSemanticTokensProvider(
+        markdownSelector,
+        semanticTokensProvider,
+        legend
+      )
+    );
+  }
+
   context.subscriptions.push(
     showLogsCmd,
     openCmd,
     openAtCursorCmd,
     subtreeCmd,
     restartCmd,
-    showVersionCmd
+    showVersionCmd,
+    dispatchCmd
   );
 
   const mdPlugin = createMarkdownItPlugin(previewIndex);
