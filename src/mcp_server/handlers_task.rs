@@ -538,6 +538,34 @@ impl PkbSearchServer {
         let elapsed_parse = t.elapsed();
         tracing::debug!(target: "perf::create_task", phase = "parse", elapsed_ms = elapsed_parse.as_secs_f64() * 1000.0);
 
+        // Extract ID directly from parsed frontmatter (or fallback to reading the file on disk),
+        // never guess via regex on filename stems which can misidentify slug fragments as IDs.
+        let task_id = parsed
+            .as_ref()
+            .map(|d| d.id())
+            .unwrap_or_else(|| {
+                crate::pkb::parse_file(&path)
+                    .map(|d| d.id())
+                    .or_else(|| {
+                        std::fs::read_to_string(&path).ok().and_then(|content| {
+                            for line in content.lines() {
+                                let trimmed = line.trim();
+                                if let Some(rest) = trimmed.strip_prefix("id:") {
+                                    let id = rest.trim().trim_matches('"').trim_matches('\'').trim();
+                                    if !id.is_empty() {
+                                        return Some(id.to_string());
+                                    }
+                                }
+                                if trimmed == "---" && !line.starts_with("---") {
+                                    break;
+                                }
+                            }
+                            None
+                        })
+                    })
+                    .unwrap_or_else(|| crate::pkb::fallback_id(&path))
+            });
+
         // Incremental graph update for the new file
         if let Some(doc) = parsed {
             let t = std::time::Instant::now();
@@ -561,21 +589,6 @@ impl PkbSearchServer {
 
         tracing::debug!(target: "perf::create_task", phase = "TOTAL", elapsed_ms = t_total.elapsed().as_secs_f64() * 1000.0);
 
-        // Extract ID from filename stem (e.g. "task-a1b2c3d4-some-title.md" -> "task-a1b2c3d4").
-        // generate_id() always emits exactly 8 hex chars, so anchor the pattern to {8}
-        // rather than `+` — keeps an accidental hex-shaped slug suffix from being absorbed.
-        let task_id = path
-            .file_stem()
-            .map(|s| {
-                let stem = s.to_string_lossy();
-                static RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
-                    regex::Regex::new(r"^([a-z0-9_]+_[0-9a-f]{8}|[a-z]+-[0-9a-f]{8})").unwrap()
-                });
-                RE.find(&stem)
-                    .map(|m| m.as_str().to_string())
-                    .unwrap_or_else(|| stem.to_string())
-            })
-            .unwrap_or_default();
 
         // Return structured JSON matching get_task shape. If the post-create graph
         // lookup fails (graph rebuild raced or the file landed in an un-scanned
