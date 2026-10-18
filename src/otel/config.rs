@@ -1,5 +1,20 @@
 use std::env;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionMode {
+    Warn,
+    Enforce,
+}
+
+impl SessionMode {
+    pub fn from_env() -> Self {
+        match env::var("PKB_SESSION_MODE").as_deref() {
+            Ok(val) if val.eq_ignore_ascii_case("enforce") => SessionMode::Enforce,
+            _ => SessionMode::Warn,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct OtelConfig {
     pub endpoint: String,
