@@ -415,6 +415,10 @@ These constraints bind every future change to the score.
 - **Deliberately not built**, so not proposed again: Birnbaum importance proper (structure functions, cut sets, partial derivatives), POMDPs, per-item pairwise AHP.
 - **Deliberately impure**, not a defect to normalise away: the must-not-miss floor outside the maths (`specs/flow-rule.md` §4.5, §7), and elicited worths and link values wherever outcome data does not exist.
 - **How the model is judged.** By review and reasoning against the shipped code, not a frozen regression corpus. Three properties define good: a documentation-hygiene artefact falls out of the top of the queue; honestly recording effort never lowers a task's own rank; the importance channel shows real dynamic range across the corpus. Calibration case the model must order correctly: a certain contribution to a well-priced target above an overdue email tied to a barely-priced one.
+- **Pricing tests.** The engine stays as it is; prices and links must make these orderings come out right, and a failure means the pricing is wrong, not the engine:
+  - an overdue task outranks its day-before self, because a bad consequence becomes more likely the longer the work is delayed;
+  - an undated P0 sits above a low-value overdue email;
+  - a task a named stakeholder has long waited on sits above both, because stakeholders carry weight that flows through the graph to the work they wait on.
 
 ### 6.9. Closed exclusions
 
