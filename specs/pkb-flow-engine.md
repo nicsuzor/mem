@@ -65,7 +65,7 @@ The three are never added together, with the one exception of the open decision 
 
 **What each tool returns.**
 
-- `get_task` shows the three figures, the share of each target at stake, the strongest routes to each target, and a one-sentence explanation (U18). Example: "serves `task_b3f01c80` × 1.00 and `targ_4e2cc92a` × 0.85, both via `proj-f8b942d5` → `brain_bf2be9d8`."
+- `get_task` shows the three figures, the share of each target at stake, the strongest routes to each target, and a one-sentence explanation (U18). Example: "serves `syn_targ_gamma` × 1.00 via `syn_task_parent_last`."
 - `list_tasks`, `nested_tasks`, `export_graph` and the CLI show the three figures per row and never add worth across tasks.
 - No output carries any ranking number other than these figures, their routes and `display_rank` (section 7).
 
@@ -162,7 +162,7 @@ This spec owns the stored schema for edges and target worth (C1). Storage is add
 
 ```yaml
 links:
-  - to: targ_4e2cc92a          # exactly one of `to` or `from`; the other end is this node
+  - to: syn_targ_alpha         # exactly one of `to` or `from`; the other end is this node
     label: serves              # flow-rule §5.2: serves | needs | part_of | supports | alternative | settles
     quantum: 0.6               # 0.0..=1.0, or a word from flow-rule §5.4; omitted → the label's default (R11)
     probability: probable      # 0.0..=1.0, or a word from flow-rule §5.5; omitted → 1.00
@@ -332,9 +332,9 @@ This spec follows lines 156 and 158, and reports `null` instead of 0 (E3 adopted
 - **The comparison scalar.** The reference compares options by `gain + loss_averted` (`flow.py:295`). That sum nets gain against loss averted, which S16 forbids for display, but is settled for option comparison (Q4 settled; plain sum, consistent with the do-next comparator S17/Q3). It happens only inside the comparison of options, never in an output.
 - **Its own figure.** `decision_value` is never added to `gain` or `loss_averted`, in storage or in any output (S16).
 
-### 5.4. Cost at the live graph's size (I13)
+### 5.4. Cost at the synthetic graph's size (I13)
 
-`python3 specs/pkb-flow-engine/cost.py` prints these figures. It runs the reference calculator unchanged on the committed fixture `specs/flow-rule/fixtures/live-2026-10-05.json`. A full run takes about 20 s, of which scenario C takes about 12 s.
+`python3 specs/pkb-flow-engine/cost.py` prints these figures. It runs the reference calculator unchanged on the committed fixture `specs/flow-rule/fixtures/synthetic.json`. A full run takes under 1 s.
 
 | Scenario | Flow edges | Priced targets | Open nodes reaching a priced target | Σ cone edges (max per node) | Loops (largest) | Python `worth_all`, median per run, over three runs |
 |---|---|---|---|---|---|---|
@@ -471,7 +471,7 @@ Every tool's description in `src/mcp_server/schemas.rs` is updated to match. A `
 "flow": {
   "gain": 1.11, "loss_averted": 0.0, "decision_value": 0.0,
   "flow_status": "ok",
-  "stake": {"task_b3f01c80": 1.0, "targ_4e2cc92a": 0.85},
+  "stake": {"syn_targ_alpha": 1.0, "syn_targ_beta": 0.85},
   "loop_extra": {}
 }
 ```
@@ -543,7 +543,7 @@ Each criterion is something an observer can check against the built server. Ever
 | A10 | Work with a `settles` link into an open decision shows `decision_value = quantum × EVPI`; doubling every price doubles it; marking the decision done sets it to 0 | I10, U12, R14 | T-I10 |
 | A11 | `FlowInput` has no date-typed field and `src/flow.rs` names no date type or function; shifting every `due` by 400 days changes no `flow` | S5, I11, R1 | T-I11 |
 | A12 | `get_task` returns, for each target in `stake`, a strongest route whose strength is at most `stake[t]`, and reports `loop_extra` for any excess over the loop-free bound | I12, U18 | T-I12 |
-| A13 | On the committed fixture, every open node's `gain` and `loss_averted` match `specs/pkb-flow-engine/expected-live-2026-10-05.json` within 1e-9 | I13 | T-parity |
+| A13 | On the committed fixture, every open node's `gain` and `loss_averted` match `specs/pkb-flow-engine/expected-synthetic.json` within 1e-9 | I13 | T-parity |
 | A14 | Restating a positive target as a negative one moves each protective task's figure from `gain` to `loss_averted` unchanged | S12, I14, U13 | T-I14 |
 | A15 | A task serving one target and harming another equally shows two non-zero figures, distinct from a task linked to nothing | S16, I15 | T-I15 |
 | A16 | A loop with a harms edge, including a pure negative loop at quantum 1, settles, with results independent of node ids | I16 | T-I16 |
@@ -572,20 +572,20 @@ There is one test per invariant, T-I1 to T-I17, and fourteen engine tests. Each 
 
 | Test | Invariant / criterion | Construction | Expected (from `flow-rule.md` §10 unless stated) |
 |---|---|---|---|
-| T-I1 `flow_inv01_parallel_prerequisites_full_worth` | I1 / A1 | a node carrying 0.95 with two `needs` prerequisites (`brain_448bb804`) | each prerequisite gain 0.95; node 0.95 with and without them; largest change elsewhere 0.0 |
-| T-I2 `flow_inv02_split_changes_nothing_unrelated` | I2 / A2 | split one prerequisite into two `needs` parts | parts 0.95 and 0.95; all other `flow` unchanged |
-| T-I3 `flow_inv03_one_source_once_two_add` | I3 / A3 | node serving a 0.60 target directly at 1.0 and via its parent at 0.5, plus a 0.35 target | `stake` 1.0, not 1.5; gain 0.95 |
-| T-I4 `flow_inv04_reinforcing_loop_bounded` | I4 / A4 | three-node loop from row 4, plus a feeder at 0.5 | feeder 0.2965 with the loop, 0.2801 with it opened |
-| T-I5 `flow_inv05_blocked_passes_worth` | I5 / A5 | a blocked node carrying 0.95, with open blockers | node 0.95; each blocker 0.95 |
+| T-I1 `flow_inv01_parallel_prerequisites_full_worth` | I1 / A1 | a node carrying 0.80 with two `needs` prerequisites (`syn_task_prereq_head`) | each prerequisite gain 0.80; node 0.80 with and without them; largest change elsewhere 0.0 |
+| T-I2 `flow_inv02_split_changes_nothing_unrelated` | I2 / A2 | split one prerequisite into two `needs` parts | parts 0.80 and 0.80; all other `flow` unchanged |
+| T-I3 `flow_inv03_one_source_once_two_add` | I3 / A3 | node serving a 0.50 target directly at 1.0 and via its parent at 0.5, plus a 0.30 target | `stake` 1.0, not 1.5; gain 0.80 |
+| T-I4 `flow_inv04_reinforcing_loop_bounded` | I4 / A4 | three-node loop from row 4, plus a feeder at 0.5 | feeder 0.0533 with the loop, 0.0500 with it opened |
+| T-I5 `flow_inv05_blocked_passes_worth` | I5 / A5 | a blocked node carrying 0.80, with open blockers | node 0.80; each blocker 0.80 |
 | T-I6 `flow_inv06_display_changes_no_number` | I6 / A6 | run `list_tasks` under every `sort` value, and the display layer with the cliff buffer passed as 0, 7, 14 and 30 | serialised `flow` map byte-identical across runs |
 | T-I7 `flow_inv07_unlinked_is_default` | I7 / A7 | node with only wikilinks and `supersedes` to a priced target | 0 / 0 / 0, `flow_status: ok` |
-| T-I8 `flow_inv08_last_step_full_worth` | I8 / A8 | a parent carrying 1.11 with four `part_of` children done and one open (`proj-f8b942d5`) | open child gain 1.11 |
-| T-I9 `flow_inv09_opportunity_one_node` | I9 / A9 | add a 0.35 target and one `serves` link | changes only on the upstream set; `admin-3e02c20b`, the serving node, 1.11 → 1.46 |
-| T-I10 `flow_inv10_decision_value` | I10 / A10 | decision with two `alternative` options (p 0.4 and 0.3, each 1.11) and one `settles` link | 0.1998; 0.3996 with prices doubled; 0.0 once decided |
+| T-I8 `flow_inv08_last_step_full_worth` | I8 / A8 | a parent carrying 0.40 with three `part_of` children done and one open (`syn_task_parent_last`) | open child gain 0.40 |
+| T-I9 `flow_inv09_opportunity_one_node` | I9 / A9 | add a 0.35 target and one `serves` link | changes only on the upstream set; `syn_task_child_last`, the serving node, 0.40 → 0.75 |
+| T-I10 `flow_inv10_decision_value` | I10 / A10 | decision with two `alternative` options (p 0.4 and 0.3, each 0.40) and one `settles` link | 0.072; 0.144 with prices doubled; 0.0 once decided |
 | T-I11 `flow_inv11_no_dates_in_flow` | I11 / A11 | (a) a compile-time test that `FlowInput`'s fields are only ids, states, worths and edges; (b) a source scan of `src/flow.rs` for `chrono`, `NaiveDate`, `Utc`, `due`, `today`; (c) shift every `due` by 400 days | (a) compiles; (b) no match; (c) `flow` byte-identical |
-| T-I12 `flow_inv12_routes_explain` | I12 / A12 | the fixture | for every (node, target) pair: strongest-route strength ≤ `stake`; any excess over the loop-free bound appears as `loop_extra` (`n_d663317dd7`: 0.9712 against 0.9449) |
-| T-I13 → T-parity (the "differences explained" half of I13 is `flow-rule.md` §11 and is not re-tested by the engine) | I13 / A13 | load the fixture through the engine's own parser | every open node within 1e-9 of `expected-live-2026-10-05.json` (1,502 rows); 49 carrying worth |
-| T-I14 `flow_inv14_negative_target_symmetry` | I14 / A14 | `targ_safety` at +0.35, then restated at −0.35 with protections as harms | 0.2625 / 0.2625 / 0.2822 move from `gain` to `loss_averted` unchanged |
+| T-I12 `flow_inv12_routes_explain` | I12 / A12 | the fixture | for every (node, target) pair: strongest-route strength ≤ `stake`; any excess over the loop-free bound appears as `loop_extra` (`syn_task_loop_extra`: 0.5000 against 0.3750) |
+| T-I13 → T-parity (the "differences explained" half of I13 is `flow-rule.md` §11 and is not re-tested by the engine) | I13 / A13 | load the fixture through the engine's own parser | every open node within 1e-9 of `expected-synthetic.json` (1,147 rows); 21 carrying worth |
+| T-I14 `flow_inv14_negative_target_symmetry` | I14 / A14 | `syn_targ_shield` at +0.35, then restated at −0.35 with protections as harms | 0.2625 / 0.2625 / 0.2800 move from `gain` to `loss_averted` unchanged |
 | T-I15 `flow_inv15_gain_and_loss_not_netted` | I15 / A15 | task serving a 1.0 target at 0.6 and harming another 1.0 target at 0.6 | `(0.60, −0.60)`, distinct from `(0, 0)` |
 | T-I16 `flow_inv16_harmful_loop_settles` | I16 / A16 | row-16 loop with a harms closing edge; a pure negative loop at quantum 1; ids permuted | 0.3878 / 0.3878 / 0.8163 and 0.2308 / 0.2308 / 0.7692; identical under permutation |
 | T-I17 `display_inv17_cliff_lane` | I17 / A17 | hard node due D with worth 0, effort 1 day; fake and soft nodes; `today` stepped from D−40 to D | (this spec's construction) hard first in `list_tasks` from D−8 (1 + 7 days); fake and soft never on the cliff lane |
@@ -694,5 +694,5 @@ These are cited lines in `flow-rule.md` that no longer match `specs/flow-rule/fl
 |---|---|
 | `specs/pkb-flow-engine.md` | this spec |
 | `specs/pkb-flow-engine/cost.py` | the cost figures in §5.4; runs the reference calculator unchanged |
-| `specs/pkb-flow-engine/expected-live-2026-10-05.json` | oracle for T-parity: `gain` and `loss_averted` for every open node of the fixture (1,502 rows, 49 carrying worth), from `python3 specs/flow-rule/flow.py live specs/flow-rule/fixtures/live-2026-10-05.json --out …` |
+| `specs/pkb-flow-engine/expected-synthetic.json` | oracle for T-parity: `gain` and `loss_averted` for every open node of the fixture (1,147 rows, 21 carrying worth), from `python3 specs/flow-rule/flow.py live specs/flow-rule/fixtures/synthetic.json --out …` |
 

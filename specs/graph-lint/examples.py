@@ -3,10 +3,10 @@
 
     python3 specs/graph-lint/examples.py
 
-This is an evidence script, not the linter. It reads the committed live-graph
-fixture of the flow-rule spec (flow-rule/fixtures/live-2026-10-05.json) through
+This is an evidence script, not the linter. It reads the committed synthetic
+fixture of the flow-rule spec (flow-rule/fixtures/synthetic.json) through
 the flow-rule reference calculator, and prints one block per check family.
-Rows marked ASSUMED edit a real node hypothetically, because the live graph
+Rows marked ASSUMED edit a synthetic node hypothetically, because the synthetic graph
 does not yet carry the field being checked.
 """
 
@@ -22,7 +22,7 @@ sys.path.insert(0, os.path.join(HERE, "..", "flow-rule"))
 
 import flow  # noqa: E402
 
-FIXTURE = os.path.join(HERE, "..", "flow-rule", "fixtures", "live-2026-10-05.json")
+FIXTURE = os.path.join(HERE, "..", "flow-rule", "fixtures", "synthetic.json")
 
 
 STRATEGIC_TARGET_TYPES = {"target", "goal"}
@@ -84,7 +84,7 @@ def main() -> int:
     fed = [(t, len(inc[t]), sum(st[e.src] == "open" for e in inc[t])) for t in unpriced if inc[t]]
     print(f"unpriced targets with incoming edges: {len(fed)}")
     for t, n, o in fed:
-        if t == "targ_safety":
+        if t == "syn_targ_shield":
             print(f"  {t}: {n} incoming edges, {o} from open work")
     print(f"worth on a non-target: {sorted(v for v in g.worth if typ[v] not in STRATEGIC_TARGET_TYPES)}")
 
@@ -118,8 +118,8 @@ def main() -> int:
     print(f"today's dep-hard-cycle rule on the same edges finds: {len(old)} cycles")
     # ASSUMED: reopen the done node of the child-depends-on-parent loop.
     g2 = flow.Graph(state=dict(st), worth=dict(g.worth), edges=list(g.edges))
-    g2.state["n_22a3f9be31"] = "open"
-    print(f"  ASSUMED n_22a3f9be31 reopened: saturated loops {flow.saturated_loops(g2)}; "
+    g2.state["syn_lint_reopen_node"] = "open"
+    print(f"  ASSUMED syn_lint_reopen_node reopened: saturated loops {flow.saturated_loops(g2)}; "
           f"today's rule still finds {len(old_hard_cycles(g2))}")
 
     print("\n## Deadlines")
