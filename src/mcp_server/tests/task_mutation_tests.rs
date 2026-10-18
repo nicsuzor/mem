@@ -3189,4 +3189,97 @@ fn test_delete_type_guard_mismatch_leads_with_reason() {
     );
 }
 
+#[test]
+fn test_create_task_reports_actual_written_id_on_hex_title() {
+    let (_tmp, server) = build_disk_backed_server(&[]);
+
+    // Title contains an 8-hex string (18585412).
+    // On unpatched code, the regex in handle_create_task greedily matched past the real ID
+    // into the slug (aops_<hash>_fix_18585412), causing get_task to fail and returning
+    // the "not yet visible in graph" error with the bogus ID instead of a success result.
+    let res = server.handle_create_task(&json!({
+        "title": "Fix 18585412 in parser",
+        "type": "task",
+        "project": "aops",
+        "parent": "aops",
+        "allow_missing_parent": true,
+    }));
+
+    // Find the file written on disk to inspect the actual ID in its frontmatter
+    let files = crate::pkb::scan_directory(&server.pkb_root);
+    let task_file = files
+        .iter()
+        .find(|p| p.to_string_lossy().contains("18585412"))
+        .expect("task file must be written to disk");
+    let written_doc = crate::pkb::parse_file(task_file).expect("file must be parseable");
+    let actual_written_id = written_doc.id();
+
+    // 1. Success result: create_task must succeed (Ok), not fail with not-yet-visible error
+    assert!(
+        res.is_ok(),
+        "create_task must succeed with Ok, but failed with: {:?}",
+        res.as_ref().err().map(|e| &e.message)
+    );
+    let ok_res = res.unwrap();
+    let text = ok_res
+        .content
+        .iter()
+        .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+        .collect::<String>();
+    let val: serde_json::Value = serde_json::from_str(&text).unwrap();
+    let returned_id = val.get("id").and_then(|v| v.as_str()).unwrap();
+
+    // 2. Returned ID must equal the actual written document ID from frontmatter,
+    // not a regex-mangled stem.
+    assert_eq!(
+        returned_id, actual_written_id,
+        "returned ID '{returned_id}' must match actual written document ID '{actual_written_id}'"
+    );
+    assert!(
+        !returned_id.contains("18585412"),
+        "returned ID '{returned_id}' must not contain hex slug fragment '18585412'"
+    );
+}
+
+#[test]
+fn test_decompose_subtasks_report_actual_written_id_on_hex_title() {
+    let (_tmp, server) = build_disk_backed_server(&[(
+        "tasks/parent.md",
+        "---\nid: parent\ntitle: Parent\ntype: task\nstatus: ready\n---\n",
+    )]);
+
+    let res = server
+        .handle_decompose_task(&json!({
+            "parent_id": "parent",
+            "subtasks": [
+                {
+                    "title": "Fix 18585412 in parser",
+                    "type": "task",
+                    "project": "aops",
+                }
+            ]
+        }))
+        .unwrap();
+
+    let text = res.content[0].raw.as_text().unwrap().text.clone();
+    let files = crate::pkb::scan_directory(&server.pkb_root);
+    let subtask_file = files
+        .iter()
+        .find(|p| p.to_string_lossy().contains("18585412"))
+        .expect("subtask file must be written to disk");
+    let doc = crate::pkb::parse_file(subtask_file).expect("file must be parseable");
+    let actual_id = doc.id();
+
+    assert!(
+        text.contains(&format!("- `{actual_id}` — ")),
+        "output must contain the actual written subtask ID '{actual_id}', got:\n{text}"
+    );
+    assert!(
+        !text.contains("18585412`"),
+        "output ID must not absorb hex slug suffix"
+    );
+}
+
+
+
 
