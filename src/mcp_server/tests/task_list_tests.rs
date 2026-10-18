@@ -1,8 +1,25 @@
 use super::*;
 
-/// AC1 + AC6: the DEFAULT list_tasks output (no sort/order arg) is ordered by
-/// focus_score descending, asserted on the returned values (consecutive
-/// focus_scores are non-increasing), and is stable across repeated calls.
+/// Assert that `ids` (as returned by list_tasks) are in the engine's flow
+/// display order (`GraphStore::sort_by_display`).
+fn assert_in_display_order(server: &PkbSearchServer, ids: &[String]) {
+    let graph = server.graph.read();
+    let mut nodes: Vec<&crate::graph::GraphNode> = ids
+        .iter()
+        .map(|id| graph.resolve(id).unwrap_or_else(|| panic!("{id} must resolve")))
+        .collect();
+    GraphStore::sort_by_display(
+        &mut nodes,
+        chrono::Utc::now().date_naive(),
+        crate::display_rank::DISPLAY_CLIFF_BUFFER_DAYS,
+    );
+    let expected: Vec<String> = nodes
+        .iter()
+        .map(|n| n.task_id.as_deref().unwrap_or(&n.id).to_string())
+        .collect();
+    assert_eq!(ids, expected.as_slice(), "list_tasks must follow display_cmp order");
+}
+
 #[test]
 fn test_top_n_by_metric() {
     let server = build_test_server();
@@ -88,35 +105,18 @@ fn test_top_n_by_metric() {
     }
 }
 
+/// AC1: the DEFAULT list_tasks output (no sort arg) follows the flow
+/// display order (`display_cmp`).
 #[test]
-fn test_list_tasks_default_order_is_focus_desc() {
+fn test_list_tasks_default_order_is_display_order() {
     let server = build_test_server();
-    let result = server
-        .handle_list_tasks(&json!({"format": "json"}))
-        .unwrap();
-    let tasks = extract_task_objects(&result);
-    assert!(
-        tasks.len() >= 2,
-        "fixture should return multiple tasks, got {}",
-        tasks.len()
+    let ids = extract_task_ids(
+        &server
+            .handle_list_tasks(&json!({"format": "json"}))
+            .unwrap(),
     );
-
-    let scores: Vec<i64> = tasks
-        .iter()
-        .map(|t| {
-            t.get("focus_score")
-                .and_then(|s| s.as_i64())
-                .unwrap_or(i64::MIN)
-        })
-        .collect();
-    for w in scores.windows(2) {
-        assert!(
-            w[0] >= w[1],
-            "focus_score must be non-increasing in default order, saw {} then {}. Full: {scores:?}",
-            w[0],
-            w[1]
-        );
-    }
+    assert!(ids.len() >= 2, "fixture should return multiple tasks, got {}", ids.len());
+    assert_in_display_order(&server, &ids);
 }
 
 /// AC2: every returned row carries a `status` field in the default projection.
@@ -161,36 +161,23 @@ fn test_list_tasks_default_order_is_deterministic() {
     );
 }
 
-/// AC1: the `ready` special filter is also focus_score-DESC by default, with
+/// AC1: the `ready` special filter also follows the flow display order, with
 /// status present on every row.
 #[test]
-fn test_list_tasks_ready_order_is_focus_desc_with_status() {
+fn test_list_tasks_ready_order_is_display_order_with_status() {
     let server = build_test_server();
     let result = server
         .handle_list_tasks(&json!({"status": "ready", "format": "json"}))
         .unwrap();
     let tasks = extract_task_objects(&result);
     assert!(!tasks.is_empty(), "fixture should have ready tasks");
-    let scores: Vec<i64> = tasks
-        .iter()
-        .map(|t| {
-            t.get("focus_score")
-                .and_then(|s| s.as_i64())
-                .unwrap_or(i64::MIN)
-        })
-        .collect();
-    for w in scores.windows(2) {
-        assert!(
-            w[0] >= w[1],
-            "ready focus_scores must be non-increasing: {scores:?}"
-        );
-    }
     for t in &tasks {
         assert!(
             t.get("status").and_then(|s| s.as_str()).is_some(),
             "ready row missing status: {t}"
         );
     }
+    assert_in_display_order(&server, &extract_task_ids(&result));
 }
 
 /// AC4: an explicit `format` argument is honoured unchanged — the markdown
@@ -291,43 +278,6 @@ fn test_list_tasks_include_done_surfaces_terminal_tasks() {
     assert!(
         ids.contains(&"task-a4".to_string()),
         "archived task-a4 should appear with include_done=true"
-    );
-}
-
-#[test]
-fn test_done_tasks_no_live_focus_score_urgency() {
-    let server = build_test_server();
-    let result = server
-        .handle_list_tasks(
-            &json!({"project": "ProjectAlpha", "include_done": true, "format": "json"}),
-        )
-        .unwrap();
-
-    let text = result
-        .content
-        .iter()
-        .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
-        .collect::<String>();
-
-    let parsed: serde_json::Value = serde_json::from_str(&text).unwrap();
-    let tasks = parsed.get("tasks").unwrap().as_array().unwrap();
-
-    // Find task-a3 (which is done)
-    let task_a3 = tasks
-        .iter()
-        .find(|t| t.get("id").unwrap().as_str() == Some("task-a3"))
-        .unwrap();
-
-    assert_eq!(
-        task_a3.get("focus_score"),
-        Some(&serde_json::Value::Null),
-        "done task should have null focus_score"
-    );
-    let signals = task_a3.get("signals").unwrap();
-    assert_eq!(
-        signals.get("urgency").unwrap().as_f64(),
-        Some(0.0),
-        "done task should have 0.0 urgency"
     );
 }
 
@@ -544,99 +494,97 @@ fn test_list_tasks_schema_includes_include_done() {
     );
 }
 
-// ── focus_score description ──
+// ── Tool descriptions describe the flow engine only ──
+
+const RETIRED_RANKING_TERMS: &[&str] = &[
+    "focus_score",
+    "cost_of_delay",
+    "downstream weight",
+    "downstream_weight",
+    "VoI",
+    "severity_gate",
+    "signals",
+];
 
 #[test]
-fn test_list_tasks_description_mentions_focus_score() {
+fn test_list_and_get_task_descriptions_describe_flow_not_retired_terms() {
     let tools = PkbSearchServer::get_all_tools();
-    let list_tasks = tools
-        .iter()
-        .find(|t| t.name.as_ref() == "list_tasks")
-        .expect("list_tasks tool should exist");
-    let desc = list_tasks.description.as_deref().unwrap_or("");
-    assert!(
-        desc.contains("focus_score"),
-        "list_tasks description should mention focus_score, got: {desc}"
-    );
-}
-
-#[test]
-fn test_get_task_description_mentions_focus_score() {
-    let tools = PkbSearchServer::get_all_tools();
-    let get_task = tools
-        .iter()
-        .find(|t| t.name.as_ref() == "get_task")
-        .expect("get_task tool should exist");
-    let desc = get_task.description.as_deref().unwrap_or("");
-    assert!(
-        desc.contains("focus_score"),
-        "get_task description should mention focus_score, got: {desc}"
-    );
-}
-
-// ── Payload shape: focus_score top-level, signals nested ──
-
-#[test]
-fn test_list_tasks_focus_score_toplevel_signals_nested() {
-    let server = build_test_server();
-    let result = server
-        .handle_list_tasks(&json!({"status": "ready", "format": "json"}))
-        .unwrap();
-    let text = result
-        .content
-        .iter()
-        .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
-        .collect::<String>();
-    let val: serde_json::Value =
-        serde_json::from_str(&text).expect("list_tasks json output should parse");
-    let tasks = val
-        .get("tasks")
-        .and_then(|t| t.as_array())
-        .expect("should have tasks array");
-    assert!(!tasks.is_empty(), "fixture should have ready tasks");
-    for t in tasks {
-        assert!(
-            t.get("focus_score").is_some(),
-            "focus_score must be a top-level field"
-        );
-        let signals = t
-            .get("signals")
-            .and_then(|s| s.as_object())
-            .expect("signals must be a top-level object");
-        for key in &[
-            "criticality",
-            "urgency",
-            "downstream_weight",
-            "scope",
-            "uncertainty",
-            "voi_value",
-        ] {
-            assert!(
-                signals.contains_key(*key),
-                "signals.{key} must exist under signals, not at top level"
-            );
-            assert!(
-                t.get(key).is_none(),
-                "{key} must NOT appear at the top level (belongs in signals)"
-            );
+    for name in ["list_tasks", "get_task"] {
+        let tool = tools
+            .iter()
+            .find(|t| t.name.as_ref() == name)
+            .unwrap_or_else(|| panic!("{name} tool should exist"));
+        let desc = tool.description.as_deref().unwrap_or("");
+        assert!(desc.contains("gain"), "{name} description should name flow figures, got: {desc}");
+        for term in RETIRED_RANKING_TERMS {
+            assert!(!desc.contains(term), "{name} description mentions retired `{term}`: {desc}");
         }
     }
 }
 
 #[test]
-fn test_get_task_focus_score_toplevel_signals_nested() {
+fn test_list_tasks_schema_offers_no_retired_ranking_params() {
+    let tools = PkbSearchServer::get_all_tools();
+    for name in ["list_tasks", "nested_tasks", "batch_update"] {
+        let Some(tool) = tools.iter().find(|t| t.name.as_ref() == name) else {
+            continue;
+        };
+        let props = tool.input_schema.get("properties").and_then(|p| p.as_object()).unwrap();
+        for param in ["focus_score_gte", "weight_gte"] {
+            assert!(!props.contains_key(param), "{name} still offers retired `{param}`");
+        }
+    }
+}
+
+// ── Payload shape: flow figures, no retired ranking fields ──
+
+const RETIRED_ROW_FIELDS: &[&str] = &[
+    "focus_score",
+    "effective_intent",
+    "signals",
+    "criticality",
+    "urgency",
+    "downstream_weight",
+    "voi_value",
+    "affordable_loss",
+    "affordable_loss_filtered",
+    "chain_slack",
+    "unlock_breadth",
+    "value_lineage",
+];
+
+#[test]
+fn test_list_tasks_rows_carry_flow_figures_not_retired_fields() {
+    let server = build_test_server();
+    let tasks = extract_task_objects(
+        &server
+            .handle_list_tasks(&json!({"status": "ready", "format": "json"}))
+            .unwrap(),
+    );
+    assert!(!tasks.is_empty(), "fixture should have ready tasks");
+    for t in &tasks {
+        for key in ["flow_status", "on_cliff", "ready", "blocked"] {
+            assert!(t.get(key).is_some(), "list_tasks row must carry `{key}`: {t}");
+        }
+        for key in RETIRED_ROW_FIELDS {
+            assert!(t.get(key).is_none(), "list_tasks row carries retired `{key}`: {t}");
+        }
+    }
+}
+
+#[test]
+fn test_get_task_carries_flow_and_display_not_retired_fields() {
     // get_task reads from disk, so we build a self-contained server with
-    // actual files in a dedicated temp directory (separate from the shared
-    // /tmp/test-pkb-project used by other tests to avoid interference).
+    // actual files in a dedicated temp directory.
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path();
     let task_dir = root.join("tasks");
     std::fs::create_dir_all(&task_dir).unwrap();
     std::fs::write(
-            task_dir.join("task-shape-test.md"),
-            "---\ntitle: Shape Test Task\ntype: task\nstatus: active\nid: task-shape-test\n---\n\nBody.\n",
-        )
-        .unwrap();
+        task_dir.join("task-shape-test.md"),
+        "---\ntitle: Shape Test Task\ntype: task\nstatus: active\nid: task-shape-test\n---\n\nBody.\n",
+    )
+    .unwrap();
 
     let doc = PkbDocument {
         path: PathBuf::from("tasks/task-shape-test.md"),
@@ -658,14 +606,11 @@ fn test_get_task_focus_score_toplevel_signals_nested() {
         file_hash: "test_hash".to_string(),
     };
     let graph = GraphStore::build(&[doc], root);
-    let store = VectorStore::new(3);
-    let embedder = Embedder::new_dummy();
-    let db_path = root.join("db");
     let server = PkbSearchServer::new(
-        Arc::new(RwLock::new(store)),
-        Arc::new(embedder),
+        Arc::new(RwLock::new(VectorStore::new(3))),
+        Arc::new(Embedder::new_dummy()),
         root.to_path_buf(),
-        db_path,
+        root.join("db"),
         Arc::new(RwLock::new(graph)),
     );
 
@@ -680,30 +625,10 @@ fn test_get_task_focus_score_toplevel_signals_nested() {
     let t: serde_json::Value =
         serde_json::from_str(&text).expect("get_task json output should parse");
 
-    assert!(
-        t.get("focus_score").is_some(),
-        "focus_score must be a top-level field in get_task response"
-    );
-    let signals = t
-        .get("signals")
-        .and_then(|s| s.as_object())
-        .expect("signals must be a top-level object in get_task response");
-    for key in &[
-        "criticality",
-        "urgency",
-        "downstream_weight",
-        "scope",
-        "uncertainty",
-        "voi_value",
-    ] {
-        assert!(
-            signals.contains_key(*key),
-            "signals.{key} must exist under signals in get_task response"
-        );
-        assert!(
-            t.get(key).is_none(),
-            "{key} must NOT appear at the top level in get_task response (belongs in signals)"
-        );
+    assert!(t.get("flow").is_some(), "get_task must carry `flow`: {t}");
+    assert!(t.get("display").is_some(), "get_task must carry `display`: {t}");
+    for key in RETIRED_ROW_FIELDS.iter().chain(&["urgency_ratio", "target_ancestors"]) {
+        assert!(t.get(key).is_none(), "get_task carries retired `{key}`: {t}");
     }
 }
 
@@ -983,30 +908,6 @@ fn test_list_tasks_has_superseded_by_filter() {
         assert!(
             task.get("superseded_by").is_none(),
             "unfiltered json task rows must NOT contain 'superseded_by' key"
-        );
-    }
-}
-
-#[test]
-fn test_task_signals_include_affordable_loss() {
-    let server = build_test_server();
-    let result = server
-        .handle_list_tasks(&json!({"format": "json"}))
-        .unwrap();
-    let tasks = extract_task_objects(&result);
-    assert!(!tasks.is_empty());
-    for t in tasks {
-        let signals = t
-            .get("signals")
-            .and_then(|s| s.as_object())
-            .expect("signals object must exist");
-        assert!(
-            signals.contains_key("affordable_loss"),
-            "signals must contain affordable_loss"
-        );
-        assert!(
-            signals.contains_key("affordable_loss_filtered"),
-            "signals must contain affordable_loss_filtered"
         );
     }
 }

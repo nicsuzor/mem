@@ -20,7 +20,7 @@ tags:
 
 **Home:** `specs/flow-migration.md` in the `nicsuzor/mem` repository, with its reference scripts in `specs/flow-migration/`. The migration tool it specifies belongs to the `pkb` binary in this repository. The data it changes lives in Nic's PKB repository (`nicsuzor/brain`, private).
 
-**Status: settled (points 1–30 of spec_866ee53d).** This canonical specification defines the migration path from legacy ranking (`ranking.md`) to the settled flow rule and edge model (`flow-rule.md`). It governs the migration phases (R1–R8) and guarantees that migration is non-destructive, staged in shadow, and fully reversible until final cleanup. Its numbers come from the reference dry run in [`flow-migration/dryrun.py`](flow-migration/dryrun.py).
+**Status: settled (points 1–30 of spec_866ee53d).** This canonical specification defines the migration of PKB data from the legacy fields to the settled flow rule and edge model (`flow-rule.md`). It governs the migration phases (R1–R8). The engine side is complete: flow is the only ranking engine, there is no ranking setting, and there is no switch back to the legacy ranking (`pkb-flow-engine.md` §4, §7.1). The data migration is non-destructive and reversible until final cleanup. Its numbers come from the reference dry run in [`flow-migration/dryrun.py`](flow-migration/dryrun.py).
 
 Traceability tags:
 
@@ -35,11 +35,11 @@ Traceability tags:
 
 ## 0. Summary for Nic
 
-**What happens.** The move has four steps, and each one can be undone:
+**What happens.** The move has four steps. The engine step is done. The data steps can be undone until cleanup:
 
-1. **Add, don't replace.** The migration adds the new values (a `worth` on each target priced on an open-ended log scale per S26, a `quantum` and `probability` on each link per S2, S25) next to the old fields. It deletes nothing. Today's ranking reads the graph exactly as before. The new ranking runs alongside in shadow.
+1. **Add, don't replace.** The migration adds the new values (a `worth` on each target priced on an open-ended log scale per S26, a `quantum` and `probability` on each link per S2, S25) next to the old fields. It deletes nothing. The old fields stay on disk until cleanup.
 2. **Every target is priced on the open log scale.** One sitting covers 90 strategic nodes: 73 typed `target` and 17 old `goal` nodes the engine already reads as targets. Agents make educated price guesses on the open-ended logarithmic scale (S14, S26; 7 carry a price today from `standing_weight` and are mapped over; agents suggest values for the rest), and you review and confirm them. Capital stocks (reputation, funding base) are wired as unpriced hub targets (S27).
-3. **Switch the ranking over.** This waits until you have compared the two rankings on real data. Switching back is one setting (`ranking: legacy | flow`).
+3. **Switch the ranking over.** Done on the engine side: flow is the only ranking engine. There is no ranking setting and no switch back.
 4. **Clean up.** Only after you say so, a second change deletes the old fields. This is the only step that cannot be undone, except from git history.
 
 **What it changes on today's graph** (live export, 6 October 2026, `dryrun.py`):
@@ -53,8 +53,8 @@ Traceability tags:
 - **Untouched.** Nothing else: no other key, and none of the 5,375 wikilinks. That no page body changes is checked on the real files by M5; the fixture holds no bodies.
 - **Undo works.** On today's data, undoing the migration restores the migrated fields of all 255 changed nodes exactly. The byte-level check on files is M3, for the build.
 - **Rankings.** 52 of 1,489 open items carry worth under the new rule (with `part_of` at quantum 0, Q1 settled, and `status: retired` read as done, MQ10 settled).
-  - Of today's top 50, 4 still carry worth. The other 46 carry no route to a priced target over edges of non-zero strength (`serves`, `needs`, `supports`).
-  - Calibration cases reflect the settled Q1 rule (`part_of` quantum 0). The list's current first item (`proj-76fbc546`) moves to 2nd (gain 0.95 via direct `serves`). Nodes whose only connection to priced targets was through parent edges (`brain_448bb804`, `admin-3e02c20b`, `task_e79f1a57`, `personal_92d5909f`, `brain_7f772690`) carry 0.0 worth until direct contribution links are wired.
+  - Of the legacy top 50 at the snapshot, 4 still carry worth. The other 46 carry no route to a priced target over edges of non-zero strength (`serves`, `needs`, `supports`).
+  - Calibration cases reflect the settled Q1 rule (`part_of` quantum 0). The legacy list's first item at the snapshot (`proj-76fbc546`) moves to 2nd (gain 0.95 via direct `serves`). Nodes whose only connection to priced targets was through parent edges (`brain_448bb804`, `admin-3e02c20b`, `task_e79f1a57`, `personal_92d5909f`, `brain_7f772690`) carry 0.0 worth until direct contribution links are wired.
 
 **What it costs you:**
 
@@ -63,9 +63,8 @@ Traceability tags:
 - **Six contribution links** whose old word was not on the scale ("medium" 3, "high" 2, blank 1). These are left unvalued for the first densify batch.
 - **27 in-flight tasks to settle:** 2 to cancel, 9 to supersede, 5 to pause, 11 to keep (section 10).
 
-**Decisions waiting on you:** section 13 questions. Note that C1 storage is confirmed additive in place (MQ4; engine owns schema, `links:` list as R8 option), MQ10 is settled (`retired` → done), and MQ14 is closed by the Q17 rule (price for worth in itself, never for what it feeds). The primary open questions are:
+**Decisions waiting on you:** section 13 questions. Note that C1 storage is confirmed additive in place (MQ4; engine owns schema, `links:` list as R8 option), MQ10 is settled (`retired` → done), MQ14 is closed by the Q17 rule (price for worth in itself, never for what it feeds), and MQ1 is retired with the legacy engine (no cutover is left to gate). The primary open questions are:
 
-- **MQ1.** Do you switch over only once every target has a price (zero allowed)?
 - **MQ2.** Are the 17 old `goal` nodes priced as targets, merged into targets, or retired?
 - **MQ3.** Do you confirm the migrated values: soft links at 0.3, old words read as quantum with probability 1.00 (FR-Q22)?
 
@@ -106,22 +105,22 @@ Four repositories read or write these fields:
 ## 2. Architecture and data flow
 
 ```text
-                 ┌──────────── reversible ─────────────────────────────────────────────┐
- live graph ──►  snapshot ──► dry run ──► pricing ──► apply (additive) ──► shadow ──► cutover ──► window ──► cleanup
- (brain repo)    export +     report    (Nic reviews) one commit in       both        one engine  legacy     second commit
-                 today's      (§8)         worth,     brain, ledger       rankings    setting     fields     deletes legacy
-                 order                     deadline   (§5)                computed    flips       kept       fields (MQ7)
-                                           classes                        (§9 R1)     (§9 R6)                ── one-way ──
+                 ┌──────────── reversible (--revert) ───────────────┐
+ live graph ──►  snapshot ──► dry run ──► pricing ──► apply (additive) ──► cleanup
+ (brain repo)    export +     report    (Nic reviews) one commit in       second commit
+                 display      (§8)         worth,     brain, ledger       deletes legacy
+                 order                     deadline   (§5)                fields (MQ7)
+                                           classes                        ── one-way ──
 ```
 
 - **The migration tool reads:**
   - the PKB files;
   - the engine's resolved edges;
-  - today's `list_tasks` order.
+  - the current `list_tasks` display order.
 - **It writes:**
   - frontmatter keys in the allowed set (§5.3), and nothing else;
   - a ledger file.
-- **The engine reads the result** in both modes (§9). The legacy ranking ignores the added keys. The flow ignores the legacy ones (FR §2).
+- **The engine reads the result** (§9). Flow is its only ranking. The flow ignores the legacy fields (FR §2).
 
 ---
 
@@ -210,18 +209,18 @@ Of the 412 nodes with status `none`, 24 are `type: task`. The flow adapter reads
 
 ### 4.3. Computed fields
 
-These are computed, not stored, so nothing in the PKB files changes. The engine stops emitting them at cleanup, per FR §9 and §14. Counts are nodes carrying a nonzero value in the export:
+These were computed, not stored, so nothing in the PKB files changes. They were removed with the legacy ranking (FR §9, §14; `pkb-flow-engine.md` §7.1): the engine no longer computes or emits them. Counts are nodes that carried a nonzero value in the export of 6 October 2026:
 
 | Field | Count | Fate |
 |---|---|---|
-| `focus_score` | 955 (602 open) | kept in shadow for comparison, then removed |
-| `value_lineage` | 187 | kept in shadow for comparison, then removed |
-| `downstream_weight` | 287 | kept in shadow for comparison, then removed |
-| `unlock_breadth` | 24 | kept in shadow for comparison, then removed |
-| `urgency` | 1,770 | kept in shadow for comparison, then removed |
-| `voi_value` | 2 | kept in shadow for comparison, then removed |
-| `stakeholder_exposure` | 58 | kept in shadow for comparison, then removed |
-| `queue_rank`, `cost_of_delay`, `severity_gate` | on ranked tasks | kept in shadow for comparison, then removed |
+| `focus_score` | 955 (602 open) | removed |
+| `value_lineage` | 187 | removed |
+| `downstream_weight` | 287 | removed |
+| `unlock_breadth` | 24 | removed |
+| `urgency` | 1,770 | removed |
+| `voi_value` | 2 | removed |
+| `stakeholder_exposure` | 58 | removed |
+| `queue_rank`, `cost_of_delay`, `severity_gate` | on ranked tasks | removed |
 
 ---
 
@@ -243,12 +242,12 @@ A value that differs from the label's default is stored on the entry itself. A l
 **What this storage buys:**
 
 - The migration touches only the 255 nodes that need a value.
-- The legacy ranking keeps working once R1 ships, because the R1 engine reads the id from either form. **Today's parser does not:** `parse_string_array` keeps strings only (`src/graph.rs:1065`) and would silently drop a map entry. Apply therefore waits for R1 (§9).
+- The engine reads the id from either form (R1, done: `parse_string_array`, `src/graph.rs:1546`). An older parser kept strings only and would silently drop a map entry, so apply waits for R1 (§9).
 - Undoing the migration is a mechanical inverse.
 
 **Schema ownership and the R8 alternative.** The engine spec (`epic_2de1b579`) owns the stored schema for edges and target worth; this spec owns the migration transform. Additive in place is confirmed for R1–R7. A single unified `links:` list remains an R8 option for Nic at cleanup (§9). Whichever form is finalized at R8, the ledger, reversal, and acceptance criteria apply unchanged.
 
-**Engine work under the proposal.** The engine must accept the map form inside `soft_depends_on` and `depends_on` lists. Today they parse as string arrays only (`src/graph.rs:1706-1712`). That is the one engine change the migration needs before it can be applied (§9, R1).
+**Engine work under the proposal.** The engine must accept the map form inside `soft_depends_on` and `depends_on` lists. It does (`parse_string_array`, `src/graph.rs:1546`). That was the one engine change the migration needed before it could be applied (§9, R1).
 
 ### 5.2. What is written
 
@@ -309,12 +308,12 @@ On the live graph the top-level keys changed are `contributes_to`, `soft_depends
 
 Each run writes one ledger file in the PKB repository, under `.agents/migrations/flow-<date>.json`. It holds:
 
-- **the snapshot:** the export's content hash and today's `list_tasks` order, with focus scores;
+- **the snapshot:** the export's content hash and the `list_tasks` display order at the snapshot (`today_rank`: task id and 1-based display position);
 - **one row per write:** node id, file path, key path, value before, value after;
 - **status-less task records:** the 24 `type: task` nodes with no status that the adapter reads as done (:205; `dryrun.py:69`), each given a ledger row and a lint note so they are auditable and not lost silently (§7.1, :95);
 - **the run's report:** sections 3, 4 and 8.
 
-The ledger is how the migration is reversed (§7.2). It is also how the dashboard shows "before" during the shadow period.
+The ledger is how the migration is reversed (§7.2).
 
 ### 5.5. Tool contract
 
@@ -367,7 +366,7 @@ Under Q1 settled (`part_of` quantum 0.0), reach reflects direct contribution pat
 | 1 | 12 | `garage-69a576ed` (1), `qut-f71664e8` (1), `brain-b948a148` (1), `academicops-dfb31347` (1), `proj-home-c3997b42` (1), … |
 | 0 | 19 | four `goal_type: committed` targets: `admin-73e215bc`, `brain-1b370df8`, `targ-8f16a7c2`, `targ_hdr_current_completion` |
 
-A target with reach 0 is still priced. Its price moves nothing until the densify routine values a link to it (FR §8, skills spec `epic_80ce44ae`). The four committed targets with reach 0 are the clearest case: today severity lifts their work, and after cutover nothing does until a link is valued. The cliff lane still catches hard deadlines (FR §7).
+A target with reach 0 is still priced. Its price moves nothing until the densify routine values a link to it (FR §8, skills spec `epic_80ce44ae`). The four committed targets with reach 0 are the clearest case: the legacy ranking let severity lift their work; under the flow nothing does until a link is valued. The cliff lane still catches hard deadlines (FR §7).
 
 **How Nic reviews.** For each row, Nic approves or adjusts the suggested price to one of:
 
@@ -388,7 +387,7 @@ The tool writes `worth` from the anchor table (FR §5.6, FR-Q7). If Nic says a t
 
 **Size.** Pricing is one sitting of at most 90 answers plus 6 date classes. By FR §8's count, it is the first of about four batches of fifty.
 
-**Gate.** As proposed, cutover (§9, R6) refuses while any target lacks a `worth` (zero is allowed) and names those that lack one (MQ1). `pkb migrate flow --status` shows the count.
+**Gate.** Retired with the legacy engine: the engine side has cut over (§9, R6), so there is no cutover left to gate (MQ1, M9). `pkb migrate flow --status` still shows which targets lack a `worth`.
 
 **What pricing does to the numbers** (illustration only; **assumed** prices, not Nic's). With every unpriced target and goal set to Moderate (0.15):
 
@@ -406,24 +405,22 @@ These figures show the scale of the step. They are not a proposal.
 
 | Stage | What is lost | Size on today's graph | Recoverable? |
 |---|---|---|---|
-| Apply | nothing: the change is additive. Of the 255 nodes it changes, all 255 keep the same legacy reading once the R1 engine reads map entries (`dryrun.py` §4); before R1 the legacy parser would drop soft links, so apply waits for R1 | 255 of 255 changed nodes | yes, `--revert` |
+| Apply | nothing: the change is additive. Of the 255 nodes it changes, all 255 keep every existing value; only allowed keys are added (`dryrun.py` §4). Apply waits for R1, since a parser that does not read map entries would drop soft links | 255 of 255 changed nodes | yes, `--revert` |
 | Apply | **meaning, not data**: an old word mixed amount and likelihood; it becomes a quantum with probability 1.00 | 155 links | the word is kept until cleanup; densify re-asks it (FR §5.4) |
 | Apply | **meaning, not data**: a soft link that recorded context, not contribution, now moves worth at 0.3 | 184 links, 43 between open nodes | densify can set any of them to 0 |
-| Shadow | nothing | — | — |
-| Cutover | today's order | 529 ranked tasks; the order is saved in the ledger | yes, one setting |
-| Cutover | the pull of severity, a named person waiting, dates, priority band, age, blast radius, unlock breadth and value-of-information gates (FR §9, §14) | 46 of today's top 50 fall to zero under Q1 settled (`part_of` at 0.0); 4 carry worth (`dryrun.py` §7) | yes, one setting; the hard-deadline cliff and Nic's prices bring back what matters (FR §7) |
-| Cutover | worth for 4 committed targets with no valued link | reach 0 (§6) | by densify, not by reversal |
-| Cutover / Adapter | 24 tasks with no status: the flow adapter reads status-less nodes as done (:205; `dryrun.py:69`), treating them as completed without explicit status. Each gets a ledger row and a lint note so nothing is lost silently (:95) | 24 tasks: `n_07d115101c`, `n_0b06664fc4`, `n_11ebbcf82d`, `n_3be6d9cce6`, `n_42995d77f7`, `n_485b5d97c3`, `n_4bce0b411b`, `n_4d0abba538`, `n_51f53f6e11`, `n_6543db808e`, `n_7d5a883f2d`, `n_85426e629a`, `n_93a403f3e1`, `n_9c4482b6e8`, `n_ac2aa14b93`, `n_ac43e9ee9b`, `n_b57c314c23`, `n_b65ef54fad`, `n_c609df7d5a`, `n_cbbf29e240`, `n_da89aafae0`, `n_dac7ad7c10`, `n_e466433623`, `n_f0c34f69fb` | in files; linter flags them |
+| Cutover (engine, done) | the legacy order | 529 ranked tasks at the snapshot; the fixture keeps that order (§14) | no: the legacy engine is removed |
+| Cutover (engine, done) | the pull of severity, a named person waiting, dates, priority band, age, blast radius, unlock breadth and value-of-information gates (FR §9, §14) | 46 of the snapshot's legacy top 50 fall to zero under Q1 settled (`part_of` at 0.0); 4 carry worth (`dryrun.py` §7) | no switch back; the hard-deadline cliff and Nic's prices bring back what matters (FR §7) |
+| Cutover (engine, done) | worth for 4 committed targets with no valued link | reach 0 (§6) | by densify, not by reversal |
+| Cutover (engine, done) / Adapter | 24 tasks with no status: the flow adapter reads status-less nodes as done (:205; `dryrun.py:69`), treating them as completed without explicit status. Each gets a ledger row and a lint note so nothing is lost silently (:95) | 24 tasks: `n_07d115101c`, `n_0b06664fc4`, `n_11ebbcf82d`, `n_3be6d9cce6`, `n_42995d77f7`, `n_485b5d97c3`, `n_4bce0b411b`, `n_4d0abba538`, `n_51f53f6e11`, `n_6543db808e`, `n_7d5a883f2d`, `n_85426e629a`, `n_93a403f3e1`, `n_9c4482b6e8`, `n_ac2aa14b93`, `n_ac43e9ee9b`, `n_b57c314c23`, `n_b65ef54fad`, `n_c609df7d5a`, `n_cbbf29e240`, `n_da89aafae0`, `n_dac7ad7c10`, `n_e466433623`, `n_f0c34f69fb` | in files; linter flags them |
 | Cleanup | the legacy fields Nic chose (MQ7) | up to `standing_weight` 7, `stated_weight` 169, `anomaly_flag` 18, plus any of the node fields in §4.2 | only from git history and the ledger |
 | Never migrated | references naming no node; `goals` lists; wikilinks as edges | 53 unresolvable entries; 24 `goals` entries; 5,375 wikilinks | they stay in the files as they are; nothing is deleted |
 
 ### 7.2. Reversal
 
-There are three levels. Each is checkable (M3, M10, M14).
+The engine cannot be reversed: flow is the only ranking engine, with no ranking setting and no switch back. The data has two levels. Each is checkable (M3, M14).
 
-1. **Cutover back.** The engine setting `ranking: legacy | flow` returns to `legacy`. No file changes. The `list_tasks` order matches what the legacy engine gives from the same files (M10).
-2. **Data back.** `pkb migrate flow --revert LEDGER` restores every row still holding its migrated value. Nodes edited after the migration are reported, not overwritten. If no later commit touched the migrated lines, `git revert` of the migration commit does the same. On the live graph's fixture, the ledger-driven revert restores all 255 changed nodes exactly. It also keeps a `worth` that was already set, and reports a link edited after apply as drift and leaves it alone (`dryrun.py` §4). The fixture holds the fields the migration reads, not whole files, so the byte-level check is M3.
-3. **After cleanup.** Reversal is no longer a tool operation. The ledger holds every deleted value, and git holds every file. Cleanup therefore needs Nic's explicit approval (`--confirm`, MQ7). It runs only after the reversal window he sets (MQ6).
+1. **Data back.** `pkb migrate flow --revert LEDGER` restores every row still holding its migrated value. Nodes edited after the migration are reported, not overwritten. If no later commit touched the migrated lines, `git revert` of the migration commit does the same. On the live graph's fixture, the ledger-driven revert restores all 255 changed nodes exactly. It also keeps a `worth` that was already set, and reports a link edited after apply as drift and leaves it alone (`dryrun.py` §4). The fixture holds the fields the migration reads, not whole files, so the byte-level check is M3.
+2. **After cleanup.** Reversal is no longer a tool operation. The ledger holds every deleted value, and git holds every file. Cleanup therefore needs Nic's explicit approval (`--confirm`, MQ7). It runs only on his word (MQ6).
 
 ---
 
@@ -441,10 +438,10 @@ The dry run applies §5 to every node of the fixture, reads the migrated graph a
 
 **Before and after on the calibration cases** (`kb_weighting_user_stories_test_cases`):
 
-- **"Today"** is the `list_tasks` order at the snapshot (529 tasks).
-- **"After"** orders the same tasks by gain plus loss averted, with ties broken by today's order. It is a comparison device only, as in FR §11; the ordering is FR-Q3.
+- **"Snapshot"** is the legacy `list_tasks` order and `focus_score` at the 6 October 2026 snapshot (529 tasks). It is a dated record; the engine no longer computes either.
+- **"After"** orders the same tasks by gain plus loss averted, with ties broken by the snapshot order. It is a comparison device only, as in FR §11; the ordering is FR-Q3.
 
-| Case | Node | Status | Today rank | focus_score | After: gain | After: loss averted | After rank | Why it moves |
+| Case | Node | Status | Snapshot rank (legacy) | Snapshot focus_score (legacy) | After: gain | After: loss averted | After rank | Why it moves |
 |---|---|---|---|---|---|---|---|---|
 | 1 triage | `admin_1fece2e0` | cancelled | — | — | — | — | — | Case no longer live: cancelled since the case was written |
 | 2 menu | `brain_448bb804` | ready | 256 | 51 | 0 | 0 | 263 | Under Q1 settled (`part_of` quantum 0.0), worth does not flow over parent links; requires direct contribution link |
@@ -453,7 +450,7 @@ The dry run applies §5 to every node of the fixture, reads the migrated graph a
 | 2, 5 | `admin-59965524` | done | — | — | — | — | — | Case no longer live |
 | 3 untangle | `mem_722b54d7` | queued | 413 | 4 | 0 | 0 | 413 | No route to a priced target; superseded by the flow rule itself (§10) |
 | 3 untangle | the premise check the case names (its id carries personal names, so it is hashed in the fixture and not printed) | done | — | — | — | — | — | Case no longer live: the blocker it names is done |
-| 3 untangle | `task-11182949` | inbox | not ranked | 185 | 0 | 0 | — | Not ready today; no route to a priced target |
+| 3 untangle | `task-11182949` | inbox | not ranked | 185 | 0 | 0 | — | Not ready at the snapshot; no route to a priced target |
 | 4 opportunity | `admin-3e02c20b` | ready | 289 | 2 | 0 | 0 | 291 | Route to decision option was via `parent`; with `part_of` at 0.0, worth requires direct `serves` / `alternative` |
 | 4 opportunity | `trustcon_1c23b18d` | ready | 237 | 10 | 0 | 0 | 248 | No route to a priced target |
 | 5 frontier | `aops_polecat_mcp_server_build` | done | — | — | — | — | — | Case no longer live |
@@ -464,16 +461,16 @@ The dry run applies §5 to every node of the fixture, reads the migrated graph a
 
 **Movement at the top:**
 
-- **Today's top ten, after:** ranks 2, 44, 45, 46, 47, 48, 49, 50, 51 and 52 (`dryrun.py` §7).
-- **The new top ten, today:** ranks 192 (`brain_bf2be9d8`), 1 (`proj-76fbc546`), 280 (`n_babb53b707`), 187 (`n_4bc0b6c27a`), 198 (`n_2b7d0dfb98`), 203 (`n_49a3fc84c1`), 281 (`n_1b572ba86e`), 239 (`n_d7f3292689`), 278 (`n_b4d537b6bb`), and 38 (`n_f4de0462b4`).
+- **The snapshot's top ten, after:** ranks 2, 44, 45, 46, 47, 48, 49, 50, 51 and 52 (`dryrun.py` §7).
+- **The new top ten, at their snapshot ranks:** ranks 192 (`brain_bf2be9d8`), 1 (`proj-76fbc546`), 280 (`n_babb53b707`), 187 (`n_4bc0b6c27a`), 198 (`n_2b7d0dfb98`), 203 (`n_49a3fc84c1`), 281 (`n_1b572ba86e`), 239 (`n_d7f3292689`), 278 (`n_b4d537b6bb`), and 38 (`n_f4de0462b4`).
 
 Under Q1 settled (`part_of` quantum 0.0), worth does not flow over parent edges. The decision `brain_bf2be9d8` carries 1.11 worth directly from its outgoing links to `task_b3f01c80` and `targ_4e2cc92a`. However, its options (`task_e79f1a57`, `brain_7f772690`, `task_1760e611`, `proj-f8b942d5`, and sub-nodes `personal_92d5909f`, `admin-3e02c20b`) were grouped as `parent:` children, so they do not inherit worth until they are relabelled `alternative` (FR-Q8, MQ9).
 
 **What the dry run shows:**
 
 - **Direct contribution drives ranking.** With `part_of` at quantum 0, only tasks serving priced targets along `serves`, `needs`, and `supports` edges carry worth. `proj-76fbc546` (case 6) ranks 2nd with gain 0.95. Tasks previously inflated by hierarchical parent links or names alone drop down the ordering.
-- **Pricing comes first.** Tasks without links to priced targets sit at zero. With every target priced (§6, assumed), 103 open nodes carry worth instead of 52. The order of release (§9) therefore puts pricing before cutover.
-- **Four of the six cases describe a state that is no longer true:** cases 1 and 5, and the named blockers of cases 2 and 3. A fresh calibration set before cutover is MQ11.
+- **Pricing comes first.** Tasks without links to priced targets sit at zero. With every target priced (§6, assumed), 103 open nodes carry worth instead of 52. Until targets are priced, their work sits at zero.
+- **Four of the six cases describe a state that is no longer true:** cases 1 and 5, and the named blockers of cases 2 and 3. Whether to draw a fresh calibration set is MQ11.
 
 ---
 
@@ -483,7 +480,7 @@ Under Q1 settled (`part_of` quantum 0.0), worth does not flow over parent edges.
 
 - No component reads a field before it is written.
 - No component loses a field it still reads.
-- Every step before R8 can be undone.
+- Every data step before R8 can be undone.
 
 **Owners:**
 
@@ -496,25 +493,24 @@ Under Q1 settled (`part_of` quantum 0.0), worth does not flow over parent edges.
 | Step | Component | What ships | Precondition (checkable) | Undo |
 |---|---|---|---|---|
 | R0 | — | Nic approves the six specs. He answers the questions that block: FR-Q1, FR-Q2, FR-Q22 / MQ3, MQ1, MQ2, MQ4 | assessment `epic_3c8110d9` done | — |
-| R1 | engine | **Dual read, shadow flow.** The engine parses the new keys and the map form of list entries (§5.1). It computes the flow beside the legacy ranking, and emits `gain`, `loss_averted`, `stake`, `decision_value` and `loop_extra` (FR §12) next to the legacy fields. The legacy ranking still sorts. The setting `ranking: legacy` is the default. The `pkb migrate flow` tool ships | R0 | release revert; no data written |
-| R2 | linter | Ships with graph-lint §5 severities (errors, warnings, style), legacy checks unchanged: unpriced targets, unvalued edges, invalid labels and signs, saturated loops, unclassed dates, references naming no node | R1 | config |
+| R1 | engine | **Done.** The engine parses the new keys and the map form of list entries (§5.1). It computes the flow and emits `gain`, `loss_averted`, `stake`, `decision_value` and `loop_extra` (FR §12). The `pkb migrate flow` tool ships | R0 | — (engine side complete) |
+| R2 | linter | Ships with graph-lint §5 severities (errors, warnings, style), existing checks unchanged: unpriced targets, unvalued edges, invalid labels and signs, saturated loops, unclassed dates, references naming no node | R1 | config |
 | R3 | data | **Pricing sitting** (§6). Writes `worth` and `deadline_class` only | R1 (the engine reads `worth`) and R2 (the linter lists what is missing) | `--revert` on its own ledger |
 | R4 | data | **Apply.** `--dry-run`, then Nic reviews, then `--apply`, as one pull request in `nicsuzor/brain` that Nic merges (MQ8) | R3; the dry run regenerated on the day; linter clean of errors | `--revert` |
 | R4b | data | **Prototype hub conversion.** Convert epic `hdr_prospective_enquiries` into the first prototype hub: set `type: prototype`, `edge_template: {serves: {to: hdr_prospective_enquiries, quantum: 1.0}}` for instances; prototype carries `serves` to `research-supervision-1b44af33` at its existing `probable` link (quantum 0.85); no prototype node exists on the graph today (S20). Instances inherit class-level worth through this unpriced hub | R4 | revert frontmatter of `hdr_prospective_enquiries` |
 | R5 | skills | `/q`, `/decompose`, densify and the email placement write `quantum`, `probability` and `set_by` on new links, and `worth` on new targets. They stop writing `stated_weight`. Today the plugin's `skills/q/SKILL.md:19` and `skills/decompose/SKILL.md:25,30` name `depends_on` and `soft_depends_on` only. `--status` lists links added between R4 and R5 for the first densify batch (§5.5) | R4 | plugin release revert |
-| R5 | dashboard | Shows gain and loss averted side by side, and the route explanation, from the shadow fields. Legacy views stay, so Nic can compare | R1 (fields exist); R4 (values are real) | release revert |
-| R6 | engine | **Cutover:** `ranking: flow` | MQ1 gate (every target priced); R5 shipped; Nic has compared both rankings on the dashboard | `ranking: legacy` |
-| R7 | — | **Reversal window.** Both rankings are still computed, and legacy fields are still on disk | — | — |
-| R8 | data, engine, linter, dashboard | **Cleanup** after Nic's `--confirm` (MQ6, MQ7): legacy fields are deleted. The engine stops computing the legacy ranking (FR §14). The linter switches to **error** for legacy fields (referring to lint §5.8 promoting `flow-legacy-field` to error). The dashboard removes legacy views. Single `links:` list is an option for Nic | Nic's explicit approval | git history and ledger only |
+| R5 | dashboard | Shows gain and loss averted side by side, and the route explanation | R1 (fields exist); R4 (values are real) | release revert |
+| R6 | engine | **Cutover: done.** Flow is the only ranking engine. There is no ranking setting and no switch back (`pkb-flow-engine.md` §4) | — | none |
+| R7 | — | **Reversal window: retired** with the legacy engine. Only the flow is computed. Legacy frontmatter fields stay on disk until R8, and `--revert LEDGER` still restores files | — | — |
+| R8 | data, engine, linter | **Cleanup** after Nic's `--confirm` (MQ6, MQ7): legacy fields are deleted. The linter switches to **error** for legacy fields (referring to lint §5.8 promoting `flow-legacy-field` to error). Single `links:` list is an option for Nic | Nic's explicit approval | git history and ledger only |
 
 **Why this order:**
 
-- **Engine before data.** The engine must read the map form before any file uses it. Otherwise the legacy parser drops the soft links (`src/graph.rs:1706-1712` parses string arrays).
-- **Pricing before cutover.** With 7 of 90 strategic nodes priced, the new order is mostly a function of what is unpriced (§8).
-- **Prototype hub before cutover.** Converting `hdr_prospective_enquiries` into the first prototype hub (R4b) establishes class-level worth for incoming enquiries before cutover (S20).
+- **Engine before data.** The engine must read the map form before any file uses it. Otherwise a parser that reads strings only drops the soft links. The engine now reads both forms (`src/graph.rs:1546`).
+- **Pricing first.** With 7 of 90 strategic nodes priced, the flow order is mostly a function of what is unpriced (§8).
+- **Prototype hub right after apply.** Converting `hdr_prospective_enquiries` into the first prototype hub (R4b) establishes class-level worth for incoming enquiries (S20).
 - **Skills soon after apply.** Links created between apply and the skills switch are listed for densify (§5.5), not lost and not silently re-valued.
-- **Dashboard before cutover.** Nic's comparison of the two rankings happens on the dashboard, and the dashboard reads both sets of fields.
-- **Cleanup last and separately.** It is the only step that cannot be undone.
+- **Cleanup last and separately.** It is the only data step that cannot be undone.
 
 ---
 
@@ -532,7 +528,7 @@ The dispositions are **proposals**. This task's authority covers itself only, so
 
 - cancelled tasks get `status: cancelled` with a reason;
 - superseded tasks get a `supersedes` edge from the named sibling spec;
-- paused tasks get `status: paused`, and are reconsidered at R6.
+- paused tasks get `status: paused`, and are reconsidered after R6 (now done on the engine side).
 
 | Task | Status | Work | Proposed | Reason |
 |---|---|---|---|---|
@@ -547,11 +543,11 @@ The dispositions are **proposals**. This task's authority covers itself only, so
 | `od_engine_fields_for_dashboard_derivations` | queued | move client-side derivations into `export_graph` | supersede by dashboard `epic_adf10cd3` (fields from `epic_2de1b579`) | the severity gate and age staleness it relies on are removed |
 | `od_gravity_view_design` | partial | force view sized by value received | supersede by dashboard `epic_adf10cd3` | `value_lineage`, `standing_weight` and `stated_weight` all change |
 | `od_force_view_unblocker_emphasis` | ready | emphasise unblockers | supersede by dashboard `epic_adf10cd3` | flow to unblockers (S4) defines the measure |
-| `overwhelm_dashboard_fce30143` | ready | deploy the cost-of-delay engine and dashboard | pause | it matters only while the legacy engine is live |
+| `overwhelm_dashboard_fce30143` | ready | deploy the cost-of-delay engine and dashboard | pause | it mattered only while the legacy engine was live; that engine is removed |
 | `od_effective_intent_border_size_conflict` | ready | intent border against propagated band | pause; cancel at R8 | `effective_intent` is removed |
-| `od_daily_treemap_strategic_review` | ready | daily review against the ranking doctrine | pause; the rubric moves to skills `epic_80ce44ae` | its rubric is the focus tuple |
+| `od_daily_treemap_strategic_review` | ready | daily review against the ranking doctrine | pause; the rubric moves to skills `epic_80ce44ae` | its rubric was the focus tuple, which is removed |
 | `ida_instr_daily_treemap_strategic_review` | ready | the standing ledger for the same review | pause with its twin | as above |
-| `mem_ac9a47ac` | ready | QA of restored weight notes | pause; likely cancel | the notes describe the engine being replaced |
+| `mem_ac9a47ac` | ready | QA of restored weight notes | pause; likely cancel | the notes describe the engine that was replaced |
 | `task_1760e611` | inbox | a direction decision, then pricing the academic targets | keep; re-scope its pricing goal into §6 | it supplies S14 |
 | `overwhelm_dashboard_02f5fa9b` | ready | weighting discussion | keep; its measure table is superseded by FR §9 | — |
 | `task_48255cdd` | inbox | force-view grouping | keep | affected only if the parent edge is removed (FR-Q1) |
@@ -568,10 +564,11 @@ The dispositions are **proposals**. This task's authority covers itself only, so
 
 **At apply:** none. The change is additive (§7.1).
 
-**At cutover** (R6), as the default ranking, though still computed until R8:
+**At cutover** (R6, done on the engine side; `pkb-flow-engine.md` §7.1):
 
 - the legacy sort tuple and every term FR §14 lists;
-- the `list_tasks` order derived from them.
+- the `list_tasks` order derived from them;
+- the legacy ranking stages, the ranking setting, and the legacy fields in `export_graph`.
 
 **At cleanup** (R8):
 
@@ -582,10 +579,6 @@ The dispositions are **proposals**. This task's authority covers itself only, so
   - `anomaly_flag`;
   - `current_weight`;
   - whichever node fields Nic retires in MQ7.
-- **Engine:**
-  - the legacy ranking stages (`ranking.md:40-57`);
-  - the `ranking: legacy` setting;
-  - the legacy fields in `export_graph`.
 - **Linter:** the parse warning for unrecognised contribution words (`src/graph.rs:1605-1623`), replaced by the new edge checks.
 - **Skills:** writing `stated_weight`.
 
@@ -598,17 +591,17 @@ Each criterion is something an observer can check. The test beside it is the one
 | # | Observable criterion | Traces to | Test |
 |---|---|---|---|
 | M1 | `--dry-run` prints, for each edge kind in §3, stored entries, resolved edges and entries naming no node. The resolved counts equal `export_graph`'s count of edges of that type, taken at the same moment | T1, brief §B (edge kinds), I13 | compare the dry-run table with a direct count over `export_graph` edges; reference: `dryrun.py` §1 |
-| M2 | After `--apply`, the legacy ranking's `list_tasks` order is identical to the order before apply | T3, S1 | with the R1 engine and `ranking: legacy`: list before, apply, list after, diff empty. Reference (weaker: it shows only that no key outside the allowed set moved): `dryrun.py` §4 "R1 legacy view is unchanged … 255 of 255" |
+| M2 | **Retired** with the legacy engine. It compared the legacy ranking's order before and after apply; there is no legacy ranking now. M5 still checks that no key outside the allowed set moves | T3, S1 | — |
 | M3 | `--revert` after `--apply` leaves the PKB byte-identical to the snapshot commit | T3 | `git diff <snapshot>` empty after revert; reference: `dryrun.py` §4 "restored exactly … 255 of 255" |
 | M4 | A second `--apply` writes nothing | T3 | run apply twice: the second commit is empty; add a bare soft link after apply and re-run: it is not written. Reference: `dryrun.py` §4 |
 | M5 | The migration commit changes only frontmatter. Its added keys are a subset of §5.3, and no body line changes | T1, T3 | parse the diff; every hunk is inside frontmatter and every added key is allowed |
 | M6 | Every changed value has exactly one ledger row, and every ledger row matches a change | T3 | join the ledger with the diff; no unmatched rows on either side; reference: 346 rows on the fixture |
-| M7 | After apply, the engine's shadow `gain` and `loss_averted` equal the dry run's for every open node | I13, FR §12 | compare the shadow export with the dry-run table; reference: `dryrun.py` §5 "identical to flow-rule's own adapter: 1489 of 1489" |
+| M7 | After apply, the engine's `gain` and `loss_averted` equal the dry run's for every open node | I13, FR §12 | compare the export with the dry-run table; reference: `dryrun.py` §5 "identical to flow-rule's own adapter: 1489 of 1489" |
 | M8 | Each pricing answer writes `worth` per FR §5.6, and only that, plus `deadline_class` for the dates asked | T2, S14, U20 | price one target and class one date; the diff shows those two keys only |
-| M9 | Under MQ1, cutover refuses while a target lacks `worth` and names it | T2, S14, MQ1 | remove one `worth`; the cutover command exits non-zero with that id |
-| M10 | Setting `ranking: legacy` after cutover restores the legacy order exactly | T3, T5 | list before cutover, cut over, set legacy, list again, diff empty |
+| M9 | **Retired** with the legacy engine: there is no cutover left to gate (MQ1). `--status` still names targets that lack `worth` | T2, S14, MQ1 | — |
+| M10 | **Retired** with the legacy engine: there is no switch back to the legacy order | T3, T5 | — |
 | M11 | The dry-run report regenerates the calibration table in §8, and every row whose rank moves by more than 50 carries an explanation | T4, I13, U3, U4, U17 | the report's calibration section is non-empty, and its explanation column has no blanks for such rows |
-| M12 | Each release step's precondition in §9 is a check the tool or CI runs before the step proceeds | T5 | for R4 and R6, run the step with its precondition unmet: it refuses |
+| M12 | Each release step's precondition in §9 is a check the tool or CI runs before the step proceeds | T5 | for R4, run the step with its precondition unmet: it refuses |
 | M13 | References that name no node are unchanged by the migration and listed by the linter | T1 | count before and after apply: equal; the linter lists the same ids |
 | M14 | `--cleanup` refuses without `--confirm` and without a ledger. With both, it deletes only the keys chosen in MQ7 | T3, MQ7 | run without the flag: it refuses; run with it: the diff deletes only the listed keys |
 | M15 | `--status` reports drift: rows edited since apply. `--revert` skips them and names them | T3 | apply, edit one migrated value, revert: that row is reported and untouched; the others are reverted |
@@ -620,12 +613,12 @@ Each criterion is something an observer can check. The test beside it is the one
 
 The questions are ordered by consequence. Where a question repeats one in `flow-rule.md`, it says so. Those must be answered once, for both specs.
 
-1. **MQ1. Pricing gate.** Should cutover wait until every target has a `worth`, with zero allowed? Proposed: yes. Otherwise work for unpriced targets falls to zero at cutover (§8).
+1. **MQ1. Pricing gate.** Retired with the legacy engine: the engine side has cut over, so there is no cutover left to gate. Work for unpriced targets sits at zero until they are priced (§8).
 2. **MQ2. The 17 legacy `goal` nodes.** The engine already reads them as targets. Should they be priced, merged into existing targets, or retired? And their 24 `goals:` entries, which today build no edge: should they become `serves` links at the default quantum, so densify can value them, or stay inert? Proposed: inert until the goals themselves are decided.
 3. **MQ3 (= FR-Q22). Migrated values.** Do you confirm soft links at quantum 0.3, and the old words read as quantum with probability 1.00?
 4. **MQ4. Storage, and who decides it.** Settled (C1): Additive in place is confirmed for R1–R7 (§5.1); a unified `links:` list remains an R8 option. The engine spec (`epic_2de1b579`) owns the stored schema; this spec owns the transform.
 5. **MQ5. In-flight tasks.** Do you approve the dispositions in §10?
-6. **MQ6. Reversal window.** How long do both rankings run after cutover before cleanup may be proposed? Proposed: no fixed length; cleanup only on your word.
+6. **MQ6. When cleanup may run.** The reversal window is retired with the legacy engine: only the flow runs. Proposed: cleanup only on your word.
 7. **MQ7. What cleanup deletes.** Which legacy fields go at R8? Candidates:
    - `standing_weight`, `stated_weight`, `anomaly_flag`, `multiplier`;
    - `severity`, `goal_type` and `confidence` (see FR-Q24);
@@ -633,13 +626,13 @@ The questions are ordered by consequence. Where a question repeats one in `flow-
    - `intent` (see FR-Q10);
    - `has_open_question`.
 8. **MQ8. Who applies.** Does an agent open the migration as a pull request in `nicsuzor/brain` for you to merge, as proposed, or do you run it yourself?
-9. **MQ9 (with FR-Q8). The open career decision.** Should `brain_bf2be9d8`'s options be relabelled `alternative` before cutover? Until then each option carries the decision's full worth, and the decision's subtree fills seven of the new top ten (§8).
+9. **MQ9 (with FR-Q8). The open career decision.** Should `brain_bf2be9d8`'s options be relabelled `alternative`? Until then each option carries the decision's full worth, and the decision's subtree fills seven of the new top ten (§8).
 10. **MQ10. `retired` status.** Settled: `status: retired` maps to `done` in the flow adapter (engine E16).
-11. **MQ11. Calibration set.** Four of the six calibration cases describe a state that is no longer true (§8). Should a fresh set be drawn before cutover, so the comparison at R6 tests live cases?
+11. **MQ11. Calibration set.** Four of the six calibration cases describe a state that is no longer true (§8). Should a fresh set be drawn, so the calibration table (§8, M11) tests live cases?
 12. **MQ12. The one stored `children` entry** points at a legacy goal. Should the linter fix it unasked, or report it?
 13. **MQ13. Unrecognised words.** Six contribution links carry "medium" (3), "high" (2) or a blank (1). They are left unvalued for the first densify batch, as proposed. Or should you value them in the pricing sitting?
 14. **MQ14 (= FR-Q17). Targets serving targets.** Closed by the Q17 rule (S18): A target is priced for its worth in itself, never for what it feeds; a target valued only for what it feeds is left unpriced and passes worth through. The pricing sheet (§6) asks that question per target and per target→target link.
-15. **MQ15. Snapshot of today's order.** The ledger keeps today's `list_tasks` order for comparison. Should it also be kept after cleanup, as a record of what the old engine said?
+15. **MQ15. Snapshot of the order.** The ledger keeps the `list_tasks` display order at the snapshot for comparison. Should it also be kept after cleanup, as a record?
 16. **MQ16. Links written between apply and the skills switch.** Should they be listed for densify (proposed), or should the skills switch ship in the same release as apply so that no such links exist?
 
 Questions from `flow-rule.md` that govern release steps here:
@@ -659,7 +652,7 @@ Questions from `flow-rule.md` that govern release steps here:
 
 **About the fixture:**
 
-- **What it keeps:** structure, the fields in §4 (free text reduced to "present"), and today's `list_tasks` order.
+- **What it keeps:** structure, the fields in §4 (free text reduced to "present"), and the legacy `list_tasks` order of 6 October 2026.
 - **What it drops:** titles, bodies and names.
 - **Ids:** uncited ids are replaced by a keyed hash whose key was discarded. Ids that carry a person's name or reveal a personal event are never cited, so they are hashed too.
 

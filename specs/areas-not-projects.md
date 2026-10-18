@@ -41,7 +41,7 @@ tags:
 
 The PKB hierarchy has Project as a structural type (`Project → Epic → Task → Action`) and derives project membership from the parent chain (decision 2026-03-22). In practice this conflates two distinct concerns and forces users to express both through one mechanism:
 
-1. **Tree role** — single-parent, well-typed, used for decomposition, dependency propagation, and `downstream_weight` BFS.
+1. **Tree role** — single-parent, well-typed, used for decomposition and dependency propagation.
 2. **Area-of-life / category** — multi-valued, evolving, used for filtering, dashboards, and "what's this for?" framing.
 
 These have opposite shapes. Tree roles want exactly one parent; areas want many. Tree roles are bounded efforts; areas are stable nouns. Tree roles get completed; areas persist. Forcing both through `type: project` produces the failure modes visible in the dashboard:

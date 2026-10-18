@@ -20,7 +20,7 @@ tags:
 
 **Home:** `specs/flow-rule.md` in the `nicsuzor/mem` repository, with its reference scripts in `specs/flow-rule/`.
 
-**Status: settled (points 1–30 of spec_866ee53d).** This canonical specification defines the flow rule, edge model, and mathematical physics replacing the legacy ranking system in [`ranking.md`](ranking.md). It specifies the flow model across repositories and governs the engine build (`nicsuzor/mem`), dashboard display (`nicsuzor/overwhelm-dashboard`), and agent workflows (`nicsuzor/academicOps`). The numbers in it come from the reference calculator in [`flow-rule/`](flow-rule/), which is a checking aid and oracle for the engine.
+**Status: settled (points 1–30 of spec_866ee53d).** This canonical specification defines the flow rule, edge model, and mathematical physics of PKB ranking. Flow is the only ranking engine; [`ranking.md`](ranking.md) covers ordering, classification and graph diagnostics. It specifies the flow model across repositories and governs the engine build (`nicsuzor/mem`), dashboard display (`nicsuzor/overwhelm-dashboard`), and agent workflows (`nicsuzor/academicOps`). The numbers in it come from the reference calculator in [`flow-rule/`](flow-rule/), which is a checking aid and oracle for the engine.
 
 Traceability tags used throughout:
 
@@ -29,61 +29,6 @@ Traceability tags used throughout:
 - **U1–U20:** user stories in `kb_weighting_user_stories_test_cases` (calibration cases U1–U6) and `pkb-arch-framework` (formal weighting stories U1–U20).
 - **Q1–Q31:** architectural decisions settled in `spec_866ee53d` and recorded in section 15.
 
----
-
-## 0. Summary for Nic
-
-**What changes.** Two figures replace today's tuple of eleven terms: what you would fail to gain, and what loss you would fail to avert, if a piece of work were never done. They are never netted into one number. Targets are priced on an open-ended log scale: agents make educated price guesses and you review them (S14, S26). Every link says how much of the thing it points at the work delivers (its *quantum*) and how likely that is (its *probability*, default 1.00). Worth flows backwards along links from targets to work, chaining probabilities by multiplication along paths (S2, S25).
-
-**The rule in one line.** A task is worth what you would lose if it were never done, assuming everything else gets done.
-
-**What that gives you:**
-
-- **Prerequisites and finishing steps.** Two prerequisites of the same thing each carry its full worth, because without either one it fails (S10, U17). The last small step before finished work goes out carries the whole worth (S9, U16).
-- **Blocked work.** Blocked work keeps its worth and passes it to whatever unblocks it (S4, U3).
-- **Shared foundations.** Work serving several targets adds them up. A target reached by several routes is counted once (U11, S25).
-- **Loops.** A loop can add worth but cannot run away (S8, S15). A loop where every link is full strength is rejected as a modelling error, as cycles of hard dependencies are today.
-- **Targets you want to avoid.** You price them as negative. Work that protects against one shows a positive *loss averted*, kept beside *gain* and never netted against it (S12, S16, U13).
-- **Moonshots and power-law returns.** Targets are priced on an open-ended log scale, allowing 10x–100x scientific outcomes to compete rationally with routine incremental wins without artificial distortions (S26, S28).
-- **Capital stocks as hubs.** Reputation, track record, and collaborator networks are hub targets; routine work feeds them at high probability, and moonshots draw from them (S27).
-- **Do-next list is a draw, not an argmax.** The list samples work with a high base exploitation rate and non-zero exploration weighted by uncertainty (Thompson-style), protecting attention while exposing tail opportunities (S29).
-- **Unlinked work stays at zero.** Anything not linked to a priced target is worth exactly zero. On today's graph that is 1,255 of 1,502 open items (U7, U8, U9).
-- **What is not in the maths.** Dates, deadline classes, effort, readiness, grouping, and the non-compensatory severity floor are all decided after or outside the maths and never change a flow number (S1, S5, S13, S24).
-
-**What it costs you:**
-
-1. Worths do not add up across tasks. Two prerequisites of a 1.0 target are each worth 1.0, so "the sum of open work" means nothing and the dashboard must not show it.
-2. Only 6 of your 15 targets are priced. Until the rest are, work for unpriced targets is worth zero, even work that today's ranking pushes up by severity, a stakeholder or a date. Example: `syn_task_hard_cliff` is 9th today and 19th under this rule. A hard-deadline class brings it back to the top as its date nears, through the display rule, without touching its worth (section 7).
-3. Open decisions use one extra small rule, the value of finding out (section 6).
-4. You supply about 153 numbers before deadline classes: 19 target prices, 134 migrated link values to confirm (section 8). Parent links and default quantum are settled (Q1, Q2). Agents propose them in batches of fifty.
-
-**Settled design:** Section 15 documents all 31 architectural decisions settled by Nic (points 1–30 of `spec_866ee53d`). None is left open.
-
----
-
-## 1. Problem and target
-
-**Problem.** Today's ranking (`ranking.md`) has three layers:
-
-- a tuple `(severity_gate, cost_of_delay, tie_breakers)` (`ranking.md:30`);
-- eleven terms with separate scales (`ranking.md:82-98`);
-- several propagation mechanisms that disagree about direction:
-  - urgency relaxation (`ranking.md:333-342`);
-  - the effective-intent blocker and ancestor channels (`ranking.md:389-393`);
-  - one-hop value lineage with a conduit pass (`ranking.md:427`);
-  - the downstream cone (`ranking.md:299-309`).
-
-It mixes calendar arithmetic into the maths (`ranking.md:148-151`, `ranking.md:339-341`). It gives blocked work zero inherited value (`ranking.md:427`), which is the opposite of S4. It also cannot tell worthwhile from worthless work (U7): a stakeholder name alone adds 2,000 to 8,000 points (`ranking.md:215-221`).
-
-**Target.** The target has three parts:
-
-- one edge type carrying a label, a quantum and a probability (S2);
-- one rule by which worth flows across every edge (S3);
-- every categorical choice in display and agent logic (S1).
-
-The rule must satisfy I1–I17 and serve U1–U20.
-
----
 
 ## 2. Architecture and data flow
 
@@ -368,7 +313,7 @@ Worth of `S`, the work that would settle `D`. The options are worth 0.6 (p 0.4) 
 
 ### 4.6. Point 25: Odds live on edges into targets and chain by multiplication; no calendar discounting (S25)
 
-**The decision.** A task's worth is the target's price times the product of edge probabilities along its path to the target, replacing the legacy all-success baseline. Odds written as prose in task bodies move onto the edge into the target. There is no time discounting in the flow: distance in uncertain steps stands in for calendar time (S5, S6, S13). Nearly-finished work needs no special case: a short, high-probability path gives the Sarasvathy bird-in-hand preference.
+**The decision.** A task's worth is the target's price times the product of edge probabilities along its path to the target, replacing the earlier all-success baseline. Odds written as prose in task bodies move onto the edge into the target. There is no time discounting in the flow: distance in uncertain steps stands in for calendar time (S5, S6, S13). Nearly-finished work needs no special case: a short, high-probability path gives the Sarasvathy bird-in-hand preference.
 
 **Rationale.** Time discounting in human knowledge work is notoriously mischaracterized by exponential ($e^{-\rho t}$) or hyperbolic ($1/(1+kt)$) calendar curves. In academic research, opportunities do not decay with calendar days; they decay because intermediate execution steps fail or dependencies slip. Replacing calendar time discounting with multiplicative probability chaining along directed steps ($s = \prod \text{quantum} \times \text{probability}$) maps priority directly to execution risk. A task one step away at 90% certainty naturally outranks a task five steps away at $0.90^5 \approx 0.59$, producing the bird-in-hand preference without ad-hoc time parameters.
 
@@ -460,7 +405,7 @@ Every simplification in the flow redesign is stated as a concrete strength it bu
 
 **Strength.** Strength is `quantum × probability` (S2; `kb_edge_weight_quantum_vs_confidence`).
 
-**The probability field is reinstated.** `ranking.md:487` rejected a separate quantum term as collinear. That holds only for the product. Separate fields are kept because Nic answers them as different questions: "how much" and "how likely" (S2). The maths reads only the product.
+**The probability field is reinstated.** The removed legacy ranking rejected a separate quantum term as collinear. That holds only for the product. Separate fields are kept because Nic answers them as different questions: "how much" and "how likely" (S2). The maths reads only the product.
 
 ### 5.2. Label set
 
@@ -478,7 +423,7 @@ Labels name what the link is for. Two of them feed the decision rule. None of th
 **Labels not carried over.**
 
 - **Wikilinks and `supersedes`.** These are not edges of this model (section 8).
-- **A separate `blocks` label.** Today's `blocks` and `soft_blocks` are inverses filled in from `depends_on` and `soft_depends_on` by the `compute_inverses` stage (`ranking.md:41`; `src/graph_store.rs:477`). They are not stored.
+- **A separate `blocks` label.** `blocks` and `soft_blocks` are inverses filled in from `depends_on` and `soft_depends_on` by the `compute_inverses` stage (`ranking.md` §1; `src/graph_store.rs:477`). They are not stored.
 
 **Whether a hard block is its own label.** This model keeps it as its own label (`needs`) because display needs it for the ready filter. In the maths it is a contribution at full quantum (Q5).
 
@@ -505,7 +450,7 @@ The old seven-word scale mixed amount and likelihood (`kb_edge_weight_quantum_vs
 
 ### 5.5. Probability scale
 
-The probability is the chance the work delivers its quantum. The Renooij–Witteman words already parsed by `numeric_weight()` (`src/graph.rs:292-318`; `ranking.md:466-473`) are reused unchanged:
+The probability is the chance the work delivers its quantum. The Renooij–Witteman words already parsed by `numeric_weight()` (`src/graph.rs:292-318`) are reused unchanged:
 
 | Word | Value |
 |---|---|
@@ -596,9 +541,9 @@ Each rule below reads the maths' output and nothing it writes feeds back (I6). T
 |---|---|---|---|---|---|
 | `parent` | 524 | `part_of` | 0.0 (Q1 settled) | 1.00 | filing label; grouping/progress read it; carries no worth in the flow; class-level worth comes from prototype nodes used as unpriced hubs (settled Q1, S19, S20) |
 | `depends_on` | 64 | `needs` | 1.0 | 1.00 | nothing |
-| `soft_depends_on` | 51 | `supports` | 0.3, today's soft factor (`ranking.md:335`), `set_by: migrated` | 1.00 | the reading "soft = optional" becomes an explicit, re-elicitable quantum |
+| `soft_depends_on` | 51 | `supports` | 0.3, the soft factor of the removed legacy ranking, `set_by: migrated` | 1.00 | the reading "soft = optional" becomes an explicit, re-elicitable quantum |
 | `contributes_to` | 83 | `serves` | `numeric_weight()` of the stated word (`src/graph.rs:292`), capped at 1.0, `set_by: migrated`; an edge with no stated word gets the default | 1.00 | the old word mixed amount and likelihood; re-elicitation splits it (§5.4) |
-| wikilink | 1,876 | not an edge | — | — | nothing: `ranking.md` never mentions wikilinks (searched for "wikilink" and "relates"), and the downstream cone expands only over `blocks`, `soft_blocks`, children and reverse `contributes_to` (`ranking.md:304`) |
+| wikilink | 1,876 | not an edge | — | — | nothing: the removed legacy ranking never read wikilinks, and its downstream cone expanded only over `blocks`, `soft_blocks`, children and reverse `contributes_to` |
 | `supersedes` | not in the fixture | not an edge (agent logic) | — | — | nothing |
 
 **Effect on the live run.** With these defaults, the live graph has 1,502 flow edges with nonzero strength:
@@ -628,62 +573,62 @@ That is 153 inputs before deadline classes: about three batches of fifty, the ta
 
 ---
 
-## 9. Current engine measures mapped
+## 9. Legacy ranking measures mapped
 
-Every measure in `ranking.md` is mapped to one of three outcomes:
+Every measure of the removed legacy ranking is mapped to one of three outcomes:
 
 - **produced by the rule**;
 - **moved** to display or agent logic;
 - **dropped**.
 
-| Measure (ranking.md) | Outcome | Reason |
+| Measure (legacy ranking) | Outcome | Reason |
 |---|---|---|
-| `focus_tuple` (`:30`) | dropped | one rule replaces the tuple; ordering is display (Q3) |
-| `focus_score` display number (`:33`) | dropped | gain and loss averted are the numbers shown |
-| `severity_gate` (`:78`, `:124-137`) | moved | catastrophic obligations are hard-deadline cliffs or −1.00 targets; the gate itself is not maths (S13) |
-| `cost_of_delay` (`:79`, `:141-143`) | dropped | replaced by gain and loss averted |
-| `tie_breakers` (`:80`) | moved | ordering is display |
-| `intent_pressure` (`:105-122`) | dropped | Nic's priority is expressed by pricing targets; a pinned task becomes display (Q10) |
-| `deadline_pressure_multiplier` (`:139-154`) | moved | deadline classes and the cliff lane (S5, S13, I11) |
-| courtesy-review decay (`:156-188`) | dropped | an unclassed date is `fake` and never presses (U15) |
-| `age_staleness_bonus` (`:190-199`) | dropped | age is not worth (U8) |
-| `downstream_weight` (`:201-209`, `:297-313`) | dropped | blast radius is replaced by worth reaching unblockers (brief, "Leaning") |
-| `stakeholder_waiting` (`:211-226`) | moved | a waiting person is agent logic (triage, U1) or a priced target; a name alone adds no worth (U7) |
-| `urgency`, `S_lex`, `f(slack)`, propagation, conduit (`:228-236`, `:325-346`) | dropped / moved | severity becomes pricing; slack becomes the cliff lane; propagation is replaced by §3 |
-| `chain_slack` (`:348-356`) | moved | display may show the tightest hard deadline downstream |
-| `voi_term`, `voi_value` (`:238-251`, `:358-373`) | produced | by the decision rule (§6) |
-| `uncertainty`, `confidence` (`:375-385`) | produced | as edge probability; node-level confidence is dropped |
-| `value_lineage` (`:253-259`, `:421-431`) | produced | it is the rule's gain, now multi-hop, reaching blocked work |
-| sibling-contributor independence (`:428`) | produced | contributors to one target are scored by their own loss, never reduced by siblings |
-| `effective_intent` (`:387-395`) | dropped | no intent in the maths |
-| `scope` (`:397-401`) | moved | display (size of a `part_of` tree) |
-| `pagerank`, `betweenness`, degrees (`:403-408`) | moved | already diagnostics only (`:435-446`); stay as gardening lenses |
-| `criticality` (`:315-323`) | moved | diagnostic only |
-| `unlock_breadth` (`:410-419`) | dropped | a blocker carries the full worth of what it unblocks (I5) |
-| `affordable_loss` filter (`:94`) | moved | agent logic (effectuation), not maths |
-| standing weight (`:421-431`) | produced | the target worth input, now signed |
-| verbal contribution scale (`:461-476`) | produced | split into quantum (§5.4) and probability (§5.5) |
-| `multiplier` / `x` (`:478-487`) | dropped | quantum is stated directly |
-| `goal_type` gating (`:128`, `:330`, `:426`, `:453`, `:455`) | dropped | in `ranking.md`, `goal_type == "committed"` gated SEV4 lexicographic overrides (`severity_gate`, `S_lex`, overdue-pin guard); ordinary pricing was not gated on `goal_type` (`:426`). Under the new model, target pricing operates directly on priced targets without category gating, and hard deadlines form the cliff lane regardless of goal_type |
-| `waiting_since` timestamp anchor (`:219`) | dropped | in `ranking.md`, `waiting_since` (or `created`) was the timestamp anchor for the stakeholder waiting clock; dropped because stakeholder waiting is removed from the maths (a waiting person is handled in agent triage or via explicit target pricing) |
-| cone depth cap `MAX_CONE_DEPTH = 20` (`:304`, `:333`, `:354`) | dropped | the old engine bounded BFS downstream cone expansion and urgency relaxation to 20 hops; the flow rule computes global fixed points across all hops without an artificial depth cutoff |
-| ready / blocked / roots (`:497-517`) | moved | ready-leaf filter (display); actionable views restricted to claimable task leaves |
-| ready predicate: `ACTIONABLE_TYPES` (`["task", "learn", "pr"]`) and `CLAIMABLE_TYPES` (`["task"]`) (`:499-504`) | moved | display ready-leaf filter (Q31) |
-| ready predicate: `has_acceptance_criteria` gate for `inbox` status (`:505`) | moved | display ready-leaf filter (Q31) |
-| ready predicate: `COMPLETED_STATUSES` `{"done", "cancelled"}` (`:506`) | moved | node state mapping in maths (done nodes have $y=1$, cancelled nodes excluded) |
-| ready predicate: transitive dependency checking across `blocks` chains (`:506`, `:514`) | moved / produced | replaced by `needs` edges where blocked work passes worth to unblockers (I5) |
-| `focus_cmp`, `queue_rank` (`:519-530`) | moved | ordering is display |
-| severity ladder (`:449-457`) | dropped | severity is not read; it prompts pricing (Q24) |
-| `blocking_urgency` (pipeline stage `:46`; `src/graph_store.rs:503`) | dropped | a blocker carries the full worth of what it unblocks (I5); urgency by date is the cliff lane |
-| `stakeholder_exposure` (input to criticality, `:318`) | moved | display, with `criticality` |
-| `deadline_pressure_active` flag (`:152`) | dropped | no date term in the maths (I11); display reads `due` and `deadline_class` directly |
-| `has_real_stakes` gates (`:161-172`, `:213`) | dropped | they gate terms this spec removes (courtesy decay, stakeholder waiting); gate detection is agent logic |
-| committed-SEV4 overdue pin guard (`:342`) | moved | the cliff lane for hard deadlines (S13) |
-| `order`, `id` tie-breaks (`:80`, `:522`) | moved | ordering is display; a deterministic final tie-break stays there |
-| `has_open_question`, `dep_resolution_ratio`, C_open / C_divergence gates (`:366-370`, `:381`) | dropped | value of information comes only from `alternative` edges (§6). An open question with no modelled alternatives earns nothing until migration or an agent adds them (Q8) |
-| `focus_picks` / `pkb focus` surfacing (`:346`, `:553`) | moved | display, reading gain and loss averted; dashboard spec (`epic_adf10cd3`) |
-| `export_graph` fields `cost_of_delay`, `severity_gate`, `queue_rank` (`:524-530`) | dropped | replaced by the outputs in §12; the dashboard's `/api/graph` must read them instead (`epic_adf10cd3`) |
-| raw `intent` (P0–P4) and its consumers: `list_tasks` priority filter, ready sorting, `priority_weight` (`:306`, `:395`) | moved, pending Q10 | not read by the maths; whether the field survives as a filter or pin is Q10 |
+| `focus_tuple` | dropped | one rule replaces the tuple; ordering is display (Q3) |
+| `focus_score` display number | dropped | gain and loss averted are the numbers shown |
+| `severity_gate` | moved | catastrophic obligations are hard-deadline cliffs or −1.00 targets; the gate itself is not maths (S13) |
+| `cost_of_delay` | dropped | replaced by gain and loss averted |
+| `tie_breakers` | moved | ordering is display |
+| `intent_pressure` | dropped | Nic's priority is expressed by pricing targets; a pinned task becomes display (Q10) |
+| `deadline_pressure_multiplier` | moved | deadline classes and the cliff lane (S5, S13, I11) |
+| courtesy-review decay | dropped | an unclassed date is `fake` and never presses (U15) |
+| `age_staleness_bonus` | dropped | age is not worth (U8) |
+| `downstream_weight` | dropped | blast radius is replaced by worth reaching unblockers (brief, "Leaning") |
+| `stakeholder_waiting` | moved | a waiting person is agent logic (triage, U1) or a priced target; a name alone adds no worth (U7) |
+| `urgency`, `S_lex`, `f(slack)`, propagation, conduit | dropped / moved | severity becomes pricing; slack becomes the cliff lane; propagation is replaced by §3 |
+| `chain_slack` | moved | display may show the tightest hard deadline downstream |
+| `voi_term`, `voi_value` | produced | by the decision rule (§6) |
+| `uncertainty`, `confidence` | produced | as edge probability; node-level confidence is dropped |
+| `value_lineage` | produced | it is the rule's gain, now multi-hop, reaching blocked work |
+| sibling-contributor independence | produced | contributors to one target are scored by their own loss, never reduced by siblings |
+| `effective_intent` | dropped | no intent in the maths |
+| `scope` | moved | display (size of a `part_of` tree) |
+| `pagerank`, `betweenness`, degrees | moved | already diagnostics only; stay as gardening lenses |
+| `criticality` | dropped | removed from the engine and every output; `pagerank`, `betweenness` and degrees stay as diagnostics (E11) |
+| `unlock_breadth` | dropped | a blocker carries the full worth of what it unblocks (I5) |
+| `affordable_loss` filter | moved | agent logic (effectuation), not maths |
+| standing weight | produced | the target worth input, now signed |
+| verbal contribution scale | produced | split into quantum (§5.4) and probability (§5.5) |
+| `multiplier` / `x` | dropped | quantum is stated directly |
+| `goal_type` gating | dropped | in the legacy ranking, `goal_type == "committed"` gated SEV4 lexicographic overrides (`severity_gate`, `S_lex`, overdue-pin guard); ordinary pricing was not gated on `goal_type`. Under the new model, target pricing operates directly on priced targets without category gating, and hard deadlines form the cliff lane regardless of goal_type |
+| `waiting_since` timestamp anchor | dropped | in the legacy ranking, `waiting_since` (or `created`) was the timestamp anchor for the stakeholder waiting clock; dropped because stakeholder waiting is removed from the maths (a waiting person is handled in agent triage or via explicit target pricing) |
+| cone depth cap `MAX_CONE_DEPTH = 20` | dropped | the old engine bounded BFS downstream cone expansion and urgency relaxation to 20 hops; the flow rule computes global fixed points across all hops without an artificial depth cutoff |
+| ready / blocked / roots | moved | ready-leaf filter (display); actionable views restricted to claimable task leaves |
+| ready predicate: `ACTIONABLE_TYPES` (`["task", "learn", "pr"]`) and `CLAIMABLE_TYPES` (`["task"]`) | moved | display ready-leaf filter (Q31) |
+| ready predicate: `has_acceptance_criteria` gate for `inbox` status | moved | display ready-leaf filter (Q31) |
+| ready predicate: `COMPLETED_STATUSES` `{"done", "cancelled"}` | moved | node state mapping in maths (done nodes have $y=1$, cancelled nodes excluded) |
+| ready predicate: transitive dependency checking across `blocks` chains | moved / produced | replaced by `needs` edges where blocked work passes worth to unblockers (I5) |
+| `focus_cmp`, `queue_rank` | moved | ordering is display |
+| severity ladder | dropped | severity is not read; it prompts pricing (Q24) |
+| `blocking_urgency` (a pipeline stage) | dropped | a blocker carries the full worth of what it unblocks (I5); urgency by date is the cliff lane |
+| `stakeholder_exposure` (input to criticality) | dropped | removed with `criticality`; `stakeholder` stays as a stored field |
+| `deadline_pressure_active` flag | dropped | no date term in the maths (I11); display reads `due` and `deadline_class` directly |
+| `has_real_stakes` gates | dropped | they gate terms this spec removes (courtesy decay, stakeholder waiting); gate detection is agent logic |
+| committed-SEV4 overdue pin guard | moved | the cliff lane for hard deadlines (S13) |
+| `order`, `id` tie-breaks | moved | ordering is display; a deterministic final tie-break stays there |
+| `has_open_question`, `dep_resolution_ratio`, C_open / C_divergence gates | dropped | value of information comes only from `alternative` edges (§6). An open question with no modelled alternatives earns nothing until migration or an agent adds them (Q8) |
+| `focus_picks` / `pkb focus` surfacing | moved | display, reading gain and loss averted; dashboard spec (`epic_adf10cd3`) |
+| `export_graph` fields `cost_of_delay`, `severity_gate`, `queue_rank` | dropped | replaced by the outputs in §12; the dashboard's `/api/graph` must read them instead (`epic_adf10cd3`) |
+| raw `intent` (P0–P4) and its consumers: `list_tasks` priority filter, ready sorting, `priority_weight` | moved, pending Q10 | not read by the maths; whether the field survives as a filter or pin is Q10 |
 | `detect_weight_divergence` (`src/graph_store.rs`, `compute_divergence_anomalies`) | moved | agent diagnostic; must read `quantum × probability`, since the old word mixed the two |
 | `current_weight` (`src/graph.rs:262`, dormant) | dropped | no reader; quantum and probability replace it |
 
@@ -729,7 +674,7 @@ Every measure in `ranking.md` is mapped to one of three outcomes:
 
 Of the 1,132 ranked tasks, 18 carry worth.
 
-| Node | Today | New | Worth | Why it differs |
+| Node | Legacy | New | Worth | Why it differs |
 |---|---|---|---|---|
 | `syn_task_multi_route` | 1 | 1 | 0.80 | Carries two priced targets (`syn_targ_alpha` 0.50, `syn_targ_beta` 0.30). |
 | `syn_task_prereq_head` | 2 | 2 | 0.80 | High ranking, carries unblocked targets. Blocked work keeps worth. |
@@ -766,7 +711,7 @@ Of the 1,132 ranked tasks, 18 carry worth.
 **Contract on these fields.**
 
 - **No other ranking number is emitted.**
-- **Determinism.** The output is a pure function of node states, target worths and edge fields. It is byte-identical across rebuilds from identical input (as `ranking.md:64-69` requires today).
+- **Determinism.** The output is a pure function of node states, target worths and edge fields. It is byte-identical across rebuilds from identical input (as `ranking.md` §1.1 requires).
 
 **Explanation contract.** `explain(u)` returns, per priced target:
 
@@ -819,7 +764,7 @@ Each criterion is something an observer can check. The test named beside it is t
 
 ## 14. Behaviour removed
 
-The following leave the maths once this spec is approved and built. Some reappear in display or agent logic; section 9 says which.
+The following were removed with the legacy ranking. Some reappear in display or agent logic; section 9 says which.
 
 - **Ranking machinery:**
   - the sort tuple;
@@ -829,8 +774,8 @@ The following leave the maths once this spec is approved and built. Some reappea
   - `intent_pressure`;
   - `effective_intent`;
   - `blocking_urgency`;
-  - the `affordable_loss` filter (moves to agent logic);
-  - node-level `confidence` as a ranking input (edge probability replaces it).
+  - the `affordable_loss` filter (moved to agent logic);
+  - node-level `confidence` as a ranking input (edge probability replaced it).
 - **Date arithmetic in the maths:**
   - the deadline multiplier;
   - courtesy decay;
@@ -840,7 +785,8 @@ The following leave the maths once this spec is approved and built. Some reappea
   - `downstream_weight` and `unlock_breadth` as ranking inputs;
   - the conduit pass that zeroes containers and blocked leaves.
 - **Stakeholder points:** the stakeholder-waiting bonus.
-- **Exported fields:** `cost_of_delay`, `severity_gate` and `queue_rank` in `export_graph` JSON.
+- **Exported fields:** `cost_of_delay`, `severity_gate`, `queue_rank`, `effective_intent` and the top-level `focus` in `export_graph` JSON.
+- **Query filters:** `focus_score_gte` and `weight_gte` on `list_tasks`.
 - **Edge-weight fields:**
   - the `multiplier` edge field;
   - the seven-word contribution scale as a single number.

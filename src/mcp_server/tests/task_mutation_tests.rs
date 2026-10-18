@@ -2814,9 +2814,6 @@ fn test_classification_field_create_get_list_update_roundtrip() {
     let get_text = get_res.content[0].raw.as_text().unwrap().text.clone();
     let get_json: serde_json::Value = serde_json::from_str(&get_text).unwrap();
     assert_eq!(get_json["classification"], "bug");
-    assert!(get_json["signals"]["criticality"].is_number());
-    assert!(get_json["signals"]["scope"].is_number());
-    assert!(get_json["signals"]["uncertainty"].is_number());
 
     // 3. list_tasks must return classification
     let list_res = server

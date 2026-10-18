@@ -254,7 +254,7 @@ const KNOWN_KEYS: &[&str] = &[
     "deadline_class",
     "links",
     "follow_up_tasks",
-    // Target / prototype node fields (spec multi-parent-edges §1.1, §1.6)
+    // Target / prototype node fields (specs/multi-parent.md §1.1, §1.5)
     "severity",
     "goal_type",
     "consequence",

@@ -890,13 +890,6 @@ impl PkbSearchServer {
                 .ok()
                 .map(|due_date| (due_date - today).num_days())
         });
-        let effort_days = node
-            .effort
-            .as_deref()
-            .and_then(crate::graph::parse_effort_days)
-            .unwrap_or(3);
-        let urgency_ratio: Option<f64> =
-            days_until_due.map(|d| (effort_days as f64 / d.max(1) as f64).min(1.0));
 
         let contributes_to: Vec<serde_json::Value> = node
             .contributes_to
@@ -932,10 +925,6 @@ impl PkbSearchServer {
                 })
             }
         });
-        let include_signals = args
-            .get("include_signals")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(true);
         let include_routes = args
             .get("include_routes")
             .and_then(|v| v.as_bool())
@@ -977,16 +966,13 @@ impl PkbSearchServer {
             "subtasks": subtask_nodes_sorted,
             "parent": parent,
             "closes": closes,
-            "target_ancestors": node.target_ancestors,
             "goals": node.goals,
             "contributes_to": contributes_to,
             "contributed_by": node.contributed_by,
             "follow_up_tasks": node.follow_up_tasks,
-            "focus_score": node.focus_score,
             "blocked": graph.is_blocked(&node.id),
             "parse_warnings": node.parse_warnings,
             "days_until_due": days_until_due,
-            "urgency_ratio": urgency_ratio,
             "links_out": graph.links_out(&node.id),
             "links_in": graph.links_in(&node.id),
             "flow": node.flow,
@@ -1013,32 +999,6 @@ impl PkbSearchServer {
 
         if !metadata_only {
             result["body"] = serde_json::json!(body);
-        }
-
-        if graph.ranking_mode() == crate::polecat_config::RankingMode::Flow {
-            if let Some(map) = result.as_object_mut() {
-                map.remove("focus_score");
-                map.remove("effective_intent");
-                map.remove("stakeholder_exposure");
-                map.remove("target_ancestors");
-                map.remove("urgency_ratio");
-                map.remove("standing_weight");
-                map.remove("signals");
-            }
-        } else if include_signals {
-            result["signals"] = serde_json::json!({
-                "criticality": node.criticality,
-                "urgency": node.urgency,
-                "downstream_weight": node.downstream_weight,
-                "scope": node.scope,
-                "uncertainty": node.uncertainty,
-                "voi_value": node.voi_value,
-                "affordable_loss": node.affordable_loss,
-                "affordable_loss_filtered": node.affordable_loss_filtered,
-                "chain_slack": node.chain_slack,
-                "unlock_breadth": node.unlock_breadth,
-                "value_lineage": node.value_lineage,
-            });
         }
 
         if let Some(ref filter) = fields_filter {
@@ -1349,7 +1309,6 @@ impl PkbSearchServer {
         let doc_type = args.get("type").and_then(|v| v.as_str());
         let title_contains = args.get("title_contains").and_then(|v| v.as_str());
         let complexity = args.get("complexity").and_then(|v| v.as_str());
-        let weight_gte = args.get("weight_gte").and_then(|v| v.as_i64());
         let gain_gte = args.get("gain_gte").and_then(|v| v.as_f64());
         let loss_averted_gte = args.get("loss_averted_gte").and_then(|v| v.as_f64());
         let task_sort = args
@@ -1358,7 +1317,6 @@ impl PkbSearchServer {
             .and_then(crate::display_rank::TaskSort::from_str_loose)
             .unwrap_or(crate::display_rank::TaskSort::Default);
         let project = args.get("project").and_then(|v| v.as_str());
-        let focus_score_gte = args.get("focus_score_gte").and_then(|v| v.as_i64());
         let tags: Vec<String> = args
             .get("tags")
             .and_then(|v| v.as_array())
@@ -1470,11 +1428,7 @@ impl PkbSearchServer {
         }
 
         if let Some(pri) = intent {
-            if graph.ranking_mode() == crate::polecat_config::RankingMode::Flow {
-                tasks.retain(|t| t.intent.unwrap_or(4) <= pri);
-            } else {
-                tasks.retain(|t| t.effective_intent.unwrap_or(4) <= pri);
-            }
+            tasks.retain(|t| t.intent.unwrap_or(4) <= pri);
         }
         if let Some(min_gain) = gain_gte {
             tasks.retain(|t| {
@@ -1554,9 +1508,6 @@ impl PkbSearchServer {
                     .unwrap_or(false)
             });
         }
-        if let Some(w_gte) = weight_gte {
-            tasks.retain(|t| t.downstream_weight >= w_gte as f64);
-        }
         if !tags.is_empty() {
             tasks.retain(|t| {
                 tags.iter()
@@ -1566,10 +1517,6 @@ impl PkbSearchServer {
 
         if let Some(want_superseded) = has_superseded_by {
             tasks.retain(|t| t.superseded_by.is_empty() != want_superseded);
-        }
-
-        if let Some(min_score) = focus_score_gte {
-            tasks.retain(|t| t.focus_score.unwrap_or(0) >= min_score);
         }
 
         // Date filters on modified. Tasks with no modified date (or unparseable)
@@ -1611,21 +1558,15 @@ impl PkbSearchServer {
             return Ok(Self::structured_result(label.to_string(), zero));
         }
 
-        // Default ordering (AC1/AC6): focus_score DESC with a deterministic
-        // tie-break. `list_tasks` exposes no explicit sort argument, so this is
-        // always the default projection ordering. Applied before truncation so
-        // the top-`limit` rows are the highest-focus tasks, and applied to every
-        // path (default / ready / blocked / filtered) since they all funnel into
-        // `tasks`. Shares the same comparator as the CLI `list` default for parity.
+        // Ordering (AC1/AC6): flow display order (`display_cmp`), or the
+        // explicit `sort` key when given. Applied before truncation so the
+        // top-`limit` rows are the head of the display order, and applied to
+        // every path (default / ready / blocked / filtered) since they all
+        // funnel into `tasks`. Shares the same comparator as the CLI `list`
+        // default for parity.
         let today = chrono::Utc::now().date_naive();
         let buffer_days = crate::display_rank::DISPLAY_CLIFF_BUFFER_DAYS;
-        if graph.ranking_mode() == crate::polecat_config::RankingMode::Flow
-            || task_sort != crate::display_rank::TaskSort::Default
-        {
-            GraphStore::sort_by_display_with_sort(&mut tasks, task_sort, today, buffer_days);
-        } else {
-            GraphStore::sort_by_focus(&mut tasks);
-        }
+        GraphStore::sort_by_display_with_sort(&mut tasks, task_sort, today, buffer_days);
 
         let total = tasks.len();
         tasks.truncate(limit);
@@ -1723,82 +1664,43 @@ impl PkbSearchServer {
                     }
                 }
 
-                let mut obj = if graph.ranking_mode() == crate::polecat_config::RankingMode::Flow {
-                    let flow = t.flow.as_ref();
-                    let eff = crate::display_rank::resolve_effort_days(t.effort.as_deref());
-                    let mapped_deadline_class = t.deadline_class.map(|dc| match dc {
-                        crate::graph::DeadlineClass::Fake => crate::display_rank::DeadlineClass::Fake,
-                        crate::graph::DeadlineClass::Soft => crate::display_rank::DeadlineClass::Soft,
-                        crate::graph::DeadlineClass::Hard => crate::display_rank::DeadlineClass::Hard,
-                    });
-                    let due_date = t.due.as_deref().and_then(crate::display_rank::parse_due_date);
-                    let on_cliff = crate::display_rank::is_on_cliff(due_date, mapped_deadline_class, eff, today, buffer_days);
-                    serde_json::json!({
-                        "id": t.task_id.as_deref().unwrap_or(&t.id),
-                        "title": t.label,
-                        "status": t.status.as_deref().unwrap_or("unknown"),
-                        "gain": flow.and_then(|f| f.gain),
-                        "loss_averted": flow.and_then(|f| f.loss_averted),
-                        "decision_value": flow.and_then(|f| f.decision_value),
-                        "flow_status": flow.map(|f| f.flow_status).unwrap_or(crate::flow::FlowStatus::Ok),
-                        "ready": t.classification.as_deref() == Some("ready"),
-                        "blocked": graph.is_blocked(&t.id),
-                        "on_cliff": on_cliff,
-                        "due": t.due,
-                        "deadline_class": t.deadline_class,
-                        "effort": t.effort,
-                        "classification": t.classification,
-                        "intent": t.intent.unwrap_or(4),
-                        "project": t.project,
-                        "assignee": t.assignee,
-                        "modified": t.modified,
-                        "tags": t.tags,
-                        "parent": t.parent,
-                        "depends_on": t.depends_on,
-                        "node_type": t.node_type,
-                        "consequence": t.consequence,
-                        "severity": t.severity,
-                        "goal_type": t.goal_type,
-                        "edge_template": t.edge_template,
-                    })
-                } else {
-                    serde_json::json!({
-                        "id": t.task_id.as_deref().unwrap_or(&t.id),
-                        "title": t.label,
-                        "status": t.status.as_deref().unwrap_or("unknown"),
-                        "classification": t.classification,
-                        "intent": t.intent.unwrap_or(4),
-                        "effective_intent": t.effective_intent.unwrap_or(t.intent.unwrap_or(4)),
-                        "focus_score": t.focus_score,
-                        "blocked": graph.is_blocked(&t.id),
-                        "signals": {
-                            "criticality": t.criticality,
-                            "urgency": t.urgency,
-                            "downstream_weight": t.downstream_weight,
-                            "scope": t.scope,
-                            "uncertainty": t.uncertainty,
-                            "voi_value": t.voi_value,
-                            "affordable_loss": t.affordable_loss,
-                            "affordable_loss_filtered": t.affordable_loss_filtered,
-                            "chain_slack": t.chain_slack,
-                            "unlock_breadth": t.unlock_breadth,
-                            "value_lineage": t.value_lineage,
-                        },
-                        "project": t.project,
-                        "assignee": t.assignee,
-                        "modified": t.modified,
-                        "tags": t.tags,
-                        "parent": t.parent,
-                        "depends_on": t.depends_on,
-                        "node_type": t.node_type,
-                        "due": t.due,
-                        "effort": t.effort,
-                        "consequence": t.consequence,
-                        "severity": t.severity,
-                        "goal_type": t.goal_type,
-                        "edge_template": t.edge_template,
-                    })
-                };
+                let flow = t.flow.as_ref();
+                let eff = crate::display_rank::resolve_effort_days(t.effort.as_deref());
+                let mapped_deadline_class = t.deadline_class.map(|dc| match dc {
+                    crate::graph::DeadlineClass::Fake => crate::display_rank::DeadlineClass::Fake,
+                    crate::graph::DeadlineClass::Soft => crate::display_rank::DeadlineClass::Soft,
+                    crate::graph::DeadlineClass::Hard => crate::display_rank::DeadlineClass::Hard,
+                });
+                let due_date = t.due.as_deref().and_then(crate::display_rank::parse_due_date);
+                let on_cliff = crate::display_rank::is_on_cliff(due_date, mapped_deadline_class, eff, today, buffer_days);
+                let mut obj = serde_json::json!({
+                    "id": t.task_id.as_deref().unwrap_or(&t.id),
+                    "title": t.label,
+                    "status": t.status.as_deref().unwrap_or("unknown"),
+                    "gain": flow.and_then(|f| f.gain),
+                    "loss_averted": flow.and_then(|f| f.loss_averted),
+                    "decision_value": flow.and_then(|f| f.decision_value),
+                    "flow_status": flow.map(|f| f.flow_status).unwrap_or(crate::flow::FlowStatus::Ok),
+                    "ready": t.classification.as_deref() == Some("ready"),
+                    "blocked": graph.is_blocked(&t.id),
+                    "on_cliff": on_cliff,
+                    "due": t.due,
+                    "deadline_class": t.deadline_class,
+                    "effort": t.effort,
+                    "classification": t.classification,
+                    "intent": t.intent.unwrap_or(4),
+                    "project": t.project,
+                    "assignee": t.assignee,
+                    "modified": t.modified,
+                    "tags": t.tags,
+                    "parent": t.parent,
+                    "depends_on": t.depends_on,
+                    "node_type": t.node_type,
+                    "consequence": t.consequence,
+                    "severity": t.severity,
+                    "goal_type": t.goal_type,
+                    "edge_template": t.edge_template,
+                });
 
                 if wants_rel_summary {
                     let resolve_ref = |rid: &str| -> serde_json::Value {
@@ -1920,209 +1822,110 @@ impl PkbSearchServer {
             }
             out
         } else if is_ready {
-            if graph.ranking_mode() == crate::polecat_config::RankingMode::Flow {
-                let mut out = format!(
-                    "**{total} ready tasks** (showing {}, sorted by display_cmp)\n\n",
-                    tasks.len()
-                );
-                let today = chrono::Utc::now().date_naive();
-                let buffer_days = crate::display_rank::DISPLAY_CLIFF_BUFFER_DAYS;
-                if has_superseded_by.is_some() {
-                    out.push_str("| # | ID | Status | Pri | Gain | Loss Averted | Decision | Due | Cliff | Superseded By | Title |\n|---|---|---|---|---|---|---|---|---|---|---|\n");
-                } else {
-                    out.push_str("| # | ID | Status | Pri | Gain | Loss Averted | Decision | Due | Cliff | Title |\n|---|---|---|---|---|---|---|---|---|---|\n");
-                }
-                for (i, t) in tasks.iter().enumerate() {
-                    let id = t.task_id.as_deref().unwrap_or(&t.id);
-                    let flow = t.flow.as_ref();
-                    let gain_str = flow
-                        .and_then(|f| f.gain)
-                        .map(|v| format!("{:.2}", v))
-                        .unwrap_or_else(|| "-".to_string());
-                    let loss_str = flow
-                        .and_then(|f| f.loss_averted)
-                        .map(|v| format!("{:.2}", v))
-                        .unwrap_or_else(|| "-".to_string());
-                    let dec_str = flow
-                        .and_then(|f| f.decision_value)
-                        .map(|v| format!("{:.2}", v))
-                        .unwrap_or_else(|| "-".to_string());
-
-                    let eff = crate::display_rank::resolve_effort_days(t.effort.as_deref());
-                    let mapped_deadline_class = t.deadline_class.map(|dc| match dc {
-                        crate::graph::DeadlineClass::Fake => crate::display_rank::DeadlineClass::Fake,
-                        crate::graph::DeadlineClass::Soft => crate::display_rank::DeadlineClass::Soft,
-                        crate::graph::DeadlineClass::Hard => crate::display_rank::DeadlineClass::Hard,
-                    });
-                    let due_date = t.due.as_deref().and_then(crate::display_rank::parse_due_date);
-                    let on_cliff = crate::display_rank::is_on_cliff(due_date, mapped_deadline_class, eff, today, buffer_days);
-                    let cliff_str = if on_cliff { "yes" } else { "-" };
-
-                    let due_str = t
-                        .due
-                        .as_deref()
-                        .map(|due| {
-                            let len = std::cmp::min(10, due.len());
-                            let class_suffix = match t.deadline_class {
-                                Some(crate::graph::DeadlineClass::Hard) => " (hard)",
-                                Some(crate::graph::DeadlineClass::Soft) => " (soft)",
-                                Some(crate::graph::DeadlineClass::Fake) => " (fake)",
-                                None => "",
-                            };
-                            chrono::NaiveDate::parse_from_str(
-                                &due[..due.floor_char_boundary(len)],
-                                "%Y-%m-%d",
-                            )
-                            .ok()
-                            .map(|due_date| {
-                                let d = (due_date - today).num_days();
-                                if d < 0 {
-                                    format!("{}d overdue{}", -d, class_suffix)
-                                } else if d == 0 {
-                                    format!("today{}", class_suffix)
-                                } else {
-                                    format!("{}d{}", d, class_suffix)
-                                }
-                            })
-                            .unwrap_or_else(|| format!("{}{}", &due[..due.floor_char_boundary(len)], class_suffix))
-                        })
-                        .unwrap_or_else(|| "-".to_string());
-
-                    if has_superseded_by.is_some() {
-                        let superseded_str = if t.superseded_by.is_empty() {
-                            "-".to_string()
-                        } else {
-                            t.superseded_by.join(", ")
-                        };
-                        out.push_str(&format!(
-                            "| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |\n",
-                            i + 1,
-                            id,
-                            t.status.as_deref().unwrap_or("-"),
-                            t.intent.unwrap_or(4),
-                            gain_str,
-                            loss_str,
-                            dec_str,
-                            due_str,
-                            cliff_str,
-                            superseded_str,
-                            t.label
-                        ));
-                    } else {
-                        out.push_str(&format!(
-                            "| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |\n",
-                            i + 1,
-                            id,
-                            t.status.as_deref().unwrap_or("-"),
-                            t.intent.unwrap_or(4),
-                            gain_str,
-                            loss_str,
-                            dec_str,
-                            due_str,
-                            cliff_str,
-                            t.label
-                        ));
-                    }
-                }
-                out
+            let mut out = format!(
+                "**{total} ready tasks** (showing {}, sorted by display_cmp)\n\n",
+                tasks.len()
+            );
+            let today = chrono::Utc::now().date_naive();
+            let buffer_days = crate::display_rank::DISPLAY_CLIFF_BUFFER_DAYS;
+            if has_superseded_by.is_some() {
+                out.push_str("| # | ID | Status | Pri | Gain | Loss Averted | Decision | Due | Cliff | Superseded By | Title |\n|---|---|---|---|---|---|---|---|---|---|---|\n");
             } else {
-                // Ready view: table with Weight column, sorted by focus_score (default).
-                let mut out = format!(
-                    "**{total} ready tasks** (showing {}, sorted by focus_score)\n\n",
-                    tasks.len()
-                );
-                let today = chrono::Utc::now().date_naive();
-                if has_superseded_by.is_some() {
-                    out.push_str("| # | ID | Status | Pri | Weight | Crit | Urg | Due | Superseded By | Title |\n|---|---|---|---|---|---|---|---|---|---|\n");
-                } else {
-                    out.push_str("| # | ID | Status | Pri | Weight | Crit | Urg | Due | Title |\n|---|---|---|---|---|---|---|---|---|\n");
-                }
-                for (i, t) in tasks.iter().enumerate() {
-                    let id = t.task_id.as_deref().unwrap_or(&t.id);
-                    let weight = if t.downstream_weight > 0.0 {
-                        format!(
-                            "{:.1}{}",
-                            t.downstream_weight,
-                            if t.stakeholder_exposure { "!" } else { "" }
-                        )
-                    } else {
-                        "-".to_string()
-                    };
-                    let crit = if t.criticality > 0.0 {
-                        format!("{:.2}", t.criticality)
-                    } else {
-                        "-".to_string()
-                    };
-                    let urg = if t.urgency > 0.0 {
-                        if t.urgency >= 10000.0 {
-                            "SEV4".to_string()
-                        } else if t.urgency >= 100.0 {
-                            format!("{:.0}", t.urgency)
-                        } else {
-                            format!("{:.1}", t.urgency)
-                        }
-                    } else {
-                        "-".to_string()
-                    };
-                    let due_str = t
-                        .due
-                        .as_deref()
-                        .map(|due| {
-                            let len = std::cmp::min(10, due.len());
-                            chrono::NaiveDate::parse_from_str(
-                                &due[..due.floor_char_boundary(len)],
-                                "%Y-%m-%d",
-                            )
-                            .ok()
-                            .map(|due_date| {
-                                let d = (due_date - today).num_days();
-                                if d < 0 {
-                                    format!("{}d overdue", -d)
-                                } else if d == 0 {
-                                    "today".to_string()
-                                } else {
-                                    format!("{}d", d)
-                                }
-                            })
-                            .unwrap_or_else(|| due[..due.floor_char_boundary(len)].to_string())
-                        })
-                        .unwrap_or_else(|| "-".to_string());
-                    if has_superseded_by.is_some() {
-                        let superseded_str = if t.superseded_by.is_empty() {
-                            "-".to_string()
-                        } else {
-                            t.superseded_by.join(", ")
-                        };
-                        out.push_str(&format!(
-                            "| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |\n",
-                            i + 1,
-                            id,
-                            t.status.as_deref().unwrap_or("-"),
-                            t.intent.unwrap_or(4),
-                            weight,
-                            crit,
-                            urg,
-                            due_str,
-                            superseded_str,
-                            t.label
-                        ));
-                    } else {
-                        out.push_str(&format!(
-                            "| {} | {} | {} | {} | {} | {} | {} | {} | {} |\n",
-                            i + 1,
-                            id,
-                            t.status.as_deref().unwrap_or("-"),
-                            t.intent.unwrap_or(4),
-                            weight,
-                            crit,
-                            urg,
-                            due_str,
-                            t.label
-                        ));
-                    }
-                }
-                out
+                out.push_str("| # | ID | Status | Pri | Gain | Loss Averted | Decision | Due | Cliff | Title |\n|---|---|---|---|---|---|---|---|---|---|\n");
             }
+            for (i, t) in tasks.iter().enumerate() {
+                let id = t.task_id.as_deref().unwrap_or(&t.id);
+                let flow = t.flow.as_ref();
+                let gain_str = flow
+                    .and_then(|f| f.gain)
+                    .map(|v| format!("{:.2}", v))
+                    .unwrap_or_else(|| "-".to_string());
+                let loss_str = flow
+                    .and_then(|f| f.loss_averted)
+                    .map(|v| format!("{:.2}", v))
+                    .unwrap_or_else(|| "-".to_string());
+                let dec_str = flow
+                    .and_then(|f| f.decision_value)
+                    .map(|v| format!("{:.2}", v))
+                    .unwrap_or_else(|| "-".to_string());
+
+                let eff = crate::display_rank::resolve_effort_days(t.effort.as_deref());
+                let mapped_deadline_class = t.deadline_class.map(|dc| match dc {
+                    crate::graph::DeadlineClass::Fake => crate::display_rank::DeadlineClass::Fake,
+                    crate::graph::DeadlineClass::Soft => crate::display_rank::DeadlineClass::Soft,
+                    crate::graph::DeadlineClass::Hard => crate::display_rank::DeadlineClass::Hard,
+                });
+                let due_date = t.due.as_deref().and_then(crate::display_rank::parse_due_date);
+                let on_cliff = crate::display_rank::is_on_cliff(due_date, mapped_deadline_class, eff, today, buffer_days);
+                let cliff_str = if on_cliff { "yes" } else { "-" };
+
+                let due_str = t
+                    .due
+                    .as_deref()
+                    .map(|due| {
+                        let len = std::cmp::min(10, due.len());
+                        let class_suffix = match t.deadline_class {
+                            Some(crate::graph::DeadlineClass::Hard) => " (hard)",
+                            Some(crate::graph::DeadlineClass::Soft) => " (soft)",
+                            Some(crate::graph::DeadlineClass::Fake) => " (fake)",
+                            None => "",
+                        };
+                        chrono::NaiveDate::parse_from_str(
+                            &due[..due.floor_char_boundary(len)],
+                            "%Y-%m-%d",
+                        )
+                        .ok()
+                        .map(|due_date| {
+                            let d = (due_date - today).num_days();
+                            if d < 0 {
+                                format!("{}d overdue{}", -d, class_suffix)
+                            } else if d == 0 {
+                                format!("today{}", class_suffix)
+                            } else {
+                                format!("{}d{}", d, class_suffix)
+                            }
+                        })
+                        .unwrap_or_else(|| format!("{}{}", &due[..due.floor_char_boundary(len)], class_suffix))
+                    })
+                    .unwrap_or_else(|| "-".to_string());
+
+                if has_superseded_by.is_some() {
+                    let superseded_str = if t.superseded_by.is_empty() {
+                        "-".to_string()
+                    } else {
+                        t.superseded_by.join(", ")
+                    };
+                    out.push_str(&format!(
+                        "| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |\n",
+                        i + 1,
+                        id,
+                        t.status.as_deref().unwrap_or("-"),
+                        t.intent.unwrap_or(4),
+                        gain_str,
+                        loss_str,
+                        dec_str,
+                        due_str,
+                        cliff_str,
+                        superseded_str,
+                        t.label
+                    ));
+                } else {
+                    out.push_str(&format!(
+                        "| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |\n",
+                        i + 1,
+                        id,
+                        t.status.as_deref().unwrap_or("-"),
+                        t.intent.unwrap_or(4),
+                        gain_str,
+                        loss_str,
+                        dec_str,
+                        due_str,
+                        cliff_str,
+                        t.label
+                    ));
+                }
+            }
+            out
         } else {
             // Default view: standard table
             let mut out = if has_superseded_by.is_some() {

@@ -527,15 +527,15 @@ impl PkbSearchServer {
     /// Patches the node in place under the graph write lock (microseconds),
     /// runs cheap classification so `list_tasks(status="ready")` membership
     /// reflects the new status, and schedules a coalesced background
-    /// rebuild that refreshes derived metrics (downstream_weight,
-    /// effective_priority, focus_score, target_ancestors, similarity edges).
+    /// rebuild that refreshes derived metrics (flow figures, centrality,
+    /// target_ancestors, similarity edges).
     ///
     /// Consistency: after this returns, `resolve(id)` finds the node, its
     /// `status`/`parent`/`priority` are fresh, and ready/blocked membership
-    /// is fresh. Derived metric *values* (downstream_weight, focus_score,
-    /// urgency ordering) lag by 1–3s until the background rebuild lands —
-    /// the prior values are carried over from the existing node so they
-    /// don't reset to defaults.
+    /// is fresh. Derived metric *values* (flow figures, centrality) lag by
+    /// 1–3s until the background rebuild lands; structural inverses and
+    /// centrality are carried over from the existing node so they don't
+    /// reset to defaults.
     ///
     /// Concurrency: the graph write lock serialises concurrent writers
     /// safely (each patch is a HashMap insert; no clone-and-swap race).
@@ -1660,6 +1660,24 @@ impl PkbSearchServer {
         res
     }
 
+    pub fn is_read_only_tool(name: &str) -> bool {
+        static READ_ONLY_TOOLS: std::sync::OnceLock<std::collections::HashSet<String>> =
+            std::sync::OnceLock::new();
+        let set = READ_ONLY_TOOLS.get_or_init(|| {
+            Self::get_all_tools()
+                .into_iter()
+                .filter(|t| {
+                    t.annotations
+                        .as_ref()
+                        .and_then(|a| a.read_only_hint)
+                        == Some(true)
+                })
+                .map(|t| t.name.to_string())
+                .collect()
+        });
+        set.contains(name)
+    }
+
     pub async fn execute_tool_call(
         &self,
         tool_name: &str,
@@ -1669,23 +1687,33 @@ impl PkbSearchServer {
     ) -> Result<CallToolResult, McpError> {
         let start = std::time::Instant::now();
         let tool_name = tool_name.to_string();
-        let args = args.clone();
+        let mut args = args.clone();
 
         let client_context = crate::otel::client_context::ClientContext::extract(
             parts,
             meta,
+            &mut args,
             &self.session_registry,
         );
 
         if let Some(ref mcp_id) = client_context.mcp_session_id {
-            self.session_registry
-                .update_activity(mcp_id, Some(client_context.session_id.clone()));
+            self.session_registry.update_activity(mcp_id);
         }
-        let session_id = client_context.session_id.clone();
+
+        let canonical_name = match tool_name.as_str() {
+            "pkb_trace" | "pkb_orphans" => tool_name.clone(),
+            other => other.strip_prefix("pkb_").unwrap_or(other).to_string(),
+        };
+
+        let is_read_only = Self::is_read_only_tool(&canonical_name);
+        let is_mutating = !is_read_only;
+        let is_unattributed = client_context.session_source == crate::otel::client_context::SessionSource::None;
+        let session_mode = crate::otel::config::SessionMode::from_env();
+        let log_session_id = client_context.session_id.clone();
 
         let (tx, rx) = tokio::sync::oneshot::channel();
         let this_task = self.clone();
-        let tool_name_task = tool_name.clone();
+        let canonical_name_task = canonical_name.clone();
 
         tokio::task::spawn_blocking(move || {
             crate::otel::call_metrics::CallMetrics::start_recording();
@@ -1697,21 +1725,31 @@ impl PkbSearchServer {
             let tracer = opentelemetry::global::tracer("mem");
             use opentelemetry::trace::Tracer;
 
-            let canonical_name = match tool_name_task.as_str() {
-                "pkb_trace" | "pkb_orphans" => tool_name_task.clone(),
-                other => other.strip_prefix("pkb_").unwrap_or(other).to_string(),
-            };
-
             let mut builder = tracer
-                .span_builder(format!("mcp.{}", canonical_name))
+                .span_builder(format!("mcp.{}", canonical_name_task))
                 .with_kind(opentelemetry::trace::SpanKind::Server);
 
             let mut attrs = vec![
                 opentelemetry::KeyValue::new("openinference.span.kind", "TOOL"),
-                opentelemetry::KeyValue::new("tool.name", canonical_name.clone()),
-                opentelemetry::KeyValue::new("session.id", client_context.session_id.clone()),
+                opentelemetry::KeyValue::new("tool.name", canonical_name_task.clone()),
+                opentelemetry::KeyValue::new("aops.session.source", client_context.session_source.as_str()),
             ];
 
+            if let Some(ref sid) = client_context.session_id {
+                attrs.push(opentelemetry::KeyValue::new("session.id", sid.clone()));
+            }
+            if let Some(ref rebound) = client_context.rebound_from {
+                attrs.push(opentelemetry::KeyValue::new("aops.session.rebound_from", rebound.clone()));
+            }
+            if let Some(ref aid) = client_context.agent_id {
+                attrs.push(opentelemetry::KeyValue::new("agent.id", aid.clone()));
+            }
+            if let Some(ref pid) = client_context.prompt_id {
+                attrs.push(opentelemetry::KeyValue::new("prompt.id", pid.clone()));
+            }
+            if is_mutating && is_unattributed && session_mode == crate::otel::config::SessionMode::Warn {
+                attrs.push(opentelemetry::KeyValue::new("aops.session.missing", true));
+            }
             if let Some(ref tid) = client_context.task_id {
                 attrs.push(opentelemetry::KeyValue::new(
                     "tag.tags",
@@ -1739,7 +1777,22 @@ impl PkbSearchServer {
             let cx = parent_cx.with_span(span);
             let _guard = cx.clone().attach();
 
-            let res = this_task.dispatch_tool_sync(&canonical_name, &args);
+            let res = if is_mutating && is_unattributed && session_mode == crate::otel::config::SessionMode::Enforce {
+                Err(McpError {
+                    code: ErrorCode::INVALID_PARAMS,
+                    message: Cow::from(format!(
+                        "Unattributed write refused: tool '{canonical_name_task}' requires a caller session ID when PKB_SESSION_MODE=enforce. \
+                         Supply your session ID via the `_session` argument (e.g. `{{\"_session\": {{\"session_id\": \"<your-session-id>\"}}}}`). \
+                         You can find your session ID in the environment variable AOPS_SESSION_ID or your agent session context."
+                    )),
+                    data: None,
+                })
+            } else {
+                if is_mutating && is_unattributed {
+                    tracing::warn!("Unattributed write to tool '{}' in warning mode (missing session id)", canonical_name_task);
+                }
+                this_task.dispatch_tool_sync(&canonical_name_task, &args)
+            };
 
             let metrics = crate::otel::call_metrics::CallMetrics::finish_recording().unwrap_or_default();
 
@@ -1844,25 +1897,28 @@ impl PkbSearchServer {
         let latency = start.elapsed().as_millis();
         crate::telemetry::record_call(&tool_name, response_bytes, latency, is_error);
 
-        if session_id == "unknown" {
-            tracing::info!(
-                target: "pkb::tool_call",
-                tool = %tool_name,
-                status = %if is_error { "error" } else { "ok" },
-                latency_ms = latency as u64,
-                response_bytes,
-                "tool call"
-            );
-        } else {
-            tracing::info!(
-                target: "pkb::tool_call",
-                tool = %tool_name,
-                status = %if is_error { "error" } else { "ok" },
-                latency_ms = latency as u64,
-                response_bytes,
-                session = %session_id,
-                "tool call"
-            );
+        match &log_session_id {
+            None => {
+                tracing::info!(
+                    target: "pkb::tool_call",
+                    tool = %tool_name,
+                    status = %if is_error { "error" } else { "ok" },
+                    latency_ms = latency as u64,
+                    response_bytes,
+                    "tool call"
+                );
+            }
+            Some(sid) => {
+                tracing::info!(
+                    target: "pkb::tool_call",
+                    tool = %tool_name,
+                    status = %if is_error { "error" } else { "ok" },
+                    latency_ms = latency as u64,
+                    response_bytes,
+                    session = %sid,
+                    "tool call"
+                );
+            }
         }
 
         result

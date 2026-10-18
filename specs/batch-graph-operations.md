@@ -78,7 +78,6 @@ All batch operations accept a target set defined by filters. Filters are composa
 | Text | `--title-contains "PhD inquiry"` | `title_contains: "PhD inquiry"` | Substring match on title |
 | Complexity | `--complexity mechanical` | `complexity: "mechanical"` | Match complexity tag |
 | Directory | `--directory tasks/inbox` | `directory: "tasks/inbox"` | File path contains directory (useful for targeting inbox vs project dirs) |
-| Weight | `--weight-gte 5` | `weight_gte: 5` | Downstream weight >= N (structurally important nodes) |
 
 ### CLI Composition
 
@@ -659,7 +658,6 @@ pub struct FilterSet {
     pub title_contains: Option<String>,
     pub complexity: Option<String>,
     pub directory: Option<String>,
-    pub weight_gte: Option<u32>,
 }
 
 impl FilterSet {
@@ -877,8 +875,6 @@ A dedicated view (`g` from main) showing the health metrics from `graph_stats`, 
 3. **No transaction rollback in v1.** The per-file atomic pattern (write to temp, rename) is sufficient. Git gives you rollback for free (`git checkout -- .`). Failures are reported in the response.
 
 4. **Full graph rebuild in v1.** `build_from_directory()` at ~2s is acceptable for batch ops. Incremental graph updates are a future optimization.
-
-5. **`--weight-gte` included in Phase 1.** Useful for finding structurally important nodes during grooming sessions.
 
 ---
 

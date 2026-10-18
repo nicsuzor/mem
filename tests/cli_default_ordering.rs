@@ -1,6 +1,6 @@
 //! Behavioural tests for the CLI `tasks` surface: the DEFAULT ordering (no
-//! `--sort` argument) must be `focus_score`-descending, agreeing with the MCP
-//! `list_tasks` default, while an EXPLICIT `--sort` argument is honoured verbatim.
+//! `--sort` argument) is the flow display order (`display_cmp`), agreeing with
+//! the MCP `list_tasks` default, while an EXPLICIT `--sort` key is honoured.
 //!
 //! These run fully offline — `pkb tasks` builds the graph from the PKB directory
 //! and needs no embeddings/ONNX — so they execute on every machine. (mem-e394a6d0)
@@ -44,42 +44,9 @@ impl KillOnParentDeath for Command {
     }
 }
 
-/// Seed a temp PKB whose focus_score ordering DIVERGES from priority ordering:
-///   - t-hi   : priority 0          → focus_score 10000
-///   - t-mid  : priority 1          → focus_score  5000
-///   - t-sev  : priority 2, sev 4   → focus_score 100000 (severity dominates)
-///
-/// So focus order is [t-sev, t-hi, t-mid] but priority order is [t-hi, t-mid, t-sev].
-fn seed(dir: &std::path::Path) {
-    std::fs::create_dir_all(dir.join("tasks")).unwrap();
-    std::fs::create_dir_all(dir.join("projects")).unwrap();
-    std::fs::write(
-        dir.join("projects/p.md"),
-        "---\nid: p\ntitle: P\ntype: project\nstatus: active\n---\n# P\n",
-    )
-    .unwrap();
-    let tasks = [
-        ("t-hi", "priority: 0\n"),
-        ("t-mid", "priority: 1\n"),
-        ("t-sev", "priority: 2\nseverity: 4\ngoal_type: committed\n"),
-    ];
-    for (id, extra) in tasks {
-        std::fs::write(
-            dir.join(format!("tasks/{id}.md")),
-            format!("---\nid: {id}\ntitle: Task {id}\ntype: task\nstatus: ready\n{extra}parent: p\n---\nbody for {id}\n"),
-        )
-        .unwrap();
-    }
-}
-
 /// Run `pkb tasks [extra args]` and return the ordered, de-duplicated
 /// list of known task IDs as they appear in the flat output.
-fn ordered_ids_with_env(
-    dir: &std::path::Path,
-    known: &[&str],
-    extra: &[&str],
-    envs: &[(&str, &str)],
-) -> Vec<String> {
+fn ordered_ids(dir: &std::path::Path, known: &[&str], extra: &[&str]) -> Vec<String> {
     let db = dir.join("db.bin");
     let mut args: Vec<String> = vec![
         "--pkb-root".into(),
@@ -101,13 +68,8 @@ fn ordered_ids_with_env(
     cmd.args(&args)
         .env("AOPS_OFFLINE", "1")
         .env("ACA_DATA", dir.to_string_lossy().as_ref())
-        .env_remove("PKB_RANKING")
-        .env_remove("AOPS_RANKING")
         .env_remove("AOPS_SESSIONS")
         .env_remove("AOPS_POLECAT_CONFIG");
-    for (k, v) in envs {
-        cmd.env(k, v);
-    }
     let out = cmd.kill_on_parent_death().output().expect("run pkb tasks");
     assert!(
         out.status.success(),
@@ -128,14 +90,8 @@ fn ordered_ids_with_env(
     seen
 }
 
-/// Run `pkb tasks all --flat [extra args]` and return the ordered, de-duplicated
-/// list of seeded task IDs as they appear in the output.
-fn ordered_ids(dir: &std::path::Path, extra: &[&str]) -> Vec<String> {
-    ordered_ids_with_env(dir, &["t-hi", "t-mid", "t-sev"], extra, &[])
-}
-
 /// Run `pkb tasks all [extra args]` (hierarchical tree mode) and return ordered IDs.
-fn ordered_tree_ids(dir: &std::path::Path, extra: &[&str]) -> Vec<String> {
+fn ordered_tree_ids(dir: &std::path::Path, known: &[&str], extra: &[&str]) -> Vec<String> {
     let db = dir.join("db.bin");
     let mut args: Vec<String> = vec![
         "--pkb-root".into(),
@@ -151,8 +107,6 @@ fn ordered_tree_ids(dir: &std::path::Path, extra: &[&str]) -> Vec<String> {
         .args(&args)
         .env("AOPS_OFFLINE", "1")
         .env("ACA_DATA", dir.to_string_lossy().as_ref())
-        .env_remove("PKB_RANKING")
-        .env_remove("AOPS_RANKING")
         .env_remove("AOPS_SESSIONS")
         .env_remove("AOPS_POLECAT_CONFIG")
         .kill_on_parent_death()
@@ -166,7 +120,6 @@ fn ordered_tree_ids(dir: &std::path::Path, extra: &[&str]) -> Vec<String> {
     );
     let stdout = String::from_utf8_lossy(&out.stdout);
 
-    let known = ["t-hi", "t-mid", "t-sev"];
     let mut seen = Vec::new();
     for line in stdout.lines() {
         for id in known {
@@ -178,12 +131,8 @@ fn ordered_tree_ids(dir: &std::path::Path, extra: &[&str]) -> Vec<String> {
     seen
 }
 
-/// Run `pkb focus` and return ordered IDs for given known list and environment variables.
-fn ordered_focus_ids_with_env(
-    dir: &std::path::Path,
-    known: &[&str],
-    envs: &[(&str, &str)],
-) -> Vec<String> {
+/// Run `pkb focus` and return ordered IDs for the given known list.
+fn ordered_focus_ids(dir: &std::path::Path, known: &[&str]) -> Vec<String> {
     let db = dir.join("db.bin");
     let args: Vec<String> = vec![
         "--pkb-root".into(),
@@ -197,13 +146,8 @@ fn ordered_focus_ids_with_env(
     cmd.args(&args)
         .env("AOPS_OFFLINE", "1")
         .env("ACA_DATA", dir.to_string_lossy().as_ref())
-        .env_remove("PKB_RANKING")
-        .env_remove("AOPS_RANKING")
         .env_remove("AOPS_SESSIONS")
         .env_remove("AOPS_POLECAT_CONFIG");
-    for (k, v) in envs {
-        cmd.env(k, v);
-    }
     let out = cmd.kill_on_parent_death().output().expect("run pkb focus");
     assert!(
         out.status.success(),
@@ -224,105 +168,10 @@ fn ordered_focus_ids_with_env(
     seen
 }
 
-/// Run `pkb focus` and return ordered IDs.
-fn ordered_focus_ids(dir: &std::path::Path) -> Vec<String> {
-    ordered_focus_ids_with_env(dir, &["t-hi", "t-mid", "t-sev"], &[])
-}
-
-/// AC1 (CLI parity): with NO `--sort` argument the default order is focus_score
-/// descending — the SEV4 task sorts ahead of the P0 task even though its raw
-/// priority is lower. This is the same comparator the MCP `list_tasks` default
-/// uses, so the two surfaces agree.
-#[test]
-fn cli_tasks_default_order_is_focus_desc() {
-    let dir = tempfile::tempdir().unwrap();
-    seed(dir.path());
-    let ids = ordered_ids(dir.path(), &[]);
-    assert_eq!(
-        ids,
-        vec!["t-sev", "t-hi", "t-mid"],
-        "default `pkb tasks` order must be focus_score-DESC (sev4 first), got {ids:?}"
-    );
-}
-
-/// Tree sibling order parity: task siblings rendered hierarchically under a parent
-/// are ordered according to canonical focus_cmp (focus_score DESC).
-#[test]
-fn cli_tasks_tree_sibling_order_matches_focus_cmp() {
-    let dir = tempfile::tempdir().unwrap();
-    seed(dir.path());
-    let ids = ordered_tree_ids(dir.path(), &[]);
-    assert_eq!(
-        ids,
-        vec!["t-sev", "t-hi", "t-mid"],
-        "tree sibling order must be focus_score-DESC (sev4 first), got {ids:?}"
-    );
-}
-
-/// CLI `pkb focus` surface parity: `pkb focus` returns tasks ordered canonically.
-#[test]
-fn cli_focus_agrees_with_canonical_focus_order() {
-    let dir = tempfile::tempdir().unwrap();
-    seed(dir.path());
-    let ids = ordered_focus_ids(dir.path());
-    assert_eq!(
-        ids,
-        vec!["t-sev", "t-hi", "t-mid"],
-        "`pkb focus` order must be focus_score-DESC (sev4 first), got {ids:?}"
-    );
-}
-
-/// Parity between CLI and library GraphStore paths: `pkb tasks`, `pkb tasks --flat`,
-/// `pkb focus`, and `GraphStore::sort_by_focus` all produce the exact same ordering.
-#[test]
-fn cli_and_library_focus_score_parity() {
-    let dir = tempfile::tempdir().unwrap();
-    seed(dir.path());
-
-    let flat_ids = ordered_ids(dir.path(), &[]);
-    let tree_ids = ordered_tree_ids(dir.path(), &[]);
-    let focus_ids = ordered_focus_ids(dir.path());
-
-    assert_eq!(flat_ids, vec!["t-sev", "t-hi", "t-mid"]);
-    assert_eq!(tree_ids, flat_ids, "tree view must match flat view focus ordering");
-    assert_eq!(focus_ids, flat_ids, "focus command must match tasks view focus ordering");
-}
-
-/// AC4 (backward compatibility): an EXPLICIT `--sort priority` is honoured
-/// verbatim — ascending by raw priority — and is NOT overridden by the new
-/// focus_score default. The SEV4/P2 task drops to last under priority sort.
-#[test]
-fn cli_tasks_explicit_sort_priority_is_honoured() {
-    let dir = tempfile::tempdir().unwrap();
-    seed(dir.path());
-    let ids = ordered_ids(dir.path(), &["--sort", "priority"]);
-    assert_eq!(
-        ids,
-        vec!["t-hi", "t-mid", "t-sev"],
-        "explicit `--sort priority` must order by raw priority ascending, got {ids:?}"
-    );
-}
-
-/// AC6 (determinism): repeated identical default calls return identical ordering.
-#[test]
-fn cli_tasks_default_order_is_deterministic() {
-    let dir = tempfile::tempdir().unwrap();
-    seed(dir.path());
-    let first = ordered_ids(dir.path(), &[]);
-    let second = ordered_ids(dir.path(), &[]);
-    assert_eq!(
-        first, second,
-        "repeated default `pkb tasks` calls must agree"
-    );
-    assert_eq!(first.len(), 3, "all three seeded tasks should appear");
-}
-
 fn seed_flow_parity(dir: &std::path::Path) {
     std::fs::create_dir_all(dir.join("targets")).unwrap();
     std::fs::create_dir_all(dir.join("tasks")).unwrap();
     std::fs::create_dir_all(dir.join("projects")).unwrap();
-
-    std::fs::write(dir.join("polecat.yaml"), "ranking: flow\n").unwrap();
 
     std::fs::write(
         dir.join("projects/p.md"),
@@ -362,18 +211,82 @@ fn seed_flow_parity(dir: &std::path::Path) {
     .unwrap();
 }
 
+const FLOW_KNOWN: [&str; 3] = ["t-cliff", "t-high", "t-low"];
+
+/// AC1 (CLI parity): with NO `--sort` argument the default order is the flow
+/// display order — the hard-deadline cliff task first, then by gain descending.
+#[test]
+fn cli_tasks_default_order_is_display_order() {
+    let dir = tempfile::tempdir().unwrap();
+    seed_flow_parity(dir.path());
+    let ids = ordered_ids(dir.path(), &FLOW_KNOWN, &[]);
+    assert_eq!(
+        ids,
+        vec!["t-cliff", "t-high", "t-low"],
+        "default `pkb tasks` order must be display_cmp order, got {ids:?}"
+    );
+}
+
+/// Tree sibling order parity: task siblings rendered hierarchically under a
+/// parent follow the same display order as the flat view.
+#[test]
+fn cli_tasks_tree_sibling_order_matches_display_order() {
+    let dir = tempfile::tempdir().unwrap();
+    seed_flow_parity(dir.path());
+    let tree_ids = ordered_tree_ids(dir.path(), &FLOW_KNOWN, &[]);
+    let flat_ids = ordered_ids(dir.path(), &FLOW_KNOWN, &[]);
+    assert_eq!(tree_ids, vec!["t-cliff", "t-high", "t-low"]);
+    assert_eq!(tree_ids, flat_ids, "tree view must match flat view ordering");
+}
+
+/// An EXPLICIT `--sort` key is honoured: `--sort id` orders by id ascending,
+/// where the default display order puts the figureless `a-plain` last.
+#[test]
+fn cli_tasks_explicit_sort_is_honoured() {
+    let dir = tempfile::tempdir().unwrap();
+    seed_flow_parity(dir.path());
+    std::fs::write(
+        dir.path().join("tasks/a-plain.md"),
+        "---\nid: a-plain\ntitle: Plain Task\ntype: task\nstatus: ready\nparent: p\n---\nBody\n",
+    )
+    .unwrap();
+    let known = ["a-plain", "t-cliff", "t-high", "t-low"];
+    let default_ids = ordered_ids(dir.path(), &known, &[]);
+    assert_eq!(
+        default_ids,
+        vec!["t-cliff", "t-high", "t-low", "a-plain"],
+        "default order puts the task with no flow figures last, got {default_ids:?}"
+    );
+    let ids = ordered_ids(dir.path(), &known, &["--sort", "id"]);
+    assert_eq!(
+        ids,
+        vec!["a-plain", "t-cliff", "t-high", "t-low"],
+        "explicit `--sort id` must order by id ascending, got {ids:?}"
+    );
+}
+
+/// AC6 (determinism): repeated identical default calls return identical ordering.
+#[test]
+fn cli_tasks_default_order_is_deterministic() {
+    let dir = tempfile::tempdir().unwrap();
+    seed_flow_parity(dir.path());
+    let first = ordered_ids(dir.path(), &FLOW_KNOWN, &[]);
+    let second = ordered_ids(dir.path(), &FLOW_KNOWN, &[]);
+    assert_eq!(first, second, "repeated default `pkb tasks` calls must agree");
+    assert_eq!(first.len(), 3, "all three seeded tasks should appear");
+}
+
 /// T-cli-parity / A24: `pkb tasks`, `pkb focus`, and `list_tasks` agree on order
-/// and figures under `display_cmp` with `PKB_RANKING=flow`.
+/// and figures under `display_cmp`.
 #[test]
 fn cli_and_mcp_display_order_parity() {
     let dir = tempfile::tempdir().unwrap();
     seed_flow_parity(dir.path());
 
-    let known = ["t-cliff", "t-high", "t-low"];
-    let envs = [("PKB_RANKING", "flow")];
+    let known = FLOW_KNOWN;
 
     // 1. CLI tasks ready order
-    let cli_tasks_order = ordered_ids_with_env(dir.path(), &known, &["ready"], &envs);
+    let cli_tasks_order = ordered_ids(dir.path(), &known, &["ready"]);
     assert_eq!(
         cli_tasks_order,
         vec!["t-cliff", "t-high", "t-low"],
@@ -381,11 +294,11 @@ fn cli_and_mcp_display_order_parity() {
     );
 
     // 2. CLI focus order
-    let cli_focus_order = ordered_focus_ids_with_env(dir.path(), &known, &envs);
+    let cli_focus_order = ordered_focus_ids(dir.path(), &known);
     assert_eq!(
         cli_focus_order,
         vec!["t-cliff", "t-high", "t-low"],
-        "pkb focus must agree with pkb tasks display_cmp order under flow ranking"
+        "pkb focus must agree with pkb tasks display_cmp order"
     );
 
     // 3. MCP list_tasks ready order (JSON)
@@ -434,7 +347,7 @@ fn cli_and_mcp_display_order_parity() {
     assert_eq!(
         mcp_ids,
         vec!["t-cliff", "t-high", "t-low"],
-        "list_tasks ready must match CLI display_cmp order under flow ranking"
+        "list_tasks ready must match CLI display_cmp order"
     );
 
     // Verify figures on the MCP rows
@@ -445,7 +358,7 @@ fn cli_and_mcp_display_order_parity() {
     assert_eq!(th.get("gain").and_then(|g| g.as_f64()), Some(0.8));
     assert!(
         th.get("downstream_weight").is_none(),
-        "legacy downstream_weight omitted in flow mode"
+        "retired downstream_weight must not be emitted"
     );
 
     // 4. MCP list_tasks ready order (markdown default)
@@ -470,50 +383,7 @@ fn cli_and_mcp_display_order_parity() {
     assert_eq!(
         mcp_md_ids,
         vec!["t-cliff", "t-high", "t-low"],
-        "markdown list_tasks ready must also match CLI display_cmp order under flow ranking"
-    );
-}
-
-/// M10: Setting `ranking: legacy` restores the legacy order exactly.
-#[test]
-fn test_m10_legacy_order_restored_by_one_setting() {
-    let dir = tempfile::tempdir().unwrap();
-    seed(dir.path());
-
-    let known = ["t-hi", "t-mid", "t-sev"];
-
-    // 1. With PKB_RANKING=legacy, CLI tasks default returns exact legacy focus order
-    let legacy_ids = ordered_ids_with_env(dir.path(), &known, &[], &[("PKB_RANKING", "legacy")]);
-    assert_eq!(
-        legacy_ids,
-        vec!["t-sev", "t-hi", "t-mid"],
-        "PKB_RANKING=legacy must restore legacy focus_score order"
-    );
-
-    let legacy_focus_ids =
-        ordered_focus_ids_with_env(dir.path(), &known, &[("PKB_RANKING", "legacy")]);
-    assert_eq!(
-        legacy_focus_ids,
-        vec!["t-sev", "t-hi", "t-mid"],
-        "PKB_RANKING=legacy must restore legacy focus_score order in focus command"
-    );
-
-    // 2. Setting ranking: legacy via polecat.yaml also restores legacy order
-    std::fs::write(dir.path().join("polecat.yaml"), "ranking: legacy\n").unwrap();
-    let config_ids = ordered_ids_with_env(dir.path(), &known, &[], &[]);
-    assert_eq!(
-        config_ids,
-        vec!["t-sev", "t-hi", "t-mid"],
-        "polecat.yaml ranking: legacy must restore legacy focus_score order"
-    );
-
-    // 3. Setting ranking: flow via polecat.yaml produces flow ordering (non-legacy)
-    std::fs::write(dir.path().join("polecat.yaml"), "ranking: flow\n").unwrap();
-    let flow_config_ids = ordered_ids_with_env(dir.path(), &known, &[], &[]);
-    assert_ne!(
-        flow_config_ids,
-        vec!["t-sev", "t-hi", "t-mid"],
-        "polecat.yaml ranking: flow must switch away from legacy focus_score order"
+        "markdown list_tasks ready must also match CLI display_cmp order"
     );
 }
 
@@ -524,8 +394,6 @@ fn test_no_output_sums_worth() {
     let root = dir.path();
     std::fs::create_dir_all(root.join("targets")).unwrap();
     std::fs::create_dir_all(root.join("tasks")).unwrap();
-
-    std::fs::write(root.join("polecat.yaml"), "ranking: flow\n").unwrap();
 
     // Target A worth 0.8
     std::fs::write(

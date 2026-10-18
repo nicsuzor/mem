@@ -39,8 +39,8 @@ Those specs cite requirement IDs from this one (`GV-…`). They do not restate t
 
 | Capability | Where | Spec |
 | --- | --- | --- |
-| Verbal contribution-weight scale, synonyms, case-insensitive match, `multiplier` | `ContributesTo::numeric_weight`, `is_recognized_weight` (`src/graph.rs`) | `specs/ranking.md` §7, §7.1; `specs/pkb-rules.md` §6.4 |
-| Graph export as JSON or DOT, hop-based focus, `project`, `include_done` | `export_graph` (MCP), `pkb graph` (CLI) | `specs/ranking.md` §8.5 |
+| Verbal contribution-weight scale, synonyms, case-insensitive match, `multiplier` | `ContributesTo::numeric_weight`, `is_recognized_weight` (`src/graph.rs`) | `specs/pkb-flow-engine.md` R7; `specs/flow-migration.md` §5.2; `specs/pkb-rules.md` §6.4 |
+| Graph export as JSON or DOT, hop-based focus, `project`, `include_done` | `export_graph` (MCP), `pkb graph` (CLI) | `specs/pkb-flow-engine.md` §7.2 |
 | Excalidraw export, 3-way diff, sync, merge into an existing canvas | `graph_excalidraw` / `diff_excalidraw` / `sync_excalidraw`, `pkb excalidraw export\|diff\|sync` | `src/excalidraw/README.md` |
 | Canvas files in the PKB by path | `list_excalidraw` / `get_excalidraw` / `write_excalidraw` | `specs/pkb-server-spec.md` §Data Format |
 | File-level primitives: `query` (type, bbox, dot-path equality filters), `batch`, `apply`, `update --set`, `move-elem`, `align`, `distribute`, `group`, `lock`, `set-text`/`fit`, `snapshot`, `summary`, `describe`, `overlap`, `arrows-check`, `screenshot` | `pkb-excalidraw` | `specs/excalidraw-tooling.md` |
@@ -54,7 +54,6 @@ These are properties of the current code that the requirements below must not ke
 | `Edge` serialises only `source`, `target`, `type`; DOT edges carry only `type`. | GV-D1, GV-D3 |
 | The parse-warning check trims the stated term, but `numeric_weight` does not, so a padded term passes the warning and scores zero. | GV-D2 |
 | `extract_ego_subgraph` stops adding nodes at 100 and says nothing. The same function feeds `export_graph` with `focus` and `graph_excalidraw`. | GV-S2 |
-| The JSON `focus` array is a focus-pick list, not the requested node. | GV-S1 (response names its seeds) |
 | Ego extraction iterates a `HashSet`, so card placement differs between identical calls. | GV-X4 |
 | Card text truncates titles to 36 characters and tag lines to 32, and the reader takes card text back as title and tags. | GV-X3, GV-R1, GV-R2 |
 | Sync writes `depends_on`, `soft_depends_on` and `parent` edges only. Every other edge type falls to `_ => {}` and is dropped without a report. | GV-R4, GV-R11 |
@@ -262,7 +261,7 @@ mem does not:
 ## 6. Open decisions (Nic)
 
 1. **Build order.** Recommended: §4.1–§4.4 first, then GV-X3 with GV-R1 and GV-R2 (clean round trip), then the rest of §4.6 and §4.9 so a read-only map can be drawn, then §4.7 and the rest of §4.8. Reason: the dashboard and the skill both need §4.1–§4.4, and nothing else in the Excalidraw path is safe until an unmodified canvas diffs clean.
-2. **`possible` and the vocabulary.** The source request lists `possible` as outside the vocabulary and wants its edge marked invalid. `specs/ranking.md` §7 and `numeric_weight` treat `possible` as a synonym of `uncertain` (0.25). This spec follows `ranking.md`, so `possible` is valid. Recommended: keep the synonym. If Nic wants synonyms rejected, that is a change to `ranking.md` §7, not to the export.
+2. **`possible` and the vocabulary.** The source request lists `possible` as outside the vocabulary and wants its edge marked invalid. `numeric_weight` (`src/graph.rs`) treats `possible` as a synonym of `uncertain` (0.25). This spec follows `numeric_weight`, so `possible` is valid. Recommended: keep the synonym. If Nic wants synonyms rejected, that is a change to `numeric_weight`, not to the export.
 3. **Where the goal end sits.** Under GV-L1, a target that feeds futures takes the `resource` layer, even if Nic thinks of it as a goal. Recommended: let the edges decide, as the rule does, and leave the goal layer to nodes with no onward edge unless Nic adds edges from futures to such a target.
 4. **Knowledge notes.** Notes tagged into a subgraph but with no `contributes_to` edges are outside GV-F1 and outside the default closure. Recommended: leave them out by default. An agent can add them by seeding on id or tag.
 5. **Weights from the canvas.** Should sync write a `contributes_to` addition or re-weight drawn on the canvas (GV-R3, GV-R4)? Recommended: yes, through dry-run and confirmation only, because the canvas is where Nic will be looking when he sets weights. This needs his ruling. It meets two existing rules:

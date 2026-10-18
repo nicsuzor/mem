@@ -147,23 +147,6 @@ mod tier_rebuild_tests {
                 .unwrap(),
         );
         assert!(ids.is_empty());
-
-        // Test weight_gte filter — negative case: isolated tasks have 0 downstream weight
-        let ids = task_ids_from(
-            &server
-                .handle_list_tasks(&json!({"weight_gte": 1, "format": "json"}))
-                .unwrap(),
-        );
-        assert!(ids.is_empty());
-
-        // Test weight_gte filter — positive case: weight_gte=0 passes all tasks
-        let ids = task_ids_from(
-            &server
-                .handle_list_tasks(&json!({"weight_gte": 0, "format": "json"}))
-                .unwrap(),
-        );
-        assert!(!ids.is_empty());
-        assert!(ids.contains(&"task-1".to_string()));
     }
 
     /// Tier-1 must produce fresh ready-list classification (membership) on

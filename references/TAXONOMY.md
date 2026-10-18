@@ -43,7 +43,7 @@ Each level resolves a different kind of uncertainty:
 
 ## Core Computed Properties
 
-Every node carries three core computed properties that drive both label assignment and tooling:
+Every node carries core computed properties that drive both label assignment and tooling:
 
 ### scope
 
@@ -67,32 +67,14 @@ Every node carries three core computed properties that drive both label assignme
 
 **What it tells you**: Whether a node is ready to act on. Low uncertainty = can execute. High uncertainty = needs more thinking or decomposition.
 
-### criticality
-
-**What it measures**: Impact on goal achievement — how much this node matters relative to the rest of the graph.
-
-**How computed**: Normalized composite of:
-
-- `downstream_weight` (internal input): the depth-decayed, edge-factor-discounted sum of base weights over the **distinct** nodes reachable downstream — `Σ (1/depth) × base_weight × edge_factor`, where `base_weight` is a priority multiplier (P0:5, P1:3, P2:2, P3:1, else 0.5) doubled when `due` is set and zeroed for completed work, and `edge_factor` is the product along the path (`blocks` 1.0, `soft_blocks` 0.3, parent→child 0.5, `contributes_to` at its verbal-scale weight, reverse direction only). It is **not** a count, and it walks more than `depends_on`. Each reachable node is counted once however many routes reach it. Fed into `criticality`, and **surfaced to callers**: `get_task` returns it under `signals.downstream_weight` and `get_network_metrics` returns it as a top-level field. Use it for filtering and debugging, never as the headline ranking signal
-- `pagerank`: structural influence in the dependency graph
-- `stakeholder_exposure`: explicit priority/stakeholder signals
-
-**What it tells you**: Which nodes to work on first when time is scarce. High criticality = unblocks many downstream nodes. Low criticality = isolated or terminal work.
-
-> **Note**: For user-facing prioritisation and ranking, use `focus_score` — the canonical composite that embeds severity, priority, `urgency` (deadline slack + decay), `downstream_weight`, stakeholder waiting, and the value-of-information premium `voi_value` (below). See `specs/multi-parent.md` §2.2 for the full model. Component fields (`urgency`, `downstream_weight`, `criticality`, `voi_value`) remain visible in metadata for filtering and debugging, but should never be the headline ranking signal — ranking always goes through `focus_score`.
-
-### voi_value
-
-**What it measures**: Value-of-information premium — how much resolving this node's downstream uncertainty would improve later ranking decisions. Range: `0–5,000`.
-
-**How computed**: Via the `voi_term` formula in `specs/multi-parent.md` §2.2. A single deduped cone walk from the node — the same traversal that produces `downstream_weight`, but restricted to the unblocking channel (`blocks`/`soft_blocks`/children, no reverse `contributes_to`) and weighting each visited node by its own `uncertainty`. Each node in the cone is counted once however many routes reach it, so unlocking a fan-out can never be worth more than the union of what it unlocks. Consumes the `uncertainty` and `leaf` properties defined above. Gated to leaf nodes (`leaf = false` ⇒ `voi_value = 0`) and capped at 5,000 to stay below the SEV4-committed lexicographic floor.
-
-**What it tells you**: Whether an uncertainty-resolving task (spike, probe, prototype) deserves ranking credit it would otherwise be denied by a purely exploitative signal. Surfaced for filter/debug only — ranking always goes through `focus_score`, which sums `voi_value` as one additive term.
-
 ### depth and leaf
 
 - **depth**: Distance from root (parent chain walk). Advisory — does not determine label.
 - **leaf**: Boolean. True exactly when the node has no children (`node.leaf = node.children.is_empty()`). Uncertainty is **not** consulted and cannot be: `leaf` is assigned in `compute_inverses`, which runs before `compute_uncertainty`. A structural indicator of decomposition completeness — not sufficient for execution readiness (which also requires resolved DependsOn edges).
+
+### Ranking
+
+Ranking is not one of these properties. The flow engine ranks work by its figures `gain`, `loss_averted` and `decision_value`, computed from `links` and target `worth` (`specs/flow-rule.md`, `specs/pkb-flow-engine.md`); the display order is `display_cmp` (`specs/ranking.md` §3). `scope`, `uncertainty`, `depth` and `leaf` are diagnostics and display fields; none of them enters the flow computation or `display_cmp`.
 
 ---
 
@@ -138,7 +120,7 @@ The `classification` field carries additional semantic subtypes (bug, feature, s
 | `refactor` | Internal restructuring with no behaviour change                          |
 | `docs`     | Documentation-only work                                                  |
 
-The list is **open** — projects may add domain-specific values. `classification` never changes a node's computed properties or its place in the hierarchy; it exists for filtering and reporting only. Notably, the `voi_value` signal deliberately keys off the *computed* `uncertainty` and `leaf` properties, **not** the `spike` classification: classification labels are human-set and therefore gameable, so ranking does not consume them. Keeping subtypes in a single field avoids multiplying top-level `type` values.
+The list is **open** — projects may add domain-specific values. `classification` never changes a node's computed properties or its place in the hierarchy; it exists for filtering and reporting only. Ranking does not consume it. Keeping subtypes in a single field avoids multiplying top-level `type` values.
 
 ### `template` nodes and the recurring-workflow pattern
 
