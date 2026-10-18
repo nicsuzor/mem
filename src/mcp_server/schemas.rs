@@ -1251,7 +1251,7 @@ impl PkbSearchServer {
                     "ready": { "type": "array", "items": { "type": "string" } },
                     "blocked": { "type": "array", "items": { "type": "string" } },
                     "roots": { "type": "array", "items": { "type": "string" } },
-                    "focus": { "type": "string" }
+                    "cliff": { "type": "array", "items": { "type": "string" } }
                 }
             }),
             "diff_excalidraw" => serde_json::json!({
