@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0](https://github.com/nicsuzor/mem/compare/mem-v0.3.105...mem-v0.4.0) (2026-10-17)
+
+
+### ⚠ BREAKING CHANGES
+
+* **ranking:** the legacy ranking mode is gone. `ranking: legacy` in polecat.yaml and `PKB_RANKING` / `AOPS_RANKING` are ignored. Removed from GraphNode serialisation (export_graph nodes and the graph JSON): `focus_score`, `focus_tuple`, `downstream_weight`, `stakeholder_exposure`, `criticality`, `urgency`, `chain_slack`, `unlock_breadth`, `value_lineage`, `voi_value`, `affordable_loss` (frontmatter no longer read), `affordable_loss_filtered`. Removed from export_graph nodes: `cost_of_delay`, `severity_gate`, `queue_rank`, `effective_intent`; top-level `focus` list. Removed from get_task: `focus_score`, `target_ancestors`, `urgency_ratio`, the `signals` object, and the `include_signals` input. Removed from list_tasks: inputs `focus_score_gte` and `weight_gte`; the legacy row shape (`focus_score`, `effective_intent`, `signals`) and the legacy markdown ready table (Weight / Crit / Urg). `intent` filters on the stored intent. Removed from nested_tasks / batch_update filters: `weight_gte`; from NestedTaskNode: `effective_intent`, `downstream_weight`. Removed from the MCP index (`pkb graph --format mcp-index`): `downstream_weight`, `stakeholder_exposure`, `focus_score`. Removed from get_network_metrics / top_n_by_metric `NetworkMetrics`: `downstream_weight`, `stakeholder_exposure`. Removed from graph_stats: `affordable_loss_filtered_count`. CLI: `pkb tasks --weight-gte` and `--sort weight|intent|priority` are gone (`--sort` takes the flow keys); the WEIGHT column, `wt:` figure and `!` exposure marker are gone from `pkb tasks`, `pkb show`, `pkb metrics` and task lines. Excalidraw cards lose the `focus_score >= 1000` tier bump and START marker, and size by stated intent. The LSP top bar loses `w:`.
+
+### Features
+
+* **lsp:** redesign hover preview as compact interactive card ([3bb6233](https://github.com/nicsuzor/mem/commit/3bb62330af98de36bd8d338cea8505552eb93eab))
+* **lsp:** redesign hover preview as compact interactive card ([14aef64](https://github.com/nicsuzor/mem/commit/14aef647c65ee1861c07bc6bbea95ba0dad3089f))
+* **ranking:** remove legacy ranking mode; flow is the only engine ([#743](https://github.com/nicsuzor/mem/issues/743)) ([1d37d01](https://github.com/nicsuzor/mem/commit/1d37d01e005ccf7527d6b643e04005de2fea2431))
+
+
+### Bug Fixes
+
+* **mcp:** lead error messages with reason and name subjects briefly ([#739](https://github.com/nicsuzor/mem/issues/739)) ([976dc03](https://github.com/nicsuzor/mem/commit/976dc03a98a680a3cd057a4af644c0d329b16f0e))
+* **mcp:** remove needless borrow on title in decompose_task error handler ([61d4210](https://github.com/nicsuzor/mem/commit/61d42101915df7cf306e0ac274c344b59acf6189))
+* **mcp:** remove needless borrow on title in decompose_task error handler ([aea3749](https://github.com/nicsuzor/mem/commit/aea37497f15330965978079935cd2fd015cac9af))
+
 ## [0.3.105](https://github.com/nicsuzor/mem/compare/mem-v0.3.104...mem-v0.3.105) (2026-10-15)
 
 
