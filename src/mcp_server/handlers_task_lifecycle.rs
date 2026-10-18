@@ -726,6 +726,11 @@ impl PkbSearchServer {
                 data: None,
             })?;
 
+        let body = args.get("body").and_then(|v| v.as_str());
+        if let Some(b) = body {
+            self.reject_machine_paths(b, None)?;
+        }
+
         let summary = args.get("summary").and_then(|v| v.as_str()).unwrap_or("");
 
         // Dynamically clamp title length based on project prefix length so generated filename
@@ -821,6 +826,7 @@ impl PkbSearchServer {
                         .collect()
                 })
                 .unwrap_or_default(),
+            body: body.map(String::from),
             ..Default::default()
         };
 
@@ -1361,6 +1367,12 @@ impl PkbSearchServer {
                 message: Cow::from("subtasks array cannot be empty"),
                 data: None,
             });
+        }
+
+        for subtask in subtasks {
+            if let Some(body) = subtask.get("body").and_then(|v| v.as_str()) {
+                self.reject_machine_paths(body, None)?;
+            }
         }
 
         let (project_prefix, parent_project) = {
