@@ -2509,7 +2509,7 @@ impl GraphNode {
                         None => LinkSetBy::Nic,
                     };
 
-                    let mut quantum = match obj.get("quantum") {
+                    let quantum = match obj.get("quantum") {
                         Some(v) => match parse_quantum_word_or_float(v) {
                             Ok(Some(q)) => q,
                             Ok(None) => label.default_quantum(),
@@ -2524,9 +2524,6 @@ impl GraphNode {
                         None => label.default_quantum(),
                     };
 
-                    if set_by == LinkSetBy::AgentProposed {
-                        quantum = 0.0;
-                    }
 
                     let probability = match obj.get("probability").or_else(|| obj.get("certainty")) {
                         Some(v) => match parse_probability_word_or_float(v) {
@@ -2611,16 +2608,11 @@ impl GraphNode {
                     } else {
                         (None, Some(target))
                     };
-                    let final_q = if set_by == LinkSetBy::AgentProposed {
-                        0.0
-                    } else {
-                        quantum
-                    };
                     links.push(Link {
                         to,
                         from,
                         label,
-                        quantum: final_q,
+                        quantum,
                         probability,
                         effect,
                         justification,

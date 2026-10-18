@@ -3189,4 +3189,154 @@ fn test_delete_type_guard_mismatch_leads_with_reason() {
     );
 }
 
+#[test]
+fn test_create_task_link_quantum_word_and_float_stored_and_indexed() {
+    let (_tmp, server) = build_disk_backed_server(&[
+        (
+            "tasks/parent-task.md",
+            "---\nid: parent-task\ntitle: Parent Task\ntype: task\nstatus: ready\n---\n\n# Parent Task\n",
+        ),
+        (
+            "tasks/target-a.md",
+            "---\nid: target-a\ntitle: Target A\ntype: target\nstatus: open\nworth: 0.8\n---\n\n# Target A\n",
+        ),
+        (
+            "tasks/target-b.md",
+            "---\nid: target-b\ntitle: Target B\ntype: target\nstatus: open\nworth: 0.5\n---\n\n# Target B\n",
+        ),
+    ]);
 
+    let res = server
+        .handle_create_task(&json!({
+            "title": "Task with Word and Float Quantum",
+            "type": "task",
+            "parent": "parent-task",
+            "links": [
+                {
+                    "to": "target-a",
+                    "label": "serves",
+                    "quantum": "most",
+                    "probability": 0.85,
+                    "set_by": "agent-proposed"
+                },
+                {
+                    "to": "target-b",
+                    "label": "serves",
+                    "quantum": 0.75,
+                    "probability": 0.5,
+                    "set_by": "agent-proposed"
+                }
+            ]
+        }))
+        .unwrap();
+
+    let text = res
+        .content
+        .iter()
+        .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+        .collect::<String>();
+    let created: serde_json::Value = serde_json::from_str(&text).unwrap();
+    let task_id = created.get("id").and_then(|v| v.as_str()).unwrap();
+
+    let get_res = server
+        .handle_get_task(&json!({ "id": task_id }))
+        .unwrap();
+    let get_text = get_res
+        .content
+        .iter()
+        .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+        .collect::<String>();
+    let task: serde_json::Value = serde_json::from_str(&get_text).unwrap();
+
+    let links_out = task.get("links_out").and_then(|v| v.as_array()).unwrap();
+    let link_a = links_out
+        .iter()
+        .find(|l| l.get("to").and_then(|v| v.as_str()) == Some("target-a"))
+        .unwrap();
+    let link_b = links_out
+        .iter()
+        .find(|l| l.get("to").and_then(|v| v.as_str()) == Some("target-b"))
+        .unwrap();
+
+    // "most" maps to 0.60
+    assert_eq!(
+        link_a.get("quantum").and_then(|v| v.as_f64()),
+        Some(0.60),
+        "Link with word 'most' should read back as quantum 0.60"
+    );
+    let strength_a = link_a.get("strength").and_then(|v| v.as_f64()).unwrap();
+    assert!(
+        (strength_a - 0.60 * 0.85).abs() < 1e-9,
+        "Link A strength should be quantum * probability = 0.60 * 0.85 = 0.51, got {strength_a}"
+    );
+
+    // 0.75 maps to 0.75
+    assert_eq!(
+        link_b.get("quantum").and_then(|v| v.as_f64()),
+        Some(0.75),
+        "Link with float 0.75 should read back as quantum 0.75"
+    );
+    let strength_b = link_b.get("strength").and_then(|v| v.as_f64()).unwrap();
+    assert!(
+        (strength_b - 0.75 * 0.5).abs() < 1e-9,
+        "Link B strength should be quantum * probability = 0.75 * 0.5 = 0.375, got {strength_b}"
+    );
+}
+
+#[test]
+fn test_update_task_link_quantum_reflected_without_restart() {
+    let (_tmp, server) = build_disk_backed_server(&[
+        (
+            "tasks/target-a.md",
+            "---\nid: target-a\ntitle: Target A\ntype: target\nstatus: open\nworth: 0.8\n---\n\n# Target A\n",
+        ),
+        (
+            "tasks/task-existing.md",
+            "---\nid: task-existing\ntitle: Existing Task\ntype: task\nstatus: ready\nlinks:\n  - to: target-a\n    label: serves\n    quantum: 0.25\n    probability: 0.8\n    set_by: agent-proposed\n---\n\n# Existing Task\n",
+        ),
+    ]);
+
+    // Update link quantum to 0.75
+    server
+        .handle_update_task(&json!({
+            "id": "task-existing",
+            "updates": {
+                "links": [
+                    {
+                        "to": "target-a",
+                        "label": "serves",
+                        "quantum": 0.75,
+                        "probability": 0.8,
+                        "set_by": "agent-proposed"
+                    }
+                ]
+            }
+        }))
+        .unwrap();
+
+    // Verify graph reflects the update immediately without server restart
+    let get_updated = server
+        .handle_get_task(&json!({ "id": "task-existing" }))
+        .unwrap();
+    let get_updated_text = get_updated
+        .content
+        .iter()
+        .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+        .collect::<String>();
+    let task_updated: serde_json::Value = serde_json::from_str(&get_updated_text).unwrap();
+    let links_updated = task_updated.get("links_out").and_then(|v| v.as_array()).unwrap();
+    let link_updated = links_updated
+        .iter()
+        .find(|l| l.get("to").and_then(|v| v.as_str()) == Some("target-a"))
+        .unwrap();
+    assert_eq!(
+        link_updated.get("quantum").and_then(|v| v.as_f64()),
+        Some(0.75),
+        "Updated link should reflect new quantum 0.75 without restart"
+    );
+    let strength_updated = link_updated.get("strength").and_then(|v| v.as_f64()).unwrap();
+    assert!(
+        (strength_updated - 0.75 * 0.8).abs() < 1e-9,
+        "Updated link strength should be 0.75 * 0.8 = 0.6, got {strength_updated}"
+    );
+}
