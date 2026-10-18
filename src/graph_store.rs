@@ -2615,11 +2615,16 @@ pub fn build_flow_input(nodes: &[GraphNode]) -> crate::flow::FlowInput {
     }
     let (resolved_edges, _) = resolve_flow_edges_from_nodes(nodes);
     for e in resolved_edges {
+        let quantum = if e.set_by == crate::graph::LinkSetBy::AgentProposed {
+            0.0
+        } else {
+            e.quantum
+        };
         flow_input.add_edge(crate::flow::FlowEdge {
             src: e.src,
             dst: e.dst,
             label: e.label.as_str().to_string(),
-            quantum: e.quantum,
+            quantum,
             probability: e.probability,
             effect: match e.effect {
                 crate::graph::LinkEffect::Helps => crate::flow::FlowEffect::Helps,

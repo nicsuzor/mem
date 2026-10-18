@@ -468,7 +468,7 @@ fn test_links_schema_mapping() {
         .unwrap();
     assert_eq!(dep_map_link.label, LinkLabel::Needs);
     assert_eq!(dep_map_link.set_by, LinkSetBy::AgentProposed);
-    assert_eq!(dep_map_link.quantum, 0.0); // agent-proposed reads at 0.0!
+    assert_eq!(dep_map_link.quantum, 0.7); // Stored quantum preserved!
 
     // soft_depends_on: bare string -> supports, quantum 0.3
     let soft_bare_link = node_deps
@@ -609,10 +609,10 @@ fn test_links_schema_mapping() {
         .find(|l| l.to.as_deref() == Some("targ_ap_needs"))
         .unwrap();
     assert_eq!(
-        l_ap_needs.quantum, 0.0,
-        "agent-proposed needs must read at 0.0"
+        l_ap_needs.quantum, 0.8,
+        "agent-proposed needs retains stated quantum 0.8"
     );
-    assert_eq!(l_ap_needs.strength(), 0.0);
+    assert_eq!(l_ap_needs.strength(), 0.8);
 
     let l_ap_serves = n_props
         .links
@@ -620,9 +620,10 @@ fn test_links_schema_mapping() {
         .find(|l| l.to.as_deref() == Some("targ_ap_serves"))
         .unwrap();
     assert_eq!(
-        l_ap_serves.quantum, 0.0,
-        "agent-proposed serves must read at 0.0"
+        l_ap_serves.quantum, 0.9,
+        "agent-proposed serves retains stated quantum 0.9"
     );
+    assert_eq!(l_ap_serves.strength(), 0.9);
 
     let l_nic = n_props
         .links
