@@ -2003,30 +2003,23 @@ impl ServerHandler for PkbSearchServer {
     }
 
     fn get_info(&self) -> ServerInfo {
-        let mut instructions = String::from(
-            "PKB Search — semantic search + task graph over personal knowledge base. \
-             A suite of tools for search, documents, tasks, and knowledge graph. \
-             Use MCP prompts (find-task, explore-topic, navigate-graph, find-by-tag) for search pattern guidance. \
-            session_registry: crate::otel::session_registry::SessionRegistry::new(),
-             Use get_stats to view per-tool usage telemetry.",
-        );
-        if self.stale_count > 0 {
-            instructions.push_str(&format!(
-                " WARNING: Index is stale — {} document(s) need re-indexing. \
-                 Search results may be incomplete or outdated. \
-                 Run `pkb reindex` to update.",
-                self.stale_count
-            ));
-        }
-        ServerInfo::new(
+        let mut info = ServerInfo::new(
             ServerCapabilities::builder()
                 .enable_tools()
                 .enable_prompts()
                 .build(),
         )
         .with_protocol_version(ProtocolVersion::V_2024_11_05)
-        .with_server_info(Implementation::new("pkb", env!("CARGO_PKG_VERSION")))
-        .with_instructions(instructions)
+        .with_server_info(Implementation::new("pkb", env!("CARGO_PKG_VERSION")));
+
+        if self.stale_count > 0 {
+            info = info.with_instructions(format!(
+                "WARNING: Index is stale — {} document(s) need re-indexing. \
+                 Search results may be incomplete or outdated.",
+                self.stale_count
+            ));
+        }
+        info
     }
 }
 
