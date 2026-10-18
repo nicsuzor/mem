@@ -838,6 +838,14 @@ impl GraphStore {
             if new_node.project.is_none() {
                 new_node.project = old.project;
             }
+            if new_node.flow.is_none() {
+                new_node.flow = old.flow;
+            }
+        }
+
+        // R16, A27: carry over previous flow, or initialize new open nodes with 0 / 0 / 0 with ok.
+        if new_node.flow.is_none() && !crate::graph::is_completed(new_node.status.as_deref()) {
+            new_node.flow = Some(crate::flow::FlowOutput::zero());
         }
 
         // Synchronously fix parent→child edges when a reparent occurred.

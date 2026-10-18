@@ -1612,41 +1612,26 @@ fn test_real_export_encoding_registry_conformance() {
          status: ready\n\
          priority: 1\n\
          project: infra\n\
+         worth: 1.0\n\
          ---\n# Long Service Leave\n",
     )
     .unwrap();
 
-    // 2. P2 Epic -> Tier L (300px), Epic style (#edf2ff, #4c6ef5)
+    // 2. Epic with high flow -> Tier L (300px), Epic style (#edf2ff, #4c6ef5)
     fs::write(
         pkb_root.join("epics/epic-p2.md"),
-        "---\n\
-         id: epic-p2\n\
-         title: \"Infrastructure Revamp\"\n\
-         type: epic\n\
-         status: ready\n\
-         priority: 2\n\
-         project: infra\n\
-         ---\n# Infrastructure Revamp\n",
+        "---\nid: epic-p2\ntitle: \"Infrastructure Revamp\"\ntype: epic\nstatus: ready\npriority: 2\nproject: infra\nlinks:\n  - to: targ_4e2cc92a\n    label: serves\n    quantum: 0.8\n---\n# Infrastructure Revamp\n",
     )
     .unwrap();
 
-    // 3. P2 Task with effort 2h -> Tier M (240px), Green ready (#e8f0e6, #2b8a3e), effort 2h
+    // 3. Task with moderate flow and effort 2h -> Tier M (240px), Green ready (#e8f0e6, #2b8a3e), effort 2h
     fs::write(
         pkb_root.join("tasks/task-p2.md"),
-        "---\n\
-         id: task-p2\n\
-         title: \"Configure Pipeline\"\n\
-         type: task\n\
-         status: ready\n\
-         priority: 2\n\
-         effort: 2h\n\
-         project: testproj\n\
-         parent: epic-p2\n\
-         ---\n# Configure Pipeline\n",
+        "---\nid: task-p2\ntitle: \"Configure Pipeline\"\ntype: task\nstatus: ready\npriority: 2\neffort: 2h\nproject: testproj\nparent: epic-p2\nlinks:\n  - to: targ_4e2cc92a\n    label: serves\n    quantum: 0.4\n---\n# Configure Pipeline\n",
     )
     .unwrap();
 
-    // 4. P4 Task in_progress -> Tier S (200px), Deep green (#a3d3a3), now chip
+    // 4. Unvalued task in_progress -> Tier S (200px), Deep green (#a3d3a3), now chip
     fs::write(
         pkb_root.join("tasks/task-p4.md"),
         "---\n\
@@ -1827,17 +1812,17 @@ fn test_real_export_encoding_registry_conformance() {
     assert_eq!(card_target.background_color, "#ecdcab", "Target must have gold fill");
     assert_eq!(card_target.stroke_color, "#f59f00", "Target must have gold stroke");
 
-    // 2. P2 Epic: Tier L (300px), Epic colors (#edf2ff, #4c6ef5)
+    // 2. Epic: Tier L (300px), Epic colors (#edf2ff, #4c6ef5), sized by high flow (0.80 >= 0.60)
     let card_epic = find_card("epic-p2");
     assert_eq!(card_epic.id, "epic-p2", "Element ID must equal node ID");
-    assert_eq!(card_epic.width, CARD_WIDTH_L, "P2 Epic must use Tier L (300px)");
+    assert_eq!(card_epic.width, CARD_WIDTH_L, "Epic with high flow must use Tier L (300px)");
     assert_eq!(card_epic.background_color, "#edf2ff");
     assert_eq!(card_epic.stroke_color, "#4c6ef5");
 
-    // 3. P2 Task: Tier M (240px), Ready green (#e8f0e6, #2b8a3e), effort 2h
+    // 3. Task: Tier M (240px), Ready green (#e8f0e6, #2b8a3e), effort 2h, sized by moderate flow (0.40)
     let card_p2 = find_card("task-p2");
     assert_eq!(card_p2.id, "task-p2", "Element ID must equal node ID");
-    assert_eq!(card_p2.width, CARD_WIDTH_M, "P2 Task must use Tier M (240px)");
+    assert_eq!(card_p2.width, CARD_WIDTH_M, "Task with moderate flow must use Tier M (240px)");
     assert_eq!(card_p2.background_color, "#e8f0e6", "Ready fill must be #e8f0e6");
     assert_eq!(card_p2.stroke_color, "#2b8a3e");
     let text_p2 = find_text("task-p2");
@@ -1845,11 +1830,11 @@ fn test_real_export_encoding_registry_conformance() {
     assert!(raw_text_p2.contains("[READY · P2]"));
     assert!(raw_text_p2.contains("2h"), "Effort badge must be present");
 
-    // 4. P4 Task, child of a P2 epic: its card tier comes from its own stated
-    // intent (P4 leaf -> Tier S, 200px); deep green (#a3d3a3), now chip.
+    // 4. Unvalued task, child of an epic: card tier comes from flow (unvalued -> Tier S, 200px);
+    // deep green (#a3d3a3), now chip.
     let card_p4 = find_card("task-p4");
     assert_eq!(card_p4.id, "task-p4", "Element ID must equal node ID");
-    assert_eq!(card_p4.width, CARD_WIDTH_S, "P4 leaf task must use Tier S");
+    assert_eq!(card_p4.width, CARD_WIDTH_S, "Unvalued leaf task must use Tier S");
     assert_eq!(card_p4.background_color, "#a3d3a3", "In-progress fill must be deep green #a3d3a3");
     let text_p4 = find_text("task-p4");
     let raw_text_p4 = text_p4.text.as_deref().unwrap();
@@ -2442,4 +2427,137 @@ project: testproj\n\
         diff.added_nodes
     );
 }
+
+// ===========================================================================
+// Test 27: Card Sizing by Flow Figures E14 (mem_2c956a49)
+// ===========================================================================
+
+#[test]
+fn test_export_card_sizing_by_flow_figures_e14() {
+    let ws = tempfile::tempdir().expect("tempdir");
+    let pkb_root = ws.path();
+
+    fs::write(
+        pkb_root.join("polecat.yaml"),
+        "projects:\n  testproj: {}\n",
+    )
+    .unwrap();
+
+    let dirs = ["targets", "tasks"];
+    for d in &dirs {
+        fs::create_dir_all(pkb_root.join(d)).unwrap();
+    }
+
+    // 1. Positive target node (anchor -> Tier A 380px)
+    fs::write(
+        pkb_root.join("targets/targ-pos.md"),
+        "---\nid: targ-pos\ntitle: Positive Target\ntype: target\nstatus: active\nworth: 1.0\n---\n# Positive Target\n",
+    )
+    .unwrap();
+
+    // 2. Negative avoidance target node
+    fs::write(
+        pkb_root.join("targets/targ-neg.md"),
+        "---\nid: targ-neg\ntitle: Catastrophic Risk Target\ntype: target\nstatus: active\nworth: -1.0\n---\n# Risk Target\n",
+    )
+    .unwrap();
+
+    // 3. Task with high gain (0.80 >= 0.60) -> Tier L (300px)
+    fs::write(
+        pkb_root.join("tasks/task-high-gain.md"),
+        "---\nid: task-high-gain\ntitle: High Gain Task\ntype: task\nstatus: ready\nlinks:\n  - to: targ-pos\n    label: serves\n    quantum: 0.8\n---\n# High Gain\n",
+    )
+    .unwrap();
+
+    // 4. Task with high loss averted (0.70 >= 0.60) -> Tier L (300px)
+    fs::write(
+        pkb_root.join("tasks/task-high-loss.md"),
+        "---\nid: task-high-loss\ntitle: High Loss Averted Task\ntype: task\nstatus: ready\nlinks:\n  - to: targ-neg\n    label: serves\n    quantum: 0.7\n---\n# High Loss\n",
+    )
+    .unwrap();
+
+    // 5. Task with moderate gain (0.40, 0.30 <= g < 0.60) -> Tier M (240px)
+    fs::write(
+        pkb_root.join("tasks/task-mod-gain.md"),
+        "---\nid: task-mod-gain\ntitle: Moderate Gain Task\ntype: task\nstatus: ready\nlinks:\n  - to: targ-pos\n    label: serves\n    quantum: 0.4\n---\n# Moderate Gain\n",
+    )
+    .unwrap();
+
+    // 6. Task with moderate loss averted (0.35, 0.30 <= |l| < 0.60) -> Tier M (240px)
+    fs::write(
+        pkb_root.join("tasks/task-mod-loss.md"),
+        "---\nid: task-mod-loss\ntitle: Moderate Loss Task\ntype: task\nstatus: ready\nlinks:\n  - to: targ-neg\n    label: serves\n    quantum: 0.35\n---\n# Moderate Loss\n",
+    )
+    .unwrap();
+
+    // 7. E14 larger of gain and |loss_averted|, never their sum:
+    // gain = 0.20, |loss_averted| = 0.40.
+    // Sum would be 0.20 + 0.40 = 0.60 (which would be Tier L if summed).
+    // Larger is max(0.20, 0.40) = 0.40, which is Tier M (240px).
+    fs::write(
+        pkb_root.join("tasks/task-max-not-sum.md"),
+        "---\nid: task-max-not-sum\ntitle: Max Not Sum Task\ntype: task\nstatus: ready\nlinks:\n  - to: targ-pos\n    label: serves\n    quantum: 0.2\n  - to: targ-neg\n    label: serves\n    quantum: 0.4\n---\n# Max Not Sum\n",
+    )
+    .unwrap();
+
+    // 8. Unvalued node with 0.0 flow figures -> Tier S (200px)
+    fs::write(
+        pkb_root.join("tasks/task-unvalued.md"),
+        "---\nid: task-unvalued\ntitle: Unvalued Task\ntype: task\nstatus: ready\n---\n# Unvalued\n",
+    )
+    .unwrap();
+
+    // 9. Node without figures (inbox draft with no flow links) -> Tier S (200px)
+    fs::write(
+        pkb_root.join("tasks/task-no-flow.md"),
+        "---\nid: task-no-flow\ntitle: No Flow Figures Task\ntype: task\nstatus: inbox\n---\n# No Flow\n",
+    )
+    .unwrap();
+
+    let gs = GraphStore::build_from_directory(pkb_root);
+
+    let all_ids: Vec<String> = gs.nodes().map(|n| n.id.clone()).collect();
+    let excal_file = export_subgraph(&gs, &all_ids, None).expect("export subgraph");
+
+    let find_card = |id: &str| -> &ExcalidrawElement {
+        excal_file
+            .elements
+            .iter()
+            .find(|e| (e.id == id || e.custom_data.as_ref().and_then(|c| c.pkb.as_ref()).and_then(|p| p.node_id.as_deref()) == Some(id)) && e.element_type != "frame")
+            .unwrap_or_else(|| panic!("Card for node {id} must exist in exported scene"))
+    };
+
+    // 1. Target node uses Tier A (380px)
+    let card_target = find_card("targ-pos");
+    assert_eq!(card_target.width, CARD_WIDTH_A, "Target/anchor must use Tier A (380px)");
+
+    // 2. High gain node (0.80 >= 0.60) uses Tier L (300px)
+    let card_high_gain = find_card("task-high-gain");
+    assert_eq!(card_high_gain.width, CARD_WIDTH_L, "High gain node must use Tier L (300px)");
+
+    // 3. High loss averted node (0.70 >= 0.60) uses Tier L (300px)
+    let card_high_loss = find_card("task-high-loss");
+    assert_eq!(card_high_loss.width, CARD_WIDTH_L, "High loss averted node must use Tier L (300px)");
+
+    // 4. Moderate gain node (0.40) uses Tier M (240px)
+    let card_mod_gain = find_card("task-mod-gain");
+    assert_eq!(card_mod_gain.width, CARD_WIDTH_M, "Moderate gain node must use Tier M (240px)");
+
+    // 5. Moderate loss averted node (0.35) uses Tier M (240px)
+    let card_mod_loss = find_card("task-mod-loss");
+    assert_eq!(card_mod_loss.width, CARD_WIDTH_M, "Moderate loss averted node must use Tier M (240px)");
+
+    // 6. E14 larger of gain and |loss_averted|, never sum (max 0.40 -> Tier M 240px, NOT Tier L 300px)
+    let card_max_not_sum = find_card("task-max-not-sum");
+    assert_eq!(card_max_not_sum.width, CARD_WIDTH_M, "E14 larger of gain and |loss_averted|, never sum: must use Tier M (240px)");
+
+    // 7. Unvalued node gets floor size Tier S (200px)
+    let card_unvalued = find_card("task-unvalued");
+    assert_eq!(card_unvalued.width, CARD_WIDTH_S, "Unvalued node must get floor Tier S (200px)");
+
+    // 8. Node without figures gets floor size Tier S (200px)
+    let card_no_flow = find_card("task-no-flow");
+    assert_eq!(card_no_flow.width, CARD_WIDTH_S, "Node without flow figures must get floor Tier S (200px)");
+}
+
 

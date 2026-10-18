@@ -37,8 +37,9 @@ fn test_export_graph_tool_is_registered_read_only_with_expected_params() {
     }
 
     // graph_json must be removed completely from get_all_tools
+    let all_tools = PkbSearchServer::get_all_tools();
     assert!(
-        !tools.iter().any(|t| t.name.as_ref() == "graph_json"),
+        !all_tools.iter().any(|t| t.name.as_ref() == "graph_json"),
         "graph_json must not be registered"
     );
 }
@@ -154,6 +155,18 @@ fn test_export_graph_json_emits_display_rank_and_no_retired_ranking_fields() {
     w("t_plain.md", "---\nid: t_plain\ntitle: Plain\ntype: task\nstatus: ready\n---\nB\n");
     w("t_other.md", "---\nid: t_other\ntitle: Other\ntype: task\nstatus: in_progress\n---\nB\n");
     w("t_done.md", "---\nid: t_done\ntitle: Done\ntype: task\nstatus: done\n---\nB\n");
+    w(
+        "t_sw.md",
+        "---\nid: t_sw\ntitle: SW Node\ntype: task\nstatus: ready\nstanding_weight: 0.8\n---\nB\n",
+    );
+    w(
+        "t_uncert.md",
+        "---\nid: t_uncert\ntitle: Uncert Node\ntype: task\nstatus: ready\nconfidence: 0.4\n---\nB\n",
+    );
+    w(
+        "t_parented.md",
+        "---\nid: t_parented\ntitle: Parented Node\ntype: task\nstatus: ready\nparent: targ_x\n---\nB\n",
+    );
 
     let graph = GraphStore::build_from_directory(&root);
     let shared = Arc::new(RwLock::new(graph));
@@ -196,12 +209,29 @@ fn test_export_graph_json_emits_display_rank_and_no_retired_ranking_fields() {
         "value_lineage",
         "voi_value",
         "affordable_loss_filtered",
+        "standing_weight",
     ];
     for n in nodes {
         for key in retired {
             assert!(n.get(key).is_none(), "retired field `{key}` emitted: {n}");
         }
     }
+
+    // Nodes with standing_weight have it mapped to worth, but standing_weight is not emitted
+    assert_eq!(by_id("t_sw")["worth"].as_f64(), Some(0.8));
+    assert!(by_id("t_sw").get("standing_weight").is_none());
+
+    // Retained display fields for the dashboard: uncertainty and target_ancestors
+    let uncert_node = by_id("t_uncert");
+    let uncert_val = uncert_node["uncertainty"].as_f64().unwrap();
+    assert!((uncert_val - 0.6).abs() < 1e-4, "uncertainty must be emitted for dashboard: {uncert_node}");
+
+    let parented_node = by_id("t_parented");
+    assert_eq!(
+        parented_node["target_ancestors"],
+        serde_json::json!(["targ_x"]),
+        "target_ancestors must be emitted for dashboard: {parented_node}"
+    );
 
     // display_rank is exactly the engine's display order, 1..N contiguous.
     let g = shared.read();

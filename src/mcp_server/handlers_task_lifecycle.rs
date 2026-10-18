@@ -229,15 +229,24 @@ impl PkbSearchServer {
         let elapsed_parse = t.elapsed();
         tracing::debug!(target: "perf::claim_task", phase = "parse", elapsed_ms = elapsed_parse.as_secs_f64() * 1000.0);
 
+        let instance_id = parsed
+            .as_ref()
+            .map(|d| d.id())
+            .unwrap_or_else(|| {
+                crate::pkb::parse_file(&instance_path)
+                    .map(|d| d.id())
+                    .unwrap_or_else(|| crate::pkb::fallback_id(&instance_path))
+            });
+
         // Register instance in the graph.
-        if let Some(doc) = parsed {
+        if let Some(ref doc) = parsed {
             let t = std::time::Instant::now();
-            self.rebuild_graph_for_pkb_document(&doc);
+            self.rebuild_graph_for_pkb_document(doc);
             let elapsed_graph = t.elapsed();
             tracing::debug!(target: "perf::claim_task", phase = "rebuild_graph_fast", elapsed_ms = elapsed_graph.as_secs_f64() * 1000.0);
 
             let t = std::time::Instant::now();
-            self.try_upsert_document(&doc);
+            self.try_upsert_document(doc);
             let elapsed_upsert = t.elapsed();
             tracing::debug!(target: "perf::claim_task", phase = "vector_upsert_and_save", elapsed_ms = elapsed_upsert.as_secs_f64() * 1000.0);
         } else {
@@ -251,17 +260,6 @@ impl PkbSearchServer {
         }
 
         tracing::debug!(target: "perf::claim_task", phase = "TOTAL", elapsed_ms = t_total.elapsed().as_secs_f64() * 1000.0);
-
-        // Return via get_task for consistent shape.
-        let instance_id = instance_path
-            .file_stem()
-            .map(|s| s.to_string_lossy().to_string())
-            .unwrap_or_else(|| {
-                instance_path
-                    .file_name()
-                    .map(|s| s.to_string_lossy().to_string())
-                    .unwrap_or_default()
-            });
 
         let get_args = serde_json::json!({ "id": instance_id });
         self.handle_get_task(&get_args).map_err(|e| McpError {
@@ -726,6 +724,11 @@ impl PkbSearchServer {
                 data: None,
             })?;
 
+        let body = args.get("body").and_then(|v| v.as_str());
+        if let Some(b) = body {
+            self.reject_machine_paths(b, None)?;
+        }
+
         let summary = args.get("summary").and_then(|v| v.as_str()).unwrap_or("");
 
         // Dynamically clamp title length based on project prefix length so generated filename
@@ -821,6 +824,7 @@ impl PkbSearchServer {
                         .collect()
                 })
                 .unwrap_or_default(),
+            body: body.map(String::from),
             ..Default::default()
         };
 
@@ -839,15 +843,11 @@ impl PkbSearchServer {
             doc_id
         } else {
             self.rebuild_graph();
-            static ID_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
-                regex::Regex::new(r"^([a-z0-9_]+_[0-9a-f]{8}|[a-z0-9_]+-[0-9a-f]{8})").unwrap()
-            });
-            path.file_stem()
-                .and_then(|s| s.to_str())
-                .map(|s| ID_RE.find(s).map(|m| m.as_str()).unwrap_or(s))
-                .unwrap_or("task-unknown")
-                .to_string()
+            crate::pkb::parse_file(&path)
+                .map(|d| d.id())
+                .unwrap_or_else(|| crate::pkb::fallback_id(&path))
         };
+
 
         Ok(id)
     }
@@ -1363,6 +1363,12 @@ impl PkbSearchServer {
             });
         }
 
+        for subtask in subtasks {
+            if let Some(body) = subtask.get("body").and_then(|v| v.as_str()) {
+                self.reject_machine_paths(body, None)?;
+            }
+        }
+
         let (project_prefix, parent_project) = {
             let graph = self.graph.read();
             match graph.resolve(parent_id) {
@@ -1497,12 +1503,8 @@ impl PkbSearchServer {
         }
 
         let mut created: Vec<(String, String, PathBuf)> = Vec::new();
-        static ID_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
-            regex::Regex::new(r"^([a-z0-9_]+_[0-9a-f]{8}|[a-z]+-[0-9a-f]{8})")
-                .expect("valid static regex")
-        });
-
         let mut severity_warning = false;
+
 
         // Pre-resolve dependencies and check for hard dependency cycles across all subtasks
         let mut resolved_deps_per_subtask: Vec<Vec<String>> = Vec::with_capacity(subtasks.len());
@@ -1668,16 +1670,15 @@ impl PkbSearchServer {
                 }
             })?;
 
-            let id_str = path
-                .file_stem()
-                .map(|s| {
-                    let stem = s.to_string_lossy();
-                    ID_RE
-                        .find(&stem)
-                        .map(|m| m.as_str().to_string())
-                        .unwrap_or_else(|| stem.to_string())
-                })
-                .unwrap_or_default();
+            let doc = crate::pkb::parse_file_relative(&path, &self.pkb_root);
+            let id_str = doc
+                .as_ref()
+                .map(|d| d.id())
+                .unwrap_or_else(|| {
+                    crate::pkb::parse_file(&path)
+                        .map(|d| d.id())
+                        .unwrap_or_else(|| crate::pkb::fallback_id(&path))
+                });
             let filename = path
                 .file_stem()
                 .map(|s| s.to_string_lossy().into_owned())

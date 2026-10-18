@@ -1075,7 +1075,7 @@ pub struct GraphNode {
     /// Pre-flow `standing_weight` frontmatter (float 0.0..=1.0). Read as
     /// [`GraphNode::worth`] when `worth` is absent, until the flow migration
     /// retires the key (specs/flow-migration.md).
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing)]
     pub standing_weight: Option<f64>,
     /// Edge template for `type: prototype` nodes (specs/multi-parent.md §1.5).
     /// Resolved at edge-creation time per §2.5.

@@ -446,6 +446,7 @@ impl PkbSearchServer {
                         "issue_url": { "type": "string", "description": "External issue/ticket URL" },
                         "follow_up_tasks": { "type": "array", "items": { "type": "string" }, "description": "IDs of new tasks created as follow-ups. Validated for existence." },
                         "release_summary": { "type": "string", "description": "Detailed technical summary for the release. Warning if > 500 chars." },
+                        "body": { "type": "string", "description": "Markdown body for ad-hoc tasks (wikilinks supported; host paths rejected)" },
                         "recursive": { "type": "boolean", "description": "Cascade-close all open descendant tasks when releasing as done. Default: false." }
                     },
                     "required": ["status", "summary"]
@@ -867,7 +868,7 @@ impl PkbSearchServer {
                                     "intent": { "type": "integer", "description": "Intent band 0-4 (P0 Critical .. P4 Backlog)" },
                                     "task_ids": { "type": "array", "items": { "type": "string" }, "description": "Existing task IDs to reparent under this new epic (required; unresolvable IDs are reported as errors, not fatal)" },
                                     "depends_on": { "type": "array", "items": { "type": "string" }, "description": "IDs the epic itself depends on" },
-                                    "body": { "type": "string", "description": "Markdown body for the epic" }
+                                    "body": { "type": "string", "description": "Markdown body for the epic. Refer to other PKB files by wikilink (`[[id]]`) or PKB-root-relative path; a machine-specific path such as `~/brain/...` or `/home/nic/brain/...` is rejected with error_type `machine_specific_path`." }
                                 },
                                 "required": ["title", "task_ids"]
                             },
@@ -1250,7 +1251,7 @@ impl PkbSearchServer {
                     "ready": { "type": "array", "items": { "type": "string" } },
                     "blocked": { "type": "array", "items": { "type": "string" } },
                     "roots": { "type": "array", "items": { "type": "string" } },
-                    "focus": { "type": "string" }
+                    "cliff": { "type": "array", "items": { "type": "string" } }
                 }
             }),
             "diff_excalidraw" => serde_json::json!({

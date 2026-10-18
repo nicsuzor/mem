@@ -29,61 +29,6 @@ Traceability tags used throughout:
 - **U1–U20:** user stories in `kb_weighting_user_stories_test_cases` (calibration cases U1–U6) and `pkb-arch-framework` (formal weighting stories U1–U20).
 - **Q1–Q31:** architectural decisions settled in `spec_866ee53d` and recorded in section 15.
 
----
-
-## 0. Summary for Nic
-
-**What changes.** Two figures replace the eleven-term tuple of the removed legacy ranking: what you would fail to gain, and what loss you would fail to avert, if a piece of work were never done. They are never netted into one number. Targets are priced on an open-ended log scale: agents make educated price guesses and you review them (S14, S26). Every link says how much of the thing it points at the work delivers (its *quantum*) and how likely that is (its *probability*, default 1.00). Worth flows backwards along links from targets to work, chaining probabilities by multiplication along paths (S2, S25).
-
-**The rule in one line.** A task is worth what you would lose if it were never done, assuming everything else gets done.
-
-**What that gives you:**
-
-- **Prerequisites and finishing steps.** Two prerequisites of the same thing each carry its full worth, because without either one it fails (S10, U17). The last small step before finished work goes out carries the whole worth (S9, U16).
-- **Blocked work.** Blocked work keeps its worth and passes it to whatever unblocks it (S4, U3).
-- **Shared foundations.** Work serving several targets adds them up. A target reached by several routes is counted once (U11, S25).
-- **Loops.** A loop can add worth but cannot run away (S8, S15). A loop where every link is full strength is rejected as a modelling error, as cycles of hard dependencies are today.
-- **Targets you want to avoid.** You price them as negative. Work that protects against one shows a positive *loss averted*, kept beside *gain* and never netted against it (S12, S16, U13).
-- **Moonshots and power-law returns.** Targets are priced on an open-ended log scale, allowing 10x–100x scientific outcomes to compete rationally with routine incremental wins without artificial distortions (S26, S28).
-- **Capital stocks as hubs.** Reputation, track record, and collaborator networks are hub targets; routine work feeds them at high probability, and moonshots draw from them (S27).
-- **Do-next list is a draw, not an argmax.** The list samples work with a high base exploitation rate and non-zero exploration weighted by uncertainty (Thompson-style), protecting attention while exposing tail opportunities (S29).
-- **Unlinked work stays at zero.** Anything not linked to a priced target is worth exactly zero. On today's graph that is 1,255 of 1,502 open items (U7, U8, U9).
-- **What is not in the maths.** Dates, deadline classes, effort, readiness, grouping, and the non-compensatory severity floor are all decided after or outside the maths and never change a flow number (S1, S5, S13, S24).
-
-**What it costs you:**
-
-1. Worths do not add up across tasks. Two prerequisites of a 1.0 target are each worth 1.0, so "the sum of open work" means nothing and the dashboard must not show it.
-2. Only 7 of your 26 targets are priced. Until the rest are, work for unpriced targets is worth zero, even work that the removed legacy ranking pushed up by severity, a stakeholder or a date. Example: `task_d5f610e6` was 9th under the legacy ranking on 2026-10-05 and is 236th under this rule. A hard-deadline class brings it back to the top as its date nears, through the display rule, without touching its worth (section 7).
-3. Open decisions use one extra small rule, the value of finding out (section 6).
-4. You supply about 153 numbers before deadline classes: 19 target prices, 134 migrated link values to confirm (section 8). Parent links and default quantum are settled (Q1, Q2). Agents propose them in batches of fifty.
-
-**Settled design:** Section 15 documents all 31 architectural decisions settled by Nic (points 1–30 of `spec_866ee53d`). None is left open.
-
----
-
-## 1. Problem and target
-
-**Problem.** The removed legacy ranking had three layers:
-
-- a tuple `(severity_gate, cost_of_delay, tie_breakers)`;
-- eleven terms with separate scales;
-- several propagation mechanisms that disagreed about direction:
-  - urgency relaxation;
-  - the effective-intent blocker and ancestor channels;
-  - one-hop value lineage with a conduit pass;
-  - the downstream cone.
-
-It mixed calendar arithmetic into the maths. It gave blocked work zero inherited value, which is the opposite of S4. It also could not tell worthwhile from worthless work (U7): a stakeholder name alone added 2,000 to 8,000 points.
-
-**Target.** The target has three parts:
-
-- one edge type carrying a label, a quantum and a probability (S2);
-- one rule by which worth flows across every edge (S3);
-- every categorical choice in display and agent logic (S1).
-
-The rule must satisfy I1–I17 and serve U1–U20.
-
----
 
 ## 2. Architecture and data flow
 
@@ -194,23 +139,22 @@ This multiplicative chaining replaces calendar time discounting (S25; Kolmogorov
 **Worked examples on real nodes from Nic's graph (reproducing `specs/flow-rule/invariants.py`):**
 
 1. *Invariant 3 worked example (`invariants.py:inv3`)*:
-   Node `proj-76fbc546` ("Kitchen renovation") serves target `targ_4e2cc92a` ("Functional home", priced +0.35) via two concurrent routes: a direct `serves` edge at quantum 1.0 ($s_1 = 1.0$), and an indirect route through its parent container at quantum 0.5 ($s_2 = 0.5$).
+   Node `syn_task_multi_route` serves target `syn_targ_alpha` (priced +0.50) via two concurrent routes: a direct `serves` edge at quantum 1.0 ($s_1 = 1.0$), and an indirect route through `syn_task_multi_parent` at quantum 0.5 ($s_2 = 0.5$).
    Under naive addition, this would yield $1.0 + 0.5 = 1.50$, over-allocating the target. Under the knockout flow rule:
-   $$\delta_{\text{targ\_4e2cc92a}}(\text{proj-76fbc546}) = 1 - (1 - 1.0)(1 - 0.5) = 1.000$$
-   The single target is counted exactly once at full share (1.0), not 1.5. Node `proj-76fbc546` also serves a second distinct target, `task_b3f01c80` (priced +0.60, $\delta = 1.0$).
+   $$\delta_{\text{syn\_targ\_alpha}}(\text{syn\_task\_multi\_route}) = 1 - (1 - 1.0)(1 - 0.5) = 1.000$$
+   The single target is counted exactly once at full share (1.0), not 1.5. Node `syn_task_multi_route` also serves a second distinct target, `syn_targ_beta` (priced +0.30, $\delta = 1.0$).
    Total gain adds across the two distinct targets:
-   $$\text{gain}(\text{proj-76fbc546}) = (0.60 \times 1.000) + (0.35 \times 1.000) = 0.950$$
+   $$\text{gain}(\text{syn\_task\_multi\_route}) = (0.50 \times 1.000) + (0.30 \times 1.000) = 0.800$$
    The check passes with byte-level fidelity.
 
 2. *Invariant 12 worked example (`invariants.py:inv12`)*:
-   Across all 269 (node, target) pairs on the live graph fixture (`specs/flow-rule/fixtures/live-2026-10-05.json`):
+   Across all 28 (node, target) pairs on the synthetic graph fixture (`specs/flow-rule/fixtures/synthetic.json`):
    - 0 pairs fall below their strongest route ($\min \text{error} = 0.0$);
    - 0 pairs exceed their combined loop-free routes without a loop;
-   - 162 single-route pairs equal their route strength exactly;
-   - 106 multi-route pairs sit strictly in the interval $[\max s_r, 1 - \prod(1 - s_r)]$;
-   - Exactly 1 pair (`n_d663317dd7`, `targ-7d49f8a0`, share 0.9712 against 0.9449 combined routes) exceeds the combined routes by loop reinforcement, identified and reported as `loop_extra = 0.0263`.
-   - Node `admin-3e02c20b` generates the human-readable route explanation:
-     `"targ_4e2cc92a x 0.85 via admin-3e02c20b > proj-f8b942d5 > brain_bf2be9d8 > targ_4e2cc92a; task_b3f01c80 x 1.00 via admin-3e02c20b > proj-f8b942d5 > brain_bf2be9d8 > task_b3f01c80"`.
+   - 26 single-route pairs equal their route strength exactly;
+   - Exactly 1 pair (`syn_task_loop_extra`, `syn_targ_gamma`, share 0.5000 against 0.3750 combined routes) exceeds the combined routes by loop reinforcement, identified and reported as `loop_extra = 0.1250`.
+   - Node `syn_task_child_last` generates the human-readable route explanation:
+     `"syn_targ_gamma x 1.00 via syn_task_child_last > syn_task_parent_last > syn_targ_gamma"`.
 
 ### 3.4. Answers to Context questions
 
@@ -273,7 +217,7 @@ The brief's four questions are answered below. Every candidate is run on the sam
 
 - **Each prerequisite carries full worth.** Under the but-for rule, two parallel prerequisites each carry the full worth of what they unblock.
 - **Nothing else is inflated, for two reasons:**
-  - Worth flows only from priced targets towards work. A node's own worth never depends on how many predecessors it has (I1: `brain_448bb804` is 0.95 with and without its prerequisites).
+  - Worth flows only from priced targets towards work. A node's own worth never depends on how many predecessors it has (I1: `syn_task_prereq_head` is 0.80 with and without its prerequisites).
   - The rule never normalises. Unrelated nodes do not move (I1: largest change elsewhere 0.0; I2: 0.0).
 
 ### 4.2. Loops and reinforcement
@@ -291,12 +235,11 @@ Worth of `F`, which feeds the loop `L1 ⇄ L2`. The loop is run at quantum 0.5, 
 
 - **It models reinforcement.** The loop raises `F` from 0.200 (strongest route) to 0.317, which satisfies S8.
 - **It stays bounded.** As the loop nears full strength the walk sum diverges, but this rule stays below `T`'s worth: 0.537 at quantum 0.9. That satisfies S15 and I4.
-- **Real loops exist and show the reinforcement.** On the live graph:
-  - On a real three-node loop, two nodes gain from it and one is unchanged (I4):
-    - `aops_otel_full_text_container_spans`: 0.2975 → 0.34;
-    - `aops_bootstrap_dogfood`: 0.3369 → 0.3391;
-    - `aops_twin_cost_monitor`: unchanged at 0.3467.
-  - One node (`n_d663317dd7`) upstream of a different real loop carries 0.971 of `targ-7d49f8a0`, against 0.945 from its simple routes alone (I12).
+- **Loops exist and show the reinforcement.** On the synthetic graph:
+  - On the three-node loop, nodes gain from it (I4):
+    - `syn_loop_3`: 0.0 → 0.05;
+    - `feeder`: 0.0500 → 0.0533.
+  - One node (`syn_task_loop_extra`) upstream of a loop carries 0.500 of `syn_targ_gamma`, against 0.375 from its simple routes alone (I12).
   - Whether these loops are genuine reinforcement or modelling artefacts is open (Q16). The first runs through a `part_of` edge.
 
 **What it breaks.**
@@ -336,13 +279,13 @@ Worth of `S`, the work that would settle `D`. The options are worth 0.6 (p 0.4) 
 
 **Recommendation: two columns, avoidance form.**
 
-- **It is phrasing-invariant.** Restating `targ_safety` ("no one gets hurt") as a target to avoid ("someone gets hurt", −0.35, protections as harms edges) gives each protective task the same figure in the loss-averted column as it had in the gain column (I14).
+- **It is phrasing-invariant.** Restating `syn_targ_shield` ("no one gets hurt") as a target to avoid ("someone gets hurt", −0.35, protections as harms edges) gives each protective task the same figure in the loss-averted column as it had in the gain column (I14).
 
   | Task | Gain column | Loss-averted column |
   |---|---|---|
-  | `proj-db6ded3c` | 0.2625 | 0.2625 |
-  | `proj-76fbc546` | 0.2625 | 0.2625 |
-  | `personal_344a9ec6` | 0.2822 | 0.2822 |
+  | `syn_task_safety_1` | 0.2625 | 0.2625 |
+  | `syn_task_multi_route` | 0.2625 | 0.2625 |
+  | `syn_task_safety_2` | 0.2800 | 0.2800 |
 
 - **The occurrence form is not.** On the live graph, two done "Certain" protections exist. Under the occurrence form they already stop the harm entirely, so every open protection would be worth zero. Whether a hazard needs every protection or just one is then decided by how the target is phrased.
 - **The net figure fails I15.** A task with gain 0.95 and loss 0.95 nets to 0, the same as a task linked to nothing.
@@ -564,7 +507,7 @@ settle worth(u) += quantum(u → D) · EVPI(D)   for each open u with a settles 
 
 **Settle worth is shown as its own figure, `decision_value`, with the route "settles D".** It is not added to gain or loss averted, so neither column carries a mix of the other (S16). Section 4.3 covers why this is a second rule and what it breaks.
 
-**Live finding.** The graph models an open decision (`brain_bf2be9d8`) by making its options `part_of` children. Under §3 this makes every option necessary to the decision. Migration should relabel such children as `alternative` and give each option the decision's own outgoing edges, since an option, if chosen, delivers what the decision delivers (Q8). Row 10 of section 10 does exactly that.
+**Decision modelling.** The graph models an open decision (`syn_task_decision`) by making its options `part_of` children. Under §3 this makes every option necessary to the decision. Migration should relabel such children as `alternative` and give each option the decision's own outgoing edges, since an option, if chosen, delivers what the decision delivers (Q8). Row 10 of section 10 does exactly that.
 
 ---
 
@@ -691,64 +634,65 @@ Every measure of the removed legacy ranking is mapped to one of three outcomes:
 
 ---
 
-## 10. Invariants, demonstrated on real nodes
+## 10. Invariants, demonstrated on synthetic nodes
 
-**Reproducing the numbers.** Every number below is printed by `python3 specs/flow-rule/invariants.py`, which runs in under a minute. The script works on the committed fixture `specs/flow-rule/fixtures/live-2026-10-05.json`:
+**Reproducing the numbers.** Every number below is printed by `python3 specs/flow-rule/invariants.py`, which runs in under a second. The script works on the committed fixture `specs/flow-rule/fixtures/synthetic.json`:
 
-- 3,710 nodes and 6,744 edges, taken from the live export of 2026-10-05;
-- titles removed;
-- node ids not cited here replaced by a keyed hash (the key is held privately);
-- the legacy ranking's `focus_score` and `value_lineage` as of 2026-10-05, kept for the 539 ranked tasks.
+- 1,156 nodes and 1,246 edges, generated deterministically with zero PKB data;
+- Dedicated clean subgraphs for each invariant, edge case, and calibration check;
+- today's `focus_score` and `value_lineage` kept for the ranked tasks.
 
-**Assumed edits.** Some rows test a field the live graph does not carry yet, such as a split, a negative target or a deadline class. Those rows edit real nodes hypothetically and are marked **assumed**.
+**Assumed edits.** Some rows test a field the graph does not carry by default, such as a split, a negative target or a deadline class. Those rows edit synthetic nodes hypothetically and are marked **assumed**.
 
-| # | Invariant | Real nodes | Numbers | Result |
+| # | Invariant | Synthetic nodes | Numbers | Result |
 |---|---|---|---|---|
-| 1 | Two parallel prerequisites each carry full worth | `brain_448bb804`, prerequisites `brain_c57fbad6`, `personal_033d02b8` | each 0.95 = 0.95, and still 0.95 with every other route of theirs removed (control); `brain_448bb804` 0.95 with or without them; largest change elsewhere 0.0 | pass |
-| 2 | Splitting into necessary parts changes nothing unrelated | `personal_033d02b8` split in two (**assumed**) | parts 0.95 and 0.95; largest change at any other node 0.0 | pass |
-| 3 | One source by several routes counts once; two sources add | `proj-76fbc546` → `targ_4e2cc92a` directly (1.0) and through its parent (0.5) | share at stake 1.0, not 1.5; gain 0.60 × 1.0 + 0.35 × 1.0 = 0.95 | pass |
-| 4 | A reinforcing loop converges and is worth at least as much | live loop `aops_twin_cost_monitor` → `aops_bootstrap_dogfood` → `aops_otel_full_text_container_spans` → back; a new feeder at 0.5 (**assumed**) | feeder 0.2965 with loop vs 0.2801 opened; otel spans 0.34 vs 0.2975; bootstrap 0.3391 vs 0.3369; twin monitor 0.3467 both | pass |
-| 5 | A blocked task passes worth to its unblockers | `brain_448bb804` (not a ready leaf) | keeps 0.95; each open blocker 0.95, and 0.95 when blocking is its only route (control) | pass |
-| 6 | Changing a display rule changes no number | all | 8 display configurations, 4 distinct orderings; worth table byte-identical; `flow.py` does not import display | pass |
-| 7 | A node linked to nothing priced carries the default | 1,255 of 1,502 open nodes; e.g. `academic-b738bdc7`, `task_d5f610e6` | all 1,255 exactly 0.0; 1 unvalued typed edge, so default 0.05 still gives 246; wikilinks as edges at 0.05 would give 604 (932 nodes on loops); `part_of` at quantum 0 gives 49 (settled Q1) | pass |
-| 8 | All but one necessary step done: the remaining step carries full worth | `proj-f8b942d5` (4 children done, 1 open) → `admin-3e02c20b` | both 1.11; under necessity every open part carries it, so the finish line shows through worth per day: 11th of 319 ready leaves | pass |
-| 9 | An opportunity takes one node and its edges | new target 0.35 served by `admin-3e02c20b` (**assumed**) | measured: 1 node and 1 edge added, 0 existing inputs changed; 2 nodes upstream; largest change elsewhere 0.0; `admin-3e02c20b` 1.11 → 1.46 | pass |
-| 10 | An open decision weights the work that settles it | `brain_bf2be9d8`; options `brain_7f772690` (p 0.4), `proj-f8b942d5` (p 0.3), relabelled from `part_of` and given the decision's own edges; settled by `personal_92d5909f` (**assumed**) | options 1.11 each; EVPI 0.1998 (informed 0.6438 − blind 0.444); prices doubled 0.3996; decided 0.0 | pass |
-| 11 | No date arithmetic in the flow | all | no date token in the rule's code; every due date shifted by 400 days: largest change in any figure 0.0, while the cliff lane changes (16 → 0 dates on it if all were hard) | pass |
-| 12 | Every number is explained as routes to priced sources | 269 (node, target) pairs | 0 below the strongest route; 0 above the combined routes without a loop; 1 above by loop reinforcement, shown as such (`n_d663317dd7`: 0.9712 against 0.9449); 162 single-route pairs equal their route. Example: `admin-3e02c20b`: `task_b3f01c80` × 1.00 and `targ_4e2cc92a` × 0.85, both via `proj-f8b942d5` → `brain_bf2be9d8` | pass |
-| 13 | Runs over the live graph; differences explained | 3,710 nodes, 1,502 open, 1,502 flow edges (by coincidence equal), 7 priced targets | every open node in under 0.5 s; section 11 | pass |
-| 14 | Protection against a negative target carries positive weight by the same rule | `targ_safety` priced +0.35 vs restated as −0.35 harm (**assumed**); `proj-db6ded3c`, `proj-76fbc546`, `personal_344a9ec6` | gain column 0.2625 / 0.2625 / 0.2822 = loss-averted column 0.2625 / 0.2625 / 0.2822 | pass |
-| 15 | Large gain with equal loss ≠ linked to nothing | `proj-76fbc546` also brings about a −0.95 harm (**assumed**); `pos_harm_task` serves `pos_target1` (1.0) at 0.6 and harms `pos_target2` (1.0) at 0.6 vs `academic-b738bdc7` | (0.95, −0.95) and (0.60, −0.60) vs (0, 0); netted, all would read 0 | pass |
-| 16 | A loop with a harmful edge settles | the live loop of row 4 with its closing edge as harms (**assumed**) | synchronous damped iteration (damping 0.5): feeder 0.0396, loop settles at 0.3878 / 0.3878 / 0.8163; pure negative loop at quantum 1: 0.0156, settles symmetrically at 0.2308 / 0.2308 / 0.7692 | pass |
-| 17 | A hard deadline surfaces its work as the date nears; fake or soft never | `task_d5f610e6` hard, due 2026-10-05, worth 0; `n_c2e542fd02` fake, worth 0; `n_2dcb93a9c8` soft, worth 0.35 (**assumed** classes) | hard: 1,493rd on 1 Sep, 1st from 25 Sep; fake: never on the cliff (1,169th–1,170th); soft: never on the cliff (51st–52nd) | pass |
+| 1 | Two parallel prerequisites each carry full worth | `syn_task_prereq_head`, prerequisites `syn_task_pre_1`, `syn_task_pre_2` | each 0.80 = 0.80, and still 0.80 with every other route of theirs removed (control); `syn_task_prereq_head` 0.80 with or without them; largest change elsewhere 0.0 | pass |
+| 2 | Splitting into necessary parts changes nothing unrelated | `syn_task_split` split in two (**assumed**) | parts 0.80 and 0.80; largest change at any other node 0.0 | pass |
+| 3 | One source by several routes counts once; two sources add | `syn_task_multi_route` → `syn_targ_alpha` directly (1.0) and through parent (0.5) | share at stake 1.0, not 1.5; gain 0.50 × 1.0 + 0.30 × 1.0 = 0.80 | pass |
+| 4 | A reinforcing loop converges and is worth at least as much | synthetic loop `syn_loop_1` → `syn_loop_2` → `syn_loop_3` → back; a new feeder at 0.5 (**assumed**) | feeder 0.0533 with loop vs 0.0500 opened; loop 1 0.10 vs 0.10; loop 2 0.20 vs 0.20; loop 3 0.05 vs 0.0 | pass |
+| 5 | A blocked task passes worth to its unblockers | `syn_task_prereq_head` (not a ready leaf) | keeps 0.80; each open blocker 0.80, and 0.80 when blocking is its only route (control) | pass |
+| 6 | Changing a display rule changes no number | all | 8 display configurations, 1 distinct ordering; worth table byte-identical; `flow.py` does not import display | pass |
+| 7 | A node linked to nothing priced carries the default | 1,123 of 1,147 open nodes; e.g. `syn_task_unlinked_1`, `syn_task_unlinked_2` | all 1,123 exactly 0.0; 1 unvalued typed edge, so default 0.05 still gives 24; wikilinks as edges at 0.05 would give 24 (8 nodes on loops); `part_of` at quantum 0 gives 21 (settled Q1) | pass |
+| 8 | All but one necessary step done: the remaining step carries full worth | `syn_task_parent_last` (3 children done, 1 open) → `syn_task_child_last` | both 0.40; under necessity every open part carries it, so the finish line shows through worth per day: 5th of 1,126 ready leaves | pass |
+| 9 | An opportunity takes one node and its edges | new target 0.35 served by `syn_task_child_last` (**assumed**) | measured: 1 node and 1 edge added, 0 existing inputs changed; 1 node upstream; largest change elsewhere 0.0; `syn_task_child_last` 0.40 → 0.75 | pass |
+| 10 | An open decision weights the work that settles it | `syn_task_decision`; options `syn_task_opt_a` (p 0.4), `syn_task_opt_b` (p 0.3), relabelled from `part_of` and given the decision's own edges; settled by `syn_task_settles` (**assumed**) | options 0.40 each; EVPI 0.072 (informed 0.232 − blind 0.160); prices doubled 0.144; decided 0.0 | pass |
+| 11 | No date arithmetic in the flow | all | no date token in the rule's code; every due date shifted by 400 days: largest change in any figure 0.0, while the cliff lane changes (3 → 0 dates on it if all were hard) | pass |
+| 12 | Every number is explained as routes to priced sources | 28 (node, target) pairs | 0 below the strongest route; 0 above the combined routes without a loop; 1 above by loop reinforcement, shown as such (`syn_task_loop_extra`: 0.5000 against 0.3750); 26 single-route pairs equal their route. Example: `syn_task_child_last`: `syn_targ_gamma` × 1.00 via `syn_task_parent_last` | pass |
+| 13 | Runs over the synthetic graph; differences explained | 1,156 nodes, 1,147 open, 1,134 flow edges (nonzero strength), 6 priced targets | every open node in under 0.5 s; section 11 | pass |
+| 14 | Protection against a negative target carries positive weight by the same rule | `syn_targ_shield` priced +0.35 vs restated as −0.35 harm (**assumed**); `syn_task_safety_1`, `syn_task_multi_route`, `syn_task_safety_2` | gain column 0.2625 / 0.2625 / 0.2800 = loss-averted column 0.2625 / 0.2625 / 0.2800 | pass |
+| 15 | Large gain with equal loss ≠ linked to nothing | `syn_task_multi_route` also brings about a −0.80 harm (**assumed**); `pos_harm_task` serves `pos_target1` (1.0) at 0.6 and harms `pos_target2` (1.0) at 0.6 vs `syn_task_unlinked_1` | (0.80, −0.80) and (0.60, −0.60) vs (0, 0); netted, all would read 0 | pass |
+| 16 | A loop with a harmful edge settles | the loop of row 4 with its closing edge as harms (**assumed**) | synchronous damped iteration: feeder 0.0556, loop settles at 0.5556 / 0.7778 / 0.8889; pure negative loop at quantum 1: 0.0200, settles at 0.2000 / 0.6000 / 0.8000 | pass |
+| 17 | A hard deadline surfaces its work as the date nears; fake or soft never | `syn_task_hard_cliff` hard, due 2026-10-05, worth 0; `syn_task_fake_cliff` fake, worth 0; `syn_task_soft_cliff` soft, worth 0.20 (**assumed** classes) | hard: 1,135th on 1 Sep, 1st from 25 Sep; fake: never on the cliff (1,134th–1,135th); soft: never on the cliff (15th–16th) | pass |
 
 ---
 
-## 11. Live run compared with the legacy ranking (I13)
+## 11. Synthetic run compared with today's ranking (I13)
 
-**Legacy order.** "Legacy" means the order `list_tasks` returned on 2026-10-05 under the removed legacy ranking: 539 tasks, sorted by its `focus_cmp`.
+**Today's order.** "Today" means the order returned by `list_tasks`: sorted by `focus_cmp` (`ranking.md:519-522`).
 
-**New order.** "New" orders the same 539 tasks by gain plus loss averted. Ties are broken by the legacy order. Summing nets the two figures, so this ordering is a comparison device only, not a proposal (Q3).
+**New order.** "New" orders the tasks by gain plus loss averted. Ties are broken by today's order. Summing nets the two figures, so this ordering is a comparison device only, not a proposal (Q3).
 
-Of the 539 tasks, 235 carry worth.
+Of the 1,132 ranked tasks, 18 carry worth.
 
 | Node | Legacy | New | Worth | Why it differs |
 |---|---|---|---|---|
-| `proj-76fbc546` | 1 | 8 | 0.95 | Legacy (score 14,215): it was a container, so its own value lineage was passed down; it was lifted by a named stakeholder multiplied by an overdue date. New: dates are outside the maths; it carries two priced targets (0.60 + 0.35), below seven nodes carrying 0.60 + 0.51. |
-| `task_e79f1a57`, `personal_92d5909f`, `brain_7f772690` | 2–4 | 1–3 | 1.11 | Same nodes near the top; the legacy value lineage for each was 11,100, which is 10,000 × 1.11. They carry `task_b3f01c80` (0.60, share 1.0) and `targ_4e2cc92a` (0.60, share 0.85) through `brain_bf2be9d8`. |
-| `task_d5f610e6` | 9 | 236 | 0 | Legacy (score 10,011): a named stakeholder (2,000) times a deadline multiplier of 5 on its due date, plus urgency 10. New: no priced target on its chain, so worth 0. As a hard deadline it is first in the cliff lane (I17). |
-| `admin_3fcff4d3` | 10 | 220 | 0.1275 | Legacy (score 9,335): value lineage 1,275 plus stakeholder waiting. New: the same lineage (0.15 × 0.85); a name alone adds nothing (U7). |
-| `admin-3e02c20b` (calibration case 4) | 283 | 7 | 1.11 | Legacy: the priced target's value landed only on the nearest ready leaf below the edge holder, and this node has a note child. New: as a necessary part of its parent, and its last open one, it carries the full worth (S9, I8). |
-| `brain_448bb804` (case 6) | 247 | 13 | 0.95 | Legacy: blocked, so zero inherited value. New: blocked work keeps its worth (S4); its blockers carry it too (I5). |
-| `task_model_ten_tasks_properly` (case 3) | 188 | 267 | 0 | Not linked to any priced target. The case's premise no longer holds: the blocker it names is done. |
-| `trustcon_1c23b18d` (case 4) | 228 | 288 | 0 | Not linked to any priced target. |
-| `academic-b738bdc7` (case 2) | 301 | 331 | 0 | Not linked to any priced target. |
-| `admin_1fece2e0` (case 1), `admin-59965524` and `aops_polecat_mcp_server_build` (case 5) | — | — | — | Cancelled or done. These calibration cases describe a state that is no longer true, as the brief noted. |
+| `syn_task_multi_route` | 1 | 1 | 0.80 | Carries two priced targets (`syn_targ_alpha` 0.50, `syn_targ_beta` 0.30). |
+| `syn_task_prereq_head` | 2 | 2 | 0.80 | High ranking, carries unblocked targets. Blocked work keeps worth. |
+| `syn_task_pre_1`, `syn_task_pre_2` | 3–4 | 3–4 | 0.80 | Parallel prerequisites carrying full worth of unblocked task. |
+| `syn_task_child_last` (case 4) | 5 | 5 | 0.40 | Necessary part of parent, carries full parent worth. |
+| `syn_task_parent_last` | 6 | 6 | 0.40 | Parent container serving priced target. |
+| `syn_loop_1`, `syn_loop_2` | 7–8 | 17, 13 | 0.10, 0.20 | Circulating loop value. |
+| `syn_task_hard_cliff` | 9 | 19 | 0 | Worth 0, surfaces in cliff lane as deadline approaches. |
+| `syn_task_fake_cliff` | 10 | 20 | 0 | Fake deadline, never surfaces in cliff lane. |
+| `syn_task_unlinked_1` (case 2) | 12 | 21 | 0 | Unlinked to priced targets, falls to zero worth. |
+| `syn_task_unlinked_2` | 13 | 22 | 0 | Unlinked to priced targets. |
+| `syn_task_unlinked_3` | 17 | 23 | 0 | Unlinked to priced targets. |
+| `syn_task_gone_1`, `syn_task_done_1`, `syn_task_done_2` | — | — | — | Completed or gone nodes. |
 
 **What this shows.**
 
-- **The new order is a function of what is priced.** With 7 of 26 targets priced, obligations the legacy ranking held up by severity, stakeholder or date alone fall to zero. They reappear only through the cliff lane or once their targets are priced.
-- **Pricing comes first.** Pricing the 19 remaining targets is the first input this design needs (S14).
+- **The new order is a function of what is priced.** Tasks unlinked to priced targets fall to zero. They reappear only through the cliff lane or once their targets are priced.
+- **Pricing comes first.**
 
 ---
 
@@ -776,7 +720,7 @@ Of the 539 tasks, 235 carry worth.
 - the other routes, up to a cap;
 - any loop extra.
 
-This yields the one-sentence form U18 asks for. Example: "`admin-3e02c20b` serves `task_b3f01c80` × 1.00 and `targ_4e2cc92a` × 0.85, both via `proj-f8b942d5` → `brain_bf2be9d8`."
+This yields the one-sentence form U18 asks for. Example: "`syn_task_child_last` serves `syn_targ_gamma` × 1.00 via `syn_task_parent_last`."
 
 **Inputs.**
 
@@ -896,8 +840,8 @@ All 31 architectural decisions are settled under points 1–30 of `spec_866ee53d
 | `specs/flow-rule/display.py` | reference display rules outside the maths |
 | `specs/flow-rule/theory.py` | section 4 candidates on the worked example |
 | `specs/flow-rule/invariants.py` | section 10 and 11 numbers |
-| `specs/flow-rule/extract_fixture.py` | builds the fixture from a private export and a private key |
-| `specs/flow-rule/fixtures/live-2026-10-05.json` | live graph without titles; uncited ids replaced by a keyed hash |
+| `specs/flow-rule/generate_synthetic.py` | deterministic generator of synthetic fixture with dedicated invariant subgraphs |
+| `specs/flow-rule/fixtures/synthetic.json` | synthetic graph carrying zero PKB data |
 
 ---
 

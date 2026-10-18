@@ -79,7 +79,9 @@ pub fn is_red_ring(has_stakeholder: bool, status: Option<&str>) -> bool {
         })
 }
 
-/// Computes card width and height dimensions based on size tiers (node type and intent).
+/// Computes card width and height dimensions based on flow figures (E14 adopted:
+/// larger of gain and |loss_averted|, never their sum; unvalued nodes get floor Tier S).
+/// Anchor nodes (targets and goals) use Tier A.
 pub fn compute_card_dimensions(node: &crate::graph::GraphNode) -> (f64, f64) {
     let t = node
         .raw_node_type
@@ -98,31 +100,22 @@ pub fn compute_card_dimensions(node: &crate::graph::GraphNode) -> (f64, f64) {
         return (CARD_WIDTH_A, CARD_HEIGHT);
     }
 
-    let p = node.intent.unwrap_or(4);
-    let is_container = t == "epic"
-        || t == "area"
-        || t == "project"
-        || !node.children.is_empty();
-
-    let base_tier = if is_container {
-        if p <= 2 {
-            "L"
-        } else {
-            "M"
-        }
-    } else if p <= 3 {
-        "M"
+    let val = if let Some(ref flow) = node.flow {
+        let g = flow.gain.unwrap_or(0.0).max(0.0);
+        let l = flow.loss_averted.unwrap_or(0.0).abs();
+        g.max(l)
     } else {
-        "S"
+        0.0
     };
 
-    let w = match base_tier {
-        "A" => CARD_WIDTH_A,
-        "L" => CARD_WIDTH_L,
-        "M" => CARD_WIDTH_M,
-        "S" => CARD_WIDTH_S,
-        _ => CARD_WIDTH_M,
+    let w = if val >= 0.60 {
+        CARD_WIDTH_L
+    } else if val >= 0.30 {
+        CARD_WIDTH_M
+    } else {
+        CARD_WIDTH_S
     };
+
     (w, CARD_HEIGHT)
 }
 
@@ -761,27 +754,83 @@ mod tests {
 
     #[test]
     fn test_card_dimensions_and_red_ring() {
+        use crate::flow::{FlowOutput, FlowStatus};
         use crate::graph::GraphNode;
+        use std::collections::BTreeMap;
 
+        let make_flow = |gain: Option<f64>, loss_averted: Option<f64>| FlowOutput {
+            gain,
+            loss_averted,
+            deltas: BTreeMap::new(),
+            stake: BTreeMap::new(),
+            decision_value: None,
+            loop_extra: BTreeMap::new(),
+            flow_status: FlowStatus::Ok,
+            loop_nodes: None,
+        };
+
+        // Anchor node -> Tier A (380.0)
         let mut n_target = GraphNode::default();
         n_target.id = "targ_123".to_string();
         n_target.node_type = Some("target".to_string());
         assert_eq!(compute_card_dimensions(&n_target), (CARD_WIDTH_A, CARD_HEIGHT));
 
-        let mut n_epic_p2 = GraphNode::default();
-        n_epic_p2.node_type = Some("epic".to_string());
-        n_epic_p2.intent = Some(2);
-        assert_eq!(compute_card_dimensions(&n_epic_p2), (CARD_WIDTH_L, CARD_HEIGHT));
+        // High gain (>= 0.60) -> Tier L (300.0)
+        let mut n_high_gain = GraphNode::default();
+        n_high_gain.id = "task_high_gain".to_string();
+        n_high_gain.node_type = Some("task".to_string());
+        n_high_gain.flow = Some(make_flow(Some(0.75), Some(0.0)));
+        assert_eq!(compute_card_dimensions(&n_high_gain), (CARD_WIDTH_L, CARD_HEIGHT));
 
-        let mut n_task_p2 = GraphNode::default();
-        n_task_p2.node_type = Some("task".to_string());
-        n_task_p2.intent = Some(2);
-        assert_eq!(compute_card_dimensions(&n_task_p2), (CARD_WIDTH_M, CARD_HEIGHT));
+        // High loss averted (|loss_averted| >= 0.60) -> Tier L (300.0)
+        let mut n_high_loss = GraphNode::default();
+        n_high_loss.id = "task_high_loss".to_string();
+        n_high_loss.node_type = Some("task".to_string());
+        n_high_loss.flow = Some(make_flow(Some(0.0), Some(-0.80)));
+        assert_eq!(compute_card_dimensions(&n_high_loss), (CARD_WIDTH_L, CARD_HEIGHT));
 
-        let mut n_task_p4 = GraphNode::default();
-        n_task_p4.node_type = Some("task".to_string());
-        n_task_p4.intent = Some(4);
-        assert_eq!(compute_card_dimensions(&n_task_p4), (CARD_WIDTH_S, CARD_HEIGHT));
+        // Moderate gain (0.30 <= gain < 0.60) -> Tier M (240.0)
+        let mut n_mod_gain = GraphNode::default();
+        n_mod_gain.id = "task_mod_gain".to_string();
+        n_mod_gain.node_type = Some("task".to_string());
+        n_mod_gain.flow = Some(make_flow(Some(0.35), Some(0.0)));
+        assert_eq!(compute_card_dimensions(&n_mod_gain), (CARD_WIDTH_M, CARD_HEIGHT));
+
+        // Moderate loss averted (0.30 <= |loss_averted| < 0.60) -> Tier M (240.0)
+        let mut n_mod_loss = GraphNode::default();
+        n_mod_loss.id = "task_mod_loss".to_string();
+        n_mod_loss.node_type = Some("task".to_string());
+        n_mod_loss.flow = Some(make_flow(Some(0.0), Some(-0.45)));
+        assert_eq!(compute_card_dimensions(&n_mod_loss), (CARD_WIDTH_M, CARD_HEIGHT));
+
+        // E14: larger of gain and |loss_averted|, never their sum.
+        // gain 0.20 + |loss_averted| 0.40 = 0.60 (sum would be Tier L, but max is 0.40 -> Tier M)
+        let mut n_max_not_sum = GraphNode::default();
+        n_max_not_sum.id = "task_max_not_sum".to_string();
+        n_max_not_sum.node_type = Some("task".to_string());
+        n_max_not_sum.flow = Some(make_flow(Some(0.20), Some(-0.40)));
+        assert_eq!(compute_card_dimensions(&n_max_not_sum), (CARD_WIDTH_M, CARD_HEIGHT));
+
+        // Unvalued node with 0.0 flow figures -> Tier S (200.0)
+        let mut n_unvalued = GraphNode::default();
+        n_unvalued.id = "task_unvalued".to_string();
+        n_unvalued.node_type = Some("task".to_string());
+        n_unvalued.flow = Some(make_flow(Some(0.0), Some(0.0)));
+        assert_eq!(compute_card_dimensions(&n_unvalued), (CARD_WIDTH_S, CARD_HEIGHT));
+
+        // Node without flow figures (None) -> Tier S (200.0)
+        let mut n_no_flow = GraphNode::default();
+        n_no_flow.id = "task_no_flow".to_string();
+        n_no_flow.node_type = Some("task".to_string());
+        n_no_flow.flow = None;
+        assert_eq!(compute_card_dimensions(&n_no_flow), (CARD_WIDTH_S, CARD_HEIGHT));
+
+        // Low flow node (< 0.30) -> Tier S (200.0)
+        let mut n_low = GraphNode::default();
+        n_low.id = "task_low".to_string();
+        n_low.node_type = Some("task".to_string());
+        n_low.flow = Some(make_flow(Some(0.15), Some(0.0)));
+        assert_eq!(compute_card_dimensions(&n_low), (CARD_WIDTH_S, CARD_HEIGHT));
 
         assert!(is_red_ring(true, Some("ready")));
         assert!(is_red_ring(false, Some("review")));

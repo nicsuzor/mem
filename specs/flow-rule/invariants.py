@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
 """Demonstrate the seventeen invariants of the requirements brief (spec_866ee53d,
-section C) on real nodes, using the committed live-graph fixture.
+section C) on synthetic nodes, using the committed synthetic-graph fixture.
 
 Every number in flow-rule.md section 10 is printed by this script:
 
     python3 invariants.py                # table to stdout
     python3 invariants.py --json out.json
 
-Scenario edits to the live graph (a split, an added opportunity, a decision,
+Scenario edits to the graph (a split, an added opportunity, a decision,
 a negative target, a deadline class) are marked ASSUMED in the output: the
-nodes are real, the edit is hypothetical, because the live graph does not yet
-carry the field being tested.
+nodes are from the fixture, the edit is hypothetical, because the base graph
+does not yet carry the field being tested.
 """
 
 from __future__ import annotations
@@ -30,12 +30,12 @@ if HERE not in sys.path:
 import display
 import flow
 
-FIXTURE = os.path.join(HERE, "fixtures", "live-2026-10-05.json")
+FIXTURE = os.path.join(HERE, "fixtures", "synthetic.json")
 
 
 def load(default_quantum: float = 0.0, wikilinks: bool = False, date_shift: int = 0,
          part_of: float | None = None):
-    """The live graph. Unvalued edges take `default_quantum`; wikilinks are not
+    """The synthetic graph. Unvalued edges take `default_quantum`; wikilinks are not
     edges of the model unless `wikilinks` is set; `date_shift` moves every date;
     `part_of`, if given, overrides the quantum on every part_of edge (Q1)."""
     d = json.load(open(FIXTURE))
@@ -91,7 +91,7 @@ RUNTIME = time.perf_counter() - t0
 
 
 def inv1():
-    b = "brain_448bb804"
+    b = "syn_task_prereq_head"
     pre = sorted(e.src for e in G.edges if e.dst == b and e.label == "needs" and G.state[e.src] == flow.OPEN)
     g2 = copy.deepcopy(G)
     g2.edges = [e for e in g2.edges if not (e.dst == b and e.label == "needs")]
@@ -114,7 +114,7 @@ def inv1():
 
 
 def inv2():
-    p = "personal_033d02b8"
+    p = "syn_task_split"
     g2 = copy.deepcopy(G)
     g2.add("split_a")
     g2.add("split_b")
@@ -137,29 +137,29 @@ def inv2():
 
 
 def inv3():
-    u = "proj-76fbc546"
+    u = "syn_task_multi_route"
     rs = flow.routes(G, u)
+    t1 = "syn_targ_alpha"
+    t2 = "syn_targ_beta"
+    p1 = G.worth[t1]
+    p2 = G.worth[t2]
     return {
         "claim": "one source by several routes counts once; two sources add",
-        "nodes": [u, "targ_4e2cc92a", "task_7d6f78ad"],
-        "numbers": {"routes to targ_4e2cc92a": [[r3(s), " > ".join(p)] for s, p in rs["targ_4e2cc92a"]],
-                    "share of targ_4e2cc92a at stake": r3(W[u].deltas["targ_4e2cc92a"]),
-                    "share of task_7d6f78ad at stake": r3(W[u].deltas["task_7d6f78ad"]),
-                    "gain = 0.60 x share + 0.35 x share": r3(W[u].gain)},
-        "pass": len(rs["targ_4e2cc92a"]) >= 2 and W[u].deltas["targ_4e2cc92a"] <= 1.0 + 1e-9
-        and abs(W[u].gain - (0.6 * W[u].deltas["targ_4e2cc92a"] + 0.35 * W[u].deltas["task_7d6f78ad"])) < 1e-9,
+        "nodes": [u, t1, t2],
+        "numbers": {"routes to %s" % t1: [[r3(s), " > ".join(p)] for s, p in rs[t1]],
+                    "share of %s at stake" % t1: r3(W[u].deltas[t1]),
+                    "share of %s at stake" % t2: r3(W[u].deltas[t2]),
+                    ("gain = %.2f x share + %.2f x share" % (p1, p2)): r3(W[u].gain)},
+        "pass": len(rs[t1]) >= 2 and W[u].deltas[t1] <= 1.0 + 1e-9
+        and abs(W[u].gain - (p1 * W[u].deltas[t1] + p2 * W[u].deltas[t2])) < 1e-9,
     }
 
 
-LOOP = ["aops_twin_cost_monitor", "aops_bootstrap_dogfood", "aops_otel_full_text_container_spans"]
+LOOP = ["syn_loop_1", "syn_loop_2", "syn_loop_3"]
 
 
 def _loop_graph(close: bool, feed: float = 0.5, harm: bool = False, q: float | None = None):
-    """The live three-node loop, fed partially by one new upstream task.
-
-    Real loop: twin_cost_monitor -part_of-> bootstrap_dogfood -supports-> otel_spans -serves-> twin_cost_monitor.
-    ASSUMED: an upstream task `feeder` supporting twin_cost_monitor at `feed`.
-    """
+    """The three-node loop, fed partially by one new upstream task."""
     g2 = copy.deepcopy(G)
     g2.add("feeder")
     g2.link("feeder", LOOP[0], feed, label="supports")
@@ -189,7 +189,7 @@ def inv4():
 
 
 def inv5():
-    b = "brain_448bb804"
+    b = "syn_task_prereq_head"
     pre = sorted(e.src for e in G.edges if e.dst == b and e.label == "needs" and G.state[e.src] == flow.OPEN)
     g3 = copy.deepcopy(G)
     g3.edges = [e for e in g3.edges if not (e.src in pre and e.dst != b)]
@@ -238,23 +238,23 @@ def inv7():
     wp = flow.worth_all(gp)
     return {
         "claim": "a node linked to nothing priced carries the default and nothing more",
-        "nodes": ["academic-b738bdc7", "task_d5f610e6"],
+        "nodes": ["syn_task_unlinked_1", "syn_task_unlinked_2"],
         "numbers": {"open nodes": len(W), "open nodes with no route to a priced target": len(zero),
                     "of those, carrying any worth": sum(1 for u in zero if total(W[u]) != 0),
-                    "worth(academic-b738bdc7)": r3(total(W["academic-b738bdc7"])),
-                    "worth(task_d5f610e6)": r3(total(W["task_d5f610e6"])),
+                    "worth(syn_task_unlinked_1)": r3(total(W["syn_task_unlinked_1"])),
+                    "worth(syn_task_unlinked_2)": r3(total(W["syn_task_unlinked_2"])),
                     "open nodes carrying worth, default quantum 0": sum(1 for r in W.values() if total(r)),
                     "unvalued typed edges": sum(1 for e in json.load(open(FIXTURE))["edges"] if e[3] is None and e[2] != "relates"),
                     "open nodes carrying worth, default quantum 0.05 on unvalued edges": sum(1 for r in w5.values() if total(r)),
                     "same, if every wikilink also became an edge at 0.05": sum(1 for r in wl.values() if total(r)),
                     "nodes on loops then": len(flow.on_loops(gl)),
                     "open nodes carrying worth, part_of at quantum 0 (Q1)": sum(1 for r in wp.values() if total(r))},
-        "pass": all(total(W[u]) == 0 for u in zero) and total(W["academic-b738bdc7"]) == 0,
+        "pass": all(total(W[u]) == 0 for u in zero) and total(W["syn_task_unlinked_1"]) == 0,
     }
 
 
 def inv8():
-    parent, last = "proj-f8b942d5", "admin-3e02c20b"
+    parent, last = "syn_task_parent_last", "syn_task_child_last"
     kids = [e.src for e in G.edges if e.dst == parent and e.label == "part_of"]
     rows = display.view(G, W, META, date(2026, 10, 5), key="per_day")
     pos = next(i for i, r in enumerate(rows) if r["id"] == last) + 1
@@ -271,7 +271,7 @@ def inv8():
 def inv9():
     g2 = copy.deepcopy(G)
     g2.add("opportunity", flow.OPEN, 0.35)
-    g2.link("admin-3e02c20b", "opportunity", 1.0, label="serves")
+    g2.link("syn_task_child_last", "opportunity", 1.0, label="serves")
     w2 = flow.worth_all(g2)
     up = upstream(g2, "opportunity")
     added_nodes = set(g2.state) - set(G.state)
@@ -281,17 +281,17 @@ def inv9():
     gained_ok = all(abs((w2[u].gain - W[u].gain) - 0.35 * w2[u].deltas.get("opportunity", 0)) < 1e-9 for u in up if u in W)
     return {
         "claim": "adding an opportunity takes one node and its edges, and changes no other input",
-        "nodes": ["admin-3e02c20b"], "assumed": "a new opportunity priced 0.35, served by admin-3e02c20b at quantum 1",
+        "nodes": ["syn_task_child_last"], "assumed": "a new opportunity priced 0.35, served by syn_task_child_last at quantum 1",
         "numbers": {"nodes added": len(added_nodes), "edges added": added_edges, "existing inputs changed": changed,
                     "nodes upstream of the opportunity": len(up) - 1,
                     "largest change at any node not upstream": r3(diff(W, w2, skip=up)),
-                    "worth(admin-3e02c20b) before / after": [r3(total(W["admin-3e02c20b"])), r3(total(w2["admin-3e02c20b"]))]},
+                    "worth(syn_task_child_last) before / after": [r3(total(W["syn_task_child_last"])), r3(total(w2["syn_task_child_last"]))]},
         "pass": diff(W, w2, skip=up) < 1e-9 and gained_ok and len(added_nodes) == 1 and added_edges == 1 and changed == 0,
     }
 
 
 def inv10():
-    d, a, b, s = "brain_bf2be9d8", "brain_7f772690", "proj-f8b942d5", "personal_92d5909f"
+    d, a, b, s = "syn_task_decision", "syn_task_opt_a", "syn_task_opt_b", "syn_task_settles"
 
     def run(scale: float, decided: bool):
         g2 = copy.deepcopy(G)
@@ -370,7 +370,7 @@ def inv12():
                     viol += 1
             if len(strengths) == 1:
                 single += abs(dlt - lo) < 1e-9
-    u = "admin-3e02c20b"
+    u = "syn_task_child_last"
     best = {t: max(flow.routes(G, u)[t]) for t in W[u].deltas}
     sentence = "; ".join("%s x %.2f via %s" % (t, s, " > ".join(p)) for t, (s, p) in sorted(best.items()))
     return {
@@ -392,9 +392,9 @@ def inv13():
     listed = [u for u in rank_today if u in W]
     new = sorted(listed, key=lambda u: (-total(W[u]), rank_today[u]))
     rank_new = {u: i + 1 for i, u in enumerate(new)}
-    cases = ["admin_1fece2e0", "task_model_ten_tasks_properly",
-             "admin-3e02c20b", "trustcon_1c23b18d", "admin-59965524", "aops_polecat_mcp_server_build",
-             "brain_448bb804", "proj-76fbc546", "academic-b738bdc7"]
+    cases = ["syn_task_gone_1", "syn_task_done_1", "syn_task_done_2",
+             "syn_task_child_last", "syn_task_prereq_head", "syn_task_multi_route",
+             "syn_task_unlinked_1", "syn_task_unlinked_2", "syn_task_unlinked_3"]
     table = {u: {"state": G.state.get(u), "today": rank_today.get(u), "new": rank_new.get(u),
                  "worth": r3(total(W[u])) if u in W else None,
                  "today focus_score, value_lineage": list(scores.get(u, (None, None)))} for u in cases}
@@ -402,7 +402,7 @@ def inv13():
                "today focus_score, value_lineage": list(scores[u])} for u, _, _ in TODAY_RANK[:10]}
     flow_edges = len(G.flow_edges())
     return {
-        "claim": "the rule runs over the live graph and differences from today's ranking are explained",
+        "claim": "the rule runs over the synthetic graph and differences from today's ranking are explained",
         "nodes": cases,
         "numbers": {"nodes": len(G.state), "open nodes": len(W), "flow edges (nonzero strength)": flow_edges,
                     "priced targets": len(G.worth), "under 0.5 seconds for every open node": RUNTIME < 0.5,
@@ -412,22 +412,22 @@ def inv13():
     }
 
 
-SAFETY_WORK = ["proj-db6ded3c", "proj-76fbc546", "personal_344a9ec6"]
+SAFETY_WORK = ["syn_task_safety_1", "syn_task_multi_route", "syn_task_safety_2"]
 
 
 def inv14():
     pos = copy.deepcopy(G)
-    pos.worth["targ_safety"] = 0.35
+    pos.worth["syn_targ_shield"] = 0.35
     neg = copy.deepcopy(G)
     neg.add("harm_someone_hurt", flow.OPEN, -0.35)
     for e in list(neg.edges):
-        if e.dst == "targ_safety":
+        if e.dst == "syn_targ_shield":
             neg.link(e.src, "harm_someone_hurt", e.quantum, label="serves", effect=flow.HARMS)
     wp, wn = flow.worth_all(pos, only=SAFETY_WORK), flow.worth_all(neg, only=SAFETY_WORK)
     return {
         "claim": "work that protects against a negative target carries positive weight by the same rule",
-        "nodes": ["targ_safety"] + SAFETY_WORK,
-        "assumed": "targ_safety priced +0.35; restated as a harm target priced -0.35 with harms edges",
+        "nodes": ["syn_targ_shield"] + SAFETY_WORK,
+        "assumed": "syn_targ_shield priced +0.35; restated as a harm target priced -0.35 with harms edges",
         "numbers": {u: {"positive target: gain added": r3(wp[u].gain - W[u].gain),
                         "harm target: loss averted": r3(wn[u].loss_averted)} for u in SAFETY_WORK},
         "pass": all(wn[u].loss_averted > 0 and abs(wn[u].loss_averted - (wp[u].gain - W[u].gain)) < 1e-9 for u in SAFETY_WORK),
@@ -435,7 +435,7 @@ def inv14():
 
 
 def inv15():
-    u, z = "proj-76fbc546", "academic-b738bdc7"
+    u, z = "syn_task_multi_route", "syn_task_unlinked_1"
     g2 = copy.deepcopy(G)
     g2.add("harm_equal", flow.OPEN, -total(W[u]))
     g2.link(u, "harm_equal", 1.0, label="serves")
@@ -482,7 +482,7 @@ def inv16():
 
 
 def inv17():
-    classes = {"task_d5f610e6": "hard", "n_c2e542fd02": "fake", "n_2dcb93a9c8": "soft"}
+    classes = {"syn_task_hard_cliff": "hard", "syn_task_fake_cliff": "fake", "syn_task_soft_cliff": "soft"}
     meta = copy.deepcopy(META)
     for u, c in classes.items():
         meta[u]["deadline_class"] = c
@@ -494,7 +494,7 @@ def inv17():
             rows = display.view(G, W, meta, dday, ready_only=False)
             pos = next(i for i, r in enumerate(rows) if r["id"] == u) + 1
             row.append({"date": dday.isoformat(), "cliff": rows[pos - 1]["cliff"], "position": pos})
-        out["%s (%s, due %s, worth %s)" % (u, c, meta[u]["due"], r3(total(W[u])))] = row
+        out["%s (%s, due %s, worth %s)" % (u, c, meta[u].get("due"), r3(total(W[u])))] = row
     hard = out[next(k for k in out if "(hard" in k)]
     others = [v for k, v in out.items() if "(hard" not in k]
     return {
