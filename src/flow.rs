@@ -186,6 +186,22 @@ pub struct FlowOutput {
     pub loop_nodes: Option<Vec<String>>,
 }
 
+impl FlowOutput {
+    /// Zero/default flow figures with Ok status (R16, A27).
+    pub fn zero() -> Self {
+        Self {
+            gain: Some(0.0),
+            loss_averted: Some(0.0),
+            deltas: BTreeMap::new(),
+            stake: BTreeMap::new(),
+            decision_value: Some(0.0),
+            loop_extra: BTreeMap::new(),
+            flow_status: FlowStatus::Ok,
+            loop_nodes: None,
+        }
+    }
+}
+
 /// Fixed point non-convergence error.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error("no fixed point reached within iteration cap")]
