@@ -303,6 +303,7 @@ export interface PkbPreviewNode {
   tags: string[];
   parent?: string;
   aliases: string[];
+  outgoingLinks?: string[];
   bodyExcerpt: string;
   hasMoreBody: boolean;
   absPath: string;
@@ -423,6 +424,13 @@ export function parseMarkdownNode(
   const bodyExcerpt = bodyLines.slice(0, 12).join('\n');
   const hasMoreBody = bodyLines.length > 12;
 
+  const wikiLinkRe = /\[\[([a-zA-Z0-9_\-\.\/]+)(?:\|[^\]]+)?\]\]/g;
+  const outgoingLinks: string[] = [];
+  let linkMatch: RegExpExecArray | null;
+  while ((linkMatch = wikiLinkRe.exec(body)) !== null) {
+    outgoingLinks.push(linkMatch[1].trim());
+  }
+
   return {
     id,
     label,
@@ -433,6 +441,7 @@ export function parseMarkdownNode(
     tags,
     parent,
     aliases,
+    outgoingLinks,
     bodyExcerpt,
     hasMoreBody,
     absPath,
@@ -554,11 +563,9 @@ export class PkbPreviewIndex {
         }
       }
 
-      // Count backlinks in bodyExcerpt
-      const text = node.bodyExcerpt || '';
-      let match: RegExpExecArray | null;
-      while ((match = wikiRe.exec(text)) !== null) {
-        const target = match[1].trim();
+      // Count backlinks across full document body
+      const links = node.outgoingLinks || [];
+      for (const target of links) {
         const targetNode = this.resolve(target);
         if (targetNode) {
           targetNode.backlinkCount = (targetNode.backlinkCount || 0) + 1;
@@ -1034,6 +1041,36 @@ export function computeGutterBadges(
   return badges;
 }
 
+export function applyGutterBadges(
+  editor: vscode.TextEditor,
+  badges: Array<{ line: number; badge?: string; [key: string]: any }>,
+  decorationTypes: Record<string, vscode.TextEditorDecorationType>
+): void {
+  if (!editor || !editor.document) {
+    return;
+  }
+  const grouped: Record<string, vscode.Range[]> = {
+    ready: [],
+    done: [],
+    blocked: [],
+    in_progress: [],
+    task: [],
+  };
+
+  for (const b of badges) {
+    const line = typeof b.line === 'number' ? b.line : 0;
+    const range = new vscode.Range(line, 0, line, 0);
+    const badgeKey = b.badge && grouped[b.badge] ? b.badge : 'task';
+    grouped[badgeKey].push(range);
+  }
+
+  for (const [badgeKey, decType] of Object.entries(decorationTypes)) {
+    if (decType && typeof editor.setDecorations === 'function') {
+      editor.setDecorations(decType, grouped[badgeKey] || []);
+    }
+  }
+}
+
 export function updateEditorGutterBadges(
   editor: vscode.TextEditor,
   index: PkbPreviewIndex,
@@ -1044,29 +1081,7 @@ export function updateEditorGutterBadges(
   }
   const text = editor.document.getText();
   const badges = computeGutterBadges(text, index);
-
-  const grouped: Record<string, vscode.Range[]> = {
-    ready: [],
-    done: [],
-    blocked: [],
-    in_progress: [],
-    task: [],
-  };
-
-  for (const b of badges) {
-    const range = new vscode.Range(b.line, 0, b.line, 0);
-    if (grouped[b.badge]) {
-      grouped[b.badge].push(range);
-    } else {
-      grouped['task'].push(range);
-    }
-  }
-
-  for (const [badgeKey, decType] of Object.entries(decorationTypes)) {
-    if (decType && typeof editor.setDecorations === 'function') {
-      editor.setDecorations(decType, grouped[badgeKey] || []);
-    }
-  }
+  applyGutterBadges(editor, badges, decorationTypes);
 }
 
 
@@ -2312,10 +2327,25 @@ export function activate(context: vscode.ExtensionContext): { extendMarkdownIt: 
     context.subscriptions.push(dec);
   }
 
-  const triggerGutterUpdate = (editor?: vscode.TextEditor) => {
-    if (editor && editor.document && editor.document.languageId === 'markdown') {
-      updateEditorGutterBadges(editor, getPreviewIndex(), decorationTypes);
+  const triggerGutterUpdate = async (editor?: vscode.TextEditor) => {
+    if (!editor || !editor.document || editor.document.languageId !== 'markdown') {
+      return;
     }
+    if (client) {
+      try {
+        const uri = editor.document.uri.toString();
+        const badges: any = await client.sendRequest('mem/gutterBadges', {
+          textDocument: { uri },
+        });
+        if (Array.isArray(badges)) {
+          applyGutterBadges(editor, badges, decorationTypes);
+          return;
+        }
+      } catch (err) {
+        logDebug(`Failed to fetch gutterBadges from LSP: ${err}`);
+      }
+    }
+    updateEditorGutterBadges(editor, getPreviewIndex(), decorationTypes);
   };
 
   if (vscode.window.activeTextEditor) {
@@ -2339,92 +2369,6 @@ export function activate(context: vscode.ExtensionContext): { extendMarkdownIt: 
           triggerGutterUpdate(vscode.window.activeTextEditor);
         }
       })
-    );
-  }
-
-  const markdownSelector: vscode.DocumentSelector = [
-    { scheme: 'file', language: 'markdown' },
-    { scheme: 'untitled', language: 'markdown' },
-  ];
-
-  // Inlay Hints Provider
-  if (vscode.languages && typeof vscode.languages.registerInlayHintsProvider === 'function') {
-    const inlayProvider: vscode.InlayHintsProvider = {
-      provideInlayHints(doc, _range, _token) {
-        const raw = computeInlayHints(doc.getText(), getPreviewIndex());
-        return raw.map((h) => {
-          const hint = new vscode.InlayHint(
-            new vscode.Position(h.position.line, h.position.character),
-            h.label,
-            vscode.InlayHintKind?.Type || 1
-          );
-          if (h.tooltip) {
-            hint.tooltip = h.tooltip;
-          }
-          return hint;
-        });
-      },
-    };
-    context.subscriptions.push(
-      vscode.languages.registerInlayHintsProvider(markdownSelector, inlayProvider)
-    );
-  }
-
-  // CodeLens Provider
-  if (vscode.languages && typeof vscode.languages.registerCodeLensProvider === 'function') {
-    const codeLensProvider: vscode.CodeLensProvider = {
-      provideCodeLenses(doc, _token) {
-        const raw = computeHeaderCodeLenses(doc.uri.toString(), doc.getText(), getPreviewIndex());
-        return raw.map((c) => {
-          const lens = new vscode.CodeLens(
-            new vscode.Range(
-              new vscode.Position(c.range.start.line, c.range.start.character),
-              new vscode.Position(c.range.end.line, c.range.end.character)
-            )
-          );
-          if (c.command) {
-            lens.command = {
-              title: c.command.title,
-              command: c.command.command,
-              arguments: c.command.arguments,
-            };
-          }
-          return lens;
-        });
-      },
-    };
-    context.subscriptions.push(
-      vscode.languages.registerCodeLensProvider(markdownSelector, codeLensProvider)
-    );
-  }
-
-  // Semantic Tokens Provider
-  if (
-    vscode.languages &&
-    typeof vscode.languages.registerDocumentSemanticTokensProvider === 'function' &&
-    (vscode as any).SemanticTokensLegend &&
-    (vscode as any).SemanticTokensBuilder
-  ) {
-    const legend = new (vscode as any).SemanticTokensLegend(
-      SEMANTIC_TOKEN_TYPES,
-      SEMANTIC_TOKEN_MODIFIERS
-    );
-    const semanticTokensProvider: vscode.DocumentSemanticTokensProvider = {
-      provideDocumentSemanticTokens(doc, _token) {
-        const builder = new (vscode as any).SemanticTokensBuilder(legend);
-        const tokens = computeSemanticTokens(doc.getText(), getPreviewIndex());
-        for (const t of tokens) {
-          builder.push(t.line, t.start, t.length, t.tokenType, t.tokenModifiers);
-        }
-        return builder.build();
-      },
-    };
-    context.subscriptions.push(
-      vscode.languages.registerDocumentSemanticTokensProvider(
-        markdownSelector,
-        semanticTokensProvider,
-        legend
-      )
     );
   }
 

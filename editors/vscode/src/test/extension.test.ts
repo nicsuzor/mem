@@ -634,10 +634,6 @@ Child body.
     }
   });
 
-);
-    assert.strictEqual(channel.shown, true, 'mem.showLogs reveals the OutputChannel');
-  });
-
   it('computes inline hints with target title, status, and weight', () => {
     const tmpPkb = fs.mkdtempSync(path.join(os.tmpdir(), 'pkb-inlay-test-'));
     try {
