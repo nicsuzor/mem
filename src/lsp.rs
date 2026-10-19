@@ -285,7 +285,6 @@ impl LspServer {
 
     /// Resolve a reference string to a canonical GraphNode and absolute file path.
     pub fn resolve_node(&self, target: &str) -> Option<(GraphNode, PathBuf)> {
-        self.ensure_fresh();
         let graph = self.graph.read();
         let node = graph.resolve(target)?.clone();
         let abs_path = if node.path.is_absolute() {
@@ -470,6 +469,7 @@ impl LspServer {
 
     /// Handle textDocument/hover request.
     pub fn handle_hover(&self, params: &HoverParams) -> Option<Hover> {
+        self.ensure_fresh();
         let uri = &params.text_document_position_params.text_document.uri;
         let pos = params.text_document_position_params.position;
         let content = self.get_document_content(uri)?;
@@ -525,6 +525,7 @@ impl LspServer {
         &self,
         params: &GotoDefinitionParams,
     ) -> Option<GotoDefinitionResponse> {
+        self.ensure_fresh();
         let uri = &params.text_document_position_params.text_document.uri;
         let pos = params.text_document_position_params.position;
         let content = self.get_document_content(uri)?;
@@ -574,6 +575,7 @@ impl LspServer {
 
     /// Handle textDocument/documentLink request.
     pub fn handle_document_link(&self, params: &DocumentLinkParams) -> Vec<DocumentLink> {
+        self.ensure_fresh();
         let uri = &params.text_document.uri;
         let content = match self.get_document_content(uri) {
             Some(c) => c,
@@ -657,8 +659,58 @@ impl LspServer {
         links
     }
 
+    pub fn node_weight_display(node: &GraphNode) -> Option<String> {
+        if let Some(ref flow) = node.flow {
+            let val = flow.gain.unwrap_or(0.0) + flow.loss_averted.unwrap_or(0.0);
+            if val > 0.0 {
+                let formatted = format!("{:.1}", val);
+                return Some(formatted.trim_end_matches(".0").to_string());
+            }
+        }
+        if let Some(worth) = node.worth {
+            if worth.abs() > 0.0 {
+                let formatted = format!("{:.1}", worth);
+                return Some(formatted.trim_end_matches(".0").to_string());
+            }
+        }
+        if let Some(sw) = node.standing_weight {
+            if sw > 0.0 {
+                let formatted = format!("{:.1}", sw);
+                return Some(formatted.trim_end_matches(".0").to_string());
+            }
+        }
+        if let Some(intent) = node.intent {
+            return Some(intent.to_string());
+        }
+        None
+    }
+
+    pub fn node_weight_f64(node: &GraphNode) -> Option<f64> {
+        if let Some(ref flow) = node.flow {
+            let val = flow.gain.unwrap_or(0.0) + flow.loss_averted.unwrap_or(0.0);
+            if val > 0.0 {
+                return Some(val);
+            }
+        }
+        if let Some(worth) = node.worth {
+            if worth.abs() > 0.0 {
+                return Some(worth);
+            }
+        }
+        if let Some(sw) = node.standing_weight {
+            if sw > 0.0 {
+                return Some(sw);
+            }
+        }
+        if let Some(intent) = node.intent {
+            return Some(intent as f64);
+        }
+        None
+    }
+
     /// Handle textDocument/inlayHint request.
     pub fn handle_inlay_hint(&self, params: &InlayHintParams) -> Vec<InlayHint> {
+        self.ensure_fresh();
         let uri = &params.text_document.uri;
         let content = match self.get_document_content(uri) {
             Some(c) => c,
@@ -682,40 +734,30 @@ impl LspServer {
                 let target = target_match.as_str().trim();
                 let end = full.end() as u32;
 
-                if let Some((node, abs_path)) = self.resolve_node(target) {
-                    // Determine weight
-                    let mut weight_opt: Option<String> = None;
-                    if node.downstream_weight > 0.0 {
-                        let w = format!("{:.1}", node.downstream_weight);
-                        weight_opt = Some(w.trim_end_matches(".0").to_string());
-                    } else if let Some(doc) = crate::pkb::parse_file(&abs_path) {
-                        if let Some(fm) = doc.frontmatter.as_ref() {
-                            if let Some(w) = fm.get("weight") {
-                                if let Some(s) = w.as_str() {
-                                    weight_opt = Some(s.to_string());
-                                } else if let Some(n) = w.as_f64() {
-                                    let formatted = format!("{:.1}", n);
-                                    weight_opt = Some(formatted.trim_end_matches(".0").to_string());
-                                } else if let Some(n) = w.as_i64() {
-                                    weight_opt = Some(n.to_string());
-                                }
-                            }
-                        }
-                    }
-                    if weight_opt.is_none() {
-                        if let Some(intent) = node.intent {
-                            weight_opt = Some(intent.to_string());
-                        }
-                    }
-
+                if let Some((node, _abs_path)) = self.resolve_node(target) {
+                    let weight_opt = Self::node_weight_display(&node);
                     let status_opt = node.status.as_deref();
 
-                    let hint_label = match (status_opt, weight_opt.as_deref()) {
-                        (Some(st), Some(w)) => format!(": {} [{} · w:{}]", node.label, st, w),
-                        (Some(st), None) => format!(": {} [{}]", node.label, st),
-                        (None, Some(w)) => format!(": {} [w:{}]", node.label, w),
-                        (None, None) => format!(": {}", node.label),
+                    let has_explicit_alias = cap.get(2).is_some();
+                    let hint_label = if has_explicit_alias {
+                        match (status_opt, weight_opt.as_deref()) {
+                            (Some(st), Some(w)) => format!(": [{} · w:{}]", st, w),
+                            (Some(st), None) => format!(": [{}]", st),
+                            (None, Some(w)) => format!(": [w:{}]", w),
+                            (None, None) => String::new(),
+                        }
+                    } else {
+                        match (status_opt, weight_opt.as_deref()) {
+                            (Some(st), Some(w)) => format!(": {} [{} · w:{}]", node.label, st, w),
+                            (Some(st), None) => format!(": {} [{}]", node.label, st),
+                            (None, Some(w)) => format!(": {} [w:{}]", node.label, w),
+                            (None, None) => format!(": {}", node.label),
+                        }
                     };
+
+                    if hint_label.is_empty() {
+                        continue;
+                    }
 
                     hints.push(InlayHint {
                         position: Position {
@@ -771,6 +813,7 @@ impl LspServer {
         &self,
         params: &SemanticTokensParams,
     ) -> Option<SemanticTokensResult> {
+        self.ensure_fresh();
         let uri = &params.text_document.uri;
         let content = self.get_document_content(uri)?;
 
@@ -863,15 +906,28 @@ impl LspServer {
                 }
             }
             if found.is_none() {
-                // Try finding by parsing frontmatter id or stem
-                for line in content.lines() {
+                // Try finding by parsing frontmatter id: only between opening and closing `---` delimiters
+                let mut in_frontmatter = false;
+                for (i, line) in content.lines().enumerate() {
                     let trimmed = line.trim();
-                    if let Some(rest) = trimmed.strip_prefix("id:") {
-                        let id_val = rest.trim().trim_matches('"').trim_matches('\'');
-                        if !id_val.is_empty() {
-                            found = graph.resolve(id_val).cloned();
+                    if i == 0 && trimmed == "---" {
+                        in_frontmatter = true;
+                        continue;
+                    }
+                    if in_frontmatter {
+                        if trimmed == "---" {
                             break;
                         }
+                        if let Some(rest) = trimmed.strip_prefix("id:") {
+                            let id_val = rest.trim().trim_matches('"').trim_matches('\'');
+                            if !id_val.is_empty() {
+                                found = graph.resolve(id_val).cloned();
+                                break;
+                            }
+                        }
+                    } else if !trimmed.is_empty() {
+                        // Not frontmatter
+                        break;
                     }
                 }
             }
@@ -1029,7 +1085,7 @@ impl LspServer {
                     None => continue,
                 };
                 let target = target_match.as_str().trim();
-                if let Some((node, abs_path)) = self.resolve_node(target) {
+                if let Some((node, _abs_path)) = self.resolve_node(target) {
                     let ntype = node.node_type.as_deref().unwrap_or("task");
                     if ntype == "task"
                         || ntype == "subtask"
@@ -1037,26 +1093,7 @@ impl LspServer {
                         || ntype == "project"
                         || node.id.starts_with("task-")
                     {
-                        let mut weight: Option<f64> = None;
-                        if node.downstream_weight > 0.0 {
-                            weight = Some(node.downstream_weight);
-                        } else if let Some(doc) = crate::pkb::parse_file(&abs_path) {
-                            if let Some(fm) = doc.frontmatter.as_ref() {
-                                if let Some(w) = fm.get("weight") {
-                                    if let Some(n) = w.as_f64() {
-                                        weight = Some(n);
-                                    } else if let Some(n) = w.as_i64() {
-                                        weight = Some(n as f64);
-                                    }
-                                }
-                            }
-                        }
-                        if weight.is_none() {
-                            if let Some(intent) = node.intent {
-                                weight = Some(intent as f64);
-                            }
-                        }
-
+                        let weight = Self::node_weight_f64(&node);
                         let status = node.status.clone();
                         let badge = status.clone().unwrap_or_else(|| "task".to_string());
 
@@ -1302,6 +1339,7 @@ impl LspServer {
                             }
                             match serde_json::from_value::<ResolveReferenceParams>(req.params) {
                                 Ok(params) => {
+                                    self.ensure_fresh();
                                     let result = if let Some((node, abs_path)) =
                                         self.resolve_node(&params.target)
                                     {

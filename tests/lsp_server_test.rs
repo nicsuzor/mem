@@ -1651,6 +1651,127 @@ fn test_gutter_badges_for_task_links() {
     assert_eq!(badges[1].badge, "blocked");
 }
 
+#[test]
+fn test_code_lens_ignores_body_id_heuristic() {
+    let dir = tempdir().unwrap();
+    let pkb_root = dir.path().to_path_buf();
 
+    let tasks_dir = pkb_root.join("tasks");
+    fs::create_dir_all(&tasks_dir).unwrap();
 
+    // 1. A real task in PKB
+    fs::write(
+        tasks_dir.join("task-real.md"),
+        "---\nid: task-real\ntitle: Real Task\ntype: task\nstatus: ready\n---\nReal Task Body\n",
+    )
+    .unwrap();
 
+    // 2. An unrelated note whose body mentions `id: task-real` in plain text
+    let notes_dir = pkb_root.join("notes");
+    fs::create_dir_all(&notes_dir).unwrap();
+    let note_path = notes_dir.join("note-body-id.md");
+    fs::write(
+        &note_path,
+        "# Note Without Frontmatter\n\nSome body text mentioning:\nid: task-real\nIn the text.\n",
+    )
+    .unwrap();
+
+    let mut server = LspServer::new(pkb_root.clone());
+    let note_uri: Uri = format!("file://{}", note_path.to_string_lossy())
+        .parse()
+        .unwrap();
+
+    server.handle_did_open(DidOpenTextDocumentParams {
+        text_document: TextDocumentItem {
+            uri: note_uri.clone(),
+            language_id: "markdown".to_string(),
+            version: 1,
+            text: fs::read_to_string(&note_path).unwrap(),
+        },
+    });
+
+    let lenses = server.handle_code_lens(&CodeLensParams {
+        text_document: TextDocumentIdentifier { uri: note_uri },
+        work_done_progress_params: Default::default(),
+        partial_result_params: Default::default(),
+    });
+
+    // If body 'id: task-real' were matched, dispatch argument would be "task-real"
+    let dispatch_lens = lenses
+        .iter()
+        .find(|l| l.command.as_ref().map(|c| c.title == "Dispatch").unwrap_or(false))
+        .expect("Dispatch lens must exist");
+    let dispatch_args = dispatch_lens
+        .command
+        .as_ref()
+        .and_then(|c| c.arguments.as_ref())
+        .expect("Dispatch args must exist");
+    assert_ne!(
+        dispatch_args[0],
+        serde_json::Value::String("task-real".to_string()),
+        "CodeLens must NOT match 'id:' in body text for dispatch target"
+    );
+}
+
+#[test]
+fn test_inlay_hints_concise_with_explicit_alias() {
+    let dir = tempdir().unwrap();
+    let pkb_root = dir.path().to_path_buf();
+
+    let tasks_dir = pkb_root.join("tasks");
+    fs::create_dir_all(&tasks_dir).unwrap();
+    let task_path = tasks_dir.join("task-aliased.md");
+    fs::write(
+        &task_path,
+        "---\nid: task-aliased\ntitle: Heavy Long Title Here\ntype: task\nstatus: ready\nintent: 3\n---\nBody\n",
+    )
+    .unwrap();
+
+    let mut server = LspServer::new(pkb_root.clone());
+    let doc_path = pkb_root.join("notes").join("alias_test.md");
+    let doc_uri: Uri = format!("file://{}", doc_path.to_string_lossy())
+        .parse()
+        .unwrap();
+    let doc_text = "Check [[task-aliased|Short Alias]] now.\n";
+
+    server.handle_did_open(DidOpenTextDocumentParams {
+        text_document: TextDocumentItem {
+            uri: doc_uri.clone(),
+            language_id: "markdown".to_string(),
+            version: 1,
+            text: doc_text.to_string(),
+        },
+    });
+
+    let hints = server.handle_inlay_hint(&InlayHintParams {
+        text_document: TextDocumentIdentifier { uri: doc_uri },
+        range: Range {
+            start: Position {
+                line: 0,
+                character: 0,
+            },
+            end: Position {
+                line: 0,
+                character: 35,
+            },
+        },
+        work_done_progress_params: Default::default(),
+    });
+
+    assert_eq!(hints.len(), 1);
+    let label = match &hints[0].label {
+        InlayHintLabel::String(s) => s.as_str(),
+        InlayHintLabel::LabelParts(parts) => parts[0].value.as_str(),
+    };
+    // Should NOT repeat the title "Heavy Long Title Here"
+    assert!(
+        !label.contains("Heavy Long Title Here"),
+        "Inlay hint should suppress redundant title when alias is provided, got: {}",
+        label
+    );
+    assert!(
+        label.contains("ready"),
+        "Inlay hint should contain status, got: {}",
+        label
+    );
+}
