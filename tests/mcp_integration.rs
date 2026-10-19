@@ -360,11 +360,12 @@ impl Drop for HttpServer {
     }
 }
 
-/// Raw HTTP POST to /mcp endpoint. Returns (status_code, headers, body).
-fn http_post(
+/// Raw HTTP POST to any route. Returns (status_code, headers, body).
+fn http_post_route(
     port: u16,
+    route: &str,
     body: &str,
-    session_id: Option<&str>,
+    headers_extra: &[(&str, &str)],
 ) -> (u16, HashMap<String, String>, String) {
     let host = "127.0.0.1".to_string();
     let actual_port = port;
@@ -377,15 +378,15 @@ fn http_post(
         .unwrap();
 
     let mut request = format!(
-        "POST /mcp HTTP/1.1\r\n\
+        "POST {route} HTTP/1.1\r\n\
          Host: {host}:{actual_port}\r\n\
          Content-Type: application/json\r\n\
          Accept: application/json, text/event-stream\r\n\
          Content-Length: {}\r\n",
         body.len()
     );
-    if let Some(sid) = session_id {
-        request.push_str(&format!("Mcp-Session-Id: {sid}\r\n"));
+    for (k, v) in headers_extra {
+        request.push_str(&format!("{k}: {v}\r\n"));
     }
     request.push_str("Connection: close\r\n\r\n");
     request.push_str(body);
@@ -429,6 +430,19 @@ fn http_post(
     }
 
     (status_code, headers, body_section)
+}
+
+/// Raw HTTP POST to /mcp endpoint. Returns (status_code, headers, body).
+fn http_post(
+    port: u16,
+    body: &str,
+    session_id: Option<&str>,
+) -> (u16, HashMap<String, String>, String) {
+    let mut extra = Vec::new();
+    if let Some(sid) = session_id {
+        extra.push(("Mcp-Session-Id", sid));
+    }
+    http_post_route(port, "/mcp", body, &extra)
 }
 
 /// Parse SSE event data lines from response body.
@@ -669,6 +683,90 @@ fn test_http_session_reuse() {
         "graph_stats via HTTP missing content: {result}"
     );
 }
+
+#[test]
+fn test_http_mcp_requires_session() {
+    let server = HttpServer::start();
+
+    // Direct tools/call on /mcp without session must fail with client error (400 or 422)
+    let (status, _, body) = http_post_route(
+        server.port,
+        "/mcp",
+        &tool_call_request(1, "search", json!({"query": "alpha"})),
+        &[],
+    );
+    assert!(
+        status == 400 || status == 422,
+        "/mcp without session must return 400 or 422, got {status}. Body: {body}"
+    );
+
+    // Initializing properly creates a session
+    let (session_id, _) = http_initialize(server.port);
+
+    // Calling with that session ID succeeds
+    let result = http_call_tool(server.port, &session_id, 2, "graph_stats", json!({}));
+    assert!(
+        result.get("result").is_some(),
+        "/mcp with session must succeed: {result}"
+    );
+}
+
+#[test]
+fn test_http_sessionless_route() {
+    let server = HttpServer::start();
+
+    // Calling /mcp/stateless directly with tools/call, x-session-id, and traceparent (NO initialize, NO Mcp-Session-Id)
+    let trace_id = "4bf92f3577b34da6a3ce929d0e0e4736";
+    let parent_span_id = "00f067aa0ba902b7";
+    let traceparent = format!("00-{trace_id}-{parent_span_id}-01");
+    let (status, headers, body) = http_post_route(
+        server.port,
+        "/mcp/stateless",
+        &tool_call_request(1, "search", json!({"query": "alpha"})),
+        &[
+            ("x-session-id", "test-stateless-session"),
+            ("traceparent", &traceparent),
+        ],
+    );
+
+    assert_eq!(
+        status, 200,
+        "/mcp/stateless must return 200 OK without initialize, got {status}. Body: {body}"
+    );
+    // Must return application/json directly without SSE framing
+    let content_type = headers.get("content-type").expect("Content-Type header");
+    assert!(
+        content_type.contains("application/json"),
+        "expected application/json, got {content_type}"
+    );
+    // Must NOT set Mcp-Session-Id header
+    assert!(
+        !headers.contains_key("mcp-session-id"),
+        "stateless route must not issue Mcp-Session-Id: {headers:?}"
+    );
+
+    let parsed: Value = serde_json::from_str(&body).expect("valid JSON response");
+    assert!(
+        parsed.get("result").is_some(),
+        "expected result in response: {parsed}"
+    );
+
+    // Also verify /mcp/sessionless alias works identically
+    let (alias_status, alias_headers, alias_body) = http_post_route(
+        server.port,
+        "/mcp/sessionless",
+        &tool_call_request(2, "search", json!({"query": "alpha"})),
+        &[("x-session-id", "test-sessionless-alias")],
+    );
+    assert_eq!(alias_status, 200, "/mcp/sessionless alias must return 200 OK");
+    assert!(
+        !alias_headers.contains_key("mcp-session-id"),
+        "sessionless alias must not issue Mcp-Session-Id"
+    );
+    let alias_parsed: Value = serde_json::from_str(&alias_body).expect("valid JSON");
+    assert!(alias_parsed.get("result").is_some());
+}
+
 
 #[test]
 fn test_http_multiple_tools() {

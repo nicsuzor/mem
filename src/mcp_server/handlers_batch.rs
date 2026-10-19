@@ -1052,7 +1052,7 @@ impl PkbSearchServer {
             });
         }
 
-        for (_, node_updates) in &updates {
+        for node_updates in updates.values() {
             if let Some(body) = node_updates.get("body").and_then(|v| v.as_str()) {
                 self.reject_machine_paths(body, None)?;
             }
