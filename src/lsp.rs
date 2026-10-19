@@ -45,6 +45,19 @@ fn path_to_uri(path: &Path) -> Option<Uri> {
     Uri::from_str(&format!("file://{}", path.to_string_lossy())).ok()
 }
 
+/// A gutter badge item indicating a task reference on a specific line.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GutterBadgeItem {
+    pub line: u32,
+    #[serde(alias = "task_id")]
+    pub task_id: String,
+    pub title: String,
+    pub status: Option<String>,
+    pub weight: Option<f64>,
+    pub badge: String,
+}
+
 pub fn type_codicon(node_type: &str) -> &'static str {
     match node_type {
         "task" | "subtask" => "$(checklist)",
@@ -272,7 +285,6 @@ impl LspServer {
 
     /// Resolve a reference string to a canonical GraphNode and absolute file path.
     pub fn resolve_node(&self, target: &str) -> Option<(GraphNode, PathBuf)> {
-        self.ensure_fresh();
         let graph = self.graph.read();
         let node = graph.resolve(target)?.clone();
         let abs_path = if node.path.is_absolute() {
@@ -457,6 +469,7 @@ impl LspServer {
 
     /// Handle textDocument/hover request.
     pub fn handle_hover(&self, params: &HoverParams) -> Option<Hover> {
+        self.ensure_fresh();
         let uri = &params.text_document_position_params.text_document.uri;
         let pos = params.text_document_position_params.position;
         let content = self.get_document_content(uri)?;
@@ -512,6 +525,7 @@ impl LspServer {
         &self,
         params: &GotoDefinitionParams,
     ) -> Option<GotoDefinitionResponse> {
+        self.ensure_fresh();
         let uri = &params.text_document_position_params.text_document.uri;
         let pos = params.text_document_position_params.position;
         let content = self.get_document_content(uri)?;
@@ -561,6 +575,7 @@ impl LspServer {
 
     /// Handle textDocument/documentLink request.
     pub fn handle_document_link(&self, params: &DocumentLinkParams) -> Vec<DocumentLink> {
+        self.ensure_fresh();
         let uri = &params.text_document.uri;
         let content = match self.get_document_content(uri) {
             Some(c) => c,
@@ -644,6 +659,465 @@ impl LspServer {
         links
     }
 
+    pub fn node_weight_display(node: &GraphNode) -> Option<String> {
+        if let Some(ref flow) = node.flow {
+            let val = flow.gain.unwrap_or(0.0) + flow.loss_averted.unwrap_or(0.0);
+            if val > 0.0 {
+                let formatted = format!("{:.1}", val);
+                return Some(formatted.trim_end_matches(".0").to_string());
+            }
+        }
+        if let Some(worth) = node.worth {
+            if worth.abs() > 0.0 {
+                let formatted = format!("{:.1}", worth);
+                return Some(formatted.trim_end_matches(".0").to_string());
+            }
+        }
+        if let Some(sw) = node.standing_weight {
+            if sw > 0.0 {
+                let formatted = format!("{:.1}", sw);
+                return Some(formatted.trim_end_matches(".0").to_string());
+            }
+        }
+        if let Some(intent) = node.intent {
+            return Some(intent.to_string());
+        }
+        None
+    }
+
+    pub fn node_weight_f64(node: &GraphNode) -> Option<f64> {
+        if let Some(ref flow) = node.flow {
+            let val = flow.gain.unwrap_or(0.0) + flow.loss_averted.unwrap_or(0.0);
+            if val > 0.0 {
+                return Some(val);
+            }
+        }
+        if let Some(worth) = node.worth {
+            if worth.abs() > 0.0 {
+                return Some(worth);
+            }
+        }
+        if let Some(sw) = node.standing_weight {
+            if sw > 0.0 {
+                return Some(sw);
+            }
+        }
+        if let Some(intent) = node.intent {
+            return Some(intent as f64);
+        }
+        None
+    }
+
+    /// Handle textDocument/inlayHint request.
+    pub fn handle_inlay_hint(&self, params: &InlayHintParams) -> Vec<InlayHint> {
+        self.ensure_fresh();
+        let uri = &params.text_document.uri;
+        let content = match self.get_document_content(uri) {
+            Some(c) => c,
+            None => return Vec::new(),
+        };
+
+        let mut hints = Vec::new();
+
+        for (line_idx, line) in content.lines().enumerate() {
+            let line_u32 = line_idx as u32;
+
+            for cap in WIKILINK_RE.captures_iter(line) {
+                let full = match cap.get(0) {
+                    Some(f) => f,
+                    None => continue,
+                };
+                let target_match = match cap.get(1) {
+                    Some(t) => t,
+                    None => continue,
+                };
+                let target = target_match.as_str().trim();
+                let end = full.end() as u32;
+
+                if let Some((node, _abs_path)) = self.resolve_node(target) {
+                    let weight_opt = Self::node_weight_display(&node);
+                    let status_opt = node.status.as_deref();
+
+                    let has_explicit_alias = cap.get(2).is_some();
+                    let hint_label = if has_explicit_alias {
+                        match (status_opt, weight_opt.as_deref()) {
+                            (Some(st), Some(w)) => format!(": [{} · w:{}]", st, w),
+                            (Some(st), None) => format!(": [{}]", st),
+                            (None, Some(w)) => format!(": [w:{}]", w),
+                            (None, None) => String::new(),
+                        }
+                    } else {
+                        match (status_opt, weight_opt.as_deref()) {
+                            (Some(st), Some(w)) => format!(": {} [{} · w:{}]", node.label, st, w),
+                            (Some(st), None) => format!(": {} [{}]", node.label, st),
+                            (None, Some(w)) => format!(": {} [w:{}]", node.label, w),
+                            (None, None) => format!(": {}", node.label),
+                        }
+                    };
+
+                    if hint_label.is_empty() {
+                        continue;
+                    }
+
+                    hints.push(InlayHint {
+                        position: Position {
+                            line: line_u32,
+                            character: end,
+                        },
+                        label: InlayHintLabel::String(hint_label),
+                        kind: Some(InlayHintKind::TYPE),
+                        text_edits: None,
+                        tooltip: Some(InlayHintTooltip::String(format!(
+                            "{}: {}",
+                            node.id, node.label
+                        ))),
+                        padding_left: Some(true),
+                        padding_right: None,
+                        data: None,
+                    });
+                }
+            }
+        }
+
+        hints
+    }
+
+    /// Legend for semantic tokens.
+    pub fn semantic_tokens_legend() -> SemanticTokensLegend {
+        SemanticTokensLegend {
+            token_types: vec![
+                SemanticTokenType::new("pkbTaskReady"),
+                SemanticTokenType::new("pkbTaskDone"),
+                SemanticTokenType::new("pkbTaskBlocked"),
+                SemanticTokenType::new("pkbTaskOther"),
+                SemanticTokenType::new("pkbNodeInfo"),
+                SemanticTokenType::new("pkbNodeIndex"),
+                SemanticTokenType::new("pkbNodeChapter"),
+                SemanticTokenType::new("pkbNodeDefault"),
+            ],
+            token_modifiers: vec![
+                SemanticTokenModifier::new("ready"),
+                SemanticTokenModifier::new("done"),
+                SemanticTokenModifier::new("blocked"),
+                SemanticTokenModifier::new("inProgress"),
+                SemanticTokenModifier::new("task"),
+                SemanticTokenModifier::new("info"),
+                SemanticTokenModifier::new("index"),
+                SemanticTokenModifier::new("chapter"),
+            ],
+        }
+    }
+
+    /// Handle textDocument/semanticTokens/full request.
+    pub fn handle_semantic_tokens_full(
+        &self,
+        params: &SemanticTokensParams,
+    ) -> Option<SemanticTokensResult> {
+        self.ensure_fresh();
+        let uri = &params.text_document.uri;
+        let content = self.get_document_content(uri)?;
+
+        let mut raw_tokens: Vec<(u32, u32, u32, u32, u32)> = Vec::new();
+
+        for (line_idx, line) in content.lines().enumerate() {
+            let line_u32 = line_idx as u32;
+
+            for cap in WIKILINK_RE.captures_iter(line) {
+                let full = match cap.get(0) {
+                    Some(f) => f,
+                    None => continue,
+                };
+                let target_match = match cap.get(1) {
+                    Some(t) => t,
+                    None => continue,
+                };
+                let target = target_match.as_str().trim();
+                let start = full.start() as u32;
+                let length = (full.end() - full.start()) as u32;
+
+                if let Some((node, _abs_path)) = self.resolve_node(target) {
+                    let ntype = node.node_type.as_deref().unwrap_or("task");
+                    let status = node.status.as_deref();
+
+                    let (token_type, token_modifiers_bitset) = match ntype {
+                        "task" | "subtask" | "epic" | "project" => match status {
+                            Some("ready") => (0, 1 | 16),
+                            Some("done") => (1, 2 | 16),
+                            Some("blocked") => (2, 4 | 16),
+                            Some("in_progress") => (3, 8 | 16),
+                            _ => (3, 16),
+                        },
+                        "info" | "knowledge" | "reference" => (4, 32),
+                        "index" | "topic" => (5, 64),
+                        "chapter" | "spec" => (6, 128),
+                        _ => (7, 0),
+                    };
+
+                    raw_tokens.push((line_u32, start, length, token_type, token_modifiers_bitset));
+                }
+            }
+        }
+
+        let mut prev_line = 0;
+        let mut prev_start = 0;
+        let mut data = Vec::new();
+
+        for (line, start, length, token_type, token_modifiers_bitset) in raw_tokens {
+            let delta_line = line - prev_line;
+            let delta_start = if delta_line == 0 {
+                start - prev_start
+            } else {
+                start
+            };
+            prev_line = line;
+            prev_start = start;
+
+            data.push(SemanticToken {
+                delta_line,
+                delta_start,
+                length,
+                token_type,
+                token_modifiers_bitset,
+            });
+        }
+
+        Some(SemanticTokensResult::Tokens(SemanticTokens {
+            result_id: None,
+            data,
+        }))
+    }
+
+    /// Handle textDocument/codeLens request.
+    pub fn handle_code_lens(&self, params: &CodeLensParams) -> Vec<CodeLens> {
+        self.ensure_fresh();
+        let uri = &params.text_document.uri;
+        let content = match self.get_document_content(uri) {
+            Some(c) => c,
+            None => return Vec::new(),
+        };
+
+        let uri_str = uri.as_str();
+        let target_node = {
+            let graph = self.graph.read();
+            let mut found: Option<GraphNode> = None;
+            if let Ok(url) = url::Url::parse(uri_str) {
+                if let Ok(path) = url.to_file_path() {
+                    found = graph.resolve(&path.to_string_lossy()).cloned();
+                }
+            }
+            if found.is_none() {
+                // Try finding by parsing frontmatter id: only between opening and closing `---` delimiters
+                let mut in_frontmatter = false;
+                for (i, line) in content.lines().enumerate() {
+                    let trimmed = line.trim();
+                    if i == 0 && trimmed == "---" {
+                        in_frontmatter = true;
+                        continue;
+                    }
+                    if in_frontmatter {
+                        if trimmed == "---" {
+                            break;
+                        }
+                        if let Some(rest) = trimmed.strip_prefix("id:") {
+                            let id_val = rest.trim().trim_matches('"').trim_matches('\'');
+                            if !id_val.is_empty() {
+                                found = graph.resolve(id_val).cloned();
+                                break;
+                            }
+                        }
+                    } else if !trimmed.is_empty() {
+                        // Not frontmatter
+                        break;
+                    }
+                }
+            }
+            if found.is_none() {
+                if let Some(path_str) = uri_str.strip_prefix("file://") {
+                    found = graph.resolve(path_str).cloned();
+                }
+            }
+            found
+        };
+
+        let node = match target_node {
+            Some(n) => n,
+            None => {
+                let title = content
+                    .lines()
+                    .find(|l| l.starts_with("# "))
+                    .map(|l| l.trim_start_matches("# ").trim().to_string())
+                    .unwrap_or_else(|| "Note".to_string());
+                GraphNode {
+                    id: String::new(),
+                    label: title,
+                    ..Default::default()
+                }
+            }
+        };
+
+        let graph = self.graph.read();
+        let mut lenses = Vec::new();
+
+        // 1. Parent lens
+        let (parent_title, parent_cmd) = if let Some(ref pid) = node.parent {
+            if let Some(pnode) = graph.resolve(pid) {
+                (
+                    format!("Parent: {}", pnode.label),
+                    Some(Command {
+                        title: format!("Open {}", pnode.label),
+                        command: "mem.openReference".to_string(),
+                        arguments: Some(vec![serde_json::Value::String(pnode.id.clone())]),
+                    }),
+                )
+            } else {
+                (format!("Parent: {}", pid), None)
+            }
+        } else {
+            ("Parent: none".to_string(), None)
+        };
+
+        lenses.push(CodeLens {
+            range: Range::default(),
+            command: Some(Command {
+                title: parent_title,
+                command: parent_cmd
+                    .as_ref()
+                    .map(|c| c.command.clone())
+                    .unwrap_or_default(),
+                arguments: parent_cmd.and_then(|c| c.arguments),
+            }),
+            data: None,
+        });
+
+        // 2. Backlinks lens
+        let backlink_text = if node.backlink_count == 1 {
+            "1 backlink".to_string()
+        } else {
+            format!("{} backlinks", node.backlink_count)
+        };
+        lenses.push(CodeLens {
+            range: Range::default(),
+            command: Some(Command {
+                title: backlink_text,
+                command: String::new(),
+                arguments: None,
+            }),
+            data: None,
+        });
+
+        // 3. Subtasks counts by status
+        let mut subtask_ids = node.children.clone();
+        for st in &node.subtasks {
+            if !subtask_ids.contains(st) {
+                subtask_ids.push(st.clone());
+            }
+        }
+
+        let mut status_counts: std::collections::BTreeMap<String, usize> =
+            std::collections::BTreeMap::new();
+        for sid in &subtask_ids {
+            if let Some(snode) = graph.resolve(sid) {
+                let st = snode.status.as_deref().unwrap_or("unknown");
+                *status_counts.entry(st.to_string()).or_insert(0) += 1;
+            }
+        }
+
+        let subtasks_text = if status_counts.is_empty() {
+            "Subtasks: 0".to_string()
+        } else {
+            let order = ["ready", "in_progress", "blocked", "done"];
+            let mut parts = Vec::new();
+            for &key in &order {
+                if let Some(&cnt) = status_counts.get(key) {
+                    parts.push(format!("{} {}", cnt, key));
+                }
+            }
+            for (k, cnt) in &status_counts {
+                if !order.contains(&k.as_str()) {
+                    parts.push(format!("{} {}", cnt, k));
+                }
+            }
+            format!("Subtasks: {}", parts.join(" · "))
+        };
+
+        lenses.push(CodeLens {
+            range: Range::default(),
+            command: Some(Command {
+                title: subtasks_text,
+                command: String::new(),
+                arguments: None,
+            }),
+            data: None,
+        });
+
+        // 4. Dispatch action
+        lenses.push(CodeLens {
+            range: Range::default(),
+            command: Some(Command {
+                title: "Dispatch".to_string(),
+                command: "mem.dispatch".to_string(),
+                arguments: Some(vec![serde_json::Value::String(node.id.clone())]),
+            }),
+            data: None,
+        });
+
+        lenses
+    }
+
+    /// Handle gutter badges calculation for a document.
+    pub fn handle_gutter_badges(&self, uri: &Uri) -> Vec<GutterBadgeItem> {
+        self.ensure_fresh();
+        let content = match self.get_document_content(uri) {
+            Some(c) => c,
+            None => return Vec::new(),
+        };
+
+        let mut badges = Vec::new();
+
+        for (line_idx, line) in content.lines().enumerate() {
+            let line_u32 = line_idx as u32;
+
+            let mut found_task: Option<GutterBadgeItem> = None;
+
+            for cap in WIKILINK_RE.captures_iter(line) {
+                let target_match = match cap.get(1) {
+                    Some(t) => t,
+                    None => continue,
+                };
+                let target = target_match.as_str().trim();
+                if let Some((node, _abs_path)) = self.resolve_node(target) {
+                    let ntype = node.node_type.as_deref().unwrap_or("task");
+                    if ntype == "task"
+                        || ntype == "subtask"
+                        || ntype == "epic"
+                        || ntype == "project"
+                        || node.id.starts_with("task-")
+                    {
+                        let weight = Self::node_weight_f64(&node);
+                        let status = node.status.clone();
+                        let badge = status.clone().unwrap_or_else(|| "task".to_string());
+
+                        found_task = Some(GutterBadgeItem {
+                            line: line_u32,
+                            task_id: node.id.clone(),
+                            title: node.label.clone(),
+                            status,
+                            weight,
+                            badge,
+                        });
+                        break;
+                    }
+                }
+            }
+
+            if let Some(item) = found_task {
+                badges.push(item);
+            }
+        }
+
+        badges
+    }
+
     /// Run the LSP server over an arbitrary lsp-server Connection (memory or stdio).
     pub fn run_connection(mut self, connection: lsp_server::Connection) -> anyhow::Result<()> {
         let server_capabilities = serde_json::to_value(&ServerCapabilities {
@@ -653,6 +1127,18 @@ impl LspServer {
             document_link_provider: Some(DocumentLinkOptions {
                 resolve_provider: Some(false),
                 work_done_progress_options: Default::default(),
+            }),
+            inlay_hint_provider: Some(OneOf::Left(true)),
+            semantic_tokens_provider: Some(
+                SemanticTokensServerCapabilities::SemanticTokensOptions(SemanticTokensOptions {
+                    work_done_progress_options: Default::default(),
+                    legend: Self::semantic_tokens_legend(),
+                    range: Some(false),
+                    full: Some(SemanticTokensFullOptions::Bool(true)),
+                }),
+            ),
+            code_lens_provider: Some(CodeLensOptions {
+                resolve_provider: Some(false),
             }),
             ..Default::default()
         })?;
@@ -758,6 +1244,81 @@ impl LspServer {
                                 }
                             }
                         }
+                        "textDocument/inlayHint" => {
+                            match serde_json::from_value::<InlayHintParams>(req.params) {
+                                Ok(params) => {
+                                    let result = self.handle_inlay_hint(&params);
+                                    let resp = lsp_server::Response::new_ok(req.id, result);
+                                    let _ =
+                                        connection.sender.send(lsp_server::Message::Response(resp));
+                                }
+                                Err(err) => {
+                                    warn!(
+                                        method = %req.method,
+                                        id = ?req.id,
+                                        error = %err,
+                                        "Invalid inlayHint params"
+                                    );
+                                    let resp = lsp_server::Response::new_err(
+                                        req.id,
+                                        lsp_server::ErrorCode::InvalidParams as i32,
+                                        format!("Invalid inlayHint params: {}", err),
+                                    );
+                                    let _ =
+                                        connection.sender.send(lsp_server::Message::Response(resp));
+                                }
+                            }
+                        }
+                        "textDocument/semanticTokens/full" => {
+                            match serde_json::from_value::<SemanticTokensParams>(req.params) {
+                                Ok(params) => {
+                                    let result = self.handle_semantic_tokens_full(&params);
+                                    let resp = lsp_server::Response::new_ok(req.id, result);
+                                    let _ =
+                                        connection.sender.send(lsp_server::Message::Response(resp));
+                                }
+                                Err(err) => {
+                                    warn!(
+                                        method = %req.method,
+                                        id = ?req.id,
+                                        error = %err,
+                                        "Invalid semanticTokens params"
+                                    );
+                                    let resp = lsp_server::Response::new_err(
+                                        req.id,
+                                        lsp_server::ErrorCode::InvalidParams as i32,
+                                        format!("Invalid semanticTokens params: {}", err),
+                                    );
+                                    let _ =
+                                        connection.sender.send(lsp_server::Message::Response(resp));
+                                }
+                            }
+                        }
+                        "textDocument/codeLens" => {
+                            match serde_json::from_value::<CodeLensParams>(req.params) {
+                                Ok(params) => {
+                                    let result = self.handle_code_lens(&params);
+                                    let resp = lsp_server::Response::new_ok(req.id, result);
+                                    let _ =
+                                        connection.sender.send(lsp_server::Message::Response(resp));
+                                }
+                                Err(err) => {
+                                    warn!(
+                                        method = %req.method,
+                                        id = ?req.id,
+                                        error = %err,
+                                        "Invalid codeLens params"
+                                    );
+                                    let resp = lsp_server::Response::new_err(
+                                        req.id,
+                                        lsp_server::ErrorCode::InvalidParams as i32,
+                                        format!("Invalid codeLens params: {}", err),
+                                    );
+                                    let _ =
+                                        connection.sender.send(lsp_server::Message::Response(resp));
+                                }
+                            }
+                        }
                         "mem/status" => {
                             self.ensure_fresh();
                             let node_count = self.graph.read().node_count();
@@ -778,6 +1339,7 @@ impl LspServer {
                             }
                             match serde_json::from_value::<ResolveReferenceParams>(req.params) {
                                 Ok(params) => {
+                                    self.ensure_fresh();
                                     let result = if let Some((node, abs_path)) =
                                         self.resolve_node(&params.target)
                                     {
@@ -814,6 +1376,37 @@ impl LspServer {
                                         req.id,
                                         lsp_server::ErrorCode::InvalidParams as i32,
                                         format!("Invalid resolveReference params: {}", err),
+                                    );
+                                    let _ =
+                                        connection.sender.send(lsp_server::Message::Response(resp));
+                                }
+                            }
+                        }
+                        "mem/gutterBadges" => {
+                            #[derive(serde::Deserialize)]
+                            #[serde(rename_all = "camelCase")]
+                            struct GutterBadgesParams {
+                                text_document: TextDocumentIdentifier,
+                            }
+                            match serde_json::from_value::<GutterBadgesParams>(req.params) {
+                                Ok(params) => {
+                                    let result =
+                                        self.handle_gutter_badges(&params.text_document.uri);
+                                    let resp = lsp_server::Response::new_ok(req.id, result);
+                                    let _ =
+                                        connection.sender.send(lsp_server::Message::Response(resp));
+                                }
+                                Err(err) => {
+                                    warn!(
+                                        method = %req.method,
+                                        id = ?req.id,
+                                        error = %err,
+                                        "Invalid gutterBadges params"
+                                    );
+                                    let resp = lsp_server::Response::new_err(
+                                        req.id,
+                                        lsp_server::ErrorCode::InvalidParams as i32,
+                                        format!("Invalid gutterBadges params: {}", err),
                                     );
                                     let _ =
                                         connection.sender.send(lsp_server::Message::Response(resp));
