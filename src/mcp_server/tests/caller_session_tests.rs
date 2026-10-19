@@ -464,3 +464,97 @@ async fn test_session_mode_warn_and_enforce() {
 
     std::env::remove_var("PKB_SESSION_MODE");
 }
+
+#[tokio::test]
+async fn test_sessionless_call_attribution_and_no_binding() {
+    let _lock = CALLER_SESSION_TEST_MUTEX.lock().await;
+    let exporter = InMemorySpanExporter::default();
+    let provider = TracerProvider::builder()
+        .with_simple_exporter(exporter.clone())
+        .build();
+    let _prev = opentelemetry::global::set_tracer_provider(provider.clone());
+
+    let server = build_test_server();
+
+    // Traceparent + x-session-id headers, NO mcp-session-id header (sessionless call)
+    let trace_id_str = "4bf92f3577b34da6a3ce929d0e0e4736";
+    let parent_span_id_str = "00f067aa0ba902b7";
+    let traceparent_header = format!("00-{trace_id_str}-{parent_span_id_str}-01");
+
+    let req = http::Request::builder()
+        .header("x-session-id", "stateless-sess-123")
+        .header("traceparent", &traceparent_header)
+        .body(())
+        .unwrap();
+    let parts = req.into_parts().0;
+
+    let res = server
+        .execute_tool_call("search", &json!({"query": "alpha"}), Some(&parts), None)
+        .await
+        .unwrap();
+    assert!(!res.content.is_empty(), "sessionless search must return results");
+
+    let spans = exporter.spans.lock().unwrap().clone();
+    let span = spans
+        .iter()
+        .find(|s| s.name == "mcp.search")
+        .expect("mcp.search span must be emitted");
+
+    // 1. Spans parent under supplied traceparent
+    assert_eq!(
+        span.span_context.trace_id().to_string(),
+        trace_id_str,
+        "mcp.search span must carry trace_id from traceparent"
+    );
+    assert_eq!(
+        span.parent_span_id.to_string(),
+        parent_span_id_str,
+        "mcp.search span must be parented under caller span"
+    );
+
+    // 2. Carries session.id and aops.session.source = header
+    let attrs: std::collections::HashMap<String, String> = span
+        .attributes
+        .iter()
+        .map(|kv| (kv.key.as_str().to_string(), kv.value.to_string()))
+        .collect();
+    assert_eq!(
+        attrs.get("session.id").map(|s| s.as_str()),
+        Some("stateless-sess-123")
+    );
+    assert_eq!(
+        attrs.get("aops.session.source").map(|s| s.as_str()),
+        Some("header")
+    );
+
+    // 3. Binds nothing
+    assert_eq!(
+        server.session_registry.count(),
+        0,
+        "stateless call must not create connection bindings"
+    );
+
+    // Later call without x-session-id has source none (never attributed from any prior binding)
+    let res2 = server
+        .execute_tool_call("search", &json!({"query": "alpha"}), None, None)
+        .await
+        .unwrap();
+    assert!(!res2.content.is_empty());
+    let spans2 = exporter.spans.lock().unwrap().clone();
+    let span2 = spans2
+        .iter()
+        .rfind(|s| s.name == "mcp.search")
+        .expect("second mcp.search span");
+    let attrs2: std::collections::HashMap<String, String> = span2
+        .attributes
+        .iter()
+        .map(|kv| (kv.key.as_str().to_string(), kv.value.to_string()))
+        .collect();
+    assert_eq!(
+        attrs2.get("aops.session.source").map(|s| s.as_str()),
+        Some("none"),
+        "subsequent call without header must not be bound"
+    );
+    assert_eq!(attrs2.get("session.id"), None);
+}
+

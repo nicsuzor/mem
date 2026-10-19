@@ -62,6 +62,10 @@ impl SessionRegistry {
         }
     }
 
+    pub fn count(&self) -> usize {
+        self.sessions.read().len()
+    }
+
     pub fn get(&self, mcp_session_id: &str) -> Option<ClientSessionMetadata> {
         self.sessions.read().get(mcp_session_id).cloned()
     }
