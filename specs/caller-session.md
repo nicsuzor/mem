@@ -71,7 +71,11 @@ Only sources 1–3 update a binding. A W3C `traceparent` in headers or `_meta` p
 | --- | --- | --- |
 | Direct (one agent session per connection) | any `initialize` client not listed as a gateway | Bound to the last explicit id |
 | Gateway (many agents share the connection) | `initialize` client name listed in the server's gateway list | Never bound; every call must carry its own id |
+| Stateless (sessionless one-shot calls) | Request arrives on stateless route (`/mcp/stateless` or `/mcp/sessionless`) with no `Mcp-Session-Id` | Never bound; every call must carry its own id via header (`x-session-id`), `_meta.session_id`, or `_session` |
+
+Calls arriving on the stateless route bypass the transport session lifecycle (`initialize` and `Mcp-Session-Id` are neither required nor tracked). Because there is no persistent connection or transport session, the server never creates or updates a binding for stateless calls. Every call is attributed independently from its own request attributes (`x-session-id`, `_meta.session_id`, or `_session`), and parents under any supplied W3C `traceparent`. Calls lacking an explicit session ID resolve to `aops.session.source = "none"` and never bind.
 
 ### Modes
 
 `enforce` and `warn` select AC-4.1 or AC-4.2. The server starts in `warn`. It switches to `enforce` once the trace store shows writes carrying `aops.session.missing` have stopped.
+
