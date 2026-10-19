@@ -5,6 +5,10 @@ import * as os from 'os';
 import {
   activate,
   collectDescendants,
+  computeGutterBadges,
+  computeHeaderCodeLenses,
+  computeInlayHints,
+  computeSemanticTokens,
   createMarkdownItPlugin,
   extractReferenceAtPosition,
   formatBodyMicroHeadersHtml,
@@ -629,4 +633,167 @@ Child body.
       fs.rmSync(tmpPkb, { recursive: true, force: true });
     }
   });
+
+);
+    assert.strictEqual(channel.shown, true, 'mem.showLogs reveals the OutputChannel');
+  });
+
+  it('computes inline hints with target title, status, and weight', () => {
+    const tmpPkb = fs.mkdtempSync(path.join(os.tmpdir(), 'pkb-inlay-test-'));
+    try {
+      const taskPath = path.join(tmpPkb, 'task-inlay.md');
+      fs.writeFileSync(
+        taskPath,
+        `---
+id: task-inlay
+title: Inlay Hint Target
+type: task
+status: ready
+weight: 2.5
+---
+Body text.
+`
+      );
+
+      const index = new PkbPreviewIndex(tmpPkb);
+      const docText = 'Check [[task-inlay]] today.';
+      const hints = computeInlayHints(docText, index);
+
+      assert.strictEqual(hints.length, 1);
+      assert.strictEqual(hints[0].position.line, 0);
+      assert.strictEqual(hints[0].position.character, 20);
+      assert.ok(hints[0].label.includes('Inlay Hint Target'), 'Hint should have target title');
+      assert.ok(hints[0].label.includes('ready'), 'Hint should have status');
+      assert.ok(hints[0].label.includes('2.5') || hints[0].label.includes('w:'), 'Hint should have weight');
+    } finally {
+      fs.rmSync(tmpPkb, { recursive: true, force: true });
+    }
+  });
+
+  it('computes semantic tokens with distinct types for task states and node types', () => {
+    const tmpPkb = fs.mkdtempSync(path.join(os.tmpdir(), 'pkb-sem-test-'));
+    try {
+      fs.writeFileSync(
+        path.join(tmpPkb, 't-ready.md'),
+        '---\nid: t-ready\ntitle: Ready\ntype: task\nstatus: ready\n---\n'
+      );
+      fs.writeFileSync(
+        path.join(tmpPkb, 't-done.md'),
+        '---\nid: t-done\ntitle: Done\ntype: task\nstatus: done\n---\n'
+      );
+      fs.writeFileSync(
+        path.join(tmpPkb, 't-blocked.md'),
+        '---\nid: t-blocked\ntitle: Blocked\ntype: task\nstatus: blocked\n---\n'
+      );
+      fs.writeFileSync(
+        path.join(tmpPkb, 'n-info.md'),
+        '---\nid: n-info\ntitle: Info\ntype: info\n---\n'
+      );
+      fs.writeFileSync(
+        path.join(tmpPkb, 'n-index.md'),
+        '---\nid: n-index\ntitle: Index\ntype: index\n---\n'
+      );
+
+      const index = new PkbPreviewIndex(tmpPkb);
+      const docText = '[[t-ready]] [[t-done]] [[t-blocked]] [[n-info]] [[n-index]]';
+      const tokens = computeSemanticTokens(docText, index);
+
+      assert.strictEqual(tokens.length, 5);
+      // ready: 0, done: 1, blocked: 2, info: 4, index: 5
+      assert.strictEqual(tokens[0].tokenType, 0, 'Ready task has tokenType 0');
+      assert.strictEqual(tokens[1].tokenType, 1, 'Done task has tokenType 1');
+      assert.strictEqual(tokens[2].tokenType, 2, 'Blocked task has tokenType 2');
+      assert.strictEqual(tokens[3].tokenType, 4, 'Info node has tokenType 4');
+      assert.strictEqual(tokens[4].tokenType, 5, 'Index node has tokenType 5');
+    } finally {
+      fs.rmSync(tmpPkb, { recursive: true, force: true });
+    }
+  });
+
+  it('computes header bar CodeLens with parent by title, backlinks, subtasks by status, and dispatch action', () => {
+    const tmpPkb = fs.mkdtempSync(path.join(os.tmpdir(), 'pkb-lens-test-'));
+    try {
+      fs.writeFileSync(
+        path.join(tmpPkb, 'parent-node.md'),
+        '---\nid: parent-node\ntitle: Epic Root\ntype: task\nstatus: in_progress\n---\n'
+      );
+      fs.writeFileSync(
+        path.join(tmpPkb, 'sub-ready.md'),
+        '---\nid: sub-ready\ntitle: Child 1\ntype: task\nstatus: ready\nparent: main-doc\n---\n'
+      );
+      fs.writeFileSync(
+        path.join(tmpPkb, 'sub-done.md'),
+        '---\nid: sub-done\ntitle: Child 2\ntype: task\nstatus: done\nparent: main-doc\n---\n'
+      );
+      fs.writeFileSync(
+        path.join(tmpPkb, 'linker.md'),
+        '---\nid: linker\ntitle: Linker\ntype: note\n---\nReferences [[main-doc]] here.\n'
+      );
+      fs.writeFileSync(
+        path.join(tmpPkb, 'main-doc.md'),
+        '---\nid: main-doc\ntitle: Main Document\ntype: task\nstatus: in_progress\nparent: parent-node\n---\nMain content\n'
+      );
+
+      const index = new PkbPreviewIndex(tmpPkb);
+      const docText = fs.readFileSync(path.join(tmpPkb, 'main-doc.md'), 'utf8');
+      const lenses = computeHeaderCodeLenses(path.join(tmpPkb, 'main-doc.md'), docText, index);
+
+      assert.strictEqual(lenses.length, 4, 'Header bar should have 4 CodeLens items');
+
+      const titles = lenses.map((l) => l.command?.title || '');
+      assert.ok(
+        titles.some((t) => t.includes('Parent: Epic Root')),
+        `Should show parent by title, got: ${titles.join(' | ')}`
+      );
+      assert.ok(
+        titles.some((t) => t.includes('backlink')),
+        `Should show backlink count, got: ${titles.join(' | ')}`
+      );
+      assert.ok(
+        titles.some((t) => t.includes('Subtasks:') && t.includes('ready') && t.includes('done')),
+        `Should show subtasks by status, got: ${titles.join(' | ')}`
+      );
+      assert.ok(
+        lenses.some((l) => l.command?.command === 'mem.dispatch'),
+        `Should include dispatch command action, got: ${titles.join(' | ')}`
+      );
+    } finally {
+      fs.rmSync(tmpPkb, { recursive: true, force: true });
+    }
+  });
+
+  it('computes gutter badges on lines containing task links', () => {
+    const tmpPkb = fs.mkdtempSync(path.join(os.tmpdir(), 'pkb-gutter-test-'));
+    try {
+      fs.writeFileSync(
+        path.join(tmpPkb, 'task-r.md'),
+        '---\nid: task-r\ntitle: Task Ready\ntype: task\nstatus: ready\n---\n'
+      );
+      fs.writeFileSync(
+        path.join(tmpPkb, 'task-b.md'),
+        '---\nid: task-b\ntitle: Task Blocked\ntype: task\nstatus: blocked\n---\n'
+      );
+      fs.writeFileSync(
+        path.join(tmpPkb, 'note-plain.md'),
+        '---\nid: note-plain\ntitle: Plain Note\ntype: note\n---\n'
+      );
+
+      const index = new PkbPreviewIndex(tmpPkb);
+      const text =
+        'Line 0: [[task-r]] here\n' +
+        'Line 1: [[note-plain]] only\n' +
+        'Line 2: [[task-b]] blocker\n' +
+        'Line 3: no links';
+
+      const badges = computeGutterBadges(text, index);
+      assert.strictEqual(badges.length, 2, 'Should only produce gutter badges for lines with task links');
+      assert.strictEqual(badges[0].line, 0);
+      assert.strictEqual(badges[0].badge, 'ready');
+      assert.strictEqual(badges[1].line, 2);
+      assert.strictEqual(badges[1].badge, 'blocked');
+    } finally {
+      fs.rmSync(tmpPkb, { recursive: true, force: true });
+    }
+  });
+
 });
