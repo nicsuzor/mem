@@ -5,6 +5,39 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.1](https://github.com/nicsuzor/mem/compare/mem-v0.4.0...mem-v0.4.1) (2026-10-19)
+
+
+### Features
+
+* **excalidraw:** size task cards by flow figures (E14) ([e7c8dc4](https://github.com/nicsuzor/mem/commit/e7c8dc4472a730a724d03d978b02776b3e25cb4e))
+* **excalidraw:** size task cards by flow figures (E14) ([dc329d1](https://github.com/nicsuzor/mem/commit/dc329d1fede10e6a65abf28fc984bc0725a67442))
+* **http:** add sessionless attributed routes alongside /mcp ([48263a0](https://github.com/nicsuzor/mem/commit/48263a07a4940498afe46df593130dc0cfba2024))
+* **http:** add sessionless attributed routes to PKB server ([6cd18b5](https://github.com/nicsuzor/mem/commit/6cd18b5f4cbde7436c266046223dde3d57d9f974))
+* **lsp,vscode:** live PKB node state on markdown editor surface ([44f1262](https://github.com/nicsuzor/mem/commit/44f126295e032dbcea99efdcea78d87c515e02ec))
+* **lsp,vscode:** live PKB node state on markdown editor surface ([4b4c074](https://github.com/nicsuzor/mem/commit/4b4c07435b3fd899e4db58207aaa459889633441))
+* **mcp:** extend machine-specific path lint to decompose_task, release_task, and batch tools ([4c56c4d](https://github.com/nicsuzor/mem/commit/4c56c4d014f5274834cf7949836f384bcc47c204))
+* **otel:** attribute PKB server spans to caller session ([1dfde88](https://github.com/nicsuzor/mem/commit/1dfde88d05df24b4b8945b5a42c5c9fbc8c17c59))
+* **spec:** replace live flow-rule fixture with synthetic graph ([446eb4d](https://github.com/nicsuzor/mem/commit/446eb4dec97b09f716882685bdbc3be0272ca880))
+
+
+### Bug Fixes
+
+* **graph:** align export_graph schema and output with flow spec and dashboard ([9fab038](https://github.com/nicsuzor/mem/commit/9fab0388adb8b980222f631d753819ddb9129c9b))
+* **graph:** align export_graph schema and output with flow spec and dashboard ([acb1137](https://github.com/nicsuzor/mem/commit/acb1137dc47d7eec9cd791fc37d2397be3f95813))
+* **graph:** keep a node's flow figures across in-place writes ([6925cd4](https://github.com/nicsuzor/mem/commit/6925cd4488e7373f91d474b3dd34c322786c0c69))
+* **graph:** preserve and index link quantum on write ([7167ab6](https://github.com/nicsuzor/mem/commit/7167ab610768423a06cad8e73209ad9de05b48de))
+* **graph:** preserve and index link quantum on write ([42047b2](https://github.com/nicsuzor/mem/commit/42047b2273836c710a1e5a0636873023ead952db))
+* **lsp:** eliminate per-link disk scans, parse frontmatter delimiters strictly, and format concise hints ([a2e61e6](https://github.com/nicsuzor/mem/commit/a2e61e640ef225a9efe410d8261184b84ab64f1e))
+* **mcp:** report actual written document id from create_task results and errors ([fd6b010](https://github.com/nicsuzor/mem/commit/fd6b010277c8d44c8f2b2be2776ce356f0e3804f))
+* **vscode:** remove duplicate providers, count full backlinks, wire gutterBadges ([e891f4d](https://github.com/nicsuzor/mem/commit/e891f4d7e92feeb6d22b10eb33084d4602371bd6))
+
+
+### Documentation
+
+* **pkb-rules:** restate the dropped ranking properties as pricing tests ([5ba98f1](https://github.com/nicsuzor/mem/commit/5ba98f16b40303215e20a2d6758bf18cb9996b10))
+* **spec:** document stateless connection class and HTTP routes ([6aeadad](https://github.com/nicsuzor/mem/commit/6aeadaddfc580e9be15f121d2074943e505a2a5d))
+
 ## [0.4.0](https://github.com/nicsuzor/mem/compare/mem-v0.3.105...mem-v0.4.0) (2026-10-17)
 
 
