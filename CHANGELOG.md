@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.3](https://github.com/nicsuzor/mem/compare/mem-v0.4.2...mem-v0.4.3) (2026-10-20)
+
+
+### Bug Fixes
+
+* **otel:** send GENAI_ENGINE_API_KEY headers with OTLP exports ([b347100](https://github.com/nicsuzor/mem/commit/b3471007a3d79f2f2b8c99717a8765c125e1c06a))
+* **otel:** send GENAI_ENGINE_API_KEY headers with OTLP exports ([8c134bb](https://github.com/nicsuzor/mem/commit/8c134bb558cc4fbf0fab860a4d2a112bab607778))
+
 ## [0.4.2](https://github.com/nicsuzor/mem/compare/mem-v0.4.1...mem-v0.4.2) (2026-10-20)
 
 
