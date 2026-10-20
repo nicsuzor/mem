@@ -4,7 +4,7 @@ title: "PKB Type Taxonomy: Unified Node Classification"
 type: spec
 status: inbox
 created: 2026-03-11
-updated: 2026-06-03
+updated: 2026-10-20
 superseded_partial:
   - "project as actionable type (decision 2026-05-10: project = polecat repo, not a node type)"
 tags:
@@ -23,7 +23,7 @@ tags:
 > 4. **Differing fields accepted empty**:
 >    - `target` accepts empty `severity`, `consequence`, and `due` (subsuming qualitative/aspirational goals alongside quantifiable targets).
 >    - `task` accepts empty `parent` (allowing top-level/root containers without requiring an artificial epic wrapper).
-> 5. **`contributes_to` float multiplier $x$**: Edges support an optional `multiplier` (alias `x`), scaling verbal or raw float weights ($x \times \text{weight}$) into the quantum of the flow `serves` link the edge maps to (`specs/pkb-flow-engine.md` R7).
+> 5. **`contributes_to` edge parameters (quantum and probability)**: In accordance with `specs/pkb-flow-engine.md` §3.1 R4, `specs/flow-rule.md` §5, and Nic's ruling (tg 196), every link carries both a contribution quantum and an epistemic probability. Edge strength evaluates as $\text{strength} = \text{quantum} \times \text{probability}$. Legacy float multiplier $x$ is retired.
 >
 > **`project` is no longer a node type.** "Project" is the narrow operational name for a polecat-registered repo, carried as the `project: <slug>` metadata field on tasks. See [[TAXONOMY]] §"Project (operational routing field)" and [[areas-not-projects]].
 
@@ -34,7 +34,7 @@ The PKB simplifies the node taxonomy into two structural categories:
 - **`target` — strategic destination (why / what).** An out-of-tree destination (never a parent, never parented, never in "to-do" queues) subsuming former goals, targets, and capabilities. A target may be qualitative/identity-level (empty `severity`, `consequence`, and `due`) or measurable/time-bound (with `severity` SEV0–SEV4, `consequence`, and `due`). Standing value is priced via `worth` (`specs/pkb-flow-engine.md` R9; `standing_weight`, float 0.0..=1.0, is read as `worth` until the migration retires it). Work connects to targets via `contributes_to`.
 - **`task` / `learn` / `pr` — actionable work (how).** Actionable work items. `task` subsumes all discrete deliverables and container epics: a task with no `parent` acts as a top-level root; a task with children acts as a container; a task without children acts as an executable leaf. `learn` tracks hypotheses/observations (excluded from `ready`), and `pr` tracks code changes.
 
-Linkage (out-of-tree, via `contributes_to`): `task → target`. Linkage is metadata, not tree structure. Target weight propagates through `contributes_to` edges scaled by the edge's stated weight and float multiplier.
+Linkage (out-of-tree, via `contributes_to` or consolidated `links`): `task → target`. Linkage is metadata, not tree structure. Target worth propagates through edges parameterized by both contribution quantum and probability ($\text{strength} = \text{quantum} \times \text{probability}$; `specs/pkb-flow-engine.md` §3.1 R4).
 
 ## Problem
 
@@ -190,68 +190,84 @@ This field is for display and filtering only. It has no effect on graph behaviou
 
 ### The `contributes_to` edge
 
-Optional frontmatter field on **task** and **learn** nodes. Each entry is an **edge object** declaring a weighted belief and multiplier scaling that this work contributes to a target.
+Optional frontmatter field on **task** and **learn** nodes (or consolidated `links:` list per `specs/pkb-flow-engine.md` §3.1 R4). Each entry is an **edge object** declaring the contribution quantum ("how much") and epistemic probability ("how likely") with which this work advances a target.
 
 ```yaml
 ---
 type: task
 contributes_to:
   - to: targ_abc123
-    stated_weight: Expected
-    multiplier: 0.5
+    quantum: most
+    probability: expected
     justification: "contractual obligation to mark by 28 Apr"
 
-  # Float weight variant with alias x:
+  # Direct float variant (or unified links list entry):
   - to: targ_xyz789
-    weight: 0.8
-    x: 1.5
-    why: "direct technical dependency"
+    quantum: 0.6
+    probability: 0.85
+    justification: "direct technical dependency"
 ---
 ```
 
 **Canonical fields**:
 - `to` / `target`: Target node ID.
-- `stated_weight` / `weight`: Verbal Renooij-Witteman term or raw float string (`0.0..=1.0`).
-- `multiplier` / `x`: Optional float factor scaling the transmitted weight ($W_{\text{effective}} = x \times W_{\text{base}}$).
+- `quantum`: Contribution quantum `0.0..=1.0` or a verbal anchor from `specs/flow-rule.md` §5.4 (`all`, `most`, `a good part`, `some`, `a little`, `none`). Omitted quantum defaults to the label's default (`serves`: `0.0`).
+- `probability`: Epistemic probability `0.0..=1.0` or a verbal anchor from `specs/flow-rule.md` §5.5 (`certain`, `probable`, `expected`, `fifty-fifty`, `uncertain`, `improbable`, `impossible`). Omitted probability defaults to `1.00`.
 - `justification` / `why`: Rationale sentence.
+- `set_by`: Provenance marker (`nic` | `agent-proposed` | `migrated`; defaults to `nic`).
 
-**Weight scale (Renooij-Witteman verbal anchors or direct floats):**
+**Edge strength:**
+Strength is the product of contribution quantum and probability:
+$$\text{strength} = \text{quantum} \times \text{probability}$$
+
+**Quantum scale (`specs/flow-rule.md` §5.4):**
+The question asked is: *"If this were never done and everything else were, how much of the thing it points at would be lost?"*
+
+| Word | Quantum | Meaning |
+|------|---------|---------|
+| all | 1.00 | It fails without this |
+| most | 0.60 | Most of its value goes |
+| a good part | 0.30 | A substantial part goes |
+| some | 0.10 | A noticeable part goes |
+| a little | 0.03 | It is slightly worse |
+| none | 0.00 | Default (moves no worth) |
+| *Direct Float* | `0.0..=1.0` | Explicit numeric quantum |
+
+**Probability scale (`specs/flow-rule.md` §5.5):**
+The probability is the chance the work delivers its stated quantum. Reuses the Renooij–Witteman words:
 
 | Term | Anchor | Meaning |
 |------|--------|---------|
-| Impossible | 0.00 | This task cannot affect the target |
-| Improbable | 0.15 | Unlikely to be load-bearing |
-| Uncertain | 0.25 | Might matter |
-| Fifty-Fifty | 0.50 | Moderate contribution |
-| Expected | 0.75 | Likely to matter |
-| Probable | 0.85 | Strong contribution |
-| Certain | 1.00 | Single point of failure |
-| *Direct Float* | `0.0..=1.0` | Explicit numeric weight |
+| impossible | 0.00 | Cannot affect the target |
+| improbable | 0.15 | Unlikely to deliver |
+| uncertain | 0.25 | Might deliver |
+| fifty-fifty | 0.50 | Moderate chance |
+| expected | 0.75 | Likely to deliver |
+| probable | 0.85 | Strongly likely to deliver |
+| certain | 1.00 | Assured delivery (default) |
+| *Direct Float* | `0.0..=1.0` | Explicit numeric probability |
 
-### Edge Weight: Float Multiplier vs. Separate Contribution-Quantum Term Analysis
+### Edge Weight: Contribution Quantum and Probability Analysis
 
-A key question settled in this specification (mem_5c476567) is whether `contributes_to` edges require a separate "contribution-quantum" term alongside the float `multiplier`.
+A key question settled in this specification is the parameterisation of `contributes_to` edges. Earlier drafts considered a single float `multiplier` ($x$) scaling a single weight.
 
-**Verdict: A separate contribution-quantum term is NOT needed.**
+**Verdict: Every link carries both contribution quantum and probability.** (Settled by Nic, tg 196; aligns with `specs/pkb-flow-engine.md` §3.1 R4 and `specs/flow-rule.md` §5.1).
 
 The decision is grounded in four concrete reasons:
 
-1. **Mathematical Redundancy (Single Degree of Freedom)**:
-   In DAG edge weight propagation, the transmitted importance from node $u$ to target $v$ is linear:
-   $$W_{\text{trans}} = W_{\text{upstream}} \times T_{uv}$$
-   If an edge introduces both a continuous multiplier $x$ and a quantum term $q$, the effective transfer coefficient becomes:
-   $$T_{uv} = W_{\text{base}} \times x \times q$$
-   Mathematically, $x \cdot q$ is a single scalar factor. Splitting a single multiplicative degree of freedom into two distinct scalar terms introduces parameter redundancy without increasing mathematical expressiveness.
-2. **Cognitive Overhead and Elicitation Ambiguity**:
-   Requiring human authors or autonomous agents to specify both a "multiplier" and a "quantum" forces subjective distinction between two concepts that perform identical arithmetic operations. Agents and humans cannot reliably distinguish when to adjust the quantum versus the multiplier.
-3. **Orthogonality with Existing Node Properties**:
-   Conceptually, "quantum" is sometimes invoked to represent discrete chunks of work or deliverable sizing. However, sizing is already explicitly captured by the node's `effort` field, while confidence in whether the contribution will be realized is captured by `confidence`. Adding a quantum term to the edge conflates edge importance with task sizing.
-4. **Ergonomic Simplicity and Clean Propagation**:
-   The float `multiplier` (alias `x`) cleanly scales the verbal anchor or raw float:
-   $$W_{\text{effective}} = x \times W_{\text{base}}$$
-   The flow engine reads the scaled weight, $\text{ct.numeric\_weight}()$ capped at 1.0, as the quantum of the `serves` link the edge maps to (`specs/pkb-flow-engine.md` R7).
-
-A single float `multiplier` completely satisfies the requirements without introducing dead schema terms.
+1. **Separation of Epistemic Uncertainty from Structural Magnitude**:
+   A single multiplier or scalar conflates two fundamentally orthogonal questions that human elicitation answers separately:
+   - "How much of the target's value is lost if this work is omitted?" (contribution quantum $q \in [0.0, 1.0]$)
+   - "How likely is it that the work delivers that contribution?" (epistemic probability $p \in [0.0, 1.0]$)
+   While edge strength in the flow calculation evaluates as the product $\text{strength} = q \times p$ (`flow-rule.md` §5.1), eliciting them as separate parameters avoids ambiguity and matches cognitive judgment.
+2. **Alignment with Flow Engine and Graph Architecture**:
+   `specs/pkb-flow-engine.md` §3.1 R4 and `specs/flow-rule.md` §5 establish the unified edge model where every link carries both `quantum` and `probability`. The taxonomy spec conforms to this engine definition.
+3. **Clean Elicitation via Distinct Verbal Ladders**:
+   Separating the terms allows each to draw from its own validated verbal anchor scale:
+   - Quantum uses the 5-point proportion scale (`all` 1.0, `most` 0.60, `a good part` 0.30, `some` 0.10, `a little` 0.03, `none` 0.00; `flow-rule.md` §5.4).
+   - Probability uses the Renooij–Witteman 7-point uncertainty scale (`certain` 1.00, `probable` 0.85, `expected` 0.75, `fifty-fifty` 0.50, `uncertain` 0.25, `improbable` 0.15, `impossible` 0.00; `flow-rule.md` §5.5).
+4. **Retirement of the Float Multiplier**:
+   The ad-hoc float multiplier ($x$) is deprecated and retired (`specs/flow-rule.md` line 611; `specs/graph-lint.md` line 237). Legacy edges specifying `multiplier` / `x` are mapped during migration to the `serves` quantum (`specs/pkb-flow-engine.md` R7), with edge parameters standardizing on explicit `quantum` and `probability`.
 
 ```
 Epics/tasks link to targets via contributes_to: [id1, id2] frontmatter field
