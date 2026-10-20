@@ -244,16 +244,13 @@ pub fn batch_archive(
         };
 
         // Skip already archived
-        if node.status.as_deref() == Some("done") || node.status.as_deref() == Some("cancelled") {
+        if node.status.as_deref() == Some("archived") {
             summary.skipped += 1;
             summary.tasks.push(TaskAction {
                 id: id.clone(),
                 title: node.label.clone(),
                 action: "skipped".to_string(),
-                detail: Some(format!(
-                    "already {}",
-                    node.status.as_deref().unwrap_or("done")
-                )),
+                detail: Some("already archived".to_string()),
                 old_value: None,
                 new_value: None,
             });
@@ -295,16 +292,16 @@ pub fn batch_archive(
                 action: "would_archive".to_string(),
                 detail,
                 old_value: node.status.clone(),
-                new_value: Some("done".to_string()),
+                new_value: Some("archived".to_string()),
             });
             continue;
         }
 
-        // Set status to done
+        // Set status to archived
         let mut updates = HashMap::new();
         updates.insert(
             "status".to_string(),
-            serde_json::Value::String("done".to_string()),
+            serde_json::Value::String("archived".to_string()),
         );
 
         match ctx.update_task(id, updates) {

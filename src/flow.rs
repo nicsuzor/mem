@@ -54,7 +54,7 @@ pub enum FlowState {
 /// Map frontmatter status to flow lifecycle state (C8 / R1).
 pub fn status_to_flow_state(status: Option<&str>) -> FlowState {
     match status {
-        Some("cancelled") | Some("failed") => FlowState::Gone,
+        Some("cancelled") | Some("failed") | Some("archived") => FlowState::Gone,
         Some("done") | Some("retired") | None => FlowState::Done,
         Some(_) => FlowState::Open,
     }
@@ -303,7 +303,9 @@ pub fn find_components(
         if let Some(edges) = out.get(v) {
             for e in edges {
                 if !index_map.contains_key(&e.dst) {
-                    visit(&e.dst, out, index_map, low_map, stack, on_stack, found, counter);
+                    visit(
+                        &e.dst, out, index_map, low_map, stack, on_stack, found, counter,
+                    );
                     let low_dst = low_map[&e.dst];
                     let low_v = low_map.get_mut(v).unwrap();
                     if low_dst < *low_v {
@@ -442,9 +444,8 @@ pub(crate) fn settle_with_cap(
     iter_cap: usize,
 ) -> Result<BTreeMap<String, f64>, NoConvergence> {
     let harms_inside = nodes.iter().any(|v| {
-        inc.get(v).is_some_and(|edges| {
-            edges.iter().any(|e| !edge_helps(e, worth))
-        })
+        inc.get(v)
+            .is_some_and(|edges| edges.iter().any(|e| !edge_helps(e, worth)))
     });
 
     if harms_inside {
@@ -745,10 +746,8 @@ pub fn compute_flow(input: &FlowInput) -> BTreeMap<String, FlowOutput> {
                 }
                 let cleaned_gain = clean_num(gain);
                 let cleaned_loss = clean_num(loss);
-                let cleaned_deltas: BTreeMap<String, f64> = deltas
-                    .into_iter()
-                    .map(|(t, d)| (t, clean_num(d)))
-                    .collect();
+                let cleaned_deltas: BTreeMap<String, f64> =
+                    deltas.into_iter().map(|(t, d)| (t, clean_num(d))).collect();
                 let stake = cleaned_deltas.clone();
 
                 result.insert(
@@ -766,8 +765,11 @@ pub fn compute_flow(input: &FlowInput) -> BTreeMap<String, FlowOutput> {
                 );
             }
             Err(_) => {
-                let mut unsettled: Vec<String> =
-                    cone.iter().filter(|v| loop_nodes.contains(*v)).cloned().collect();
+                let mut unsettled: Vec<String> = cone
+                    .iter()
+                    .filter(|v| loop_nodes.contains(*v))
+                    .cloned()
+                    .collect();
                 unsettled.sort();
                 result.insert(
                     u.clone(),
@@ -819,10 +821,7 @@ pub fn evpi(options: &[(f64, f64)]) -> f64 {
 }
 
 /// Compute decision value on work settling open decisions (R14, §5.3).
-pub fn compute_decision_value(
-    input: &FlowInput,
-    outputs: &mut BTreeMap<String, FlowOutput>,
-) {
+pub fn compute_decision_value(input: &FlowInput, outputs: &mut BTreeMap<String, FlowOutput>) {
     let mut extra: BTreeMap<String, f64> = BTreeMap::new();
 
     for (d, st) in &input.state {
@@ -1036,7 +1035,11 @@ pub fn build_explanation(
 // ── Export / JSON Loader ─────────────────────────────────────────────────────
 
 /// Load a `FlowInput` from export JSON data.
-pub fn from_export_json(data: &serde_json::Value, default_quantum: f64, part_of_quantum: Option<f64>) -> FlowInput {
+pub fn from_export_json(
+    data: &serde_json::Value,
+    default_quantum: f64,
+    part_of_quantum: Option<f64>,
+) -> FlowInput {
     let mut input = FlowInput::new();
 
     if let Some(nodes) = data.get("nodes").and_then(|n| n.as_array()) {

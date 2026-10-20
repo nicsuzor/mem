@@ -210,8 +210,11 @@ queued -> in_progress -> done
             |              |
          blocked         review
 ```
+**Statuses**: canonical set per [[aops-core/skills/remember/references/TAXONOMY.md#status-values-and-transitions]] — `inbox`, `ready`, `queued`, `in_progress`, `review`, `done`, `blocked`, `paused`, `someday`, `cancelled`, `partial`, `failed`, `archived`.
 
-**Statuses**: canonical set per [[aops-core/skills/remember/references/TAXONOMY.md#status-values-and-transitions]] — `inbox`, `ready`, `queued`, `in_progress`, `review`, `done`, `blocked`, `paused`, `someday`, `cancelled`, `partial`.
+**Archived notes**: `archived` is accepted as a status on any note (both tasks and non-task documents). An archive script moves every PKB note with status `archived` into the sessions repository (`archived/`) and removes it from the PKB.
+
+**Retention and deletion**: Settled tasks are deleted after a retention period once their durable knowledge has been extracted to canonical notes.
 
 **Success criteria**:
 

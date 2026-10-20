@@ -178,7 +178,7 @@ Material brought in from outside (documents, diagrams, old notes, transcripts) i
 
 ### 3.1. The durability bar
 
-When a task settles, its durable knowledge moves to a canonical note and the task is deleted. Ask four questions, in order, of every proposition in a settled task:
+When a task settles, its durable knowledge moves to a canonical note. Settled tasks are deleted after a retention period. Ask four questions, in order, of every proposition in a settled task:
 
 1. **Does it persist beyond the task?** Checklist state, branch names, PR links and debug flags stop mattering once the criteria are met. Drop them.
 2. **Is it narration?** Retry logs, test output, diffs and commit SHAs are history. Only the surviving lesson passes forward.
@@ -203,7 +203,8 @@ Duplicate detection returns candidates, not verdicts. A `find_duplicates` score 
 
 Invariants:
 
-- Deletion is outright: no tombstones, no `status: archived`, no archive folders.
+- The PKB accepts `archived` as a status on any note. An archive script moves every PKB note with status `archived` out of the PKB into the sessions repository and removes it from the PKB.
+- Settled tasks are deleted after a retention period once durable knowledge is captured.
 - A consolidation that produces concatenated bodies has failed.
 - Hygiene runs in every consolidation pass and whenever a task is released as done; it does not wait to be asked for.
 

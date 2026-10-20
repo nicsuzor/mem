@@ -80,7 +80,7 @@ pub fn status_codicon(status: &str) -> &'static str {
         "review" => "$(eye)",
         "paused" => "$(debug-pause)",
         "inbox" => "$(inbox)",
-        "cancelled" | "failed" => "$(close)",
+        "cancelled" | "failed" | "archived" => "$(close)",
         _ => "$(circle-outline)",
     }
 }
