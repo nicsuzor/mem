@@ -1568,42 +1568,185 @@ mod batch_finalize_tests {
             "canonical must record the merge via its own supersedes list, got:\n{canon_disk}"
         );
 
-        let dup_disk = std::fs::read_to_string(pkb_root.join("task-dup.md")).unwrap();
+        // mem_316e3fbf: merged source must be deleted outright (specs/pkb-rules.md §3.3)
         assert!(
-            !dup_disk.contains("superseded_by"),
-            "merged-away source must NOT carry a hand-written superseded_by, got:\n{dup_disk}"
-        );
-        // aops_pkb_batch_merge_archives_as_done: a merged source's work was not
-        // performed, so it must end `cancelled` (never `done`) and carry a note
-        // naming the canonical.
-        assert!(
-            dup_disk.contains("status: cancelled") && !dup_disk.contains("status: done"),
-            "merged-away source must be cancelled, not done, got:\n{dup_disk}"
-        );
-        assert!(
-            dup_disk.contains("Merged into [[task-canon]]"),
-            "merged-away source body must name the canonical, got:\n{dup_disk}"
+            !pkb_root.join("task-dup.md").exists(),
+            "merged-away source must be deleted outright, got file still on disk"
         );
 
-        // superseded_by must compute from the canonical's supersedes edge.
         let rebuilt = GraphStore::build_from_directory(pkb_root);
-        let dup = rebuilt.get_node("task-dup").expect("task-dup in graph");
-        assert_eq!(dup.superseded_by, vec!["task-canon".to_string()]);
+        assert!(rebuilt.get_node("task-dup").is_none(), "task-dup should not be in graph");
 
-        // Re-running the same merge is idempotent: no second note.
+        // Re-running the same merge is idempotent: skipped cleanly.
         {
             let mut graph = server.graph.write();
             *graph = GraphStore::build_from_directory(pkb_root);
         }
-        server
+        let res = server
             .handle_batch_merge(&json!({
                 "canonical": "task-canon",
                 "merge_ids": ["task-dup"],
                 "dry_run": false,
             }))
             .unwrap_or_else(|e| panic!("second batch_merge failed: {e:?}"));
-        let dup_disk = std::fs::read_to_string(pkb_root.join("task-dup.md")).unwrap();
-        assert_eq!(dup_disk.matches("Merged into [[task-canon]]").count(), 1);
+        let res_text = res.content[0].raw.as_text().unwrap().text.clone();
+        assert!(res_text.contains("\"skipped\": 1"), "re-running merge should skip already-merged source: {res_text}");
+    }
+
+    #[test]
+    fn test_batch_merge_deletes_duplicate_and_rewrites_all_inbound_edges() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let pkb_root = dir.path();
+        let server = build_disk_server(pkb_root);
+
+        std::fs::write(
+            pkb_root.join("task-canon.md"),
+            "---\nid: task-canon\ntitle: Canonical\ntype: task\nstatus: ready\nparent: test-project\n---\n\n# Canonical\n",
+        )
+        .unwrap();
+        std::fs::write(
+            pkb_root.join("task-dup.md"),
+            "---\nid: task-dup\ntitle: Duplicate\ntype: task\nstatus: ready\nparent: test-project\n---\n\n# Duplicate\n",
+        )
+        .unwrap();
+        std::fs::write(
+            pkb_root.join("task-child.md"),
+            "---\nid: task-child\ntitle: Child\ntype: task\nstatus: ready\nparent: task-dup\n---\n\n# Child\n",
+        )
+        .unwrap();
+        std::fs::write(
+            pkb_root.join("task-dep.md"),
+            "---\nid: task-dep\ntitle: Dep\ntype: task\nstatus: ready\ndepends_on:\n  - task-dup\n---\n\n# Dep\n",
+        )
+        .unwrap();
+        std::fs::write(
+            pkb_root.join("task-sdep.md"),
+            "---\nid: task-sdep\ntitle: SDep\ntype: task\nstatus: ready\nsoft_depends_on:\n  - task-dup\n---\n\n# SDep\n",
+        )
+        .unwrap();
+        std::fs::write(
+            pkb_root.join("task-block.md"),
+            "---\nid: task-block\ntitle: Block\ntype: task\nstatus: ready\nblocks:\n  - task-dup\n---\n\n# Block\n",
+        )
+        .unwrap();
+        std::fs::write(
+            pkb_root.join("task-sblock.md"),
+            "---\nid: task-sblock\ntitle: SBlock\ntype: task\nstatus: ready\nsoft_blocks:\n  - task-dup\n---\n\n# SBlock\n",
+        )
+        .unwrap();
+        std::fs::write(
+            pkb_root.join("task-close.md"),
+            "---\nid: task-close\ntitle: Close\ntype: task\nstatus: ready\ncloses:\n  - task-dup\n---\n\n# Close\n",
+        )
+        .unwrap();
+        std::fs::write(
+            pkb_root.join("task-super.md"),
+            "---\nid: task-super\ntitle: Super\ntype: task\nstatus: ready\nsupersedes:\n  - task-dup\n---\n\n# Super\n",
+        )
+        .unwrap();
+
+        {
+            let mut graph = server.graph.write();
+            *graph = GraphStore::build_from_directory(pkb_root);
+        }
+
+        server
+            .handle_batch_merge(&json!({
+                "canonical": "task-canon",
+                "merge_ids": ["task-dup"],
+                "dry_run": false,
+            }))
+            .unwrap_or_else(|e| panic!("batch_merge failed: {e:?}"));
+
+        // 1. Duplicate file must be deleted outright (specs/pkb-rules.md §3.3)
+        assert!(
+            !pkb_root.join("task-dup.md").exists(),
+            "duplicate file must NOT exist on disk after batch_merge"
+        );
+
+        // 2. Canonical must record supersedes
+        let canon_disk = std::fs::read_to_string(pkb_root.join("task-canon.md")).unwrap();
+        assert!(
+            canon_disk.contains("supersedes") && canon_disk.contains("task-dup"),
+            "canonical must record the merge via its own supersedes list, got:\n{canon_disk}"
+        );
+
+        // 3. Every edge that pointed at task-dup now points at task-canon
+        let child_disk = std::fs::read_to_string(pkb_root.join("task-child.md")).unwrap();
+        assert!(child_disk.contains("parent: task-canon"), "child parent not rewritten: {child_disk}");
+        assert!(!child_disk.contains("task-dup"), "child still references duplicate: {child_disk}");
+
+        let dep_disk = std::fs::read_to_string(pkb_root.join("task-dep.md")).unwrap();
+        assert!(dep_disk.contains("task-canon"), "dep not rewritten: {dep_disk}");
+        assert!(!dep_disk.contains("task-dup"), "dep still references duplicate: {dep_disk}");
+
+        let sdep_disk = std::fs::read_to_string(pkb_root.join("task-sdep.md")).unwrap();
+        assert!(sdep_disk.contains("task-canon"), "sdep not rewritten: {sdep_disk}");
+        assert!(!sdep_disk.contains("task-dup"), "sdep still references duplicate: {sdep_disk}");
+
+        let block_disk = std::fs::read_to_string(pkb_root.join("task-block.md")).unwrap();
+        assert!(block_disk.contains("task-canon"), "blocks not rewritten: {block_disk}");
+        assert!(!block_disk.contains("task-dup"), "blocks still references duplicate: {block_disk}");
+
+        let sblock_disk = std::fs::read_to_string(pkb_root.join("task-sblock.md")).unwrap();
+        assert!(sblock_disk.contains("task-canon"), "soft_blocks not rewritten: {sblock_disk}");
+        assert!(!sblock_disk.contains("task-dup"), "soft_blocks still references duplicate: {sblock_disk}");
+
+        let close_disk = std::fs::read_to_string(pkb_root.join("task-close.md")).unwrap();
+        assert!(close_disk.contains("task-canon"), "closes not rewritten: {close_disk}");
+        assert!(!close_disk.contains("task-dup"), "closes still references duplicate: {close_disk}");
+
+        let super_disk = std::fs::read_to_string(pkb_root.join("task-super.md")).unwrap();
+        assert!(super_disk.contains("task-canon"), "supersedes not rewritten: {super_disk}");
+        assert!(!super_disk.contains("task-dup"), "supersedes still references duplicate: {super_disk}");
+
+        // 4. In the rebuilt GraphStore, task-dup is absent and no edge points to it
+        let rebuilt = GraphStore::build_from_directory(pkb_root);
+        assert!(rebuilt.get_node("task-dup").is_none(), "task-dup should not be in graph");
+        for edge in rebuilt.edges() {
+            assert_ne!(edge.target, "task-dup", "found edge pointing at deleted task-dup: {edge:?}");
+        }
+    }
+
+    #[test]
+    fn test_lint_and_index_resolution_pass_with_deleted_duplicate() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let pkb_root = dir.path();
+
+        // Canonical task that supersedes a deleted duplicate
+        std::fs::write(
+            pkb_root.join("task-canon.md"),
+            "---\nid: task-canon\ntitle: Canonical Task\ntype: task\nstatus: ready\nsupersedes:\n  - task-dup-deleted\n---\n\n# Canonical\n",
+        )
+        .unwrap();
+
+        // A dependent task pointing to canonical
+        std::fs::write(
+            pkb_root.join("task-dep.md"),
+            "---\nid: task-dep\ntitle: Dependent Task\ntype: task\nstatus: ready\ndepends_on:\n  - task-canon\n---\n\n# Dep\n",
+        )
+        .unwrap();
+
+        // 1. Lint check: lint_directory must NOT report ref-broken-dep on supersedes of deleted duplicate
+        let (results, _) = crate::lint::lint_directory(pkb_root, false, true);
+        for res in &results {
+            for diag in &res.diagnostics {
+                assert_ne!(
+                    diag.rule,
+                    "ref-broken-dep",
+                    "lint must not fail on deleted supersedes duplicate: {:?}",
+                    diag.message
+                );
+            }
+        }
+
+        // 2. Index resolution: GraphStore builds cleanly and resolves canonical
+        let graph = GraphStore::build_from_directory(pkb_root);
+        let canon = graph.get_node("task-canon").expect("task-canon in graph");
+        assert_eq!(canon.supersedes, vec!["task-dup-deleted".to_string()]);
+        assert!(graph.get_node("task-dup-deleted").is_none(), "deleted duplicate must not be in graph");
+        let dep = graph.get_node("task-dep").expect("task-dep in graph");
+        assert_eq!(dep.depends_on, vec!["task-canon".to_string()]);
     }
 }
 

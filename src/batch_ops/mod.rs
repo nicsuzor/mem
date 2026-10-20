@@ -222,6 +222,29 @@ impl<'a> BatchContext<'a> {
         Ok(())
     }
 
+    /// Delete a task file from disk.
+    pub fn delete_task(&mut self, node_id: &str) -> Result<PathBuf> {
+        let node = self
+            .graph
+            .get_node(node_id)
+            .context(format!("Node not found: {node_id}"))?;
+
+        if node.path.as_os_str().is_empty() {
+            anyhow::bail!("Cannot delete ghost node '{node_id}': no backing file on disk");
+        }
+
+        let abs_path = self.abs_path(&node.path);
+        if !abs_path.exists() {
+            anyhow::bail!(
+                "File not found on disk (index stale?): {}",
+                abs_path.display()
+            );
+        }
+
+        document_crud::delete_document(&abs_path)?;
+        Ok(abs_path)
+    }
+
     /// Resolve a relative path to absolute.
     fn abs_path(&self, rel: &Path) -> PathBuf {
         if rel.is_absolute() {
