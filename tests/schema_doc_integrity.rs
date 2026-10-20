@@ -44,3 +44,37 @@ fn test_no_dead_spec_references_in_tool_schemas() {
         );
     }
 }
+
+#[test]
+fn test_intent_default_is_documented_as_p4() {
+    let tools = PkbSearchServer::get_all_tools();
+    let mut checked_tools = Vec::new();
+    for tool in tools {
+        let name = tool.name.as_ref();
+        let schema_str = serde_json::to_string(&tool.input_schema).unwrap();
+        if schema_str.contains("Default when unset") {
+            assert!(
+                !schema_str.contains("Default when unset: P3"),
+                "Tool {name} input_schema documents intent default as P3 instead of P4"
+            );
+            assert!(
+                schema_str.contains("Default when unset: P4"),
+                "Tool {name} input_schema mentions 'Default when unset' but not P4: {schema_str}"
+            );
+            checked_tools.push(name.to_string());
+        }
+    }
+    assert!(
+        checked_tools.contains(&"create_task".to_string()),
+        "create_task must document intent default as P4"
+    );
+    assert!(
+        checked_tools.contains(&"create".to_string()),
+        "create must document intent default as P4"
+    );
+    assert!(
+        checked_tools.contains(&"decompose_task".to_string()),
+        "decompose_task must document intent default as P4"
+    );
+}
+

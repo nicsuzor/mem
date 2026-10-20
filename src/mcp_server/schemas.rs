@@ -177,7 +177,7 @@ impl PkbSearchServer {
                         "tags": { "type": "array", "items": { "type": "string" } },
                         "body": { "type": "string", "description": "Markdown body (wikilinks supported; host paths rejected)" },
                         "status": { "type": "string", "enum": ["inbox", "ready", "failed"] },
-                        "intent": { "type": "integer" },
+                        "intent": { "type": "integer", "description": "Intent band 0-4 (P0 Critical .. P4 Backlog). Default when unset: P4 (Backlog)." },
                         "parent": { "type": "string" },
                         "depends_on": { "type": "array", "items": { "type": "string" } },
                         "soft_depends_on": { "type": "array", "items": { "type": "string" } },
@@ -216,7 +216,7 @@ impl PkbSearchServer {
                         "task_title": { "type": "string" },
                         "id": { "type": "string" },
                         "parent": { "type": "string" },
-                        "intent": { "type": "integer" },
+                        "intent": { "type": "integer", "description": "Intent band 0-4 (P0 Critical .. P4 Backlog). Default when unset: P4 (Backlog)." },
                         "tags": { "type": "array", "items": { "type": "string" } },
                         "depends_on": { "type": "array", "items": { "type": "string" } },
                         "soft_depends_on": { "type": "array", "items": { "type": "string" } },
@@ -426,29 +426,29 @@ impl PkbSearchServer {
             .with_annotations(ToolAnnotations::new().read_only(false)),
             Tool::new(
                 "release_task",
-                "Release a task to a terminal or handoff status (done, review, blocked, cancelled, partial, failed). Supersedes complete_task (use status='done'). Performs session handover by recording work history, linking PRs/issues, and tracking follow-up work. If 'id' is omitted, an ad-hoc session task is created (requires `project` parameter). Evidence-or-failure-reason contract: `summary` (or `completion_evidence`) is always required; releasing to done requires all acceptance checklist items in the task body to be ticked (- [x]); releasing to blocked/cancelled/review/partial/failed additionally requires a non-empty `reason` (or `blocker`, for `blocked`) — a handback with neither is rejected. Tasks created before this requirement shipped release under the old, optional rules.",
+                "Release a task to a terminal or handoff status (done, review, blocked, cancelled, partial, failed). Evidence-or-failure-reason contract: `summary` (or `completion_evidence`) is always required; releasing to done requires all acceptance checklist items in the task body to be ticked (- [x]); releasing to blocked/cancelled/review/partial/failed additionally requires a non-empty `reason` (or `blocker`, for `blocked`) — a handback with neither is rejected.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
                         "id": { "type": "string", "description": "Task ID (flexible resolution: ID, filename stem, or title). If omitted, an ad-hoc task is created." },
-                        "project": { "type": "string", "description": "Project routing slug, validated against polecat.yaml (e.g. 'aops', 'mem'). Required when 'id' is omitted (ad-hoc task creation); optional when 'id' is provided." },
+                        "project": { "type": "string", "description": "Project routing slug (required if id omitted)" },
                         "status": {
                             "type": "string",
                             "enum": ["done", "review", "cancelled", "partial", "failed"],
                             "description": "Target status"
                         },
-                        "summary": { "type": "string", "description": "What was done and outcome. 1-3 sentences minimum. Always required (or provide completion_evidence)." },
+                        "summary": { "type": "string", "description": "What was done and outcome (or provide completion_evidence)." },
                         "completion_evidence": { "type": "string", "description": "Alias for summary: what was done and outcome (required when status is done). Releasing as done requires all acceptance checklist items to be checked (- [x])." },
                         "pr_url": { "type": "string", "description": "Pull request or commit URL" },
                         "branch": { "type": "string", "description": "Git branch name (optional)" },
-                        "blocker": { "type": "string", "description": "What is blocking this task. Required (non-empty), together with `reason`, when status=blocked — at least one of the two must be given." },
+                        "blocker": { "type": "string", "description": "Required when status=blocked (or provide reason)" },
                         "reason": { "type": "string", "description": "Why the task didn't ship cleanly. Required (non-empty) when status is blocked/cancelled/review/partial/failed (for status=blocked, `blocker` may be given instead)." },
-                        "session_id": { "type": "string", "description": "Active session ID. Falls back to $AOPS_SESSION_ID if omitted." },
+                        "session_id": { "type": "string", "description": "Active session ID" },
                         "issue_url": { "type": "string", "description": "External issue/ticket URL" },
-                        "follow_up_tasks": { "type": "array", "items": { "type": "string" }, "description": "IDs of new tasks created as follow-ups. Validated for existence." },
-                        "release_summary": { "type": "string", "description": "Detailed technical summary for the release. Warning if > 500 chars." },
+                        "follow_up_tasks": { "type": "array", "items": { "type": "string" }, "description": "IDs of new tasks created as follow-ups" },
+                        "release_summary": { "type": "string", "description": "Detailed technical summary for the release" },
                         "body": { "type": "string", "description": "Markdown body for ad-hoc tasks (wikilinks supported; host paths rejected)" },
-                        "recursive": { "type": "boolean", "description": "Cascade-close all open descendant tasks when releasing as done. Default: false." }
+                        "recursive": { "type": "boolean", "description": "Cascade-close open descendant tasks when releasing as done. Default: false." }
                     },
                     "required": ["status", "summary"]
                 }))
@@ -470,7 +470,7 @@ impl PkbSearchServer {
                                 "properties": {
                                     "title": { "type": "string" },
                                     "id": { "type": "string" },
-                                    "intent": { "type": "integer" },
+                                    "intent": { "type": "integer", "description": "Intent band 0-4 (P0 Critical .. P4 Backlog). Default when unset: P4 (Backlog)." },
                                     "depends_on": { "type": "array", "items": { "type": "string" } },
                                     "tags": { "type": "array", "items": { "type": "string" } },
                                     "assignee": { "type": "string" },
@@ -866,7 +866,7 @@ impl PkbSearchServer {
                                 "properties": {
                                     "title": { "type": "string", "description": "Epic title (required)" },
                                     "id": { "type": "string", "description": "Optional custom epic ID (auto-generated if omitted)" },
-                                    "intent": { "type": "integer", "description": "Intent band 0-4 (P0 Critical .. P4 Backlog)" },
+                                    "intent": { "type": "integer", "description": "Intent band 0-4 (P0 Critical .. P4 Backlog). Default when unset: P4 (Backlog)." },
                                     "task_ids": { "type": "array", "items": { "type": "string" }, "description": "Existing task IDs to reparent under this new epic (required; unresolvable IDs are reported as errors, not fatal)" },
                                     "depends_on": { "type": "array", "items": { "type": "string" }, "description": "IDs the epic itself depends on" },
                                     "body": { "type": "string", "description": "Markdown body for the epic. Refer to other PKB files by wikilink (`[[id]]`) or PKB-root-relative path; a machine-specific path such as `~/brain/...` or `/home/nic/brain/...` is rejected with error_type `machine_specific_path`." }
