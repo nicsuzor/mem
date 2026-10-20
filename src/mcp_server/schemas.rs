@@ -164,7 +164,7 @@ impl PkbSearchServer {
             .with_annotations(ToolAnnotations::new().read_only(true)),
             Tool::new(
                 "create",
-                "Generic document creation with automatic subdirectory routing (tasks/, projects/, goals/, notes/).",
+                "Create a doc; dir defaults by type (template: `[<project>/]workflows/<snake_id>.md`).",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -193,6 +193,7 @@ impl PkbSearchServer {
                         "severity": { "type": "integer" },
                         "goal_type": { "type": "string", "enum": GOAL_TYPE_ENUM },
                         "dir": { "type": "string" },
+                        "project": { "type": "string" },
                         "stakeholder": { "type": "string" },
                         "waiting_since": { "type": "string" },
                         "links": { "type": "array", "items": { "type": "object" } },
@@ -392,7 +393,7 @@ impl PkbSearchServer {
             .with_annotations(ToolAnnotations::new().destructive(true)),
             Tool::new(
                 "convert_document",
-                "Convert document in place (keeps ID): retype frontmatter, rename to `<dir>/<id>_<slug>.md`, reindex.",
+                "Retype doc (keeps ID), move to `<dir>/<id>_<slug>.md` (template: `[<project>/]workflows/<snake_id>.md`), reindex.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {

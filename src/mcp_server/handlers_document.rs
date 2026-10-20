@@ -629,6 +629,10 @@ impl PkbSearchServer {
                 .and_then(|v| v.as_str())
                 .map(String::from),
             dir: args.get("dir").and_then(|v| v.as_str()).map(String::from),
+            project: args
+                .get("project")
+                .and_then(|v| v.as_str())
+                .map(String::from),
             stakeholder: args
                 .get("stakeholder")
                 .and_then(|v| v.as_str())

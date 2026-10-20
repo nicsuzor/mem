@@ -138,6 +138,8 @@ A `template` node holds the canonical body and metadata for a recurring workflow
 | `project`     | Project identifier — inherited by each instance                                         |
 | `template_id` | (On instances only) Back-reference to the template that spawned this instance           |
 
+**Placement**: a template is filed as `<snake_case id>.md` (id only, no title) in `workflows/`, or in `<project>/workflows/` when it has a `project`. `create` and `convert_document` route templates there by default (see `specs/pkb-rules.md` §3.10).
+
 **Pattern for recurring workflows** (`/daily`, `/retro`, `/sleep`, `/supervisor` session logs, `/issue-sweep` cycles):
 
 1. Create a template node with `type: template` and a short, stable ID.
