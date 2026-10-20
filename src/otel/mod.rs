@@ -22,6 +22,7 @@ pub fn init_telemetry() -> Option<TracerProvider> {
     let exporter = opentelemetry_otlp::new_exporter()
         .http()
         .with_endpoint(config.endpoint)
+        .with_headers(config.headers)
         .build_span_exporter()
         .ok()?;
 
