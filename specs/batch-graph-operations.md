@@ -223,9 +223,8 @@ pkb batch update --project osb --unset assignee
 | `--remove-tag foo` | `"_remove_tags": ["foo"]` | Remove from tags array |
 | `--add-dep id` | `"_add_depends_on": ["id"]` | Append to depends_on |
 | `--remove-dep id` | `"_remove_depends_on": ["id"]` | Remove from depends_on |
-| `--superseded-by id` | `"superseded_by": "id"` | Mark as superseded + set status to done |
 
-Common pattern: manually deduplicating without full merge semantics — set `status: done` and `superseded_by: <canonical-id>` in one operation.
+Note: `superseded_by` is a computed reverse index of `supersedes` and cannot be hand-written (`specs/pkb-rules.md` §2.6). Deduplication should be performed using `batch_merge` (§6).
 
 **Response:** Same shape as `batch_reparent` — list of tasks with action taken.
 
