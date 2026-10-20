@@ -30,8 +30,8 @@ struct Cli {
     )]
     root: String,
 
-    /// Path to the persistent vector database file
-    #[arg(long, global = true, default_value_t = default_db_path())]
+    /// Path to the persistent vector database file (sidecar .stamps/.wal/.lock files live beside it)
+    #[arg(long, global = true, env = "PKB_DB_PATH", default_value_t = default_db_path())]
     db_path: String,
 
     #[command(subcommand)]
@@ -4826,6 +4826,26 @@ fn print_dashboard(tasks: &[&graph::GraphNode], filter: &TaskFilter) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_db_path_reads_pkb_db_path_env() {
+        use clap::CommandFactory;
+        let cmd = Cli::command();
+        let arg = cmd
+            .get_arguments()
+            .find(|a| a.get_id() == "db_path")
+            .expect("db_path arg");
+        assert_eq!(arg.get_env(), Some(std::ffi::OsStr::new("PKB_DB_PATH")));
+    }
+
+    #[test]
+    fn test_db_path_sidecars_follow_db_path() {
+        let db = std::path::Path::new("/data/cache/pkb_vectors.bin");
+        assert_eq!(
+            vectordb::stamps_path(db).parent(),
+            Some(std::path::Path::new("/data/cache"))
+        );
+    }
 
     // #686: "2026-01-0é" is 11 bytes; byte 10 is inside 'é' (bytes 9..11).
     const MULTIBYTE_DATE: &str = "2026-01-0\u{e9}";

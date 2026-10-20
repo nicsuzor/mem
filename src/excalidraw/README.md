@@ -118,7 +118,7 @@ Commands:
 
 Options:
       --pkb-root <PKB_ROOT>  Path to the PKB root directory [default: $ACA_DATA]
-      --db-path <DB_PATH>    Path to the persistent vector database file [default: $ACA_DATA/pkb_vectors.bin]
+      --db-path <DB_PATH>    Path to the persistent vector database file [env: PKB_DB_PATH=] [default: $ACA_DATA/pkb_vectors.bin]
 ```
 
 ```bash
