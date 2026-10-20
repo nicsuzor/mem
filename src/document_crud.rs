@@ -306,32 +306,21 @@ pub fn create_document(root: &Path, fields: DocumentFields) -> Result<PathBuf> {
     let is_daily =
         fields.doc_type == "daily" || fields.id.as_deref().map(is_daily_id).unwrap_or(false);
 
-    let (id, filename) = match fields.filename {
-        Some(explicit_filename) => {
-            let filename = validate_explicit_filename(&explicit_filename)?;
-            let id = match fields.id {
-                Some(explicit_id) => sanitize_explicit_id(&explicit_id),
-                None => {
-                    let stem = filename.strip_suffix(".md").unwrap_or(&filename);
-                    sanitize_explicit_id(stem)
-                }
-            };
-            (id, filename)
-        }
+    let id = match fields.id {
+        // Explicit ID: sanitize to prevent path traversal, preserving
+        // the caller's separator convention (see sanitize_explicit_id).
+        Some(explicit_id) => sanitize_explicit_id(&explicit_id),
+        None => generate_id(type_prefix),
+    };
+    let filename = match fields.filename {
+        Some(explicit_filename) => validate_explicit_filename(&explicit_filename)?,
         None => {
-            let id = match fields.id {
-                // Explicit ID: sanitize to prevent path traversal, preserving
-                // the caller's separator convention (see sanitize_explicit_id).
-                Some(explicit_id) => sanitize_explicit_id(&explicit_id),
-                None => generate_id(type_prefix),
-            };
             // Workflows are named by id alone (see template_filename).
-            let filename = if is_template {
+            if is_template {
                 template_filename(&id)?
             } else {
                 generate_filename(&id, &fields.title)?
-            };
-            (id, filename)
+            }
         }
     };
 
@@ -767,41 +756,26 @@ pub fn create_task(root: &Path, fields: TaskFields) -> Result<PathBuf> {
         None => None,
     };
 
-    let (id, filename) = match fields.filename {
-        Some(explicit_filename) => {
-            let filename = validate_explicit_filename(&explicit_filename)?;
-            let id = match fields.id {
-                Some(explicit_id) => sanitize_explicit_id(&explicit_id),
-                None => {
-                    let stem = filename.strip_suffix(".md").unwrap_or(&filename);
-                    sanitize_explicit_id(stem)
-                }
-            };
-            (id, filename)
+    let id = match fields.id {
+        // Explicit ID: sanitize to prevent path traversal, preserving
+        // the caller's separator convention (see sanitize_explicit_id).
+        Some(explicit_id) => sanitize_explicit_id(&explicit_id),
+        None => {
+            // Prefix source: use the canonical `project` slug when set so
+            // IDs/filenames are namespaced like `aops-<hash>` /
+            // `aops-<hash>-<slug>.md`.
+            // Fallback when project is missing: literal `"task"` to preserve
+            // legacy behaviour for projectless / ad-hoc tasks (yields
+            // `task-<hash>` / `task-<hash>-<slug>.md`). The `task_type` field
+            // is intentionally NOT used here — it is captured in the
+            // frontmatter `type:` field, not the ID prefix.
+            let prefix = project.as_deref().unwrap_or("task");
+            generate_id(prefix)
         }
-        None => match fields.id {
-            Some(explicit_id) => {
-                // Explicit ID: sanitize to prevent path traversal, preserving
-                // the caller's separator convention (see sanitize_explicit_id).
-                let safe_id = sanitize_explicit_id(&explicit_id);
-                let filename = generate_filename(&safe_id, &fields.title)?;
-                (safe_id, filename)
-            }
-            None => {
-                // Prefix source: use the canonical `project` slug when set so
-                // IDs/filenames are namespaced like `aops-<hash>` /
-                // `aops-<hash>-<slug>.md`.
-                // Fallback when project is missing: literal `"task"` to preserve
-                // legacy behaviour for projectless / ad-hoc tasks (yields
-                // `task-<hash>` / `task-<hash>-<slug>.md`). The `task_type` field
-                // is intentionally NOT used here — it is captured in the
-                // frontmatter `type:` field, not the ID prefix.
-                let prefix = project.as_deref().unwrap_or("task");
-                let id = generate_id(prefix);
-                let filename = generate_filename(&id, &fields.title)?;
-                (id, filename)
-            }
-        },
+    };
+    let filename = match fields.filename {
+        Some(explicit_filename) => validate_explicit_filename(&explicit_filename)?,
+        None => generate_filename(&id, &fields.title)?,
     };
 
     // Determine subdirectory
@@ -1322,30 +1296,13 @@ pub fn create_memory(root: &Path, fields: MemoryFields) -> Result<PathBuf> {
         );
     }
 
-    let (id, filename) = match fields.filename {
-        Some(explicit_filename) => {
-            let filename = validate_explicit_filename(&explicit_filename)?;
-            let id = match fields.id {
-                Some(explicit_id) => sanitize_explicit_id(&explicit_id),
-                None => {
-                    let stem = filename.strip_suffix(".md").unwrap_or(&filename);
-                    sanitize_explicit_id(stem)
-                }
-            };
-            (id, filename)
-        }
-        None => match fields.id {
-            Some(explicit_id) => {
-                let safe_id = sanitize_explicit_id(&explicit_id);
-                let filename = generate_filename(&safe_id, &fields.title)?;
-                (safe_id, filename)
-            }
-            None => {
-                let id = generate_id("mem");
-                let filename = generate_filename(&id, &fields.title)?;
-                (id, filename)
-            }
-        },
+    let id = match fields.id {
+        Some(explicit_id) => sanitize_explicit_id(&explicit_id),
+        None => generate_id("mem"),
+    };
+    let filename = match fields.filename {
+        Some(explicit_filename) => validate_explicit_filename(&explicit_filename)?,
+        None => generate_filename(&id, &fields.title)?,
     };
 
     // Determine subdirectory

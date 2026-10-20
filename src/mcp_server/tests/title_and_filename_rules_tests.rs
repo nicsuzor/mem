@@ -209,3 +209,73 @@ fn test_create_and_update_node_title_over_500_chars_succeeds() {
     assert_eq!(task_doc["title"].as_str().unwrap(), title_700);
 }
 
+#[test]
+fn test_omitted_id_with_explicit_filename_generates_canonical_id() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    let server = make_server(root);
+
+    // 1. Task: explicit filename, omitted id
+    let res = server
+        .handle_create_task(&json!({
+            "title": "Task with explicit filename",
+            "project": "aops",
+            "filename": "custom_task_file.md",
+        }))
+        .expect("creating task with explicit filename must succeed");
+    let out = json_of(&res);
+    let task_id = out["id"].as_str().unwrap();
+
+    assert_ne!(task_id, "custom_task_file", "id must NOT be derived from filename stem");
+    assert!(
+        task_id.starts_with("aops_"),
+        "id '{task_id}' must start with canonical project prefix 'aops_'"
+    );
+    assert_eq!(task_id.len(), 5 + 8, "canonical id length must match 'aops_' + 8 hex chars");
+
+    let file_path = root.join("aops/custom_task_file.md");
+    assert!(file_path.exists(), "task file must exist at explicit filename");
+    let fm = frontmatter(&file_path);
+    assert_eq!(fm["id"].as_str().unwrap(), task_id);
+
+    // 2. Memory: explicit filename, omitted id
+    let _res = server
+        .handle_create_memory(&json!({
+            "title": "Memory with explicit filename",
+            "filename": "custom_memory_file.md",
+        }))
+        .expect("creating memory with explicit filename must succeed");
+    let mem_file_path = root.join("memories/custom_memory_file.md");
+    assert!(mem_file_path.exists(), "memory file must exist at explicit filename");
+    let fm_mem = frontmatter(&mem_file_path);
+    let mem_id = fm_mem["id"].as_str().unwrap();
+
+    assert_ne!(mem_id, "custom_memory_file", "id must NOT be derived from filename stem");
+    assert!(
+        mem_id.starts_with("mem_"),
+        "id '{mem_id}' must start with canonical prefix 'mem_'"
+    );
+    assert_eq!(mem_id.len(), 4 + 8, "canonical id length must match 'mem_' + 8 hex chars");
+
+    // 3. Document: explicit filename, omitted id
+    let _res = server
+        .handle_create_document(&json!({
+            "title": "Document with explicit filename",
+            "type": "document",
+            "filename": "custom_doc_file.md",
+        }))
+        .expect("creating document with explicit filename must succeed");
+    let doc_file_path = root.join("notes/custom_doc_file.md");
+    assert!(doc_file_path.exists(), "document file must exist at explicit filename");
+    let fm_doc = frontmatter(&doc_file_path);
+    let doc_id = fm_doc["id"].as_str().unwrap();
+
+    assert_ne!(doc_id, "custom_doc_file", "id must NOT be derived from filename stem");
+    assert!(
+        doc_id.starts_with("docu_"),
+        "id '{doc_id}' must start with canonical prefix 'docu_'"
+    );
+    assert_eq!(doc_id.len(), 5 + 8, "canonical id length must match 'docu_' + 8 hex chars");
+}
+
+
