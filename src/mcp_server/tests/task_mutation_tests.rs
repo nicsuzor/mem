@@ -1964,22 +1964,22 @@ fn test_list_tasks_status_ready_includes_unblocked_non_leaf_node() {
 }
 
 #[test]
-fn test_list_tasks_status_archived_is_rejected_not_aliased_to_done() {
-    let (_tmp, server) = build_disk_backed_server(&[(
+fn test_list_tasks_status_archived_is_accepted_and_not_aliased_to_done() {
+    let (_tmp, server) = build_disk_backed_server(&[
+        (
             "tasks/task-done.md",
             "---\nid: task-done\ntitle: Done\ntype: task\nstatus: done\ncreated: 2026-07-23T10:00:00+00:00\n---\n\n# Done\n",
-        )]);
-    let err = server
+        ),
+        (
+            "tasks/task-archived.md",
+            "---\nid: task-archived\ntitle: Archived\ntype: task\nstatus: archived\ncreated: 2026-07-23T10:00:00+00:00\n---\n\n# Archived\n",
+        ),
+    ]);
+    let res = server
         .handle_list_tasks(&json!({"status": "archived", "format": "json"}))
-        .expect_err(
-            "status=\"archived\" is not a supported stored value and must be rejected, \
-                 not silently aliased to the done set",
-        );
-    assert!(
-        matches!(err.code, ErrorCode::INVALID_PARAMS),
-        "got: {:?}",
-        err.code
-    );
+        .expect("status=\"archived\" is a valid status and must succeed");
+    let ids = extract_task_ids(&res);
+    assert_eq!(ids, vec!["task-archived"]);
 }
 
 #[test]
@@ -3114,7 +3114,8 @@ fn test_decompose_duplicate_subtask_title_brief_subject() {
         "---\nid: epic-parent\ntitle: Epic Parent\ntype: epic\nstatus: ready\n---\n\n# Epic Parent\n",
     )]);
 
-    let long_title = "Make the reasoning-steps design note the single source for the report-arguments";
+    let long_title =
+        "Make the reasoning-steps design note the single source for the report-arguments";
     let err = server
         .handle_decompose_task(&json!({
             "parent_id": "epic-parent",
@@ -3329,9 +3330,7 @@ fn test_create_task_link_quantum_word_and_float_stored_and_indexed() {
     let created: serde_json::Value = serde_json::from_str(&text).unwrap();
     let task_id = created.get("id").and_then(|v| v.as_str()).unwrap();
 
-    let get_res = server
-        .handle_get_task(&json!({ "id": task_id }))
-        .unwrap();
+    let get_res = server.handle_get_task(&json!({ "id": task_id })).unwrap();
     let get_text = get_res
         .content
         .iter()
@@ -3415,7 +3414,10 @@ fn test_update_task_link_quantum_reflected_without_restart() {
         .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
         .collect::<String>();
     let task_updated: serde_json::Value = serde_json::from_str(&get_updated_text).unwrap();
-    let links_updated = task_updated.get("links_out").and_then(|v| v.as_array()).unwrap();
+    let links_updated = task_updated
+        .get("links_out")
+        .and_then(|v| v.as_array())
+        .unwrap();
     let link_updated = links_updated
         .iter()
         .find(|l| l.get("to").and_then(|v| v.as_str()) == Some("target-a"))
@@ -3425,7 +3427,10 @@ fn test_update_task_link_quantum_reflected_without_restart() {
         Some(0.75),
         "Updated link should reflect new quantum 0.75 without restart"
     );
-    let strength_updated = link_updated.get("strength").and_then(|v| v.as_f64()).unwrap();
+    let strength_updated = link_updated
+        .get("strength")
+        .and_then(|v| v.as_f64())
+        .unwrap();
     assert!(
         (strength_updated - 0.75 * 0.8).abs() < 1e-9,
         "Updated link strength should be 0.75 * 0.8 = 0.6, got {strength_updated}"

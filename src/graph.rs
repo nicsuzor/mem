@@ -291,7 +291,7 @@ pub enum FlowState {
 
 pub fn status_to_flow_state(status: Option<&str>) -> FlowState {
     match status.map(|s| s.trim().to_lowercase()) {
-        Some(s) if s == "cancelled" || s == "failed" => FlowState::Gone,
+        Some(s) if s == "cancelled" || s == "failed" || s == "archived" => FlowState::Gone,
         Some(s) if s == "done" || s == "retired" => FlowState::Done,
         None => FlowState::Done,
         Some(s) if s.is_empty() => FlowState::Done,
@@ -694,7 +694,9 @@ pub fn validate_contributes_to_value(val: &serde_json::Value) -> Result<(), Stri
         }
         if let Some(bh_val) = obj.get("brier_history") {
             let bh_arr = bh_val.as_array().ok_or_else(|| {
-                format!("contributes_to[{i}].brier_history must be an array of numbers; got {bh_val}")
+                format!(
+                    "contributes_to[{i}].brier_history must be an array of numbers; got {bh_val}"
+                )
             })?;
             for (j, b) in bh_arr.iter().enumerate() {
                 if !b.is_number() {
@@ -1216,8 +1218,8 @@ pub fn resolve_status_alias(status: &str) -> &str {
         | "submitted" => "review",
 
         // Done-family: completed externally or internally
-        "complete" | "completed" | "closed" | "archived" | "resolved" | "published-spir"
-        | "historical" | "accepted" => "done",
+        "complete" | "completed" | "closed" | "resolved" | "published-spir" | "historical"
+        | "accepted" => "done",
 
         // Cancelled-family — "superseded" means replaced by a newer artefact,
         // which is functionally equivalent to cancelled (no longer in play).
@@ -1363,7 +1365,7 @@ pub fn status_rank(status: &str) -> i32 {
         // `partial` is a stop-gate shape (worker paused at a seam with a live child),
         // so rank it like the other side states — entering or resuming it must not
         // trip the backwards-transition warning.
-        "paused" | "someday" | "cancelled" | "partial" | "failed" => -1,
+        "paused" | "someday" | "cancelled" | "partial" | "failed" | "archived" => -1,
         _ => 0,
     }
 }
@@ -1423,6 +1425,8 @@ pub fn parse_effort_days(effort: &str) -> Option<i64> {
 ///   live follow-up task. Not merge-ready (excluded from Nic's merge queue) and not
 ///   done (the follow-up child carries the remainder). Surfaced by the §6
 ///   partial-orphan backstop via `list_tasks(status="partial")`.
+/// - **failed**: attempted and will not be completed
+/// - **archived**: retired note or historical record marked for removal to sessions repo
 pub const VALID_STATUSES: &[&str] = &[
     "inbox",
     "ready",
@@ -1435,10 +1439,11 @@ pub const VALID_STATUSES: &[&str] = &[
     "cancelled",
     "partial",
     "failed",
+    "archived",
 ];
 
 /// Terminal statuses — no further work expected.
-pub const COMPLETED_STATUSES: &[&str] = &["done", "cancelled", "failed"];
+pub const COMPLETED_STATUSES: &[&str] = &["done", "cancelled", "failed", "archived"];
 
 /// Open work items — everything that is neither terminal nor blocked.
 /// Used for surfacing active work in dashboards and filters.
@@ -1466,7 +1471,12 @@ pub const FAILURE_HANDBACK_STATUSES: &[&str] = &["cancelled", "review", "partial
 /// Returns true if the status represents a completed/finished state.
 pub fn is_completed(status: Option<&str>) -> bool {
     status
-        .map(|s| matches!(resolve_status_alias(s), "done" | "cancelled" | "failed"))
+        .map(|s| {
+            matches!(
+                resolve_status_alias(s),
+                "done" | "cancelled" | "failed" | "archived"
+            )
+        })
         .unwrap_or(false)
 }
 
@@ -2524,8 +2534,8 @@ impl GraphNode {
                         None => label.default_quantum(),
                     };
 
-
-                    let probability = match obj.get("probability").or_else(|| obj.get("certainty")) {
+                    let probability = match obj.get("probability").or_else(|| obj.get("certainty"))
+                    {
                         Some(v) => match parse_probability_word_or_float(v) {
                             Ok(Some(p)) => p,
                             Ok(None) => 1.00,
@@ -3563,6 +3573,7 @@ mod flow_schema_tests {
     #[test]
     fn test_status_to_flow_state() {
         assert_eq!(status_to_flow_state(Some("cancelled")), FlowState::Gone);
+        assert_eq!(status_to_flow_state(Some("archived")), FlowState::Gone);
         assert_eq!(status_to_flow_state(Some("done")), FlowState::Done);
         assert_eq!(status_to_flow_state(Some("retired")), FlowState::Done);
         assert_eq!(status_to_flow_state(None), FlowState::Done);

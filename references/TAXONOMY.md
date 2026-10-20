@@ -198,6 +198,7 @@ The tree hierarchy is a **spanning tree** of the underlying dependency graph. It
 | `someday`     | Parked idea — may never be worked; differs from `inbox` by explicit deferral     |
 | `cancelled`   | Will not be done — decision made to drop                                         |
 | `failed`      | Attempted and will not be completed — terminal failure, distinct from `cancelled` (no longer wanted) and `done` |
+| `archived`    | Retired note or historical record — marked for removal to the sessions repository |
 
 **Default is `inbox`**: Every new node starts as `inbox` regardless of how it was created.
 

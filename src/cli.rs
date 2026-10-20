@@ -44,7 +44,7 @@ enum TaskFilter {
     Ready,
     /// Tasks waiting on unfinished dependencies
     Blocked,
-    /// All open tasks (excludes done/cancelled/failed)
+    /// All open tasks (excludes done/cancelled/failed/archived)
     All,
 }
 
@@ -364,7 +364,7 @@ enum Commands {
         /// Task ID
         id: String,
 
-        /// Status (inbox, ready, queued, in_progress, review, blocked, paused, someday, done, cancelled, partial, failed)
+        /// Status (inbox, ready, queued, in_progress, review, blocked, paused, someday, done, cancelled, partial, failed, archived)
         #[arg(short, long)]
         status: Option<String>,
 
@@ -1746,9 +1746,7 @@ async fn main() -> Result<()> {
                         for (target, val) in &flow.loop_extra {
                             println!("    Loop extra [{}]: {:.2}", target, val);
                         }
-                        if let Some((_routes, _trunc, explanation)) =
-                            gs.routes_for_node(&node.id)
-                        {
+                        if let Some((_routes, _trunc, explanation)) = gs.routes_for_node(&node.id) {
                             if !explanation.is_empty() {
                                 println!("    Explanation:     {explanation}");
                             }
@@ -3515,10 +3513,8 @@ async fn main() -> Result<()> {
             if http {
                 // HTTP/SSE mode
                 use rmcp::transport::streamable_http_server::{
-                    session::local::LocalSessionManager,
-                    session::never::NeverSessionManager,
-                    StreamableHttpServerConfig,
-                    StreamableHttpService,
+                    session::local::LocalSessionManager, session::never::NeverSessionManager,
+                    StreamableHttpServerConfig, StreamableHttpService,
                 };
 
                 let ct = tokio_util::sync::CancellationToken::new();
@@ -3541,8 +3537,11 @@ async fn main() -> Result<()> {
                 let session_manager = std::sync::Arc::new(session_manager_inner);
 
                 let server_stateful = server.clone();
-                let mcp_service =
-                    StreamableHttpService::new(move || Ok(server_stateful.clone()), session_manager, config);
+                let mcp_service = StreamableHttpService::new(
+                    move || Ok(server_stateful.clone()),
+                    session_manager,
+                    config,
+                );
 
                 let mut stateless_config = StreamableHttpServerConfig::default()
                     .with_stateful_mode(false)
@@ -3562,10 +3561,22 @@ async fn main() -> Result<()> {
 
                 let app = axum::Router::new()
                     .route("/mcp", axum::routing::any_service(mcp_service))
-                    .route("/mcp/stateless", axum::routing::any_service(stateless_service.clone()))
-                    .route("/mcp/sessionless", axum::routing::any_service(stateless_service.clone()))
-                    .route("/stateless", axum::routing::any_service(stateless_service.clone()))
-                    .route("/sessionless", axum::routing::any_service(stateless_service))
+                    .route(
+                        "/mcp/stateless",
+                        axum::routing::any_service(stateless_service.clone()),
+                    )
+                    .route(
+                        "/mcp/sessionless",
+                        axum::routing::any_service(stateless_service.clone()),
+                    )
+                    .route(
+                        "/stateless",
+                        axum::routing::any_service(stateless_service.clone()),
+                    )
+                    .route(
+                        "/sessionless",
+                        axum::routing::any_service(stateless_service),
+                    )
                     .layer(axum::middleware::from_fn(
                         |mut req: axum::extract::Request, next: axum::middleware::Next| async move {
                             // Ensure Host header is present for HTTP/2 requests where the :authority pseudo-header
@@ -3591,7 +3602,9 @@ async fn main() -> Result<()> {
                             } else {
                                 req.headers_mut().insert(
                                     http::header::ACCEPT,
-                                    http::HeaderValue::from_static("application/json, text/event-stream"),
+                                    http::HeaderValue::from_static(
+                                        "application/json, text/event-stream",
+                                    ),
                                 );
                             }
                             next.run(req).await
