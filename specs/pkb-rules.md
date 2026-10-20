@@ -251,6 +251,10 @@ Nic, 2026-09-18, as a standing mandate for every session:
 - **No task flooding.** Never batch-generate unverified nodes. Each node minted is checked for duplicates first (§3.8).
 - **A review is its own node only when a separate evaluator must discharge it in a different session.** Otherwise it is a checklist line on the task it reviews. An empty placeholder review node is deleted.
 
+### 3.10. Workflow placement
+
+A workflow (`type: template`) is filed as `<snake_case id>.md`: the id only, never the title. It lives in `workflows/` when it has no `project`, and in `<project>/workflows/` when it is project-scoped, so the directory shows its tier. The whole name is snake_case, id included (Nic, 2026-10-20). The frontmatter `id` is unchanged and remains what resolution reads. `create` and `convert_document` apply this placement by default.
+
 ---
 
 ## 4. Write and read discipline

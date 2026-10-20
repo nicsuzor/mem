@@ -72,6 +72,10 @@ pub struct DocumentFields {
     pub links: Vec<serde_json::Value>,
     pub worth: Option<serde_json::Value>,
     pub deadline_class: Option<String>,
+    /// Project slug, used only for `type: template`: canonicalised against
+    /// polecat.yaml, written to frontmatter, and sets the default directory
+    /// (`<project>/workflows`). Ignored for other types.
+    pub project: Option<String>,
     /// Override subdirectory placement (e.g. "notes", "projects")
     pub dir: Option<String>,
 }
@@ -248,36 +252,45 @@ pub fn create_document(root: &Path, fields: DocumentFields) -> Result<PathBuf> {
         crate::graph::validate_deadline_class_value(&dc_val).map_err(|e| anyhow::anyhow!("{e}"))?;
     }
 
+    // Workflows only: validate + canonicalize the project slug against
+    // polecat.yaml, as create_task does. Other types ignore `project`.
+    let project = match fields
+        .project
+        .as_deref()
+        .filter(|_| fields.doc_type == TEMPLATE_TYPE)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        Some(raw) => Some(crate::polecat_config::resolve_project(root, raw)?),
+        None => None,
+    };
+
     let type_prefix = type_prefix(&fields.doc_type);
+    let is_template = fields.doc_type == TEMPLATE_TYPE;
 
     let is_daily =
         fields.doc_type == "daily" || fields.id.as_deref().map(is_daily_id).unwrap_or(false);
 
-    let (id, filename) = match fields.id {
-        Some(explicit_id) => {
-            // Explicit ID: sanitize to prevent path traversal, preserving
-            // the caller's separator convention (see sanitize_explicit_id).
-            let safe_id = sanitize_explicit_id(&explicit_id);
-            let filename = generate_filename(&safe_id, &fields.title)?;
-            (safe_id, filename)
-        }
-        None => {
-            // Use project as prefix when available, otherwise type-based prefix
-            let prefix = type_prefix;
-            let id = generate_id(prefix);
-            let filename = generate_filename(&id, &fields.title)?;
-            (id, filename)
-        }
+    let id = match fields.id {
+        // Explicit ID: sanitize to prevent path traversal, preserving
+        // the caller's separator convention (see sanitize_explicit_id).
+        Some(explicit_id) => sanitize_explicit_id(&explicit_id),
+        None => generate_id(type_prefix),
+    };
+    // Workflows are named by id alone (see template_filename).
+    let filename = if is_template {
+        template_filename(&id)?
+    } else {
+        generate_filename(&id, &fields.title)?
     };
 
     // Determine subdirectory
-    let subdir = fields.dir.map(|d| expand_env_vars(&d)).unwrap_or_else(|| {
-        if is_daily {
-            "daily".to_string()
-        } else {
-            default_subdir_for_type(&fields.doc_type).to_string()
-        }
-    });
+    let subdir = match fields.dir {
+        Some(d) => expand_env_vars(&d),
+        None if is_template => template_subdir(project.as_deref())?,
+        None if is_daily => "daily".to_string(),
+        None => default_subdir_for_type(&fields.doc_type).to_string(),
+    };
 
     let dir = root.join(&subdir);
     if !dir.is_dir() {
@@ -300,6 +313,9 @@ pub fn create_document(root: &Path, fields: DocumentFields) -> Result<PathBuf> {
         yaml_escape_double_quoted(&fields.title)
     ));
     fm.push_str(&format!("type: {}\n", fields.doc_type));
+    if let Some(ref p) = project {
+        fm.push_str(&format!("project: {}\n", p));
+    }
     fm.push_str(&format!("created: {}\n", now));
     fm.push_str(&format!("modified: {}\n", now));
 
@@ -3302,6 +3318,45 @@ pub fn default_subdir_for_type(doc_type: &str) -> &'static str {
     }
 }
 
+/// Document type for workflows.
+pub const TEMPLATE_TYPE: &str = "template";
+
+/// Default directory for a workflow (`type: template`): `<project>/workflows`
+/// when project-scoped, else `workflows` (PKB tier).
+pub fn template_subdir(project: Option<&str>) -> Result<String> {
+    match project.map(str::trim).filter(|p| !p.is_empty()) {
+        Some(p) => {
+            if !is_safe_relative_path(p) {
+                anyhow::bail!("Invalid project for workflow placement: {}", p);
+            }
+            Ok(format!("{}/workflows", p))
+        }
+        None => Ok("workflows".to_string()),
+    }
+}
+
+/// Filename for a workflow (`type: template`): the ID in snake_case, with no
+/// title slug — `wf-email-sweep` -> `wf_email_sweep.md`.
+pub fn template_filename(id: &str) -> Result<String> {
+    let stem = title_to_snake_case(id);
+    let stem = if stem.is_empty() {
+        sanitize_explicit_id(id)
+    } else {
+        stem
+    };
+    let filename = format!("{}.md", stem);
+    let len = filename.chars().count();
+    if len > MAX_FILENAME_LEN {
+        anyhow::bail!(
+            "Filename '{}' is too long ({} characters). Limit is {} characters.",
+            filename,
+            len,
+            MAX_FILENAME_LEN
+        );
+    }
+    Ok(filename)
+}
+
 /// Outcome of [`convert_document`]. Paths are absolute.
 #[derive(Debug, Clone)]
 pub struct ConvertResult {
@@ -3316,11 +3371,13 @@ pub struct ConvertResult {
 }
 
 /// Convert an existing document in place: replace its frontmatter `type`,
-/// then move and rename the same file to `<dir>/<id>_<title-slug>.md`.
+/// then move and rename the same file to `<dir>/<id>_<title-slug>.md`
+/// (`<dir>/<snake_case id>.md` for `type: template`).
 /// The ID is kept — it is written into frontmatter before the rename, so a
 /// document whose ID was only its filename stem keeps that ID afterwards.
 ///
-/// - `dir` defaults to [`default_subdir_for_type`] for `new_type`.
+/// - `dir` defaults to [`default_subdir_for_type`] for `new_type`; for
+///   `template` it is [`template_subdir`] of the document's `project`.
 /// - Converting to a task type (`TASK_TYPES`) requires a valid task status:
 ///   `status` if given, else the existing status, else `inbox`. An existing
 ///   status that is not a valid task status is rejected unless `status`
@@ -3386,11 +3443,18 @@ pub fn convert_document(
         status.map(String::from).or(old_status.clone())
     };
 
-    let subdir = dir
-        .map(String::from)
-        .unwrap_or_else(|| default_subdir_for_type(new_type).to_string());
+    let is_template = new_type == TEMPLATE_TYPE;
+    let subdir = match dir {
+        Some(d) => d.to_string(),
+        None if is_template => template_subdir(fm_str("project").as_deref())?,
+        None => default_subdir_for_type(new_type).to_string(),
+    };
     let target_dir = root.join(&subdir);
-    let filename = generate_filename(&sanitize_explicit_id(id), title)?;
+    let filename = if is_template {
+        template_filename(&sanitize_explicit_id(id))?
+    } else {
+        generate_filename(&sanitize_explicit_id(id), title)?
+    };
     let new_path = target_dir.join(filename);
     let moved = new_path != abs_path;
     if moved && new_path.exists() {

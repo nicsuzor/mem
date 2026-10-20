@@ -79,10 +79,10 @@ editors/
 - `list_memories` — list memory-type documents
 
 ### Document CRUD
-- `create` — generic document creation (any doc type: notes, specs, goals, targets, contacts, etc. — not just tasks/memories)
+- `create` — generic document creation (any doc type: notes, specs, goals, targets, contacts, etc. — not just tasks/memories); templates (workflows) are filed as `<snake_case id>.md` in `workflows/` or `<project>/workflows/`
 - `append` — timestamped append to existing doc
 - `update_body` — atomically rewrite a document's prose body, preserving frontmatter
-- `convert_document` — convert an existing doc in place, keeping its ID: replace frontmatter `type`, move + rename the same file to `<dir>/<id>_<slug>.md` (default dir by type), reindex. Retype and rename are separate git commits so history shows a rename. Built for capture intake (note → task)
+- `convert_document` — convert an existing doc in place, keeping its ID: replace frontmatter `type`, move + rename the same file to `<dir>/<id>_<slug>.md` (default dir by type; templates go to `[<project>/]workflows/<snake_case id>.md`), reindex. Retype and rename are separate git commits so history shows a rename. Built for capture intake (note → task)
 - `delete` — remove doc from disk + index; optional `type` param guards deletion to a matching node type (e.g. `type: "memory"` restricts to memory/note/insight/observation, replacing the old dedicated `delete_memory` tool)
 
 ### Knowledge Graph
