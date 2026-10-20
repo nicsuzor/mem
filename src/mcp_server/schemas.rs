@@ -838,14 +838,14 @@ impl PkbSearchServer {
             .with_annotations(ToolAnnotations::new().read_only(true)),
             Tool::new(
                 "batch_merge",
-                "Merge multiple duplicate tasks or knowledge nodes into a single canonical task. Sets each source to status `cancelled` (never `done` — the source's work was not performed) and appends a note naming the canonical; records the merge as `supersedes: [sources]` on the canonical so each source's `superseded_by` computes. Unions tags and depends_on onto the canonical, reparents children and redirects parent/depends_on/soft_depends_on/soft_blocks references. Source bodies are NOT carried across — write the consolidated body on the canonical yourself. A rejected merge (e.g. dependency cycle) writes nothing. Idempotent. Supersedes merge_node.",
+                "Merge multiple duplicate tasks or knowledge nodes into a single canonical task. Deletes merged duplicates outright (leaving no cancelled stub, per specs/pkb-rules.md §3.3); records the merge as `supersedes: [sources]` on the canonical. Unions tags and depends_on onto the canonical, reparents children and redirects all inbound references (parent/depends_on/soft_depends_on/blocks/soft_blocks/supersedes/closes/links). Source bodies are NOT carried across — write the consolidated body on the canonical yourself. A rejected merge (e.g. dependency cycle) writes nothing. Idempotent. Supersedes merge_node.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
                         "canonical": { "type": "string", "description": "ID of the node to keep (alias: canonical_id)" },
                         "canonical_id": { "type": "string", "description": "Alias for canonical: ID of the node to keep" },
-                        "merge_ids": { "type": "array", "items": { "type": "string" }, "description": "IDs of duplicates/source nodes to merge into canonical and archive (alias: source_ids)" },
-                        "source_ids": { "type": "array", "items": { "type": "string" }, "description": "Alias for merge_ids: IDs of duplicate/source nodes to merge into canonical and archive" },
+                        "merge_ids": { "type": "array", "items": { "type": "string" }, "description": "IDs of duplicates/source nodes to merge into canonical and delete (alias: source_ids)" },
+                        "source_ids": { "type": "array", "items": { "type": "string" }, "description": "Alias for merge_ids: IDs of duplicate/source nodes to merge into canonical and delete" },
                         "dry_run": { "type": "boolean", "description": "Preview only (default: true — must explicitly set false to execute)" }
                     },
                     "required": ["canonical", "merge_ids"]

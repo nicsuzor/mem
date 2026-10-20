@@ -394,29 +394,29 @@ Dedicated duplicates view → shows clusters → select canonical → merge or a
 
 ### 6. `batch_merge`
 
-Merge duplicate tasks into a canonical task and cancel the others.
+Merge duplicate tasks into a canonical task and delete the duplicates outright (per `specs/pkb-rules.md` §3.3).
 
 **Parameters:**
 
 | Param | Type | Required | Description |
 |-------|------|----------|-------------|
 | canonical | string | Yes | ID of the task to keep |
-| merge_ids | string[] | Yes | IDs of duplicates to merge into canonical |
+| merge_ids | string[] | Yes | IDs of duplicates to merge into canonical and delete |
 | strategy | string | No | `append_body`, `keep_canonical`, `combine_tags` (default: all three) |
 | dry_run | bool | No | Preview only (default: false) |
 
 **Behavior:**
 
-- **Body:** Source bodies are not carried across; the caller writes the consolidated body on the canonical. Each source body gets an appended note naming the canonical (`Merged into [[<canonical>]] by batch_merge ...`)
+- **Body:** Source bodies are not carried across; the caller writes the consolidated body on the canonical. Merged duplicate files are deleted outright.
 - **Tags:** Union of all tags
 - **Dependencies:** Union of all `depends_on` and `soft_depends_on`
 - **Priority:** Keep the highest (lowest number) priority
 - **Children:** Reparent any children of merged tasks to canonical
-- **Backlinks:** Any task that had a merged task as `parent` or `depends_on` gets updated to point to canonical
-- **Cancel merged tasks** with `status: cancelled` — never `done`, since the source's work was not performed
-- **Supersession:** the canonical gains `supersedes: [<source ids>]`; each source's `superseded_by` is computed from that edge, never written
+- **Backlinks:** Any task that had a merged task in any edge field (`parent`, `depends_on`, `soft_depends_on`, `blocks`, `soft_blocks`, `closes`, `supersedes`, `contributes_to`, `links`) gets updated to point to canonical
+- **Delete merged duplicate tasks outright** leaving no file or cancelled stub, adhering to `specs/pkb-rules.md` §3.3.
+- **Supersession:** the canonical gains `supersedes: [<source ids>]` and inherits prior `supersedes` of sources. Lint and index resolution do not require superseded duplicate files to exist on disk.
 - **Validation first:** cycle checks run before any write; a rejected merge leaves every file untouched
-- **Idempotent:** a source already `cancelled` and listed in the canonical's `supersedes` is skipped
+- **Idempotent:** a source already merged into canonical (already absent from disk or listed in canonical `supersedes`) is skipped cleanly
 - Single graph rebuild at end
 
 **CLI:**
@@ -862,7 +862,7 @@ A dedicated view (`g` from main) showing the health metrics from `graph_stats`, 
 
 - For any valid FilterSet, `resolve()` returns a subset of all tasks
 - For any batch_reparent, all modified tasks have correct `parent` field
-- For any batch_merge, merged tasks have `status: cancelled` and the canonical's `supersedes` lists them
+- For any batch_merge, merged duplicate tasks are deleted outright and the canonical's `supersedes` lists them
 
 ---
 
