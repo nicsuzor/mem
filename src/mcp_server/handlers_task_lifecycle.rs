@@ -1566,6 +1566,7 @@ impl PkbSearchServer {
             let fields = crate::document_crud::TaskFields {
                 title: title.to_string(),
                 id: Some(subtask_ids[i].clone()),
+                filename: None,
                 parent: Some(parent_id.to_string()),
                 intent: subtask
                     .get("intent")

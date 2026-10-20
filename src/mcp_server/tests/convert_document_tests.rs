@@ -258,17 +258,18 @@ fn convert_document_over_limit_filename_rejected_and_writes_nothing() {
     let root = tmp.path();
     let dir = root.join("notes/mobile-captures");
     std::fs::create_dir_all(&dir).unwrap();
-    let old_path = dir.join(format!("{CAPTURE_STEM}.md"));
+    let overlong_stem = "a".repeat(85);
+    let old_path = dir.join(format!("{overlong_stem}.md"));
     std::fs::write(
         &old_path,
-        "---\ntitle: This is an extremely long capture title that exceeds the tight filename length limit for PKB tasks\ntype: note\n---\n\nAsk about the enrolment form.\n",
+        format!("---\nid: {overlong_stem}\ntitle: Short title\ntype: note\n---\n\nAsk about the enrolment form.\n"),
     )
     .unwrap();
     let original = std::fs::read_to_string(&old_path).unwrap();
     let server = make_server(root);
 
     let err = server
-        .handle_convert_document(&json!({ "id": CAPTURE_STEM, "type": "task", "status": "inbox" }))
+        .handle_convert_document(&json!({ "id": overlong_stem, "type": "task", "status": "inbox" }))
         .expect_err("convert_document with over-limit filename must fail");
     assert!(
         err.message.contains("80") && err.message.contains("characters"),
