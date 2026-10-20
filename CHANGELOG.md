@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.2](https://github.com/nicsuzor/mem/compare/mem-v0.4.1...mem-v0.4.2) (2026-10-20)
+
+
+### Features
+
+* **cli:** read the vector index path from PKB_DB_PATH ([f9170f5](https://github.com/nicsuzor/mem/commit/f9170f535525852282b887f91f8f5bb92684f90b))
+* **cli:** read the vector index path from PKB_DB_PATH ([bc50657](https://github.com/nicsuzor/mem/commit/bc50657de8d67e6e600758551e08a08a3f17b728))
+* **crud:** file workflows as &lt;snake_case id&gt;.md under [&lt;project&gt;/]workflows/ ([21b58ac](https://github.com/nicsuzor/mem/commit/21b58accb6dd139e2cbd91287e51a5925462c368))
+* **crud:** file workflows as &lt;snake_case id&gt;.md under [&lt;project&gt;/]workflows/ ([ad05af2](https://github.com/nicsuzor/mem/commit/ad05af29008142b0d369b670f1bbbb973342e4a7))
+* **pkb:** accept archived note status and add sessions repo archive script ([ff6ba8b](https://github.com/nicsuzor/mem/commit/ff6ba8b66b1a8a6bbb7f7b3eb1a526c4e6d657fe))
+* **pkb:** accept archived note status and add sessions repo archive script ([6d5a407](https://github.com/nicsuzor/mem/commit/6d5a407abffb9780a9d4d7cffd55e3031e6f442c))
+* **spec:** align taxonomy spec with flow quantum and probability ([2ea34d6](https://github.com/nicsuzor/mem/commit/2ea34d639a70ef186039998fe5277d920cf26229))
+* **spec:** align taxonomy spec with flow quantum and probability ([1078495](https://github.com/nicsuzor/mem/commit/1078495ad33df98d0dae60cf70c10fea151fb968))
+
+
+### Bug Fixes
+
+* **crud:** read create's `project` only for templates ([b6baa0a](https://github.com/nicsuzor/mem/commit/b6baa0a60a92f4ca25c57c58e389f72555bfae9a))
+
 ## [0.4.1](https://github.com/nicsuzor/mem/compare/mem-v0.4.0...mem-v0.4.1) (2026-10-19)
 
 
