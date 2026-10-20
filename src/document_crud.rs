@@ -108,6 +108,8 @@ pub struct DocumentFields {
     pub project: Option<String>,
     /// Override subdirectory placement (e.g. "notes", "projects")
     pub dir: Option<String>,
+    /// Explicit filename (optional; derived from title if omitted)
+    pub filename: Option<String>,
 }
 
 /// Fields for creating a new task.
@@ -144,6 +146,8 @@ pub struct TaskFields {
     pub classification: Option<String>,
     /// Override subdirectory placement
     pub dir: Option<String>,
+    /// Explicit filename (optional; derived from title if omitted)
+    pub filename: Option<String>,
 }
 
 /// Fields for creating a new memory.
@@ -161,6 +165,8 @@ pub struct MemoryFields {
     pub supersedes: Option<String>,
     pub project: Option<String>,
     pub dir: Option<String>,
+    /// Explicit filename (optional; derived from title if omitted)
+    pub filename: Option<String>,
 }
 
 /// Create a new document file with YAML frontmatter.
@@ -204,7 +210,6 @@ pub fn create_document(root: &Path, fields: DocumentFields) -> Result<PathBuf> {
     }
 
     let max_len = max_frontmatter_scalar_len();
-    validate_str_scalar("title", &fields.title, max_len)?;
     if let Some(ref s) = fields.assignee {
         validate_str_scalar("assignee", s, max_len)?;
     }
@@ -301,17 +306,33 @@ pub fn create_document(root: &Path, fields: DocumentFields) -> Result<PathBuf> {
     let is_daily =
         fields.doc_type == "daily" || fields.id.as_deref().map(is_daily_id).unwrap_or(false);
 
-    let id = match fields.id {
-        // Explicit ID: sanitize to prevent path traversal, preserving
-        // the caller's separator convention (see sanitize_explicit_id).
-        Some(explicit_id) => sanitize_explicit_id(&explicit_id),
-        None => generate_id(type_prefix),
-    };
-    // Workflows are named by id alone (see template_filename).
-    let filename = if is_template {
-        template_filename(&id)?
-    } else {
-        generate_filename(&id, &fields.title)?
+    let (id, filename) = match fields.filename {
+        Some(explicit_filename) => {
+            let filename = validate_explicit_filename(&explicit_filename)?;
+            let id = match fields.id {
+                Some(explicit_id) => sanitize_explicit_id(&explicit_id),
+                None => {
+                    let stem = filename.strip_suffix(".md").unwrap_or(&filename);
+                    sanitize_explicit_id(stem)
+                }
+            };
+            (id, filename)
+        }
+        None => {
+            let id = match fields.id {
+                // Explicit ID: sanitize to prevent path traversal, preserving
+                // the caller's separator convention (see sanitize_explicit_id).
+                Some(explicit_id) => sanitize_explicit_id(&explicit_id),
+                None => generate_id(type_prefix),
+            };
+            // Workflows are named by id alone (see template_filename).
+            let filename = if is_template {
+                template_filename(&id)?
+            } else {
+                generate_filename(&id, &fields.title)?
+            };
+            (id, filename)
+        }
     };
 
     // Determine subdirectory
@@ -524,9 +545,6 @@ pub fn create_subtask(root: &Path, fields: SubtaskFields) -> Result<PathBuf> {
         anyhow::bail!("parent_id cannot be empty");
     }
 
-    let max_len = max_frontmatter_scalar_len();
-    validate_str_scalar("title", &fields.title, max_len)?;
-
     let tasks_dir = root.join("tasks");
     let dir = if tasks_dir.is_dir() {
         tasks_dir
@@ -655,7 +673,6 @@ pub fn create_task(root: &Path, fields: TaskFields) -> Result<PathBuf> {
 
     // Validation
     let max_len = max_frontmatter_scalar_len();
-    validate_str_scalar("title", &fields.title, max_len)?;
     if let Some(ref s) = fields.assignee {
         validate_str_scalar("assignee", s, max_len)?;
     }
@@ -750,28 +767,41 @@ pub fn create_task(root: &Path, fields: TaskFields) -> Result<PathBuf> {
         None => None,
     };
 
-    let (id, filename) = match fields.id {
-        Some(explicit_id) => {
-            // Explicit ID: sanitize to prevent path traversal, preserving
-            // the caller's separator convention (see sanitize_explicit_id).
-            let safe_id = sanitize_explicit_id(&explicit_id);
-            let filename = generate_filename(&safe_id, &fields.title)?;
-            (safe_id, filename)
-        }
-        None => {
-            // Prefix source: use the canonical `project` slug when set so
-            // IDs/filenames are namespaced like `aops-<hash>` /
-            // `aops-<hash>-<slug>.md`.
-            // Fallback when project is missing: literal `"task"` to preserve
-            // legacy behaviour for projectless / ad-hoc tasks (yields
-            // `task-<hash>` / `task-<hash>-<slug>.md`). The `task_type` field
-            // is intentionally NOT used here — it is captured in the
-            // frontmatter `type:` field, not the ID prefix.
-            let prefix = project.as_deref().unwrap_or("task");
-            let id = generate_id(prefix);
-            let filename = generate_filename(&id, &fields.title)?;
+    let (id, filename) = match fields.filename {
+        Some(explicit_filename) => {
+            let filename = validate_explicit_filename(&explicit_filename)?;
+            let id = match fields.id {
+                Some(explicit_id) => sanitize_explicit_id(&explicit_id),
+                None => {
+                    let stem = filename.strip_suffix(".md").unwrap_or(&filename);
+                    sanitize_explicit_id(stem)
+                }
+            };
             (id, filename)
         }
+        None => match fields.id {
+            Some(explicit_id) => {
+                // Explicit ID: sanitize to prevent path traversal, preserving
+                // the caller's separator convention (see sanitize_explicit_id).
+                let safe_id = sanitize_explicit_id(&explicit_id);
+                let filename = generate_filename(&safe_id, &fields.title)?;
+                (safe_id, filename)
+            }
+            None => {
+                // Prefix source: use the canonical `project` slug when set so
+                // IDs/filenames are namespaced like `aops-<hash>` /
+                // `aops-<hash>-<slug>.md`.
+                // Fallback when project is missing: literal `"task"` to preserve
+                // legacy behaviour for projectless / ad-hoc tasks (yields
+                // `task-<hash>` / `task-<hash>-<slug>.md`). The `task_type` field
+                // is intentionally NOT used here — it is captured in the
+                // frontmatter `type:` field, not the ID prefix.
+                let prefix = project.as_deref().unwrap_or("task");
+                let id = generate_id(prefix);
+                let filename = generate_filename(&id, &fields.title)?;
+                (id, filename)
+            }
+        },
     };
 
     // Determine subdirectory
@@ -1265,7 +1295,6 @@ pub fn create_memory(root: &Path, fields: MemoryFields) -> Result<PathBuf> {
     }
 
     let max_len = max_frontmatter_scalar_len();
-    validate_str_scalar("title", &fields.title, max_len)?;
     if let Some(ref s) = fields.memory_type {
         validate_str_scalar("memory_type", s, max_len)?;
     }
@@ -1293,17 +1322,30 @@ pub fn create_memory(root: &Path, fields: MemoryFields) -> Result<PathBuf> {
         );
     }
 
-    let (id, filename) = match fields.id {
-        Some(explicit_id) => {
-            let safe_id = sanitize_explicit_id(&explicit_id);
-            let filename = generate_filename(&safe_id, &fields.title)?;
-            (safe_id, filename)
-        }
-        None => {
-            let id = generate_id("mem");
-            let filename = generate_filename(&id, &fields.title)?;
+    let (id, filename) = match fields.filename {
+        Some(explicit_filename) => {
+            let filename = validate_explicit_filename(&explicit_filename)?;
+            let id = match fields.id {
+                Some(explicit_id) => sanitize_explicit_id(&explicit_id),
+                None => {
+                    let stem = filename.strip_suffix(".md").unwrap_or(&filename);
+                    sanitize_explicit_id(stem)
+                }
+            };
             (id, filename)
         }
+        None => match fields.id {
+            Some(explicit_id) => {
+                let safe_id = sanitize_explicit_id(&explicit_id);
+                let filename = generate_filename(&safe_id, &fields.title)?;
+                (safe_id, filename)
+            }
+            None => {
+                let id = generate_id("mem");
+                let filename = generate_filename(&id, &fields.title)?;
+                (id, filename)
+            }
+        },
     };
 
     // Determine subdirectory
@@ -1842,8 +1884,10 @@ fn update_document_inner(path: &Path, updates: HashMap<String, serde_json::Value
             continue;
         }
 
-        // Validate scalar lengths for all frontmatter fields
-        validate_scalar_lengths(key, value, max_frontmatter_scalar_len())?;
+        // Validate scalar lengths for all frontmatter fields except title (titles have no length limit, mem_e2f4b397)
+        if key != "title" {
+            validate_scalar_lengths(key, value, max_frontmatter_scalar_len())?;
+        }
 
         // Validation for updated fields (mem_07e63c6c)
         validate_update_field(key, value).map_err(|e| anyhow::anyhow!("{e}"))?;
@@ -3952,16 +3996,39 @@ pub fn title_to_snake_case(title: &str) -> String {
         .join("_")
 }
 
-/// Truncate a snake slug to a max length, ensuring no trailing underscore.
-pub fn truncate_snake_slug(slug: &str, max_len: usize) -> &str {
-    if slug.len() <= max_len {
+/// Truncate a snake slug to a max length in characters, ensuring no trailing underscore.
+pub fn truncate_snake_slug(slug: &str, max_chars: usize) -> &str {
+    if slug.chars().count() <= max_chars {
         return slug.trim_end_matches('_');
     }
-    let truncated = match slug.char_indices().nth(max_len) {
+    let truncated = match slug.char_indices().nth(max_chars) {
         Some((idx, _)) => &slug[..idx],
         None => slug,
     };
     truncated.trim_end_matches('_')
+}
+
+/// Validate an explicitly supplied filename.
+/// Returns an error if it contains path separators or exceeds [`MAX_FILENAME_LEN`] characters.
+pub fn validate_explicit_filename(filename: &str) -> Result<String> {
+    if filename.contains('/') || filename.contains('\\') {
+        anyhow::bail!("Filename cannot contain path separators: '{}'", filename);
+    }
+    let filename = if filename.ends_with(".md") {
+        filename.to_string()
+    } else {
+        format!("{}.md", filename)
+    };
+    let len = filename.chars().count();
+    if len > MAX_FILENAME_LEN {
+        anyhow::bail!(
+            "Filename '{}' is too long ({} characters). Limit is {} characters.",
+            filename,
+            len,
+            MAX_FILENAME_LEN
+        );
+    }
+    Ok(filename)
 }
 
 /// Check if an ID matches the daily note naming convention: `YYYYMMDD-daily` (e.g. `20261009-daily`).
@@ -3973,21 +4040,30 @@ pub fn is_daily_id(id: &str) -> bool {
 
 /// Helper to generate a unified prefix-based filename.
 ///
-/// Returns an error if the resulting filename exceeds [`MAX_FILENAME_LEN`] characters.
+/// When the client supplies no filename, a filename derived from an over-long
+/// title is cut to [`MAX_FILENAME_LEN`] with no error.
+/// An error is returned only if the prefix alone (plus `.md`) exceeds [`MAX_FILENAME_LEN`].
 pub fn generate_filename(prefix: &str, title: &str) -> Result<String> {
-    let filename = if is_daily_id(prefix) {
-        format!("{}.md", prefix)
-    } else {
-        let slug = title_to_snake_case(title);
-        if slug.is_empty() {
-            format!("{}.md", prefix)
-        } else {
-            format!("{}_{}.md", prefix, slug)
-        }
-    };
+    let prefix_len = prefix.chars().count();
+    let dot_md_len = 3; // ".md"
 
-    let len = filename.chars().count();
-    if len > MAX_FILENAME_LEN {
+    if is_daily_id(prefix) {
+        let filename = format!("{}.md", prefix);
+        let len = filename.chars().count();
+        if len > MAX_FILENAME_LEN {
+            anyhow::bail!(
+                "Filename '{}' is too long ({} characters). Limit is {} characters.",
+                filename,
+                len,
+                MAX_FILENAME_LEN
+            );
+        }
+        return Ok(filename);
+    }
+
+    if prefix_len + dot_md_len > MAX_FILENAME_LEN {
+        let filename = format!("{}.md", prefix);
+        let len = filename.chars().count();
         anyhow::bail!(
             "Filename '{}' is too long ({} characters). Limit is {} characters.",
             filename,
@@ -3996,7 +4072,23 @@ pub fn generate_filename(prefix: &str, title: &str) -> Result<String> {
         );
     }
 
-    Ok(filename)
+    let slug = title_to_snake_case(title);
+    if slug.is_empty() {
+        return Ok(format!("{}.md", prefix));
+    }
+
+    let overhead = prefix_len + 1 + dot_md_len; // prefix + "_" + ".md"
+    if overhead >= MAX_FILENAME_LEN {
+        return Ok(format!("{}.md", prefix));
+    }
+
+    let max_slug_chars = MAX_FILENAME_LEN - overhead;
+    let truncated_slug = truncate_snake_slug(&slug, max_slug_chars);
+    if truncated_slug.is_empty() {
+        Ok(format!("{}.md", prefix))
+    } else {
+        Ok(format!("{}_{}.md", prefix, truncated_slug))
+    }
 }
 
 /// Truncate a slug to `max_len` characters, trimming trailing hyphens.
@@ -4371,16 +4463,17 @@ mod tests {
         let tasks_dir = root.join("tasks");
         fs::create_dir_all(&tasks_dir).unwrap();
 
-        // Title that produces an over-limit filename (> 80 chars)
-        let long_title = "This is a very long task title that exceeds the tight filename length limit for tasks in the PKB";
+        // Explicit filename supplied by client exceeding MAX_FILENAME_LEN (80)
+        let overlong_filename = format!("{}.md", "a".repeat(85));
         let fields = TaskFields {
-            title: long_title.to_string(),
+            title: "Short title".to_string(),
+            filename: Some(overlong_filename),
             parent: Some("parent-001".to_string()),
             project: Some("aops".to_string()),
             ..Default::default()
         };
         let err = create_task(root, fields)
-            .expect_err("creating a task with an over-limit filename must be rejected");
+            .expect_err("creating a task with an explicit over-limit filename must be rejected");
         let msg = err.to_string();
         assert!(
             msg.contains("80") && msg.contains("characters"),
@@ -4425,20 +4518,20 @@ mod tests {
         write_test_polecat_yaml(root, &["aops", "mem"]);
         let notes_dir = root.join("notes");
         fs::create_dir_all(&notes_dir).unwrap();
-        let old_path = notes_dir.join("note-001.md");
+        let overlong_id = "a".repeat(85);
+        let old_path = notes_dir.join(format!("{overlong_id}.md"));
         fs::write(
             &old_path,
-            "---\nid: note-001\ntitle: Short note\ntype: note\n---\nBody\n",
+            format!("---\nid: {overlong_id}\ntitle: Short note\ntype: note\n---\nBody\n"),
         )
         .unwrap();
         let original_content = fs::read_to_string(&old_path).unwrap();
 
-        let long_title = "This is an extremely long title for a document that exceeds the tight filename length limit";
         let err = convert_document(
             root,
             &old_path,
-            "note-001",
-            long_title,
+            &overlong_id,
+            "Short note",
             "task",
             None,
             Some("inbox"),
@@ -4466,6 +4559,41 @@ mod tests {
                 "no target file must be written"
             );
         }
+    }
+
+    #[test]
+    fn convert_document_overlong_title_succeeds_and_bounds_filename() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        write_test_polecat_yaml(root, &["aops", "mem"]);
+        let notes_dir = root.join("notes");
+        fs::create_dir_all(&notes_dir).unwrap();
+        let old_path = notes_dir.join("note-001.md");
+        fs::write(
+            &old_path,
+            "---\nid: note-001\ntitle: Short note\ntype: note\n---\nBody\n",
+        )
+        .unwrap();
+
+        let long_title = "This is an extremely long title for a document that exceeds the tight filename length limit";
+        let res = convert_document(
+            root,
+            &old_path,
+            "note-001",
+            long_title,
+            "task",
+            None,
+            Some("inbox"),
+        )
+        .expect("converting with an over-long title must succeed and truncate filename");
+        assert!(res.new_path.exists());
+        let filename = res.new_path.file_name().unwrap().to_str().unwrap();
+        assert!(
+            filename.chars().count() <= MAX_FILENAME_LEN,
+            "derived filename '{}' must be <= MAX_FILENAME_LEN ({})",
+            filename,
+            MAX_FILENAME_LEN
+        );
     }
 
     #[test]
@@ -7933,7 +8061,13 @@ mod additional_tests {
             "20261009-daily.md"
         );
         let long_title = "word ".repeat(25);
-        let err = generate_filename("task-123", &long_title).unwrap_err();
+        let filename = generate_filename("task-123", &long_title).unwrap();
+        assert!(
+            filename.chars().count() <= MAX_FILENAME_LEN,
+            "overlong title must be cut to fit within limit, got: {filename}"
+        );
+        let overlong_prefix = "p".repeat(85);
+        let err = generate_filename(&overlong_prefix, "title").unwrap_err();
         let msg = err.to_string();
         assert!(
             msg.contains("80") && msg.contains("characters"),
