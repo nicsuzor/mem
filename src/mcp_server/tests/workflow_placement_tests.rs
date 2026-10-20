@@ -158,6 +158,26 @@ fn create_non_template_filename_unchanged() {
     assert!(root.join("notes/note-abc_some_note.md").exists());
 }
 
+#[test]
+fn create_non_template_ignores_project() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    let server = make_server(root);
+
+    server
+        .handle_create_document(&json!({
+            "title": "Some note",
+            "type": "note",
+            "id": "note-proj",
+            "project": "not-a-registered-project",
+        }))
+        .unwrap();
+
+    let path = root.join("notes/note-proj_some_note.md");
+    let content = std::fs::read_to_string(&path).unwrap();
+    assert!(!content.contains("project:"));
+}
+
 fn write_note(root: &Path, rel: &str, extra: &str) -> PathBuf {
     let path = root.join(rel);
     std::fs::create_dir_all(path.parent().unwrap()).unwrap();

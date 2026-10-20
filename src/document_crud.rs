@@ -72,9 +72,9 @@ pub struct DocumentFields {
     pub links: Vec<serde_json::Value>,
     pub worth: Option<serde_json::Value>,
     pub deadline_class: Option<String>,
-    /// Project slug, canonicalised against polecat.yaml and written to
-    /// frontmatter. For `type: template` it also sets the default directory
-    /// (`<project>/workflows`).
+    /// Project slug, used only for `type: template`: canonicalised against
+    /// polecat.yaml, written to frontmatter, and sets the default directory
+    /// (`<project>/workflows`). Ignored for other types.
     pub project: Option<String>,
     /// Override subdirectory placement (e.g. "notes", "projects")
     pub dir: Option<String>,
@@ -252,11 +252,12 @@ pub fn create_document(root: &Path, fields: DocumentFields) -> Result<PathBuf> {
         crate::graph::validate_deadline_class_value(&dc_val).map_err(|e| anyhow::anyhow!("{e}"))?;
     }
 
-    // Validate + canonicalize the project slug against polecat.yaml, as
-    // create_task does.
+    // Workflows only: validate + canonicalize the project slug against
+    // polecat.yaml, as create_task does. Other types ignore `project`.
     let project = match fields
         .project
         .as_deref()
+        .filter(|_| fields.doc_type == TEMPLATE_TYPE)
         .map(str::trim)
         .filter(|s| !s.is_empty())
     {
