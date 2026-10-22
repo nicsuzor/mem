@@ -135,13 +135,20 @@ pub(crate) fn parse_status_filter(
 
 impl PkbSearchServer {
     pub(crate) fn handle_create_task(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
-        if args.get("filename").is_some() || args.get("path").is_some() {
+        if args.get("path").is_some() {
             return Err(McpError {
                 code: ErrorCode::INVALID_PARAMS,
-                message: Cow::from("filename and path arguments are no longer supported. Use dir and project instead."),
+                message: Cow::from("The 'path' parameter is no longer supported. Please use 'dir' instead."),
                 data: None,
             });
         }
+
+        let filename = args
+            .get("filename")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(String::from);
 
         // Accept `title` (preferred) or `task_title` (alias — some skill docs use this name)
         let title = args
@@ -184,6 +191,7 @@ impl PkbSearchServer {
                 "due",
                 "project",
                 "dir",
+                "filename",
                 "type",
                 "status",
                 "session_id",
@@ -270,6 +278,7 @@ impl PkbSearchServer {
         let fields = crate::document_crud::TaskFields {
             title: title.to_string(),
             id: args.get("id").and_then(|v| v.as_str()).map(String::from),
+            filename,
             parent: args
                 .get("parent")
                 .and_then(|v| v.as_str())
@@ -525,10 +534,18 @@ impl PkbSearchServer {
 
         let t = std::time::Instant::now();
         let path =
-            crate::document_crud::create_task(&self.pkb_root, fields).map_err(|e| McpError {
-                code: ErrorCode::INTERNAL_ERROR,
-                message: Cow::from(format!("Failed to create task: {e}")),
-                data: None,
+            crate::document_crud::create_task(&self.pkb_root, fields).map_err(|e| {
+                let msg = e.to_string();
+                let code = if msg.contains("is too long") {
+                    ErrorCode::INVALID_PARAMS
+                } else {
+                    ErrorCode::INTERNAL_ERROR
+                };
+                McpError {
+                    code,
+                    message: Cow::from(format!("Failed to create task: {msg}")),
+                    data: None,
+                }
             })?;
         let elapsed_write = t.elapsed();
         tracing::debug!(target: "perf::create_task", phase = "write_file", elapsed_ms = elapsed_write.as_secs_f64() * 1000.0);
