@@ -1657,6 +1657,7 @@ impl PkbSearchServer {
                     .get("classification")
                     .and_then(|v| v.as_str())
                     .map(String::from),
+                filename: None,
             };
 
             let path = crate::document_crud::create_task(&self.pkb_root, fields).map_err(|e| {
