@@ -7,6 +7,15 @@ VS Code extension for the Personal Knowledge Base (PKB) backed by `pkb lsp`, sup
 - **Mouseover Preview (Editor & Markdown Preview Windows)**:
   - Hovering over a PKB reference in the Markdown editor or in a **Markdown Preview window** (`[[id]]`, `[[id|alias]]`, `[label](target)`, or bare task/node ID such as `task-123` or `mem_1e3f8515`) displays a rich preview card of the referenced node (Title, ID, Type, Status, Intent, Tags, Parent, and 12-line body excerpt).
   - Unresolved wikilinks (`[[missing-id]]`) are highlighted in Markdown Preview with a diagnostic warning card showing the unresolved target and active `pkbRoot`.
+- **Markdown PKB Link Translation (Editor & Markdown Preview Windows)**:
+  - Translates markdown PKB links into links that open the referenced PKB node directly in a permanent new editor tab (`preview: false`), resolving Gap B in remote and local sessions without requiring separate third-party extensions.
+  - Supported link formats:
+    - Wikilinks: `[[node-id]]` and aliased wikilinks `[[node-id|Custom Label]]`
+    - Markdown links: `[label](node-id)` and `[label](path/to/note.md)`
+    - Obsidian URIs: `[label](obsidian://open?vault=...&file=...)` and raw `obsidian://open?...` in text
+    - Bare PKB node IDs: `task-123`, `mem_1e3f8515`
+  - In the Markdown editor, links are provided as clickable document links (`PkbDocumentLinkProvider`) with descriptive tooltips (`Open PKB note: <Title> (<id>)`).
+  - In Markdown Preview windows, links render with rich hover preview cards and direct file links that open in a new tab upon click.
 - **Open in New Tab (Editor & Markdown Preview Windows)**:
   - Clicking on a reference in a **Markdown Preview window** opens the whole referenced file in a permanent new editor tab (`preview: false`).
   - Clicking on a reference via Go to Definition (`F12`, `Ctrl+Click` / `Cmd+Click`) or document links in the Markdown editor opens the whole referenced file in a new editor tab.

@@ -3,7 +3,23 @@ export class MockPosition {
 }
 
 export class MockRange {
-  constructor(public start: MockPosition = new MockPosition(), public end: MockPosition = new MockPosition()) {}
+  public start: MockPosition;
+  public end: MockPosition;
+
+  constructor(
+    startOrLine: MockPosition | number = new MockPosition(),
+    endOrChar: MockPosition | number = new MockPosition(),
+    endLine?: number,
+    endChar?: number
+  ) {
+    if (typeof startOrLine === 'number' && typeof endOrChar === 'number') {
+      this.start = new MockPosition(startOrLine, endOrChar);
+      this.end = new MockPosition(endLine ?? startOrLine, endChar ?? endOrChar);
+    } else {
+      this.start = (startOrLine as MockPosition) || new MockPosition();
+      this.end = (endOrChar as MockPosition) || new MockPosition();
+    }
+  }
 }
 
 export class MockLocation {
@@ -15,7 +31,7 @@ export class MockHover {
 }
 
 export class MockDocumentLink {
-  constructor(public range: any = null, public target?: any) {}
+  constructor(public range: any = null, public target?: any, public tooltip?: string) {}
 }
 
 export class MockCompletionItem {
@@ -258,6 +274,9 @@ const baseMock: Record<string, any> = {
     registerInlayHintsProvider: (_selector: any, _provider: any) => ({ dispose: () => {} }),
     registerCodeLensProvider: (_selector: any, _provider: any) => ({ dispose: () => {} }),
     registerDocumentSemanticTokensProvider: (_selector: any, _provider: any, _legend: any) => ({
+      dispose: () => {},
+    }),
+    registerDocumentLinkProvider: (_selector: any, _provider: any) => ({
       dispose: () => {},
     }),
   },
