@@ -5,6 +5,7 @@ import * as os from 'os';
 import {
   activate,
   collectDescendants,
+  computeDocumentLinks,
   computeGutterBadges,
   computeHeaderCodeLenses,
   computeInlayHints,
@@ -19,6 +20,7 @@ import {
   logInfo,
   logWarn,
   openReferencedFile,
+  PkbDocumentLinkProvider,
   PkbPreviewIndex,
   PkbPreviewNode,
   renderHoverCardHtml,
@@ -787,6 +789,137 @@ Body text.
       assert.strictEqual(badges[0].badge, 'ready');
       assert.strictEqual(badges[1].line, 2);
       assert.strictEqual(badges[1].badge, 'blocked');
+    } finally {
+      fs.rmSync(tmpPkb, { recursive: true, force: true });
+    }
+  });
+
+  it('translates markdown PKB links (wikilinks, obsidian URIs, markdown links, bare IDs) and clicking opens the linked node', async () => {
+    const tmpPkb = fs.mkdtempSync(path.join(os.tmpdir(), 'pkb-links-test-'));
+    try {
+      const tasksDir = path.join(tmpPkb, 'tasks');
+      fs.mkdirSync(tasksDir, { recursive: true });
+
+      const targetPath = path.join(tasksDir, 'task-link-target.md');
+      const targetContent = [
+        '---',
+        'id: task-link-target',
+        'title: Target Task Title',
+        'type: task',
+        'status: ready',
+        '---',
+        'Body content of the target task.',
+      ].join('\n');
+      fs.writeFileSync(targetPath, targetContent);
+
+      const index = new PkbPreviewIndex(tmpPkb);
+      assert.strictEqual(index.size, 1);
+
+      // 1. Test index.resolve on Obsidian URIs
+      const resObs1 = index.resolve('obsidian://open?vault=brain&file=task-link-target');
+      assert.ok(resObs1, 'Must resolve obsidian:// URI with bare node ID');
+      assert.strictEqual(resObs1.id, 'task-link-target');
+
+      const resObs2 = index.resolve('obsidian://open?vault=brain&file=tasks%2Ftask-link-target.md');
+      assert.ok(resObs2, 'Must resolve obsidian:// URI with encoded relative path');
+      assert.strictEqual(resObs2.id, 'task-link-target');
+
+      const resObs3 = index.resolve('obsidian://open?file=tasks/task-link-target.md');
+      assert.ok(resObs3, 'Must resolve obsidian:// URI with unencoded relative path');
+      assert.strictEqual(resObs3.id, 'task-link-target');
+
+      // 2. Test extractReferenceAtPosition on Obsidian URI
+      const lineWithObsidian = 'Open this: obsidian://open?vault=brain&file=task-link-target now';
+      const extractedObs = extractReferenceAtPosition(lineWithObsidian, 20);
+      assert.ok(extractedObs, 'Should extract obsidian URI at cursor');
+      assert.strictEqual(extractedObs.target, 'obsidian://open?vault=brain&file=task-link-target');
+
+      // 3. Test document link translation across all markdown PKB link variants
+      const markdownDoc = [
+        'Line 0: [[task-link-target]]',
+        'Line 1: [[task-link-target|Custom Alias]]',
+        'Line 2: [Standard Link](task-link-target)',
+        'Line 3: [Obsidian Link](obsidian://open?vault=brain&file=task-link-target)',
+        'Line 4: obsidian://open?vault=brain&file=task-link-target',
+        'Line 5: task-link-target',
+      ].join('\n');
+
+      const docLinks = computeDocumentLinks(markdownDoc, index);
+      console.log('\n--- SPECIMEN CAPTURE: TRANSLATED MARKDOWN PKB LINKS ---');
+      docLinks.forEach((dl: any, i: number) => {
+        console.log(`[Link ${i}] line=${dl.range.start.line} char=${dl.range.start.character}-${dl.range.end.character} target=${dl.target.toString()} tooltip="${dl.tooltip}"`);
+      });
+      console.log('--- END SPECIMEN CAPTURE ---\n');
+
+      assert.strictEqual(docLinks.length, 6, 'Must translate all 6 PKB link variants into DocumentLinks');
+      const expectedUriStr = `file://${targetPath}`;
+
+      for (let i = 0; i < 6; i++) {
+        const link = docLinks[i];
+        assert.ok(link, `Link ${i} must exist`);
+        assert.ok(link.target, `Link ${i} target must exist`);
+        assert.strictEqual(link.range.start.line, i, `Link ${i} must be on line ${i}`);
+        assert.strictEqual(
+          link.target.toString(),
+          expectedUriStr,
+          `Link ${i} must point to file://${targetPath}`
+        );
+        assert.ok(
+          link.tooltip?.includes('Target Task Title') || link.tooltip?.includes('task-link-target'),
+          `Link ${i} tooltip must reference target title or ID`
+        );
+      }
+
+      // 4. Test clicking/activating a translated link opens the linked node in a permanent new editor tab (preview: false)
+      const mockOpenedDocs: any[] = [];
+      const mockShowOptions: any[] = [];
+      const mockWorkspace: any = {
+        openTextDocument: async (uri: any) => {
+          mockOpenedDocs.push(uri);
+          return { uri, getText: () => targetContent };
+        },
+      };
+      const mockWindow: any = {
+        showTextDocument: async (doc: any, options: any) => {
+          mockShowOptions.push(options);
+          return { document: doc };
+        },
+      };
+
+      // Simulate clicking the translated wikilink (Link 0)
+      const link0Target = docLinks[0]?.target?.toString();
+      assert.ok(link0Target, 'Link 0 target must exist');
+      const clickedEditor0 = await openReferencedFile(
+        link0Target,
+        { preview: false },
+        mockWorkspace,
+        mockWindow
+      );
+      assert.ok(clickedEditor0, 'Clicking wikilink must open target document');
+      assert.strictEqual(mockShowOptions[0].preview, false, 'Must open in new tab (preview: false)');
+      assert.strictEqual(clickedEditor0.document.getText(), targetContent);
+
+      // Simulate clicking the translated obsidian URI link (Link 3)
+      const link3Target = docLinks[3]?.target?.toString();
+      assert.ok(link3Target, 'Link 3 target must exist');
+      const clickedEditor3 = await openReferencedFile(
+        link3Target,
+        { preview: false },
+        mockWorkspace,
+        mockWindow
+      );
+      assert.ok(clickedEditor3, 'Clicking obsidian link must open target document');
+      assert.strictEqual(mockShowOptions[1].preview, false, 'Must open in new tab (preview: false)');
+
+      // 5. Test PkbDocumentLinkProvider class
+      const provider = new PkbDocumentLinkProvider(index);
+      const fakeDoc: any = {
+        getText: () => markdownDoc,
+        lineCount: 6,
+        lineAt: (n: number) => ({ text: markdownDoc.split('\n')[n] }),
+      };
+      const provided = provider.provideDocumentLinks(fakeDoc);
+      assert.strictEqual(provided.length, 6, 'PkbDocumentLinkProvider must return all 6 translated links');
     } finally {
       fs.rmSync(tmpPkb, { recursive: true, force: true });
     }
