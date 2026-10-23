@@ -44,6 +44,7 @@ fn test_get_task_self_heals_stale_cached_status_after_direct_disk_write() {
     let created = server
         .handle_create_task(&json!({
             "title": "Stale read regression",
+            "slug": "stale-read-regression",
             "type": "task",
             "project": "proj-test",
             "parent": "proj-test",
@@ -137,6 +138,7 @@ fn test_get_task_no_op_when_cache_already_fresh() {
     let created = server
         .handle_create_task(&json!({
             "title": "Fresh read control",
+            "slug": "fresh-read-control",
             "type": "task",
             "project": "proj-test",
             "parent": "proj-test",
@@ -187,6 +189,7 @@ fn test_list_tasks_self_invalidates_and_returns_untracked_file() {
     server
         .handle_create_task(&json!({
             "title": "Tracked task",
+            "slug": "tracked-task",
             "type": "task",
             "project": "proj-test",
             "parent": "proj-test",
@@ -341,6 +344,7 @@ fn test_read_after_write_synchronous_visibility_for_update_body_and_update_task(
     let created = server
         .handle_create_task(&json!({
             "title": "Synchronous flush task",
+            "slug": "synchronous-flush-task",
             "type": "task",
             "project": "proj-test",
             "parent": "proj-test",
@@ -360,7 +364,8 @@ fn test_read_after_write_synchronous_visibility_for_update_body_and_update_task(
     };
 
     // 2. update_body must be immediately readable from disk and via get_document / get_task
-    let updated_body_text = "Updated body content with section header\n\n## Details\nSynchronous flush confirmed.";
+    let updated_body_text =
+        "Updated body content with section header\n\n## Details\nSynchronous flush confirmed.";
     let update_body_res = server
         .handle_update_body(&json!({
             "id": id,
@@ -475,6 +480,7 @@ fn test_refresh_graph_closes_disk_gap_and_reports_unparseable_files() {
     server
         .handle_create_task(&json!({
             "title": "Task 1",
+            "slug": "task-1",
             "type": "task",
             "project": "proj-test",
             "parent": "proj-test",
@@ -498,11 +504,15 @@ fn test_refresh_graph_closes_disk_gap_and_reports_unparseable_files() {
         Some(2)
     );
     assert_eq!(
-        refresh_json.get("parsed_documents").and_then(|v| v.as_u64()),
+        refresh_json
+            .get("parsed_documents")
+            .and_then(|v| v.as_u64()),
         Some(2)
     );
     assert_eq!(
-        refresh_json.get("unparseable_or_skipped_files").and_then(|v| v.as_u64()),
+        refresh_json
+            .get("unparseable_or_skipped_files")
+            .and_then(|v| v.as_u64()),
         Some(0)
     );
 
@@ -786,6 +796,7 @@ async fn test_delete_followed_by_read_does_no_full_rebuild() {
     let created = server
         .handle_create_task(&json!({
             "title": "Task to delete",
+            "slug": "task-to-delete",
             "type": "task",
             "project": "proj-test",
             "parent": "proj-test",
@@ -811,8 +822,7 @@ async fn test_delete_followed_by_read_does_no_full_rebuild() {
 
     // The in-place deletion MUST update the generation stamp immediately
     assert_eq!(
-        g_gen,
-        d_gen,
+        g_gen, d_gen,
         "remove_node_in_place must update the generation stamp so cached matches disk"
     );
 
@@ -822,17 +832,20 @@ async fn test_delete_followed_by_read_does_no_full_rebuild() {
     }
     let g_gen_post_swap = server.graph.read().generation();
     assert_eq!(
-        g_gen_post_swap,
-        d_gen,
+        g_gen_post_swap, d_gen,
         "Tier-2 rebuild swap must not clobber generation stamp updated by remove_node_in_place"
     );
 
-    let epoch_before_read = server.full_rebuild_epoch.load(std::sync::atomic::Ordering::SeqCst);
+    let epoch_before_read = server
+        .full_rebuild_epoch
+        .load(std::sync::atomic::Ordering::SeqCst);
 
     // Read via handle_list_tasks (triggers ensure_graph_fresh)
     let _ = server.handle_list_tasks(&json!({})).unwrap();
 
-    let epoch_after_read = server.full_rebuild_epoch.load(std::sync::atomic::Ordering::SeqCst);
+    let epoch_after_read = server
+        .full_rebuild_epoch
+        .load(std::sync::atomic::Ordering::SeqCst);
     assert_eq!(
         epoch_after_read, epoch_before_read,
         "delete followed by read must not trigger a full graph rebuild"

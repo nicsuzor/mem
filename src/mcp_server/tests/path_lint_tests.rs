@@ -38,6 +38,7 @@ fn json_of(res: &CallToolResult) -> serde_json::Value {
 fn create_task(server: &PkbSearchServer, body: &str) -> Result<String, McpError> {
     let res = server.handle_create_task(&json!({
         "title": "Path lint fixture",
+        "slug": "path-lint-fixture",
         "type": "task",
         "project": "proj-test",
         "parent": "proj-test",
@@ -76,6 +77,7 @@ fn create_document_rejects_machine_path_and_names_it() {
     let err = server
         .handle_create_document(&json!({
             "title": "Note",
+            "slug": "note",
             "type": "note",
             "body": format!("See {OFFENDING} for the principle."),
         }))
@@ -92,6 +94,7 @@ fn create_document_passes_relative_path_and_wikilink() {
     let res = server
         .handle_create_document(&json!({
             "title": "Note",
+            "slug": "note",
             "type": "note",
             "body": format!("See `{RELATIVE}` or {WIKILINK} for the principle."),
         }))
@@ -114,6 +117,7 @@ fn create_memory_rejects_machine_path() {
     let err = server
         .handle_create_memory(&json!({
             "title": "Memory",
+            "slug": "memory",
             "body": format!("Read /Users/suzor/brain/{RELATIVE}"),
         }))
         .unwrap_err();
@@ -379,7 +383,11 @@ fn decompose_task_subtask_body_passes_relative_path_and_wikilink() {
             .unwrap();
         subtask.id.clone()
     };
-    let doc = text_of(&server.handle_get_document(&json!({"id": subtask_id})).unwrap());
+    let doc = text_of(
+        &server
+            .handle_get_document(&json!({"id": subtask_id}))
+            .unwrap(),
+    );
     assert!(doc.contains(RELATIVE) && doc.contains(WIKILINK));
 }
 
@@ -506,4 +514,3 @@ fn batch_create_epics_body_passes_relative_path_and_wikilink() {
     let doc = text_of(&server.handle_get_document(&json!({"id": epic_id})).unwrap());
     assert!(doc.contains(RELATIVE) && doc.contains(WIKILINK));
 }
-

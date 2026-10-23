@@ -10,6 +10,7 @@ fn daily_note_create_and_rewrite_leaves_exactly_one_file() {
         .handle_create_document(&json!({
             "id": "20261009-daily",
             "type": "daily",
+            "slug": "daily",
             "title": "20261009-daily-Friday",
             "body": "# Friday 9 October 2026\n\nInitial daily note content."
         }))
@@ -20,7 +21,10 @@ fn daily_note_create_and_rewrite_leaves_exactly_one_file() {
         .iter()
         .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
         .collect();
-    assert!(create_text.contains("Document created:"), "Expected creation success, got: {create_text}");
+    assert!(
+        create_text.contains("Document created:"),
+        "Expected creation success, got: {create_text}"
+    );
 
     let daily_dir = server.pkb_root.join("daily");
     let target_file = daily_dir.join("20261009-daily.md");
@@ -56,7 +60,10 @@ fn daily_note_create_and_rewrite_leaves_exactly_one_file() {
         .iter()
         .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
         .collect();
-    assert!(update_text.contains("\"ok\":true") || update_text.contains("\"ok\": true"), "Expected update success, got: {update_text}");
+    assert!(
+        update_text.contains("\"ok\":true") || update_text.contains("\"ok\": true"),
+        "Expected update success, got: {update_text}"
+    );
 
     // 3. Verify exactly one file exists at daily/YYYYMMDD-daily.md
     assert!(
@@ -97,6 +104,7 @@ fn daily_note_lands_at_daily_yyyymmdd_daily_whatever_title_it_carries() {
         .handle_create_document(&json!({
             "id": "20261010-daily",
             "type": "daily",
+            "slug": "daily",
             "title": "20261010-daily-Saturday",
             "body": "Body 1"
         }))
@@ -114,6 +122,7 @@ fn daily_note_lands_at_daily_yyyymmdd_daily_whatever_title_it_carries() {
         .handle_create_document(&json!({
             "id": "20261011-daily",
             "type": "daily",
+            "slug": "daily",
             "title": "Sunday 11 October 2026 - Sprint Planning & Strategy",
             "body": "Body 2"
         }))

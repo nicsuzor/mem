@@ -61,6 +61,7 @@ fn create_task(server: &PkbSearchServer, title: &str) -> String {
     let res = server
         .handle_create_task(&json!({
             "title": title,
+            "slug": "slug",
             "type": "task",
             "project": "proj-test",
             "parent": "proj-test",
@@ -89,7 +90,8 @@ fn test_update_task_refuses_malformed_contributes_to_string() {
         "updates": { "contributes_to": "aops_8745d500" },
     }));
 
-    let err = res.expect_err("update_task must refuse malformed contributes_to string with an error");
+    let err =
+        res.expect_err("update_task must refuse malformed contributes_to string with an error");
     assert!(
         err.message.contains("contributes_to"),
         "error message must name the field 'contributes_to', got: {}",
@@ -116,7 +118,8 @@ fn test_update_task_refuses_malformed_contributes_to_bare_ids() {
         "updates": { "contributes_to": ["aops_8745d500", "aops_12345678"] },
     }));
 
-    let err = res.expect_err("update_task must refuse malformed contributes_to bare IDs with an error");
+    let err =
+        res.expect_err("update_task must refuse malformed contributes_to bare IDs with an error");
     assert!(
         err.message.contains("contributes_to"),
         "error message must name the field 'contributes_to', got: {}",
@@ -180,7 +183,9 @@ fn test_batch_update_refuses_malformed_contributes_to() {
     );
     let errors = batch_errors(&res);
     assert!(
-        errors.iter().any(|e| e.contains("contributes_to") && e.contains("array of objects")),
+        errors
+            .iter()
+            .any(|e| e.contains("contributes_to") && e.contains("array of objects")),
         "batch_update errors must name field and expected shape, got: {errors:?}"
     );
 }
@@ -320,7 +325,10 @@ fn test_well_formed_contributes_to_and_clearing() {
         .and_then(|v| v.as_array())
         .map(|a| a.len())
         .unwrap_or(0);
-    assert_eq!(ct_after, 0, "contributes_to must be empty after clearing with []");
+    assert_eq!(
+        ct_after, 0,
+        "contributes_to must be empty after clearing with []"
+    );
 
     // 3. Clear with contributes_to: null
     // First set it back
@@ -346,5 +354,8 @@ fn test_well_formed_contributes_to_and_clearing() {
         .and_then(|v| v.as_array())
         .map(|a| a.len())
         .unwrap_or(0);
-    assert_eq!(ct_null, 0, "contributes_to must be empty after clearing with null");
+    assert_eq!(
+        ct_null, 0,
+        "contributes_to must be empty after clearing with null"
+    );
 }
