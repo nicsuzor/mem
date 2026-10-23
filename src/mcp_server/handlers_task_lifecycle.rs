@@ -815,15 +815,6 @@ impl PkbSearchServer {
                 .get("release_summary")
                 .and_then(|v| v.as_str())
                 .map(String::from),
-            follow_up_tasks: args
-                .get("follow_up_tasks")
-                .and_then(|v| v.as_array())
-                .map(|arr| {
-                    arr.iter()
-                        .filter_map(|v| v.as_str().map(String::from))
-                        .collect()
-                })
-                .unwrap_or_default(),
             body: body.map(String::from),
             ..Default::default()
         };
@@ -925,40 +916,24 @@ impl PkbSearchServer {
         let reason = args.get("reason").and_then(|v| v.as_str());
         let session_id_arg = args.get("session_id").and_then(|v| v.as_str());
         let issue_url = args.get("issue_url").and_then(|v| v.as_str());
-        let follow_up_tasks = args.get("follow_up_tasks").and_then(|v| v.as_array());
+        if args.get("follow_up_tasks").is_some() {
+            return Err(McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from(
+                    "'follow_up_tasks' is no longer supported. The PKB no longer accepts follow-up task input.",
+                ),
+                data: None,
+            });
+        }
         let release_summary = args.get("release_summary").and_then(|v| v.as_str());
 
-        // Resolve task and validate follow_up_tasks
+        // Resolve task
         let graph = self.graph.read();
         let node = graph.resolve(id).ok_or_else(|| McpError {
             code: ErrorCode::INVALID_PARAMS,
             message: Cow::from(format!("Task not found: {id}")),
             data: None,
         })?;
-
-        let mut follow_up_ids = Vec::new();
-        if let Some(arr) = follow_up_tasks {
-            let mut unresolved = Vec::new();
-            for v in arr {
-                if let Some(id_str) = v.as_str() {
-                    if graph.resolve(id_str).is_none() {
-                        unresolved.push(id_str.to_string());
-                    } else {
-                        follow_up_ids.push(id_str.to_string());
-                    }
-                }
-            }
-            if !unresolved.is_empty() {
-                return Err(McpError {
-                    code: ErrorCode::INVALID_PARAMS,
-                    message: Cow::from(format!(
-                        "Unresolved follow_up_tasks: {}",
-                        unresolved.join(", ")
-                    )),
-                    data: None,
-                });
-            }
-        }
 
         // Check task is not already terminal
         let current_status = node.status.as_deref().unwrap_or("inbox");
@@ -1164,17 +1139,6 @@ impl PkbSearchServer {
             );
         }
 
-        if !follow_up_ids.is_empty() {
-            updates.insert(
-                "follow_up_tasks".to_string(),
-                serde_json::Value::Array(
-                    follow_up_ids
-                        .into_iter()
-                        .map(serde_json::Value::String)
-                        .collect(),
-                ),
-            );
-        }
 
         if let Some(rs) = release_summary {
             updates.insert(
@@ -1647,7 +1611,6 @@ impl PkbSearchServer {
                     .map(String::from),
                 session_id: None,
                 issue_url: None,
-                follow_up_tasks: vec![],
                 release_summary: None,
                 contributes_to: vec![],
                 links: vec![],

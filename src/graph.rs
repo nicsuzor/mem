@@ -984,8 +984,6 @@ pub struct GraphNode {
     pub contributes_to: Vec<ContributesTo>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub contributed_by: Vec<String>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub follow_up_tasks: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub complexity: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -2361,10 +2359,6 @@ impl GraphNode {
                 });
             }
         }
-        let follow_up_tasks = fm
-            .as_ref()
-            .map(|f| parse_string_array(f, "follow_up_tasks"))
-            .unwrap_or_default();
         let source = fm
             .as_ref()
             .and_then(|f| f.get("source").and_then(|v| v.as_str()).map(String::from));
@@ -3115,7 +3109,6 @@ impl GraphNode {
             target_ancestors: Vec::new(),
             contributes_to,
             contributed_by: Vec::new(),
-            follow_up_tasks,
             depends_on,
             soft_depends_on,
             blocks,
