@@ -14,7 +14,12 @@ fn text_of(result: &CallToolResult) -> String {
 }
 
 fn assert_no_index_warning(surface: &str, text: &str) {
-    for needle in ["disagrees with disk", "index_warning", "may be wrong", "refresh_graph and retry"] {
+    for needle in [
+        "disagrees with disk",
+        "index_warning",
+        "may be wrong",
+        "refresh_graph and retry",
+    ] {
         assert!(
             !text.contains(needle),
             "{surface} must not carry an index/disk warning (found {needle:?}): {text}"
@@ -41,6 +46,7 @@ fn server_with_index_disk_disagreement() -> (tempfile::TempDir, PkbSearchServer)
     server
         .handle_create_task(&json!({
             "title": "Indexed task",
+            "slug": "indexed-task",
             "type": "task",
             "project": "proj-test",
             "parent": "proj-test",
@@ -57,7 +63,10 @@ fn server_with_index_disk_disagreement() -> (tempfile::TempDir, PkbSearchServer)
     server.graph.write().set_generation(gen);
 
     let (disk, indexed) = server.index_disk_counts();
-    assert_ne!(disk, indexed, "fixture must reproduce an index/disk disagreement");
+    assert_ne!(
+        disk, indexed,
+        "fixture must reproduce an index/disk disagreement"
+    );
     (tmp, server)
 }
 
@@ -65,7 +74,9 @@ fn server_with_index_disk_disagreement() -> (tempfile::TempDir, PkbSearchServer)
 fn list_tasks_carries_no_index_disk_warning_in_any_format() {
     let (_tmp, server) = server_with_index_disk_disagreement();
     for format in ["markdown", "json", "tree", "nested_json"] {
-        let res = server.handle_list_tasks(&json!({"format": format})).unwrap();
+        let res = server
+            .handle_list_tasks(&json!({"format": format}))
+            .unwrap();
         assert_no_index_warning(&format!("list_tasks(format={format})"), &text_of(&res));
     }
 }
@@ -77,7 +88,10 @@ fn list_tasks_empty_result_carries_no_index_disk_warning() {
         .handle_list_tasks(&json!({"project": "no-such-project"}))
         .unwrap();
     let text = text_of(&res);
-    assert!(text.starts_with("No tasks found"), "expected empty result: {text}");
+    assert!(
+        text.starts_with("No tasks found"),
+        "expected empty result: {text}"
+    );
     assert_no_index_warning("list_tasks(empty)", &text);
 }
 
@@ -87,10 +101,14 @@ fn task_summary_list_documents_and_search_carry_no_index_disk_warning() {
     let res = server.handle_task_summary(&json!({})).unwrap();
     assert_no_index_warning("task_summary", &text_of(&res));
     for format in ["markdown", "json"] {
-        let res = server.handle_list_documents(&json!({"format": format})).unwrap();
+        let res = server
+            .handle_list_documents(&json!({"format": format}))
+            .unwrap();
         assert_no_index_warning(&format!("list_documents(format={format})"), &text_of(&res));
     }
-    let res = server.handle_pkb_search(&json!({"query": "indexed task"})).unwrap();
+    let res = server
+        .handle_pkb_search(&json!({"query": "indexed task"}))
+        .unwrap();
     assert_no_index_warning("search", &text_of(&res));
 }
 
@@ -101,7 +119,21 @@ fn status_reports_node_and_disk_file_counts() {
     let status: serde_json::Value = serde_json::from_str(&text).unwrap();
     let index = status.get("index").expect("index section");
     let disk = crate::pkb::scan_directory(&server.pkb_root).len() as u64;
-    assert_eq!(index.get("disk_file_count").and_then(|v| v.as_u64()), Some(disk), "{status}");
-    assert_eq!(index.get("indexed_file_count").and_then(|v| v.as_u64()), Some(1), "{status}");
-    assert!(index.get("document_count").and_then(|v| v.as_u64()).is_some(), "{status}");
+    assert_eq!(
+        index.get("disk_file_count").and_then(|v| v.as_u64()),
+        Some(disk),
+        "{status}"
+    );
+    assert_eq!(
+        index.get("indexed_file_count").and_then(|v| v.as_u64()),
+        Some(1),
+        "{status}"
+    );
+    assert!(
+        index
+            .get("document_count")
+            .and_then(|v| v.as_u64())
+            .is_some(),
+        "{status}"
+    );
 }

@@ -215,7 +215,8 @@ fn test_create_task_without_parent_succeeds_as_root() {
         .dispatch_tool_sync(
             "create_task",
             &json!({
-                "title": "A root-level task without parent"
+                "title": "A root-level task without parent",
+                "slug": "root_task"
             }),
         )
         .expect("create_task without parent must succeed as root-level task");
@@ -227,7 +228,8 @@ fn test_create_task_without_parent_succeeds_as_root() {
             "create_task",
             &json!({
                 "title": "A properly parented task",
-                "parent": "proj-root"
+                "parent": "proj-root",
+                "slug": "parented_task"
             }),
         )
         .expect("create_task with parent must succeed");
@@ -247,6 +249,7 @@ fn test_effort_vs_complexity_error_and_descriptions() {
             &json!({
                 "title": "Bad effort task",
                 "parent": "proj-root",
+                "slug": "bad_effort",
                 "effort": "S"
             }),
         )
@@ -302,6 +305,7 @@ fn test_soft_depends_on_accepted_in_create_task_and_persisted() {
             &json!({
                 "id": "task-soft-dep",
                 "title": "Task with soft deps",
+                "slug": "soft_dep",
                 "parent": "proj-root",
                 "soft_depends_on": ["task-seed1"]
             }),
@@ -455,11 +459,17 @@ fn test_every_tool_rejects_when_any_required_field_is_missing() {
     valid_samples.insert("top_n_by_metric", json!({ "metric": "pagerank" }));
     valid_samples.insert(
         "create_task",
-        json!({ "title": "Test Task", "parent": "proj-root" }),
+        json!({ "title": "Test Task", "slug": "test_task", "parent": "proj-root" }),
     );
     valid_samples.insert("claim_task", json!({ "id": "task-seed1" }));
-    valid_samples.insert("create_memory", json!({ "title": "Test Memory" }));
-    valid_samples.insert("create", json!({ "title": "Test Doc", "type": "note" }));
+    valid_samples.insert(
+        "create_memory",
+        json!({ "title": "Test Memory", "slug": "test_mem" }),
+    );
+    valid_samples.insert(
+        "create",
+        json!({ "title": "Test Doc", "type": "note", "slug": "test_doc" }),
+    );
     valid_samples.insert(
         "append",
         json!({ "id": "task-seed1", "content": "Log entry" }),

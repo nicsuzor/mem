@@ -80,7 +80,12 @@ fn start_server() -> Server {
         .env_remove("OTEL_EXPORTER_OTLP_ENDPOINT")
         .env("ACA_DATA", &root)
         .env("AOPS_DUMMY_EMBEDDER", "1")
-        .args(["--pkb-root", root.to_str().unwrap(), "--db-path", db.to_str().unwrap()])
+        .args([
+            "--pkb-root",
+            root.to_str().unwrap(),
+            "--db-path",
+            db.to_str().unwrap(),
+        ])
         .args(["mcp", "--http", "--port", "0"])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -98,17 +103,31 @@ fn start_server() -> Server {
             if let Some(i) = line.find(STARTUP_MARKER) {
                 let rest = &line[i + STARTUP_MARKER.len()..];
                 let hostport = rest.split("/mcp").next().unwrap_or("");
-                if let Some(p) = hostport.rsplit(':').next().and_then(|p| p.parse::<u16>().ok()) {
+                if let Some(p) = hostport
+                    .rsplit(':')
+                    .next()
+                    .and_then(|p| p.parse::<u16>().ok())
+                {
                     let _ = tx.send(p);
                 }
             }
             sink.lock().unwrap().push(line);
         }
     });
-    let port = rx.recv_timeout(Duration::from_secs(120)).unwrap_or_else(|_| {
-        panic!("server did not start:\n{}", lines.lock().unwrap().join("\n"))
-    });
-    Server { child, port, stderr: lines, _dir: dir }
+    let port = rx
+        .recv_timeout(Duration::from_secs(120))
+        .unwrap_or_else(|_| {
+            panic!(
+                "server did not start:\n{}",
+                lines.lock().unwrap().join("\n")
+            )
+        });
+    Server {
+        child,
+        port,
+        stderr: lines,
+        _dir: dir,
+    }
 }
 
 fn post(port: u16, body: &Value, session: Option<&str>) -> (Option<String>, String) {
@@ -132,7 +151,8 @@ fn post(port: u16, body: &Value, session: Option<&str>) -> (Option<String>, Stri
     let (head, rest) = resp.split_once("\r\n\r\n").unwrap_or((&resp, ""));
     let sid = head.lines().find_map(|l| {
         let (k, v) = l.split_once(": ")?;
-        k.eq_ignore_ascii_case("mcp-session-id").then(|| v.trim().to_string())
+        k.eq_ignore_ascii_case("mcp-session-id")
+            .then(|| v.trim().to_string())
     });
     (sid, rest.to_string())
 }
@@ -160,19 +180,35 @@ fn run_session(calls: &[(&str, Value, bool)]) -> Vec<String> {
     for (i, (name, args, expects_error)) in calls.iter().enumerate() {
         let (_, body) = post(
             server.port,
-            &rpc(10 + i as u64, "tools/call", json!({"name": name, "arguments": args})),
+            &rpc(
+                10 + i as u64,
+                "tools/call",
+                json!({"name": name, "arguments": args}),
+            ),
             Some(&sid),
         );
         if *expects_error {
-            assert!(body.contains("\"error\""), "{name} returned no error: {body}");
+            assert!(
+                body.contains("\"error\""),
+                "{name} returned no error: {body}"
+            );
         } else {
-            assert!(body.contains("\"result\""), "{name} returned no result: {body}");
+            assert!(
+                body.contains("\"result\""),
+                "{name} returned no result: {body}"
+            );
         }
     }
     // Let async log lines (post-response) flush.
     let deadline = Instant::now() + Duration::from_secs(2);
     while Instant::now() < deadline {
-        let count = server.stderr.lock().unwrap().iter().filter(|l| level_of(l) == Some("INFO") && l.contains("pkb::tool_call")).count();
+        let count = server
+            .stderr
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|l| level_of(l) == Some("INFO") && l.contains("pkb::tool_call"))
+            .count();
         if count >= calls.len() {
             break;
         }
@@ -198,15 +234,15 @@ fn calls() -> Vec<(&'static str, Value, bool)> {
         ("search", json!({"query": "fixture"}), false),
         (
             "create_task",
-            json!({"task_title": "Logged write", "parent": "task-log-01",
+            json!({"task_title": "Logged write", "slug": "logged-write", "parent": "task-log-01",
                    "body": "A write transaction."}),
-            false
+            false,
         ),
         ("get_task", json!({"id": "missing-id-123"}), true),
         (
             "release_task",
             json!({"task_title": "some unrelated task", "reason": "unreachable", "status": "done"}),
-            true
+            true,
         ),
     ]
 }
@@ -227,7 +263,9 @@ fn default_level_hides_per_request_noise() {
         "adhoc_grouping",
     ] {
         assert!(
-            !lines.iter().any(|l| level_of(l) == Some("INFO") && l.contains(noisy)),
+            !lines
+                .iter()
+                .any(|l| level_of(l) == Some("INFO") && l.contains(noisy)),
             "`{noisy}` still logged at INFO by default:\n{dump}"
         );
     }
@@ -235,7 +273,10 @@ fn default_level_hides_per_request_noise() {
         .iter()
         .filter(|l| level_of(l) == Some("INFO") && !l.contains("pkb::tool_call"))
         .collect();
-    assert!(stray.is_empty(), "non-summary INFO lines after startup:\n{stray:#?}\n---\n{dump}");
+    assert!(
+        stray.is_empty(),
+        "non-summary INFO lines after startup:\n{stray:#?}\n---\n{dump}"
+    );
 }
 
 #[test]
@@ -247,7 +288,11 @@ fn each_tool_call_emits_one_info_summary() {
         .iter()
         .filter(|l| level_of(l) == Some("INFO") && l.contains("pkb::tool_call"))
         .collect();
-    assert_eq!(summaries.len(), calls.len(), "expected one summary per call:\n{dump}");
+    assert_eq!(
+        summaries.len(),
+        calls.len(),
+        "expected one summary per call:\n{dump}"
+    );
     for ((name, _, expects_error), line) in calls.iter().zip(&summaries) {
         assert!(line.contains(&format!("tool={name}")), "{line}");
         if *expects_error {

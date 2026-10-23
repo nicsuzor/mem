@@ -138,10 +138,14 @@ impl PkbSearchServer {
         if args.get("path").is_some() {
             return Err(McpError {
                 code: ErrorCode::INVALID_PARAMS,
-                message: Cow::from("The 'path' parameter is no longer supported. Please use 'dir' instead."),
+                message: Cow::from(
+                    "The 'path' parameter is no longer supported. Please use 'dir' instead.",
+                ),
                 data: None,
             });
         }
+
+        let slug = super::parse_and_validate_slug(args)?;
 
         let filename = args
             .get("filename")
@@ -192,6 +196,7 @@ impl PkbSearchServer {
                 "project",
                 "dir",
                 "filename",
+                "slug",
                 "type",
                 "status",
                 "session_id",
@@ -279,6 +284,7 @@ impl PkbSearchServer {
             title: title.to_string(),
             id: args.get("id").and_then(|v| v.as_str()).map(String::from),
             filename,
+            slug: Some(slug),
             parent: args
                 .get("parent")
                 .and_then(|v| v.as_str())
@@ -533,20 +539,19 @@ impl PkbSearchServer {
         let t_total = std::time::Instant::now();
 
         let t = std::time::Instant::now();
-        let path =
-            crate::document_crud::create_task(&self.pkb_root, fields).map_err(|e| {
-                let msg = e.to_string();
-                let code = if msg.contains("is too long") {
-                    ErrorCode::INVALID_PARAMS
-                } else {
-                    ErrorCode::INTERNAL_ERROR
-                };
-                McpError {
-                    code,
-                    message: Cow::from(format!("Failed to create task: {msg}")),
-                    data: None,
-                }
-            })?;
+        let path = crate::document_crud::create_task(&self.pkb_root, fields).map_err(|e| {
+            let msg = e.to_string();
+            let code = if msg.contains("is too long") {
+                ErrorCode::INVALID_PARAMS
+            } else {
+                ErrorCode::INTERNAL_ERROR
+            };
+            McpError {
+                code,
+                message: Cow::from(format!("Failed to create task: {msg}")),
+                data: None,
+            }
+        })?;
         let elapsed_write = t.elapsed();
         tracing::debug!(target: "perf::create_task", phase = "write_file", elapsed_ms = elapsed_write.as_secs_f64() * 1000.0);
 
