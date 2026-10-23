@@ -96,6 +96,7 @@ fn test_create_document_note_overlong_title_succeeds_keeps_full_title_and_bounds
         .handle_create_document(&json!({
             "title": long_title,
             "type": "note",
+            "slug": "long_note_title",
         }))
         .expect("creating a note with a title well over filename maximum must succeed");
 
@@ -140,6 +141,7 @@ fn test_create_document_task_overlong_title_succeeds_keeps_full_title_and_bounds
             "title": long_title,
             "type": "task",
             "project": "aops",
+            "slug": "long_task_title",
         }))
         .expect("creating a task via create tool with a title well over filename maximum must succeed");
 
