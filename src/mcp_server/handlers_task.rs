@@ -978,7 +978,7 @@ impl PkbSearchServer {
             .as_deref()
             .and_then(crate::display_rank::parse_due_date);
         let display = crate::display_rank::TaskDisplay::new(
-            node.classification.as_deref() == Some("ready"),
+            graph.is_ready(&node.id),
             graph.is_blocked(&node.id),
             due_date,
             mapped_deadline_class,
@@ -1726,7 +1726,7 @@ impl PkbSearchServer {
                     "loss_averted": flow.and_then(|f| f.loss_averted),
                     "decision_value": flow.and_then(|f| f.decision_value),
                     "flow_status": flow.map(|f| f.flow_status).unwrap_or(crate::flow::FlowStatus::Ok),
-                    "ready": t.classification.as_deref() == Some("ready"),
+                    "ready": graph.is_ready(&t.id),
                     "blocked": graph.is_blocked(&t.id),
                     "on_cliff": on_cliff,
                     "due": t.due,

@@ -1027,6 +1027,11 @@ impl GraphStore {
         self.blocked.iter().any(|s| s.to_lowercase() == lower)
     }
 
+    pub fn is_ready(&self, id: &str) -> bool {
+        let lower = id.to_lowercase();
+        self.ready.iter().any(|s| s.to_lowercase() == lower)
+    }
+
     /// Sort a slice of node refs in place by canonical flow display order (display_cmp).
     pub fn sort_by_display(
         nodes: &mut [&GraphNode],
