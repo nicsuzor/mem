@@ -108,8 +108,10 @@ pub struct DocumentFields {
     pub project: Option<String>,
     /// Override subdirectory placement (e.g. "notes", "projects")
     pub dir: Option<String>,
-    /// Explicit filename (optional; derived from title if omitted)
+    /// Explicit filename (optional; derived from slug/title if omitted)
     pub filename: Option<String>,
+    /// Short filename slug (required on MCP create actions; max 30 chars)
+    pub slug: Option<String>,
 }
 
 /// Fields for creating a new task.
@@ -146,8 +148,10 @@ pub struct TaskFields {
     pub classification: Option<String>,
     /// Override subdirectory placement
     pub dir: Option<String>,
-    /// Explicit filename (optional; derived from title if omitted)
+    /// Explicit filename (optional; derived from slug/title if omitted)
     pub filename: Option<String>,
+    /// Short filename slug (required on MCP create actions; max 30 chars)
+    pub slug: Option<String>,
 }
 
 /// Fields for creating a new memory.
@@ -165,8 +169,10 @@ pub struct MemoryFields {
     pub supersedes: Option<String>,
     pub project: Option<String>,
     pub dir: Option<String>,
-    /// Explicit filename (optional; derived from title if omitted)
+    /// Explicit filename (optional; derived from slug/title if omitted)
     pub filename: Option<String>,
+    /// Short filename slug (required on MCP create actions; max 30 chars)
+    pub slug: Option<String>,
 }
 
 /// Create a new document file with YAML frontmatter.
@@ -319,7 +325,8 @@ pub fn create_document(root: &Path, fields: DocumentFields) -> Result<PathBuf> {
             if is_template {
                 template_filename(&id)?
             } else {
-                generate_filename(&id, &fields.title)?
+                let slug_source = fields.slug.as_deref().unwrap_or(&fields.title);
+                generate_filename(&id, slug_source)?
             }
         }
     };
@@ -775,7 +782,10 @@ pub fn create_task(root: &Path, fields: TaskFields) -> Result<PathBuf> {
     };
     let filename = match fields.filename {
         Some(explicit_filename) => validate_explicit_filename(&explicit_filename)?,
-        None => generate_filename(&id, &fields.title)?,
+        None => {
+            let slug_source = fields.slug.as_deref().unwrap_or(&fields.title);
+            generate_filename(&id, slug_source)?
+        }
     };
 
     // Determine subdirectory
@@ -1302,7 +1312,10 @@ pub fn create_memory(root: &Path, fields: MemoryFields) -> Result<PathBuf> {
     };
     let filename = match fields.filename {
         Some(explicit_filename) => validate_explicit_filename(&explicit_filename)?,
-        None => generate_filename(&id, &fields.title)?,
+        None => {
+            let slug_source = fields.slug.as_deref().unwrap_or(&fields.title);
+            generate_filename(&id, slug_source)?
+        }
     };
 
     // Determine subdirectory
@@ -3914,6 +3927,9 @@ fn slugify(title: &str) -> String {
 /// Maximum allowed character length for a PKB filename (including the `.md` extension).
 /// Keeps filenames short and descriptive, preventing run-on titles from ballooning filenames.
 pub const MAX_FILENAME_LEN: usize = 80;
+
+/// Maximum allowed character length for an agent-supplied slug.
+pub const MAX_SLUG_LEN: usize = 30;
 
 /// Deprecated alias for backwards compatibility.
 pub const MAX_FILENAME_SLUG_LEN: usize = 80;
@@ -7683,7 +7699,9 @@ pub fn validate_update_field(key: &str, value: &serde_json::Value) -> Result<(),
                 }
                 Ok(())
             } else {
-                Err(format!("{key} must be an integer between 0 and 4; got {value}"))
+                Err(format!(
+                    "{key} must be an integer between 0 and 4; got {value}"
+                ))
             }
         }
         "severity" => {
@@ -7752,7 +7770,10 @@ pub fn validate_update_field(key: &str, value: &serde_json::Value) -> Result<(),
                         continue;
                     }
                     if let Some(obj) = item.as_object() {
-                        if obj.contains_key("to") || obj.contains_key("id") || obj.contains_key("target") {
+                        if obj.contains_key("to")
+                            || obj.contains_key("id")
+                            || obj.contains_key("target")
+                        {
                             continue;
                         }
                     }
@@ -7767,10 +7788,27 @@ pub fn validate_update_field(key: &str, value: &serde_json::Value) -> Result<(),
                 ))
             }
         }
-        "assignee" | "complexity" | "consequence" | "body" | "content" | "stakeholder"
-        | "waiting_since" | "due" | "project" | "session_id" | "issue_url" | "release_summary"
-        | "released_at" | "blocker" | "reason" | "completion_evidence" | "evidence" | "pr_url"
-        | "classification" | "branch" | "container" => {
+        "assignee"
+        | "complexity"
+        | "consequence"
+        | "body"
+        | "content"
+        | "stakeholder"
+        | "waiting_since"
+        | "due"
+        | "project"
+        | "session_id"
+        | "issue_url"
+        | "release_summary"
+        | "released_at"
+        | "blocker"
+        | "reason"
+        | "completion_evidence"
+        | "evidence"
+        | "pr_url"
+        | "classification"
+        | "branch"
+        | "container" => {
             if value.is_string() {
                 Ok(())
             } else {
@@ -7788,7 +7826,9 @@ pub fn validate_update_field(key: &str, value: &serde_json::Value) -> Result<(),
                 }
                 Ok(())
             } else {
-                Err(format!("alias must be a string or array of strings; got {value}"))
+                Err(format!(
+                    "alias must be a string or array of strings; got {value}"
+                ))
             }
         }
         _ => Ok(()),

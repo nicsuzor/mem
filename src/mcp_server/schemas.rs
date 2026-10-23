@@ -7,8 +7,7 @@ impl PkbSearchServer {
         for tool in tools {
             if tool.output_schema.is_none() {
                 tool.output_schema = Some(std::sync::Arc::new(
-                    serde_json::from_value(Self::output_schema_for_tool(&tool.name))
-                        .unwrap(),
+                    serde_json::from_value(Self::output_schema_for_tool(&tool.name)).unwrap(),
                 ));
             }
         }
@@ -164,7 +163,7 @@ impl PkbSearchServer {
             .with_annotations(ToolAnnotations::new().read_only(true)),
             Tool::new(
                 "create",
-                "Create a doc; dir defaults by type (template: `[<project>/]workflows/<snake_id>.md`).",
+                "Create a doc; dir defaults by type (template: `[<project>/]workflows/<snake_id>.md`). Requires a slug (<= 30 chars) used to construct the filename.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -173,6 +172,7 @@ impl PkbSearchServer {
                             "type": "string",
                             "enum": ["task", "learn", "pr", "template", "target", "note", "knowledge", "memory", "insight", "observation", "contact", "document", "reference", "review", "case", "spec", "prototype", "index", "daily"]
                         },
+                        "slug": { "type": "string", "maxLength": 30, "description": "Short filename slug (required, <= 30 characters). Used to construct the node filename." },
                         "id": { "type": "string" },
                         "tags": { "type": "array", "items": { "type": "string" } },
                         "body": { "type": "string", "description": "Markdown body (wikilinks supported; host paths rejected)" },
@@ -201,7 +201,7 @@ impl PkbSearchServer {
                         "worth": { "anyOf": [{ "type": "number" }, { "type": "string" }] },
                         "deadline_class": { "type": "string", "enum": ["fake", "soft", "hard"] }
                     },
-                    "required": ["title", "type"]
+                    "required": ["title", "type", "slug"]
                 }))
                 .unwrap(),
             )
@@ -209,11 +209,12 @@ impl PkbSearchServer {
             .with_annotations(ToolAnnotations::new().read_only(false)),
             Tool::new(
                 "create_task",
-                "Create a new task markdown file with YAML frontmatter. Parent is optional (omitted tasks are root tasks). Project inherits from ancestor if omitted.",
+                "Create a new task markdown file with YAML frontmatter. Requires a slug (<= 30 chars) used to construct the filename. Parent is optional (omitted tasks are root tasks). Project inherits from ancestor if omitted.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
                         "title": { "type": "string", "description": "Task title (required, alias task_title)" },
+                        "slug": { "type": "string", "maxLength": 30, "description": "Short filename slug (required, <= 30 characters). Used to construct the task filename." },
                         "task_title": { "type": "string" },
                         "id": { "type": "string" },
                         "parent": { "type": "string" },
@@ -247,7 +248,7 @@ impl PkbSearchServer {
                         "worth": { "anyOf": [{ "type": "number" }, { "type": "string" }] },
                         "deadline_class": { "type": "string", "enum": ["fake", "soft", "hard"] }
                     },
-                    "required": ["title"]
+                    "required": ["title", "slug"]
                 }))
                 .unwrap(),
             )

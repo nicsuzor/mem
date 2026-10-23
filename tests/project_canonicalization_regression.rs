@@ -63,6 +63,7 @@ fn test_create_task_canonicalizes_project_on_write() {
     let res = server
         .bench_create_task(&json!({
             "title": "Task with academicOps alias",
+            "slug": "task-academicops",
             "parent": "epic-12345678",
             "project": "academicOps",
         }))
@@ -79,9 +80,7 @@ fn test_create_task_canonicalizes_project_on_write() {
     );
 
     // Stored task frontmatter must have canonical `project: aops`
-    let task_res = server
-        .bench_get_task(&json!({"id": id}))
-        .unwrap();
+    let task_res = server.bench_get_task(&json!({"id": id})).unwrap();
     let task_text = task_res.content[0].raw.as_text().unwrap().text.as_str();
     let task_val: serde_json::Value = serde_json::from_str(task_text).unwrap();
     assert_eq!(
@@ -94,6 +93,7 @@ fn test_create_task_canonicalizes_project_on_write() {
     let res2 = server
         .bench_create_task(&json!({
             "title": "Task with ao alias",
+            "slug": "task-ao",
             "parent": "epic-12345678",
             "project": "ao",
         }))
@@ -104,9 +104,7 @@ fn test_create_task_canonicalizes_project_on_write() {
     let id2 = val2.get("id").unwrap().as_str().unwrap();
     assert!(id2.starts_with("aops_") || id2.starts_with("aops-"));
 
-    let task_res2 = server
-        .bench_get_task(&json!({"id": id2}))
-        .unwrap();
+    let task_res2 = server.bench_get_task(&json!({"id": id2})).unwrap();
     let task_text2 = task_res2.content[0].raw.as_text().unwrap().text.as_str();
     let task_val2: serde_json::Value = serde_json::from_str(task_text2).unwrap();
     assert_eq!(
@@ -124,6 +122,7 @@ fn test_update_task_canonicalizes_project_on_write() {
     let res = server
         .bench_create_task(&json!({
             "title": "Task to update",
+            "slug": "task-to-update",
             "parent": "epic-12345678",
             "project": "other-proj",
         }))
@@ -141,9 +140,7 @@ fn test_update_task_canonicalizes_project_on_write() {
         }))
         .unwrap();
 
-    let task_res = server
-        .bench_get_task(&json!({"id": id}))
-        .unwrap();
+    let task_res = server.bench_get_task(&json!({"id": id})).unwrap();
     let task_text = task_res.content[0].raw.as_text().unwrap().text.as_str();
     let task_val: serde_json::Value = serde_json::from_str(task_text).unwrap();
     assert_eq!(
@@ -161,12 +158,15 @@ fn test_list_tasks_returns_identical_sets_for_alias_and_canonical() {
     let res1 = server
         .bench_create_task(&json!({
             "title": "Task 1",
+            "slug": "task-1",
             "parent": "epic-12345678",
             "project": "aops",
         }))
         .unwrap();
-    let id1 = serde_json::from_str::<serde_json::Value>(res1.content[0].raw.as_text().unwrap().text.as_str())
-        .unwrap()["id"]
+    let id1 = serde_json::from_str::<serde_json::Value>(
+        res1.content[0].raw.as_text().unwrap().text.as_str(),
+    )
+    .unwrap()["id"]
         .as_str()
         .unwrap()
         .to_string();
@@ -174,12 +174,15 @@ fn test_list_tasks_returns_identical_sets_for_alias_and_canonical() {
     let res2 = server
         .bench_create_task(&json!({
             "title": "Task 2",
+            "slug": "task-2",
             "parent": "epic-12345678",
             "project": "academicOps",
         }))
         .unwrap();
-    let id2 = serde_json::from_str::<serde_json::Value>(res2.content[0].raw.as_text().unwrap().text.as_str())
-        .unwrap()["id"]
+    let id2 = serde_json::from_str::<serde_json::Value>(
+        res2.content[0].raw.as_text().unwrap().text.as_str(),
+    )
+    .unwrap()["id"]
         .as_str()
         .unwrap()
         .to_string();
@@ -187,12 +190,15 @@ fn test_list_tasks_returns_identical_sets_for_alias_and_canonical() {
     let res3 = server
         .bench_create_task(&json!({
             "title": "Task 3",
+            "slug": "task-3",
             "parent": "epic-12345678",
             "project": "ao",
         }))
         .unwrap();
-    let id3 = serde_json::from_str::<serde_json::Value>(res3.content[0].raw.as_text().unwrap().text.as_str())
-        .unwrap()["id"]
+    let id3 = serde_json::from_str::<serde_json::Value>(
+        res3.content[0].raw.as_text().unwrap().text.as_str(),
+    )
+    .unwrap()["id"]
         .as_str()
         .unwrap()
         .to_string();
@@ -204,8 +210,15 @@ fn test_list_tasks_returns_identical_sets_for_alias_and_canonical() {
             "format": "json",
         }))
         .unwrap();
-    let canonical_val: serde_json::Value =
-        serde_json::from_str(list_canonical.content[0].raw.as_text().unwrap().text.as_str()).unwrap();
+    let canonical_val: serde_json::Value = serde_json::from_str(
+        list_canonical.content[0]
+            .raw
+            .as_text()
+            .unwrap()
+            .text
+            .as_str(),
+    )
+    .unwrap();
     let canonical_ids: Vec<String> = canonical_val["tasks"]
         .as_array()
         .unwrap()
@@ -246,8 +259,14 @@ fn test_list_tasks_returns_identical_sets_for_alias_and_canonical() {
         .collect();
 
     assert_eq!(canonical_ids.len(), 4);
-    assert_eq!(canonical_ids, alias1_ids, "canonical and alias academicOps must return identical result sets");
-    assert_eq!(canonical_ids, alias2_ids, "canonical and alias ao must return identical result sets");
+    assert_eq!(
+        canonical_ids, alias1_ids,
+        "canonical and alias academicOps must return identical result sets"
+    );
+    assert_eq!(
+        canonical_ids, alias2_ids,
+        "canonical and alias ao must return identical result sets"
+    );
     assert!(canonical_ids.contains(&id1));
     assert!(canonical_ids.contains(&id2));
     assert!(canonical_ids.contains(&id3));
@@ -305,7 +324,8 @@ fn test_regression_reproduce_split_from_hand_written_variant_and_lint_fix() {
             .diagnostics
             .iter()
             .any(|d| d.rule == "fm-project-alias"
-                && d.message.contains("Project 'academicOps' should be canonical 'aops'")),
+                && d.message
+                    .contains("Project 'academicOps' should be canonical 'aops'")),
         "lint must flag fm-project-alias on the variant node"
     );
 
@@ -338,7 +358,15 @@ fn test_regression_reproduce_split_from_hand_written_variant_and_lint_fix() {
         .bench_list_tasks(&json!({"project": "academicOps", "format": "json"}))
         .unwrap();
 
-    let text_c = list_canonical.content[0].raw.as_text().unwrap().text.as_str();
+    let text_c = list_canonical.content[0]
+        .raw
+        .as_text()
+        .unwrap()
+        .text
+        .as_str();
     let text_a = list_alias.content[0].raw.as_text().unwrap().text.as_str();
-    assert_eq!(text_c, text_a, "after repair, both queries return identical task sets");
+    assert_eq!(
+        text_c, text_a,
+        "after repair, both queries return identical task sets"
+    );
 }

@@ -47,6 +47,51 @@ pub(crate) const GOAL_TYPE_ENUM: &[&str] = &["committed", "aspirational", "learn
 /// (e.g. `pkb_orphans`) are exempt for the unlimited case by design.
 pub(crate) const MAX_RESULTS: usize = 1000;
 
+/// Validate and extract required `slug` parameter from create action arguments.
+/// Must be present, non-empty, and at most 30 characters.
+pub(crate) fn parse_and_validate_slug(args: &JsonValue) -> Result<String, McpError> {
+    match args.get("slug") {
+        Some(v) if v.is_null() => Err(McpError {
+            code: ErrorCode::INVALID_PARAMS,
+            message: Cow::from("Missing required parameter: slug (limit is 30 characters)"),
+            data: None,
+        }),
+        Some(v) => {
+            let s = v.as_str().ok_or_else(|| McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from("Parameter 'slug' must be a string (limit is 30 characters)"),
+                data: None,
+            })?;
+            let trimmed = s.trim();
+            if trimmed.is_empty() {
+                return Err(McpError {
+                    code: ErrorCode::INVALID_PARAMS,
+                    message: Cow::from("Missing required parameter: slug (limit is 30 characters)"),
+                    data: None,
+                });
+            }
+            let len = trimmed.chars().count();
+            if len > crate::document_crud::MAX_SLUG_LEN {
+                return Err(McpError {
+                    code: ErrorCode::INVALID_PARAMS,
+                    message: Cow::from(format!(
+                        "Parameter 'slug' is too long ({} characters). Limit is {} characters.",
+                        len,
+                        crate::document_crud::MAX_SLUG_LEN
+                    )),
+                    data: None,
+                });
+            }
+            Ok(trimmed.to_string())
+        }
+        None => Err(McpError {
+            code: ErrorCode::INVALID_PARAMS,
+            message: Cow::from("Missing required parameter: slug (limit is 30 characters)"),
+            data: None,
+        }),
+    }
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ReindexStatus {
     pub timestamp: String,
@@ -1560,7 +1605,8 @@ impl PkbSearchServer {
     pub fn list_tools_result(&self) -> rmcp::model::ListToolsResult {
         let tools = Self::get_published_tools();
         let mut meta = rmcp::model::Meta::new();
-        meta.0.insert("ttlMs".to_string(), serde_json::json!(86_400_000));
+        meta.0
+            .insert("ttlMs".to_string(), serde_json::json!(86_400_000));
         let mut result = rmcp::model::ListToolsResult::with_all_items(tools);
         result.meta = Some(meta);
         result
@@ -1666,12 +1712,7 @@ impl PkbSearchServer {
         let set = READ_ONLY_TOOLS.get_or_init(|| {
             Self::get_all_tools()
                 .into_iter()
-                .filter(|t| {
-                    t.annotations
-                        .as_ref()
-                        .and_then(|a| a.read_only_hint)
-                        == Some(true)
-                })
+                .filter(|t| t.annotations.as_ref().and_then(|a| a.read_only_hint) == Some(true))
                 .map(|t| t.name.to_string())
                 .collect()
         });
@@ -1707,7 +1748,8 @@ impl PkbSearchServer {
 
         let is_read_only = Self::is_read_only_tool(&canonical_name);
         let is_mutating = !is_read_only;
-        let is_unattributed = client_context.session_source == crate::otel::client_context::SessionSource::None;
+        let is_unattributed =
+            client_context.session_source == crate::otel::client_context::SessionSource::None;
         let session_mode = crate::otel::config::SessionMode::from_env();
         let log_session_id = client_context.session_id.clone();
 
@@ -1732,14 +1774,20 @@ impl PkbSearchServer {
             let mut attrs = vec![
                 opentelemetry::KeyValue::new("openinference.span.kind", "TOOL"),
                 opentelemetry::KeyValue::new("tool.name", canonical_name_task.clone()),
-                opentelemetry::KeyValue::new("aops.session.source", client_context.session_source.as_str()),
+                opentelemetry::KeyValue::new(
+                    "aops.session.source",
+                    client_context.session_source.as_str(),
+                ),
             ];
 
             if let Some(ref sid) = client_context.session_id {
                 attrs.push(opentelemetry::KeyValue::new("session.id", sid.clone()));
             }
             if let Some(ref rebound) = client_context.rebound_from {
-                attrs.push(opentelemetry::KeyValue::new("aops.session.rebound_from", rebound.clone()));
+                attrs.push(opentelemetry::KeyValue::new(
+                    "aops.session.rebound_from",
+                    rebound.clone(),
+                ));
             }
             if let Some(ref aid) = client_context.agent_id {
                 attrs.push(opentelemetry::KeyValue::new("agent.id", aid.clone()));
@@ -1747,7 +1795,10 @@ impl PkbSearchServer {
             if let Some(ref pid) = client_context.prompt_id {
                 attrs.push(opentelemetry::KeyValue::new("prompt.id", pid.clone()));
             }
-            if is_mutating && is_unattributed && session_mode == crate::otel::config::SessionMode::Warn {
+            if is_mutating
+                && is_unattributed
+                && session_mode == crate::otel::config::SessionMode::Warn
+            {
                 attrs.push(opentelemetry::KeyValue::new("aops.session.missing", true));
             }
             if let Some(ref tid) = client_context.task_id {
@@ -1777,7 +1828,10 @@ impl PkbSearchServer {
             let cx = parent_cx.with_span(span);
             let _guard = cx.clone().attach();
 
-            let res = if is_mutating && is_unattributed && session_mode == crate::otel::config::SessionMode::Enforce {
+            let res = if is_mutating
+                && is_unattributed
+                && session_mode == crate::otel::config::SessionMode::Enforce
+            {
                 Err(McpError {
                     code: ErrorCode::INVALID_PARAMS,
                     message: Cow::from(format!(
@@ -1789,12 +1843,16 @@ impl PkbSearchServer {
                 })
             } else {
                 if is_mutating && is_unattributed {
-                    tracing::warn!("Unattributed write to tool '{}' in warning mode (missing session id)", canonical_name_task);
+                    tracing::warn!(
+                        "Unattributed write to tool '{}' in warning mode (missing session id)",
+                        canonical_name_task
+                    );
                 }
                 this_task.dispatch_tool_sync(&canonical_name_task, &args)
             };
 
-            let metrics = crate::otel::call_metrics::CallMetrics::finish_recording().unwrap_or_default();
+            let metrics =
+                crate::otel::call_metrics::CallMetrics::finish_recording().unwrap_or_default();
 
             // Add output attributes
             let is_error = res.is_err();
@@ -1855,14 +1913,10 @@ impl PkbSearchServer {
             ));
 
             let embed_time_ms = (metrics.embed_time_us as f64) / 1000.0;
-            current_span.set_attribute(opentelemetry::KeyValue::new(
-                "embed_time_ms",
-                embed_time_ms,
-            ));
-            current_span.set_attribute(opentelemetry::KeyValue::new(
-                "embed.time_ms",
-                embed_time_ms,
-            ));
+            current_span
+                .set_attribute(opentelemetry::KeyValue::new("embed_time_ms", embed_time_ms));
+            current_span
+                .set_attribute(opentelemetry::KeyValue::new("embed.time_ms", embed_time_ms));
 
             let hybrid_search_time_ms = (metrics.hybrid_search_time_us as f64) / 1000.0;
             current_span.set_attribute(opentelemetry::KeyValue::new(

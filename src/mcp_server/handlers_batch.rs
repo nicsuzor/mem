@@ -1,14 +1,17 @@
+use crate::graph_store::DEFAULT_DIVERGENCE_THRESHOLD_DAYS;
 use rmcp::model::*;
 use rmcp::ErrorData as McpError;
 use serde_json::Value as JsonValue;
 use std::borrow::Cow;
 use std::sync::atomic::Ordering;
-use crate::graph_store::DEFAULT_DIVERGENCE_THRESHOLD_DAYS;
 
-use super::{PkbSearchServer, MAX_RESULTS, DRY_RUN_WARNING};
+use super::{PkbSearchServer, DRY_RUN_WARNING, MAX_RESULTS};
 
 impl PkbSearchServer {
-    pub(crate) fn handle_get_network_metrics(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+    pub(crate) fn handle_get_network_metrics(
+        &self,
+        args: &JsonValue,
+    ) -> Result<CallToolResult, McpError> {
         self.ensure_graph_fresh();
         let id = args
             .get("id")
@@ -47,7 +50,10 @@ impl PkbSearchServer {
         }
     }
 
-    pub(crate) fn handle_top_n_by_metric(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+    pub(crate) fn handle_top_n_by_metric(
+        &self,
+        args: &JsonValue,
+    ) -> Result<CallToolResult, McpError> {
         self.ensure_graph_fresh();
 
         if let Some(id) = args.get("id").and_then(|v| v.as_str()) {
@@ -83,7 +89,9 @@ impl PkbSearchServer {
             .and_then(|v| v.as_str())
             .ok_or_else(|| McpError {
                 code: ErrorCode::INVALID_PARAMS,
-                message: Cow::from("Missing required parameter: metric (or id for single-node metrics)"),
+                message: Cow::from(
+                    "Missing required parameter: metric (or id for single-node metrics)",
+                ),
                 data: None,
             })?;
 
@@ -168,8 +176,16 @@ impl PkbSearchServer {
             }
             "decision_value" => {
                 nodes.sort_by(|a, b| {
-                    let da = a.flow.as_ref().and_then(|f| f.decision_value).unwrap_or(0.0);
-                    let db = b.flow.as_ref().and_then(|f| f.decision_value).unwrap_or(0.0);
+                    let da = a
+                        .flow
+                        .as_ref()
+                        .and_then(|f| f.decision_value)
+                        .unwrap_or(0.0);
+                    let db = b
+                        .flow
+                        .as_ref()
+                        .and_then(|f| f.decision_value)
+                        .unwrap_or(0.0);
                     db.partial_cmp(&da)
                         .unwrap_or(std::cmp::Ordering::Equal)
                         .then_with(|| a.id.cmp(&b.id))
@@ -187,7 +203,11 @@ impl PkbSearchServer {
                     "degree" => (n.indegree + n.outdegree) as f64,
                     "gain" => n.flow.as_ref().and_then(|f| f.gain).unwrap_or(0.0),
                     "loss_averted" => n.flow.as_ref().and_then(|f| f.loss_averted).unwrap_or(0.0),
-                    "decision_value" => n.flow.as_ref().and_then(|f| f.decision_value).unwrap_or(0.0),
+                    "decision_value" => n
+                        .flow
+                        .as_ref()
+                        .and_then(|f| f.decision_value)
+                        .unwrap_or(0.0),
                     _ => 0.0,
                 };
                 serde_json::json!({
@@ -278,7 +298,10 @@ impl PkbSearchServer {
         }
     }
 
-    pub(crate) fn handle_batch_reparent(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+    pub(crate) fn handle_batch_reparent(
+        &self,
+        args: &JsonValue,
+    ) -> Result<CallToolResult, McpError> {
         let new_parent = args
             .get("new_parent")
             .and_then(|v| v.as_str())
@@ -319,7 +342,10 @@ impl PkbSearchServer {
         }
     }
 
-    pub(crate) fn handle_batch_archive(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+    pub(crate) fn handle_batch_archive(
+        &self,
+        args: &JsonValue,
+    ) -> Result<CallToolResult, McpError> {
         let filters = crate::batch_ops::filters::parse_filter_set(args);
         let dry_run = args
             .get("dry_run")
@@ -430,17 +456,16 @@ impl PkbSearchServer {
     pub fn handle_graph_excalidraw(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
         self.ensure_graph_fresh();
         let node_id = args.get("node_id").and_then(|v| v.as_str());
-        let hops = args
-            .get("hops")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(2) as usize;
+        let hops = args.get("hops").and_then(|v| v.as_u64()).unwrap_or(2) as usize;
 
         let graph = self.graph.read();
-        let (json, _, _) = graph.output_excalidraw(node_id, hops).map_err(|e| McpError {
-            code: ErrorCode::INTERNAL_ERROR,
-            message: Cow::from(format!("Failed to export Excalidraw graph: {e}")),
-            data: None,
-        })?;
+        let (json, _, _) = graph
+            .output_excalidraw(node_id, hops)
+            .map_err(|e| McpError {
+                code: ErrorCode::INTERNAL_ERROR,
+                message: Cow::from(format!("Failed to export Excalidraw graph: {e}")),
+                data: None,
+            })?;
 
         Ok(CallToolResult::success(vec![Content::text(json)]))
     }
@@ -449,10 +474,7 @@ impl PkbSearchServer {
         self.ensure_graph_fresh();
         let format = args.get("format").and_then(|v| v.as_str()).unwrap_or("dot");
         let focus = args.get("focus").and_then(|v| v.as_str());
-        let max_depth = args
-            .get("max_depth")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(2) as usize;
+        let max_depth = args.get("max_depth").and_then(|v| v.as_u64()).unwrap_or(2) as usize;
         let project = args.get("project").and_then(|v| v.as_str());
         let include_done = args
             .get("include_done")
@@ -516,13 +538,12 @@ impl PkbSearchServer {
         };
 
         let graph = self.graph.read();
-        let diff = crate::excalidraw::diff_canvas(base_snapshot.as_ref(), &graph, &canvas).map_err(|e| {
-            McpError {
+        let diff = crate::excalidraw::diff_canvas(base_snapshot.as_ref(), &graph, &canvas)
+            .map_err(|e| McpError {
                 code: ErrorCode::INTERNAL_ERROR,
                 message: Cow::from(format!("Failed to compute diff: {e}")),
                 data: None,
-            }
-        })?;
+            })?;
 
         let json = serde_json::to_string_pretty(&diff).map_err(|e| McpError {
             code: ErrorCode::INTERNAL_ERROR,
@@ -575,13 +596,13 @@ impl PkbSearchServer {
 
         let diff = {
             let graph = self.graph.read();
-            crate::excalidraw::diff_canvas(base_snapshot.as_ref(), &graph, &canvas).map_err(|e| {
-                McpError {
+            crate::excalidraw::diff_canvas(base_snapshot.as_ref(), &graph, &canvas).map_err(
+                |e| McpError {
                     code: ErrorCode::INTERNAL_ERROR,
                     message: Cow::from(format!("Failed to compute diff: {e}")),
                     data: None,
-                }
-            })?
+                },
+            )?
         };
 
         if dry_run {
@@ -604,13 +625,12 @@ impl PkbSearchServer {
 
         let report = {
             let mut graph = self.graph.write();
-            crate::excalidraw::sync_canvas(&self.pkb_root, &mut graph, &diff, sync_edge_removals).map_err(|e| {
-                McpError {
+            crate::excalidraw::sync_canvas(&self.pkb_root, &mut graph, &diff, sync_edge_removals)
+                .map_err(|e| McpError {
                     code: ErrorCode::INTERNAL_ERROR,
                     message: Cow::from(format!("Failed to sync canvas to disk: {e}")),
                     data: None,
-                }
-            })?
+                })?
         };
 
         // Update vector store and schedule background graph rebuild
@@ -687,9 +707,18 @@ impl PkbSearchServer {
 
         for div in &divergences {
             let label_str = div.label.as_deref().unwrap_or("serves");
-            let q_str = div.quantum.map(|q| format!("{:.2}", q)).unwrap_or_else(|| "-".to_string());
-            let p_str = div.probability.map(|p| format!("{:.2}", p)).unwrap_or_else(|| "-".to_string());
-            let s_str = div.strength.map(|s| format!("{:.2}", s)).unwrap_or_else(|| div.stated_weight.clone());
+            let q_str = div
+                .quantum
+                .map(|q| format!("{:.2}", q))
+                .unwrap_or_else(|| "-".to_string());
+            let p_str = div
+                .probability
+                .map(|p| format!("{:.2}", p))
+                .unwrap_or_else(|| "-".to_string());
+            let s_str = div
+                .strength
+                .map(|s| format!("{:.2}", s))
+                .unwrap_or_else(|| div.stated_weight.clone());
             out.push_str(&format!(
                 "| {} (`{}`) | {} | {} | {} | **{}** | {} (`{}`) | {}d | {} |\n",
                 div.source_label,
@@ -770,7 +799,10 @@ impl PkbSearchServer {
         }
     }
 
-    pub(crate) fn handle_batch_create_epics(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+    pub(crate) fn handle_batch_create_epics(
+        &self,
+        args: &JsonValue,
+    ) -> Result<CallToolResult, McpError> {
         let parent = args.get("parent").and_then(|v| v.as_str());
         let dry_run = args
             .get("dry_run")
@@ -878,7 +910,10 @@ impl PkbSearchServer {
         Ok(CallToolResult::success(vec![Content::text(json)]))
     }
 
-    pub(crate) fn handle_batch_reclassify(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+    pub(crate) fn handle_batch_reclassify(
+        &self,
+        args: &JsonValue,
+    ) -> Result<CallToolResult, McpError> {
         let filters = crate::batch_ops::filters::parse_filter_set(args);
         let new_type = args
             .get("new_type")
@@ -920,7 +955,10 @@ impl PkbSearchServer {
         Ok(CallToolResult::success(vec![Content::text(json)]))
     }
 
-    pub(crate) fn handle_refresh_graph(&self, _args: &JsonValue) -> Result<CallToolResult, McpError> {
+    pub(crate) fn handle_refresh_graph(
+        &self,
+        _args: &JsonValue,
+    ) -> Result<CallToolResult, McpError> {
         let (scanned, parsed, node_count) = self.rebuild_graph();
         let skipped = scanned.saturating_sub(parsed);
         let json = serde_json::json!({
@@ -952,8 +990,14 @@ impl PkbSearchServer {
     /// `dry_run` (default true) only reports; `dry_run: false` purges each
     /// orphan via the same WAL-logged `Remove` + `store.remove` sequence
     /// `try_remove_document` uses for an ordinary delete, then persists.
-    pub(crate) fn handle_repair_index_orphans(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
-        let dry_run = args.get("dry_run").and_then(|v| v.as_bool()).unwrap_or(true);
+    pub(crate) fn handle_repair_index_orphans(
+        &self,
+        args: &JsonValue,
+    ) -> Result<CallToolResult, McpError> {
+        let dry_run = args
+            .get("dry_run")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true);
 
         let orphans = self.store.read().find_orphaned_entries(&self.pkb_root);
 
@@ -1021,7 +1065,10 @@ impl PkbSearchServer {
         )]))
     }
 
-    pub(crate) fn handle_apply_consolidation_batch(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+    pub(crate) fn handle_apply_consolidation_batch(
+        &self,
+        args: &JsonValue,
+    ) -> Result<CallToolResult, McpError> {
         let seed_id = args
             .get("seed_id")
             .and_then(|v| v.as_str())
@@ -1031,14 +1078,17 @@ impl PkbSearchServer {
                 message: Cow::from("Missing required parameter: seed_id"),
                 data: None,
             })?;
-        
+
         let updates_val = args.get("updates").ok_or_else(|| McpError {
             code: ErrorCode::INVALID_PARAMS,
             message: Cow::from("Missing required parameter: updates"),
             data: None,
         })?;
-        
-        let updates: std::collections::HashMap<String, std::collections::HashMap<String, JsonValue>> = serde_json::from_value(updates_val.clone()).map_err(|e| McpError {
+
+        let updates: std::collections::HashMap<
+            String,
+            std::collections::HashMap<String, JsonValue>,
+        > = serde_json::from_value(updates_val.clone()).map_err(|e| McpError {
             code: ErrorCode::INVALID_PARAMS,
             message: Cow::from(format!("Invalid updates format: {}", e)),
             data: None,
@@ -1060,7 +1110,7 @@ impl PkbSearchServer {
                 self.reject_machine_paths(content, None)?;
             }
         }
-        
+
         let dry_run = args
             .get("dry_run")
             .and_then(|v| v.as_bool())
@@ -1068,18 +1118,21 @@ impl PkbSearchServer {
 
         let graph = self.graph.read();
         let mut ctx = crate::batch_ops::BatchContext::new(&graph, &self.pkb_root);
-        
-        let summary = crate::batch_ops::consolidation::apply_consolidation_batch(&mut ctx, seed_id, updates, dry_run).map_err(|e| McpError {
+
+        let summary = crate::batch_ops::consolidation::apply_consolidation_batch(
+            &mut ctx, seed_id, updates, dry_run,
+        )
+        .map_err(|e| McpError {
             code: ErrorCode::INTERNAL_ERROR,
             message: Cow::from(format!("Failed to apply consolidation batch: {}", e)),
             data: None,
         })?;
-        
+
         drop(graph);
         if !dry_run && summary.changed > 0 {
             self.finalize_batch(&summary.modified_paths, &summary.removed_paths);
         }
-        
+
         let json = serde_json::to_string_pretty(&summary).unwrap_or_default();
         if dry_run {
             let msg = format!("{}{}", DRY_RUN_WARNING, json);
@@ -1089,11 +1142,17 @@ impl PkbSearchServer {
         }
     }
 
-    pub(crate) fn handle_get_consolidation_cluster(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+    pub(crate) fn handle_get_consolidation_cluster(
+        &self,
+        args: &JsonValue,
+    ) -> Result<CallToolResult, McpError> {
         self.ensure_graph_fresh();
         let seed_id = args.get("seed_id").and_then(|v| v.as_str());
         let max_nodes = args.get("max_nodes").and_then(|v| v.as_i64()).unwrap_or(10) as usize;
-        let vector_top_k = args.get("vector_top_k").and_then(|v| v.as_i64()).unwrap_or(10) as usize;
+        let vector_top_k = args
+            .get("vector_top_k")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(10) as usize;
 
         let graph = self.graph.read();
         let store = self.store.read();
@@ -1105,30 +1164,30 @@ impl PkbSearchServer {
             max_nodes,
             vector_top_k,
             &self.pkb_root,
-        ).map_err(|e| McpError {
+        )
+        .map_err(|e| McpError {
             code: ErrorCode::INTERNAL_ERROR,
             message: Cow::from(format!("Failed to get consolidation cluster: {}", e)),
             data: None,
         })?;
 
         Ok(CallToolResult::success(vec![Content::text(
-            serde_json::to_string_pretty(&cluster).unwrap_or_default()
+            serde_json::to_string_pretty(&cluster).unwrap_or_default(),
         )]))
     }
 
     // =========================================================================
     // CONSOLIDATED TOOLS (Progressive Disclosure)
     // =========================================================================
-
 }
 
 #[cfg(test)]
 mod batch_finalize_tests {
     use super::*;
-    use parking_lot::RwLock;
     use crate::embeddings::Embedder;
     use crate::graph_store::GraphStore;
     use crate::vectordb::VectorStore;
+    use parking_lot::RwLock;
     use serde_json::json;
     use std::path::Path;
     use std::sync::Arc;
@@ -1174,6 +1233,7 @@ mod batch_finalize_tests {
         for i in 1..=3 {
             let args = json!({
                 "title": format!("Task {i}"),
+                "slug": format!("task-{i}"),
                 "parent": "test-project",
                 "project": "test-project",
                 "status": "ready",
@@ -1264,6 +1324,7 @@ mod batch_finalize_tests {
 
         let create_args = json!({
             "title": "Batch Intent Task",
+            "slug": "batch-intent-task",
             "parent": "test-project",
             "project": "test-project",
             "status": "ready",
@@ -1575,7 +1636,10 @@ mod batch_finalize_tests {
         );
 
         let rebuilt = GraphStore::build_from_directory(pkb_root);
-        assert!(rebuilt.get_node("task-dup").is_none(), "task-dup should not be in graph");
+        assert!(
+            rebuilt.get_node("task-dup").is_none(),
+            "task-dup should not be in graph"
+        );
 
         // Re-running the same merge is idempotent: skipped cleanly.
         {
@@ -1590,7 +1654,10 @@ mod batch_finalize_tests {
             }))
             .unwrap_or_else(|e| panic!("second batch_merge failed: {e:?}"));
         let res_text = res.content[0].raw.as_text().unwrap().text.clone();
-        assert!(res_text.contains("\"skipped\": 1"), "re-running merge should skip already-merged source: {res_text}");
+        assert!(
+            res_text.contains("\"skipped\": 1"),
+            "re-running merge should skip already-merged source: {res_text}"
+        );
     }
 
     #[test]
@@ -1673,38 +1740,86 @@ mod batch_finalize_tests {
 
         // 3. Every edge that pointed at task-dup now points at task-canon
         let child_disk = std::fs::read_to_string(pkb_root.join("task-child.md")).unwrap();
-        assert!(child_disk.contains("parent: task-canon"), "child parent not rewritten: {child_disk}");
-        assert!(!child_disk.contains("task-dup"), "child still references duplicate: {child_disk}");
+        assert!(
+            child_disk.contains("parent: task-canon"),
+            "child parent not rewritten: {child_disk}"
+        );
+        assert!(
+            !child_disk.contains("task-dup"),
+            "child still references duplicate: {child_disk}"
+        );
 
         let dep_disk = std::fs::read_to_string(pkb_root.join("task-dep.md")).unwrap();
-        assert!(dep_disk.contains("task-canon"), "dep not rewritten: {dep_disk}");
-        assert!(!dep_disk.contains("task-dup"), "dep still references duplicate: {dep_disk}");
+        assert!(
+            dep_disk.contains("task-canon"),
+            "dep not rewritten: {dep_disk}"
+        );
+        assert!(
+            !dep_disk.contains("task-dup"),
+            "dep still references duplicate: {dep_disk}"
+        );
 
         let sdep_disk = std::fs::read_to_string(pkb_root.join("task-sdep.md")).unwrap();
-        assert!(sdep_disk.contains("task-canon"), "sdep not rewritten: {sdep_disk}");
-        assert!(!sdep_disk.contains("task-dup"), "sdep still references duplicate: {sdep_disk}");
+        assert!(
+            sdep_disk.contains("task-canon"),
+            "sdep not rewritten: {sdep_disk}"
+        );
+        assert!(
+            !sdep_disk.contains("task-dup"),
+            "sdep still references duplicate: {sdep_disk}"
+        );
 
         let block_disk = std::fs::read_to_string(pkb_root.join("task-block.md")).unwrap();
-        assert!(block_disk.contains("task-canon"), "blocks not rewritten: {block_disk}");
-        assert!(!block_disk.contains("task-dup"), "blocks still references duplicate: {block_disk}");
+        assert!(
+            block_disk.contains("task-canon"),
+            "blocks not rewritten: {block_disk}"
+        );
+        assert!(
+            !block_disk.contains("task-dup"),
+            "blocks still references duplicate: {block_disk}"
+        );
 
         let sblock_disk = std::fs::read_to_string(pkb_root.join("task-sblock.md")).unwrap();
-        assert!(sblock_disk.contains("task-canon"), "soft_blocks not rewritten: {sblock_disk}");
-        assert!(!sblock_disk.contains("task-dup"), "soft_blocks still references duplicate: {sblock_disk}");
+        assert!(
+            sblock_disk.contains("task-canon"),
+            "soft_blocks not rewritten: {sblock_disk}"
+        );
+        assert!(
+            !sblock_disk.contains("task-dup"),
+            "soft_blocks still references duplicate: {sblock_disk}"
+        );
 
         let close_disk = std::fs::read_to_string(pkb_root.join("task-close.md")).unwrap();
-        assert!(close_disk.contains("task-canon"), "closes not rewritten: {close_disk}");
-        assert!(!close_disk.contains("task-dup"), "closes still references duplicate: {close_disk}");
+        assert!(
+            close_disk.contains("task-canon"),
+            "closes not rewritten: {close_disk}"
+        );
+        assert!(
+            !close_disk.contains("task-dup"),
+            "closes still references duplicate: {close_disk}"
+        );
 
         let super_disk = std::fs::read_to_string(pkb_root.join("task-super.md")).unwrap();
-        assert!(super_disk.contains("task-canon"), "supersedes not rewritten: {super_disk}");
-        assert!(!super_disk.contains("task-dup"), "supersedes still references duplicate: {super_disk}");
+        assert!(
+            super_disk.contains("task-canon"),
+            "supersedes not rewritten: {super_disk}"
+        );
+        assert!(
+            !super_disk.contains("task-dup"),
+            "supersedes still references duplicate: {super_disk}"
+        );
 
         // 4. In the rebuilt GraphStore, task-dup is absent and no edge points to it
         let rebuilt = GraphStore::build_from_directory(pkb_root);
-        assert!(rebuilt.get_node("task-dup").is_none(), "task-dup should not be in graph");
+        assert!(
+            rebuilt.get_node("task-dup").is_none(),
+            "task-dup should not be in graph"
+        );
         for edge in rebuilt.edges() {
-            assert_ne!(edge.target, "task-dup", "found edge pointing at deleted task-dup: {edge:?}");
+            assert_ne!(
+                edge.target, "task-dup",
+                "found edge pointing at deleted task-dup: {edge:?}"
+            );
         }
     }
 
@@ -1732,8 +1847,7 @@ mod batch_finalize_tests {
         for res in &results {
             for diag in &res.diagnostics {
                 assert_ne!(
-                    diag.rule,
-                    "ref-broken-dep",
+                    diag.rule, "ref-broken-dep",
                     "lint must not fail on deleted supersedes duplicate: {:?}",
                     diag.message
                 );
@@ -1744,9 +1858,11 @@ mod batch_finalize_tests {
         let graph = GraphStore::build_from_directory(pkb_root);
         let canon = graph.get_node("task-canon").expect("task-canon in graph");
         assert_eq!(canon.supersedes, vec!["task-dup-deleted".to_string()]);
-        assert!(graph.get_node("task-dup-deleted").is_none(), "deleted duplicate must not be in graph");
+        assert!(
+            graph.get_node("task-dup-deleted").is_none(),
+            "deleted duplicate must not be in graph"
+        );
         let dep = graph.get_node("task-dep").expect("task-dep in graph");
         assert_eq!(dep.depends_on, vec!["task-canon".to_string()]);
     }
 }
-
