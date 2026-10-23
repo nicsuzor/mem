@@ -623,7 +623,16 @@ pub fn classify_tasks(
         let mut queue: VecDeque<String> = directly_blocked.into_iter().collect();
         while let Some(blocked_id) = queue.pop_front() {
             if let Some(task) = tasks.get(&blocked_id) {
+                // Completed/cancelled tasks are no longer actionable and do not propagate blocking
+                if is_completed(task.status.as_deref()) {
+                    continue;
+                }
                 for downstream_id in &task.blocks {
+                    if let Some(downstream) = tasks.get(downstream_id) {
+                        if is_completed(downstream.status.as_deref()) {
+                            continue;
+                        }
+                    }
                     if blocked_set.insert(downstream_id.clone()) {
                         queue.push_back(downstream_id.clone());
                     }
