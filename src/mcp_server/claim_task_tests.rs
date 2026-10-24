@@ -1,4 +1,5 @@
 use super::*;
+use std::sync::atomic::Ordering;
 #[cfg(test)]
 mod claim_task_tests {
     use super::*;
