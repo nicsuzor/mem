@@ -30,6 +30,7 @@ pub mod migrations;
 pub mod path_lint;
 pub mod pkb;
 pub mod polecat_config;
+pub mod ranking;
 pub mod rerank;
 pub mod rrf;
 pub mod task_index;
