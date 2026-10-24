@@ -42,47 +42,47 @@ fn test_ac1_diacritics_nfkd_folding() {
     let mut idx = Bm25Index::new();
     let root = Path::new("/pkb");
 
-    // "András Sajó" contains accented characters á and ó
+    // "René Descartés" contains accented characters é and á
     idx.upsert(
-        "cont_ec562f73",
-        PathBuf::from("contacts/andras_sajo.md"),
-        "András Sajó",
-        Some("contact".to_string()),
+        "doc_scholar_1",
+        PathBuf::from("notes/rene_descartes.md"),
+        "René Descartés",
+        Some("note".to_string()),
         Some("active".to_string()),
-        vec!["scholar".to_string()],
+        vec!["philosophy".to_string()],
         Some("2026-10-20".to_string()),
         None,
         None,
-        "Hungarian legal scholar and former judge".to_string(),
-        "Hungarian legal scholar and former judge".to_string(),
-        "Hungarian legal scholar and former judge of the European Court of Human Rights.",
+        "Early modern philosopher and mathematician".to_string(),
+        "Early modern philosopher and mathematician".to_string(),
+        "Early modern philosopher and mathematician known for analytic geometry.",
     );
 
     idx.upsert(
-        "cont_f7421ab9",
-        PathBuf::from("contacts/masahiko_shoji.md"),
-        "Masahiko Shoji",
-        Some("contact".to_string()),
+        "doc_scholar_2",
+        PathBuf::from("notes/gottfried_leibniz.md"),
+        "Gottfried Leibniz",
+        Some("note".to_string()),
         Some("active".to_string()),
-        vec!["sociology".to_string()],
+        vec!["mathematics".to_string()],
         Some("2026-10-20".to_string()),
         None,
         None,
-        "Japanese sociologist and researcher".to_string(),
-        "Japanese sociologist and researcher".to_string(),
-        "Japanese sociologist and researcher.",
+        "German polymath and logician".to_string(),
+        "German polymath and logician".to_string(),
+        "German polymath and logician.",
     );
 
-    // Query unaccented "Andras Sajo" must fold and retrieve András Sajó as #1
-    let results_unaccented = idx.search("Andras Sajo", 5, root, None, None, None, None);
+    // Query unaccented "Rene Descartes" must fold and retrieve René Descartés as #1
+    let results_unaccented = idx.search("Rene Descartes", 5, root, None, None, None, None);
     assert!(!results_unaccented.is_empty(), "Unaccented query should match accented document");
-    assert_eq!(results_unaccented[0].id, "cont_ec562f73");
+    assert_eq!(results_unaccented[0].id, "doc_scholar_1");
     assert!(results_unaccented[0].score > 0.0);
 
-    // Query accented "Sajó" must also retrieve András Sajó as #1
-    let results_accented = idx.search("Sajó", 5, root, None, None, None, None);
+    // Query accented "Descartés" must also retrieve René Descartés as #1
+    let results_accented = idx.search("Descartés", 5, root, None, None, None, None);
     assert!(!results_accented.is_empty());
-    assert_eq!(results_accented[0].id, "cont_ec562f73");
+    assert_eq!(results_accented[0].id, "doc_scholar_1");
 }
 
 // ── AC1: Synthetic Probes for Apostrophes ──
@@ -146,35 +146,34 @@ fn test_ac1_stopword_and_filler_probe() {
     let mut idx = Bm25Index::new();
     let root = Path::new("/pkb");
 
-    // From F15: "hydration not the blood test"
     idx.upsert(
-        "blood_test_tips",
-        PathBuf::from("notes/blood_test.md"),
-        "Blood test tips",
+        "sensor_calibration_tips",
+        PathBuf::from("notes/sensor_calibration.md"),
+        "Sensor calibration tips",
         Some("note".to_string()),
         Some("active".to_string()),
         vec![],
         Some("2026-10-20".to_string()),
         None,
         None,
-        "Blood test tips and clinical analysis".to_string(),
-        "Blood test tips and clinical analysis".to_string(),
-        "Blood test tips and clinical laboratory diagnostics.",
+        "Sensor calibration tips and bench analysis".to_string(),
+        "Sensor calibration tips and bench analysis".to_string(),
+        "Sensor calibration tips and laboratory diagnostics.",
     );
 
     idx.upsert(
-        "hydration_protocol",
-        PathBuf::from("notes/hydration.md"),
-        "Daily Hydration Protocol",
+        "thermal_protocol",
+        PathBuf::from("notes/thermal.md"),
+        "Daily Thermal Protocol",
         Some("note".to_string()),
         Some("active".to_string()),
         vec![],
         Some("2026-10-20".to_string()),
         None,
         None,
-        "Hydration intake guidelines".to_string(),
-        "Hydration intake guidelines".to_string(),
-        "Hydration protocols, fluid balance and water intake guidelines for peak performance.",
+        "Thermal operating guidelines".to_string(),
+        "Thermal operating guidelines".to_string(),
+        "Thermal protocols, heat dissipation and cooling guidelines for peak performance.",
     );
 
     idx.upsert(
@@ -199,8 +198,8 @@ fn test_ac1_stopword_and_filler_probe() {
         "Pure stopword query should not match or score"
     );
 
-    // "hydration not the blood test": "not" and "the" should be stripped
-    let tokens = tokenize("hydration not the blood test");
+    // "calibration not the sensor test": "not" and "the" should be stripped
+    let tokens = tokenize("calibration not the sensor test");
     assert!(!tokens.contains(&"not".to_string()), "tokens must not contain stopword 'not'");
     assert!(!tokens.contains(&"the".to_string()), "tokens must not contain stopword 'the'");
 }
@@ -404,8 +403,8 @@ fn test_ac3_rank_v1_legacy_parity() {
     // When rank_v1 is enabled at load:
     let mut idx_v1 = Bm25Index::new_with_rank_v1(true);
     idx_v1.upsert(
-        "mem_7cc72ed8",
-        PathBuf::from("tasks/mem_7cc72ed8.md"),
+        "item_520_xyz",
+        PathBuf::from("tasks/item_520_xyz.md"),
         "PKB search: add a lexical (BM25) layer",
         Some("task".to_string()),
         Some("in_progress".to_string()),
@@ -434,11 +433,104 @@ fn test_ac3_rank_v1_legacy_parity() {
     );
 
     // Legacy queries from existing tests
-    let res_task = idx_v1.search("mem_7cc72ed8", 5, root, None, None, None, None);
+    let res_task = idx_v1.search("item_520_xyz", 5, root, None, None, None, None);
     assert_eq!(res_task.len(), 1);
-    assert_eq!(res_task[0].id, "mem_7cc72ed8");
+    assert_eq!(res_task[0].id, "item_520_xyz");
 
     let res_pr = idx_v1.search("PR #520", 5, root, None, None, None, None);
     assert_eq!(res_pr.len(), 1);
-    assert_eq!(res_pr[0].id, "mem_7cc72ed8");
+    assert_eq!(res_pr[0].id, "item_520_xyz");
+}
+
+#[test]
+fn test_inflected_query_does_not_double_score_against_stem() {
+    let mut idx = Bm25Index::new();
+    let root = Path::new("/pkb");
+
+    idx.upsert(
+        "doc_algo",
+        PathBuf::from("notes/algo.md"),
+        "Sorting Guide",
+        Some("note".to_string()),
+        Some("active".to_string()),
+        vec![],
+        Some("2026-10-20".to_string()),
+        None,
+        None,
+        "Fast algorithms for sorting".to_string(),
+        "Fast algorithms for sorting".to_string(),
+        "Fast algorithms for sorting arrays.",
+    );
+
+    idx.upsert(
+        "doc_other",
+        PathBuf::from("notes/other.md"),
+        "Unrelated Note",
+        Some("note".to_string()),
+        Some("active".to_string()),
+        vec![],
+        Some("2026-10-20".to_string()),
+        None,
+        None,
+        "Database storage layer".to_string(),
+        "Database storage layer".to_string(),
+        "Database storage layer implementation.",
+    );
+
+    let res_singular = idx.search("algorithm", 5, root, None, None, None, None);
+    let res_plural = idx.search("algorithms", 5, root, None, None, None, None);
+    assert_eq!(res_singular.len(), 1);
+    assert_eq!(res_plural.len(), 1);
+    assert!(
+        (res_singular[0].score - res_plural[0].score).abs() < 1e-5,
+        "Inflected query 'algorithms' ({}) must not double-score compared to 'algorithm' ({})",
+        res_plural[0].score,
+        res_singular[0].score
+    );
+}
+
+#[test]
+fn test_multi_chunk_document_deduplicates_to_best_chunk() {
+    let mut idx = Bm25Index::new();
+    let root = Path::new("/pkb");
+
+    idx.upsert_chunk(
+        "doc_multi",
+        0,
+        PathBuf::from("notes/multi.md"),
+        "Multi Chunk Doc",
+        Some("note".to_string()),
+        Some("active".to_string()),
+        vec![],
+        Some("2026-10-20".to_string()),
+        None,
+        None,
+        "Chunk 0 with single optimization mention".to_string(),
+        "Chunk 0 with single optimization mention".to_string(),
+        None,
+        &[],
+        "Chunk 0 with single optimization mention in a longer text passage.",
+    );
+    idx.upsert_chunk(
+        "doc_multi",
+        1,
+        PathBuf::from("notes/multi.md"),
+        "Multi Chunk Doc",
+        Some("note".to_string()),
+        Some("active".to_string()),
+        vec![],
+        Some("2026-10-20".to_string()),
+        None,
+        None,
+        "Chunk 1 optimization optimization".to_string(),
+        "Chunk 1 optimization optimization".to_string(),
+        None,
+        &[],
+        "Chunk 1 optimization optimization.",
+    );
+
+    let results = idx.search("optimization", 10, root, None, None, None, None);
+    assert_eq!(results.len(), 1, "Multi-chunk document must be collapsed to 1 result per doc_id");
+    assert_eq!(results[0].id, "doc_multi");
+    assert_eq!(results[0].chunk_id, Some(1), "Highest-scoring chunk must be selected");
 }

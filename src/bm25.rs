@@ -77,16 +77,18 @@ pub fn stem_word(word: &str) -> String {
     stemmer.stem(word).to_string()
 }
 
+fn rank_v1_from_env() -> bool {
+    std::env::var("MEM_RANK_V1")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+}
+
 /// Default tokenizer dispatcher.
 ///
-/// If `MEM_RANK_V1` or `RANK_V1` environment variable is set to "1" or "true",
+/// If `MEM_RANK_V1` environment variable is set to "1" or "true",
 /// uses legacy v1 tokenizer. Otherwise uses v2 tokenizer.
 pub fn tokenize(text: &str) -> Vec<String> {
-    let rank_v1 = std::env::var("MEM_RANK_V1")
-        .or_else(|_| std::env::var("RANK_V1"))
-        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-        .unwrap_or(false);
-    if rank_v1 {
+    if rank_v1_from_env() {
         tokenize_v1(text)
     } else {
         tokenize_v2(text)
@@ -285,11 +287,7 @@ impl Default for Bm25Index {
 
 impl Bm25Index {
     pub fn new() -> Self {
-        let rank_v1 = std::env::var("MEM_RANK_V1")
-            .or_else(|_| std::env::var("RANK_V1"))
-            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-            .unwrap_or(false);
-        Self::new_with_rank_v1(rank_v1)
+        Self::new_with_rank_v1(rank_v1_from_env())
     }
 
     pub fn new_with_rank_v1(rank_v1: bool) -> Self {
@@ -579,6 +577,22 @@ impl Bm25Index {
         for t in query_tokens {
             *q_freqs.entry(t).or_insert(0) += 1;
         }
+        if !self.rank_v1 {
+            // In v2, tokenize_v2 emits both the raw token and its Porter stem when they differ.
+            // Remove any raw token whose Porter stem is already present in q_freqs so inflected
+            // query terms do not double-score across both the raw and stemmed postings lists.
+            let raw_with_stem: Vec<String> = q_freqs
+                .keys()
+                .filter(|t| {
+                    let s = stem_word(t);
+                    s != **t && q_freqs.contains_key(&s)
+                })
+                .cloned()
+                .collect();
+            for raw in raw_with_stem {
+                q_freqs.remove(&raw);
+            }
+        }
 
         // Accumulate scores per (doc_id, chunk_id)
         let mut scores: HashMap<(String, usize), f32> = HashMap::new();
@@ -605,7 +619,7 @@ impl Bm25Index {
             }
         }
 
-        let mut results: Vec<crate::vectordb::SearchResult> = Vec::new();
+        let mut best_by_doc: HashMap<String, crate::vectordb::SearchResult> = HashMap::new();
 
         let date_filter = match crate::date_filter::DateFilter::parse(since, before) {
             Ok(df) => df,
@@ -650,7 +664,7 @@ impl Bm25Index {
                 }
             }
 
-            results.push(crate::vectordb::SearchResult {
+            let candidate_result = crate::vectordb::SearchResult {
                 path: abs_path,
                 title: chunk.title.clone(),
                 score,
@@ -663,8 +677,26 @@ impl Bm25Index {
                 tags: chunk.tags.clone(),
                 confidence: chunk.confidence,
                 chunk_id: Some(chunk.chunk_id),
-            });
+            };
+
+            match best_by_doc.entry(chunk.id.clone()) {
+                std::collections::hash_map::Entry::Vacant(e) => {
+                    e.insert(candidate_result);
+                }
+                std::collections::hash_map::Entry::Occupied(mut e) => {
+                    let existing = e.get();
+                    let is_better = ordered_float::OrderedFloat(candidate_result.score)
+                        .cmp(&ordered_float::OrderedFloat(existing.score))
+                        .then_with(|| existing.chunk_id.cmp(&candidate_result.chunk_id))
+                        .is_gt();
+                    if is_better {
+                        e.insert(candidate_result);
+                    }
+                }
+            }
         }
+
+        let mut results: Vec<crate::vectordb::SearchResult> = best_by_doc.into_values().collect();
 
         // Sort descending by BM25 score with deterministic tie-breaking by ID then chunk ID
         results.sort_by(|a, b| {
