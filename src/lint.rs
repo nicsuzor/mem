@@ -18,6 +18,15 @@ fn get_id_regex() -> &'static regex::Regex {
     ID_RE.get_or_init(|| regex::Regex::new(r"(?i)^[a-z0-9][a-z0-9_-]*[_-][a-f0-9]{8}$").unwrap())
 }
 
+/// Mode for auto-fixing lint issues.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum FixMode {
+    /// Fix all fixable diagnostics.
+    All,
+    /// Fix only tier migrations: status: archived, log type, daily date, legacy markers.
+    Tier,
+}
+
 // ── Diagnostic types ─────────────────────────────────────────────────────
 
 /// Severity level for lint diagnostics.
@@ -425,6 +434,23 @@ pub fn lint_file(
     ancestor_map: Option<&AncestorMap>,
     children_set: Option<&ChildrenSet>,
 ) -> FileResult {
+    lint_file_with_mode(
+        path,
+        if fix { Some(FixMode::All) } else { None },
+        known_ids,
+        ancestor_map,
+        children_set,
+    )
+}
+
+/// Lint a single file with an explicit fix mode (None, Some(FixMode::All), Some(FixMode::Tier)).
+pub fn lint_file_with_mode(
+    path: &Path,
+    fix_mode: Option<FixMode>,
+    known_ids: Option<&HashSet<String>>,
+    ancestor_map: Option<&AncestorMap>,
+    children_set: Option<&ChildrenSet>,
+) -> FileResult {
     let content = match std::fs::read_to_string(path) {
         Ok(c) => c,
         Err(e) => {
@@ -469,6 +495,7 @@ pub fn lint_file(
     // ── Frontmatter rules ────────────────────────────────────────────
 
     check_frontmatter(
+        Some(path),
         &content,
         &fm_data,
         &mut diags,
@@ -503,10 +530,14 @@ pub fn lint_file(
 
     // ── Build fixed content if requested ─────────────────────────────
 
-    let fixed_content = if fix && diags.iter().any(|d| d.fixable) {
-        let fixed = apply_fixes(content_after_heal, &fm_data, path, ancestor_map);
-        if fixed != content {
-            Some(fixed)
+    let fixed_content = if let Some(mode) = fix_mode {
+        if diags.iter().any(|d| d.fixable) {
+            let fixed = apply_fixes(content_after_heal, &fm_data, path, ancestor_map, mode);
+            if fixed != content {
+                Some(fixed)
+            } else {
+                None
+            }
         } else {
             None
         }
@@ -638,6 +669,7 @@ fn resolves_project(id: &str, ancestor_map: &AncestorMap) -> bool {
 }
 
 fn check_frontmatter(
+    path: Option<&Path>,
     content: &str,
     fm_data: &Option<serde_json::Value>,
     diags: &mut Vec<Diagnostic>,
@@ -1720,6 +1752,117 @@ fn check_frontmatter(
         }
     }
 
+    // ── Tier and daily date rules (P1-M2z, Decision 6) ───────────────────
+    let mut raw_tags: Vec<String> = Vec::new();
+    if let Some(tag_val) = fm.get("tags") {
+        if let Some(arr) = tag_val.as_array() {
+            for t in arr {
+                if let Some(s) = t.as_str() {
+                    raw_tags.push(s.to_string());
+                } else if let Some(n) = t.as_i64() {
+                    raw_tags.push(n.to_string());
+                } else if let Some(n) = t.as_u64() {
+                    raw_tags.push(n.to_string());
+                }
+            }
+        } else if let Some(s) = tag_val.as_str() {
+            for part in s.split(',') {
+                let trimmed = part.trim();
+                if !trimmed.is_empty() {
+                    raw_tags.push(trimmed.to_string());
+                }
+            }
+        }
+    }
+
+    let is_archive_path = path.map_or(false, |p| {
+        p.components().any(|c| {
+            let name = c.as_os_str().to_string_lossy().to_lowercase();
+            name == "archive" || name == "archived"
+        })
+    });
+    let current_status = fm.get("status").and_then(|v| v.as_str()).unwrap_or("");
+    let current_type = fm.get("type").and_then(|v| v.as_str()).unwrap_or("");
+
+    let has_archived_tag = raw_tags.iter().any(|t| t == "archived" || t == "onenote-import");
+
+    if has_archived_tag || (is_archive_path && current_status != "archived") {
+        diags.push(Diagnostic::simple(
+            Severity::Warning,
+            "doc-tier-legacy-marker",
+            "Legacy tier marker: tag 'archived'/'onenote-import' or archive folder path -> migrate to 'status: archived'",
+            Some(1),
+            true,
+        ));
+    } else if current_type != "template" {
+        if let Some(log_tag) = raw_tags
+            .iter()
+            .find(|t| matches!(t.as_str(), "session-log" | "transcript" | "verbatim-log"))
+        {
+            if current_type != log_tag || raw_tags.iter().any(|t| t == log_tag) {
+                diags.push(Diagnostic::simple(
+                    Severity::Warning,
+                    "doc-tier-legacy-marker",
+                    format!(
+                        "Legacy log tag '{}' -> migrate to 'type: {}'",
+                        log_tag, log_tag
+                    ),
+                    Some(1),
+                    true,
+                ));
+            }
+        }
+    }
+
+    // Daily date check
+    let is_daily_note = if current_type == "daily" {
+        true
+    } else if let Some(p) = path {
+        let stem = p
+            .file_stem()
+            .map(|s| s.to_string_lossy())
+            .unwrap_or_default();
+        let in_daily_dir = p
+            .components()
+            .any(|c| c.as_os_str().to_string_lossy().to_lowercase() == "daily");
+        let matches_date = regex::Regex::new(r"^\d{4}-\d{2}-\d{2}$")
+            .map(|re| re.is_match(&stem))
+            .unwrap_or(false);
+        matches_date
+            || (in_daily_dir
+                && regex::Regex::new(r"^\d{4}-\d{2}-\d{2}")
+                    .map(|re| re.is_match(&stem))
+                    .unwrap_or(false))
+    } else {
+        false
+    };
+
+    if is_daily_note {
+        let has_date = fm
+            .get("date")
+            .and_then(|v| v.as_str())
+            .map(|s| !s.trim().is_empty())
+            .unwrap_or(false);
+        if !has_date {
+            let date_candidate = path.and_then(|p| {
+                let stem = p.file_stem()?.to_string_lossy();
+                let re = regex::Regex::new(r"(\d{4}-\d{2}-\d{2})").ok()?;
+                re.captures(&stem).map(|c| c.get(1).unwrap().as_str().to_string())
+            });
+            if let Some(d) = date_candidate {
+                diags.push(Diagnostic::simple(
+                    Severity::Warning,
+                    "doc-daily-no-date",
+                    format!(
+                        "Daily note missing 'date' in frontmatter (expected: {})",
+                        d
+                    ),
+                    Some(1),
+                    true,
+                ));
+            }
+        }
+    }
 }
 
 fn check_markdown_body(content: &str, diags: &mut Vec<Diagnostic>) {
@@ -1939,17 +2082,232 @@ fn fix_project_alias(content: &str, old_proj: &str, new_proj: &str) -> String {
     res
 }
 
+/// Remove a tag from frontmatter text (whether multi-line list, inline array, or comma-separated string).
+fn remove_tag_from_frontmatter(fm_text: &str, tag_to_remove: &str) -> String {
+    let mut lines: Vec<String> = Vec::new();
+    let mut in_tags_list = false;
+    let mut tags_list_had_items = false;
+    let mut tags_list_remaining_items = 0;
+    let mut tags_header_index: Option<usize> = None;
+
+    for line in fm_text.lines() {
+        let trimmed = line.trim();
+        if trimmed == "tags:" || trimmed.starts_with("tags:") {
+            let after = trimmed["tags:".len()..].trim();
+            if after.is_empty() {
+                // Multi-line list follows
+                in_tags_list = true;
+                tags_header_index = Some(lines.len());
+                lines.push(line.to_string());
+                continue;
+            } else if after.starts_with('[') && after.ends_with(']') {
+                // Inline array: tags: [a, b, c]
+                let inner = &after[1..after.len() - 1];
+                let items: Vec<&str> = inner
+                    .split(',')
+                    .map(|s| s.trim())
+                    .filter(|s| !s.is_empty())
+                    .filter(|s| {
+                        let unquoted = s.trim_matches(|c| c == '"' || c == '\'');
+                        unquoted != tag_to_remove
+                    })
+                    .collect();
+                if items.is_empty() {
+                    continue;
+                } else {
+                    let indent = line.len() - line.trim_start().len();
+                    lines.push(format!("{:indent$}tags: [{}]", "", items.join(", "), indent = indent));
+                    continue;
+                }
+            } else {
+                // Comma separated string: tags: foo, bar
+                let items: Vec<&str> = after
+                    .split(',')
+                    .map(|s| s.trim())
+                    .filter(|s| !s.is_empty())
+                    .filter(|s| {
+                        let unquoted = s.trim_matches(|c| c == '"' || c == '\'');
+                        unquoted != tag_to_remove
+                    })
+                    .collect();
+                if items.is_empty() {
+                    continue;
+                } else {
+                    let indent = line.len() - line.trim_start().len();
+                    lines.push(format!("{:indent$}tags: {}", "", items.join(", "), indent = indent));
+                    continue;
+                }
+            }
+        }
+
+        if in_tags_list {
+            if trimmed.starts_with('-') {
+                tags_list_had_items = true;
+                let item_val = trimmed[1..].trim();
+                let unquoted = item_val.trim_matches(|c| c == '"' || c == '\'');
+                if unquoted == tag_to_remove {
+                    continue;
+                } else {
+                    tags_list_remaining_items += 1;
+                    lines.push(line.to_string());
+                    continue;
+                }
+            } else if line.starts_with(' ') || line.starts_with('\t') {
+                lines.push(line.to_string());
+                continue;
+            } else {
+                in_tags_list = false;
+                if tags_list_had_items && tags_list_remaining_items == 0 {
+                    if let Some(idx) = tags_header_index {
+                        lines.remove(idx);
+                        tags_header_index = None;
+                    }
+                }
+            }
+        }
+
+        lines.push(line.to_string());
+    }
+
+    if in_tags_list && tags_list_had_items && tags_list_remaining_items == 0 {
+        if let Some(idx) = tags_header_index {
+            lines.remove(idx);
+        }
+    }
+
+    lines.join("\n")
+}
+
 /// Apply fixes surgically — line-level edits only, preserving key order and formatting.
 fn apply_fixes(
     content: &str,
     fm_data: &Option<serde_json::Value>,
-    _path: &Path,
+    path: &Path,
     _ancestor_map: Option<&AncestorMap>,
+    fix_mode: FixMode,
 ) -> String {
     let mut result = content.to_string();
 
     // ── Frontmatter fixes (only when we have a valid frontmatter object) ──
     if let Some(serde_json::Value::Object(fm)) = fm_data {
+        let mut raw_tags: Vec<String> = Vec::new();
+        if let Some(tag_val) = fm.get("tags") {
+            if let Some(arr) = tag_val.as_array() {
+                for t in arr {
+                    if let Some(s) = t.as_str() {
+                        raw_tags.push(s.to_string());
+                    }
+                }
+            } else if let Some(s) = tag_val.as_str() {
+                for part in s.split(',') {
+                    let trimmed = part.trim();
+                    if !trimmed.is_empty() {
+                        raw_tags.push(trimmed.to_string());
+                    }
+                }
+            }
+        }
+
+        let is_archive_path = path.components().any(|c| {
+            let name = c.as_os_str().to_string_lossy().to_lowercase();
+            name == "archive" || name == "archived"
+        });
+        let has_archived_tag = raw_tags.iter().any(|t| t == "archived" || t == "onenote-import");
+        let current_type = fm.get("type").and_then(|v| v.as_str()).unwrap_or("");
+
+        let mut changed_fm = false;
+        if result.starts_with("---\n") {
+            if let Some(fm_end_rel) = result[3..].find("\n---") {
+                let fm_end = fm_end_rel + 3;
+                let mut fm_section = result[4..fm_end].to_string();
+
+                if has_archived_tag || is_archive_path {
+                    if fm_section.lines().any(|l| l.trim().starts_with("status:")) {
+                        let re = regex::Regex::new(r"(?m)^([ \t]*status:[ \t]*).*$").unwrap();
+                        fm_section = re.replace(&fm_section, "status: archived").to_string();
+                    } else if let Some(pos) = fm_section.find("type:") {
+                        if let Some(nl) = fm_section[pos..].find('\n') {
+                            let insert_at = pos + nl + 1;
+                            fm_section.insert_str(insert_at, "status: archived\n");
+                        } else {
+                            fm_section.push_str("\nstatus: archived");
+                        }
+                    } else {
+                        fm_section = format!("status: archived\n{}", fm_section);
+                    }
+
+                    fm_section = remove_tag_from_frontmatter(&fm_section, "archived");
+                    fm_section = remove_tag_from_frontmatter(&fm_section, "onenote-import");
+                    changed_fm = true;
+                }
+
+                if current_type != "template" {
+                    for log_tag in &["session-log", "transcript", "verbatim-log"] {
+                        if raw_tags.iter().any(|t| t == *log_tag) {
+                            if fm_section.lines().any(|l| l.trim().starts_with("type:")) {
+                                let re = regex::Regex::new(r"(?m)^([ \t]*type:[ \t]*).*$").unwrap();
+                                fm_section = re.replace(&fm_section, format!("type: {}", log_tag)).to_string();
+                            } else {
+                                fm_section = format!("type: {}\n{}", log_tag, fm_section);
+                            }
+                            fm_section = remove_tag_from_frontmatter(&fm_section, log_tag);
+                            changed_fm = true;
+                        }
+                    }
+                }
+
+                // Daily note date check
+                let is_daily = if current_type == "daily" {
+                    true
+                } else {
+                    let stem = path.file_stem().map(|s| s.to_string_lossy()).unwrap_or_default();
+                    let in_daily_dir = path.components().any(|c| c.as_os_str().to_string_lossy().to_lowercase() == "daily");
+                    let matches_date = regex::Regex::new(r"^\d{4}-\d{2}-\d{2}$").map(|re| re.is_match(&stem)).unwrap_or(false);
+                    matches_date || (in_daily_dir && regex::Regex::new(r"^\d{4}-\d{2}-\d{2}").map(|re| re.is_match(&stem)).unwrap_or(false))
+                };
+
+                let has_date = fm.get("date").and_then(|v| v.as_str()).map(|s| !s.trim().is_empty()).unwrap_or(false);
+                if is_daily && !has_date {
+                    let date_candidate = path.file_stem().and_then(|stem| {
+                        let re = regex::Regex::new(r"(\d{4}-\d{2}-\d{2})").ok()?;
+                        re.captures(&stem.to_string_lossy()).map(|c| c.get(1).unwrap().as_str().to_string())
+                    });
+                    if let Some(date_str) = date_candidate {
+                        if let Some(pos) = fm_section.find("type:") {
+                            if let Some(nl) = fm_section[pos..].find('\n') {
+                                let insert_at = pos + nl + 1;
+                                fm_section.insert_str(insert_at, &format!("date: {}\n", date_str));
+                            } else {
+                                fm_section.push_str(&format!("\ndate: {}", date_str));
+                            }
+                        } else if let Some(pos) = fm_section.find("title:") {
+                            if let Some(nl) = fm_section[pos..].find('\n') {
+                                let insert_at = pos + nl + 1;
+                                fm_section.insert_str(insert_at, &format!("date: {}\n", date_str));
+                            } else {
+                                fm_section.push_str(&format!("\ndate: {}", date_str));
+                            }
+                        } else {
+                            fm_section = format!("date: {}\n{}", date_str, fm_section);
+                        }
+                        changed_fm = true;
+                    }
+                }
+
+                if changed_fm {
+                    let new_fm_str = if fm_section.ends_with('\n') {
+                        fm_section
+                    } else {
+                        format!("{}\n", fm_section)
+                    };
+                    result = format!("---\n{}---{}", new_fm_str, &result[fm_end + 4..]);
+                }
+            }
+        }
+
+        if fix_mode == FixMode::Tier {
+            return result;
+        }
         // Flow model padding fixes (specs/graph-lint.md L10, §5.2, §5.7, G20)
         if let Some(s) = fm.get("deadline_class").and_then(|v| v.as_str()) {
             let trimmed = s.trim();
@@ -2418,7 +2776,16 @@ pub fn lint_directory(
     fix: bool,
     check_refs: bool,
 ) -> (Vec<FileResult>, LintSummary) {
-    lint_directory_with_cap(pkb_root, fix, check_refs, crate::flow::ITERATION_CAP)
+    lint_directory_with_mode(pkb_root, if fix { Some(FixMode::All) } else { None }, check_refs)
+}
+
+/// Lint all markdown files under a PKB root directory with an explicit fix mode.
+pub fn lint_directory_with_mode(
+    pkb_root: &Path,
+    fix_mode: Option<FixMode>,
+    check_refs: bool,
+) -> (Vec<FileResult>, LintSummary) {
+    lint_directory_with_cap_mode(pkb_root, fix_mode, check_refs, crate::flow::ITERATION_CAP)
 }
 
 /// Lint all markdown files under a PKB root directory with a custom iteration cap for convergence check.
@@ -2428,6 +2795,17 @@ pub fn lint_directory_with_cap(
     check_refs: bool,
     iter_cap: usize,
 ) -> (Vec<FileResult>, LintSummary) {
+    lint_directory_with_cap_mode(pkb_root, if fix { Some(FixMode::All) } else { None }, check_refs, iter_cap)
+}
+
+/// Lint all markdown files under a PKB root directory with a custom iteration cap and explicit fix mode.
+pub fn lint_directory_with_cap_mode(
+    pkb_root: &Path,
+    fix_mode: Option<FixMode>,
+    check_refs: bool,
+    iter_cap: usize,
+) -> (Vec<FileResult>, LintSummary) {
+    let fix = fix_mode.is_some();
     let mut files = pkb::scan_directory(pkb_root);
     files.sort();
 
@@ -2653,7 +3031,7 @@ pub fn lint_directory_with_cap(
     };
 
     // Pre-fix pass: collect ID renames
-    let id_renames: Vec<(String, String)> = if fix {
+    let id_renames: Vec<(String, String)> = if fix_mode == Some(FixMode::All) {
         let id_re = get_id_regex();
         files
             .par_iter()
@@ -2686,9 +3064,9 @@ pub fn lint_directory_with_cap(
     let mut results: Vec<FileResult> = files
         .par_iter()
         .map(|p| {
-            lint_file(
+            lint_file_with_mode(
                 p,
-                fix,
+                fix_mode,
                 known_ids.as_ref(),
                 Some(&ancestor_map),
                 Some(&children_set),
@@ -3799,6 +4177,7 @@ Body.\n",
             .and_then(|d| d.deserialize::<serde_json::Value>().ok());
 
         check_frontmatter(
+            None,
             content_task,
             &fm_data,
             &mut diags,
@@ -3828,6 +4207,7 @@ Body.\n",
 
         let mut diags_no = Vec::new();
         check_frontmatter(
+            None,
             content_no,
             &fm_data_no,
             &mut diags_no,
@@ -3862,6 +4242,7 @@ Body.\n",
 
         let mut diags = Vec::new();
         check_frontmatter(
+            None,
             content_task,
             &fm_data,
             &mut diags,

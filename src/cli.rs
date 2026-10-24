@@ -536,9 +536,13 @@ enum Commands {
         /// Specific files to lint (omit to lint entire PKB)
         files: Vec<PathBuf>,
 
-        /// Auto-fix fixable issues in place
+        /// Auto-fix fixable issues in place (optional mode: "tier" or omitted for all)
+        #[arg(long, num_args = 0..=1, default_missing_value = "all")]
+        fix: Option<String>,
+
+        /// Dry-run mode: show what would be fixed without writing changes to disk
         #[arg(long)]
-        fix: bool,
+        dry_run: bool,
 
         /// Check cross-references (parent, depends_on) — slower, requires full scan
         #[arg(long)]
@@ -2938,33 +2942,47 @@ async fn main() -> Result<()> {
         Commands::Lint {
             files,
             fix,
+            dry_run,
             refs,
             errors_only,
             format,
         } => {
             let start = std::time::Instant::now();
 
+            let fix_mode = match fix.as_deref() {
+                Some("tier") => Some(lint::FixMode::Tier),
+                Some(_) => Some(lint::FixMode::All),
+                None => None,
+            };
+
             let (results, summary) = if files.is_empty() {
                 // Lint entire PKB
-                lint::lint_directory(&pkb_root, fix, refs)
+                lint::lint_directory_with_mode(&pkb_root, fix_mode, refs)
             } else {
                 // Lint specific files
                 let known_ids = None; // single-file mode skips ref checks
                 let results: Vec<lint::FileResult> = files
                     .iter()
-                    .map(|f| lint::lint_file(f, fix, known_ids.as_ref(), None, None))
+                    .map(|f| lint::lint_file_with_mode(f, fix_mode, known_ids.as_ref(), None, None))
                     .collect();
                 let summary = lint::LintSummary::from_results(&results);
                 (results, summary)
             };
 
-            // Write fixes. A missing id self-heals unconditionally (see
-            // lint_file), so this must run even when `--fix` wasn't passed —
-            // otherwise `pkb lint --refs` alone can't self-heal in CI.
-            let written = lint::write_fixes(&results);
-            if written > 0 {
-                eprintln!("Fixed {} files", written);
-            }
+            // Write fixes. If dry_run is set, do not write to disk.
+            let _written = if dry_run {
+                let would_fix = results.iter().filter(|r| r.fixed_content.is_some()).count();
+                if would_fix > 0 {
+                    eprintln!("[dry-run] Would fix {} files", would_fix);
+                }
+                0
+            } else {
+                let count = lint::write_fixes(&results);
+                if count > 0 {
+                    eprintln!("Fixed {} files", count);
+                }
+                count
+            };
 
             let elapsed = start.elapsed();
 
