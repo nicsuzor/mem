@@ -48,6 +48,14 @@ impl PkbSearchServer {
 
         let _date_filter = crate::date_filter::DateFilter::from_args(args)?;
 
+        if self.reranker.is_enabled() && !self.reranker.is_model_loaded() {
+            return Err(McpError {
+                code: ErrorCode::INTERNAL_ERROR,
+                message: Cow::from("reranker_unavailable"),
+                data: None,
+            });
+        }
+
         let query_embedding = self.embedder.encode_query(query).map_err(|e| McpError {
             code: ErrorCode::INTERNAL_ERROR,
             message: Cow::from(format!("Embedding error: {e}")),
@@ -65,17 +73,23 @@ impl PkbSearchServer {
         } else {
             limit * 3
         };
-        let results = store.search_hybrid(
-            query,
-            &query_embedding,
-            fetch_limit,
-            &self.pkb_root,
-            since,
-            before,
-            None,
-            Some(&self.reranker),
-            None,
-        );
+        let results = store
+            .try_search_hybrid(
+                query,
+                &query_embedding,
+                fetch_limit,
+                &self.pkb_root,
+                since,
+                before,
+                None,
+                Some(&self.reranker),
+                None,
+            )
+            .map_err(|e| McpError {
+                code: ErrorCode::INTERNAL_ERROR,
+                message: Cow::from(e.to_string()),
+                data: None,
+            })?;
 
         let graph = self.graph.read();
 
@@ -379,6 +393,21 @@ impl PkbSearchServer {
 
         let _date_filter = crate::date_filter::DateFilter::from_args(args)?;
 
+        if self.reranker.is_enabled() && !self.reranker.is_model_loaded() {
+            return Err(McpError {
+                code: ErrorCode::INTERNAL_ERROR,
+                message: Cow::from("reranker_unavailable"),
+                data: None,
+            });
+        }
+
+        let ranking_label = if self.reranker.is_enabled() && self.reranker.is_model_loaded() {
+            "reranked"
+        } else {
+            "fused"
+        };
+        let reranker_loaded = self.reranker.is_model_loaded();
+
         let query_embedding = self.embedder.encode_query(query).map_err(|e| McpError {
             code: ErrorCode::INTERNAL_ERROR,
             message: Cow::from(format!("Embedding error: {e}")),
@@ -395,17 +424,23 @@ impl PkbSearchServer {
         } else {
             limit * 2
         };
-        let results = store.search_hybrid(
-            query,
-            &query_embedding,
-            fetch_limit,
-            &self.pkb_root,
-            since,
-            before,
-            doc_type,
-            Some(&self.reranker),
-            None,
-        );
+        let results = store
+            .try_search_hybrid(
+                query,
+                &query_embedding,
+                fetch_limit,
+                &self.pkb_root,
+                since,
+                before,
+                doc_type,
+                Some(&self.reranker),
+                None,
+            )
+            .map_err(|e| McpError {
+                code: ErrorCode::INTERNAL_ERROR,
+                message: Cow::from(e.to_string()),
+                data: None,
+            })?;
 
         // Build proximity boost map if boost_id provided
         let boost_map: std::collections::HashMap<String, f32> = if let Some(bid) = boost_id {
@@ -481,6 +516,8 @@ impl PkbSearchServer {
                 "items": [],
                 "count": 0,
                 "results": [],
+                "ranking": ranking_label,
+                "reranker_loaded": reranker_loaded,
             });
             return Ok(Self::structured_result(
                 "No results found.".to_string(),
@@ -506,6 +543,8 @@ impl PkbSearchServer {
                 "count": id_list.len(),
                 "ids": id_list.clone(),
                 "items": id_list,
+                "ranking": ranking_label,
+                "reranker_loaded": reranker_loaded,
             });
 
             if format.eq_ignore_ascii_case("json") {
@@ -575,6 +614,8 @@ impl PkbSearchServer {
                 "count": json_results.len(),
                 "items": json_results.clone(),
                 "results": json_results,
+                "ranking": ranking_label,
+                "reranker_loaded": reranker_loaded,
             });
             let json_str = serde_json::to_string_pretty(&payload).unwrap_or_default();
             return Ok(Self::structured_result(json_str, payload));
@@ -670,6 +711,8 @@ impl PkbSearchServer {
             "total": scored.len(),
             "showing": scored.len(),
             "count": scored.len(),
+            "ranking": ranking_label,
+            "reranker_loaded": reranker_loaded,
             "items": scored.iter().map(|(r, score)| {
                 serde_json::json!({
                     "id": r.id,
@@ -1523,5 +1566,64 @@ mod search_status_projection_tests {
             !text.contains("**Status:**"),
             "non-task note must not present actionable task status: {text}"
         );
+    }
+
+    #[test]
+    fn test_search_reports_fused_when_reranker_off() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut server = build_seeded_server(dir.path());
+        let reranker = Arc::new(crate::rerank::CrossEncoderReranker::new(
+            crate::rerank::RerankerConfig {
+                model_path: None,
+                tokenizer_path: None,
+                top_n_candidates: 10,
+                query_token_cap: 160,
+                chunk_token_cap: 352,
+                enabled: false,
+                tau_h: crate::rerank::DEFAULT_TAU_H,
+                tau_cos: crate::rerank::DEFAULT_TAU_COS,
+                tau_s: crate::rerank::DEFAULT_TAU_S,
+            },
+        ));
+        server = server.with_reranker(reranker);
+
+        let result = server
+            .handle_pkb_search(&serde_json::json!({"query": "widget", "format": "json"}))
+            .expect("search must succeed");
+
+        let text = result_text(&result);
+        let parsed: serde_json::Value = serde_json::from_str(&text).expect("valid json output");
+        assert_eq!(parsed["ranking"], "fused");
+        assert_eq!(parsed["reranker_loaded"], false);
+    }
+
+    #[test]
+    fn test_search_raises_reranker_unavailable_when_configured_on_and_fails_to_load() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut server = build_seeded_server(dir.path());
+        let reranker = Arc::new(crate::rerank::CrossEncoderReranker::new(
+            crate::rerank::RerankerConfig {
+                model_path: Some(PathBuf::from("/nonexistent/model.onnx")),
+                tokenizer_path: Some(PathBuf::from("/nonexistent/tokenizer.json")),
+                top_n_candidates: 10,
+                query_token_cap: 160,
+                chunk_token_cap: 352,
+                enabled: true,
+                tau_h: crate::rerank::DEFAULT_TAU_H,
+                tau_cos: crate::rerank::DEFAULT_TAU_COS,
+                tau_s: crate::rerank::DEFAULT_TAU_S,
+            },
+        ));
+        server = server.with_reranker(reranker);
+
+        let result = server.handle_pkb_search(&serde_json::json!({"query": "widget"}));
+        assert!(result.is_err(), "search must error when reranker fails to load");
+        let err = result.unwrap_err();
+        assert_eq!(err.message, "reranker_unavailable");
+
+        let task_result = server.handle_task_search(&serde_json::json!({"query": "widget"}));
+        assert!(task_result.is_err(), "task_search must error when reranker fails to load");
+        let err = task_result.unwrap_err();
+        assert_eq!(err.message, "reranker_unavailable");
     }
 }

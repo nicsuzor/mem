@@ -1099,8 +1099,8 @@ fn upsert_entry_to_bm25(bm25: &mut crate::bm25::Bm25Index, entry: &DocumentEntry
     }
 
     /// Hybrid search: Combines vector similarity and BM25 lexical retrieval via Reciprocal Rank Fusion (RRF).
-    /// If a reranker is provided, scores and re-orders the fused candidates.
-    pub fn search_hybrid(
+    /// If a reranker is provided, scores and re-orders the fused candidates, propagating any `RerankerError`.
+    pub fn try_search_hybrid(
         &self,
         query: &str,
         query_embedding: &[f32],
@@ -1111,7 +1111,7 @@ fn upsert_entry_to_bm25(bm25: &mut crate::bm25::Bm25Index, entry: &DocumentEntry
         type_filter: Option<&str>,
         reranker: Option<&crate::rerank::CrossEncoderReranker>,
         predicate: Option<&dyn Fn(&GateCandidate) -> bool>,
-    ) -> Vec<SearchResult> {
+    ) -> std::result::Result<Vec<SearchResult>, crate::rerank::RerankerError> {
         let tracer = opentelemetry::global::tracer("mem");
         use opentelemetry::trace::Tracer;
         let span = tracer.start("search_hybrid");
@@ -1139,10 +1139,6 @@ fn upsert_entry_to_bm25(bm25: &mut crate::bm25::Bm25Index, entry: &DocumentEntry
 
         let mut fused = crate::rrf::fuse_rrf(vector_results, bm25_results, &config, fetch_limit);
 
-        if let Some(r) = reranker {
-            r.rerank(query, &mut fused, limit);
-        }
-
         fused.sort_by(|a, b| {
             ordered_float::OrderedFloat(b.score)
                 .cmp(&ordered_float::OrderedFloat(a.score))
@@ -1150,9 +1146,41 @@ fn upsert_entry_to_bm25(bm25: &mut crate::bm25::Bm25Index, entry: &DocumentEntry
                 .then_with(|| a.chunk_id.cmp(&b.chunk_id))
         });
 
+        if let Some(r) = reranker {
+            r.rerank(query, &mut fused, limit)?;
+        }
+
         fused.truncate(limit);
         crate::otel::call_metrics::CallMetrics::record_hybrid_search_duration(start.elapsed());
-        fused
+        Ok(fused)
+    }
+
+    /// Hybrid search: Combines vector similarity and BM25 lexical retrieval via Reciprocal Rank Fusion (RRF).
+    /// If a reranker is provided, scores and re-orders the fused candidates.
+    pub fn search_hybrid(
+        &self,
+        query: &str,
+        query_embedding: &[f32],
+        limit: usize,
+        pkb_root: &Path,
+        since: Option<&str>,
+        before: Option<&str>,
+        type_filter: Option<&str>,
+        reranker: Option<&crate::rerank::CrossEncoderReranker>,
+        predicate: Option<&dyn Fn(&GateCandidate) -> bool>,
+    ) -> Vec<SearchResult> {
+        self.try_search_hybrid(
+            query,
+            query_embedding,
+            limit,
+            pkb_root,
+            since,
+            before,
+            type_filter,
+            reranker,
+            predicate,
+        )
+        .expect("reranker failed in search_hybrid; use try_search_hybrid to handle RerankerError")
     }
 
     /// Semantic search: find the top-k most similar documents to a query.

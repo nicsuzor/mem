@@ -1278,7 +1278,7 @@ async fn main() -> Result<()> {
             let query_embedding = embedder.encode_query(&query_text)?;
             let reranker =
                 mem::rerank::CrossEncoderReranker::new(mem::rerank::RerankerConfig::default());
-            let results = store.read().search_hybrid(
+            let results = store.read().try_search_hybrid(
                 &query_text,
                 &query_embedding,
                 limit,
@@ -1288,7 +1288,7 @@ async fn main() -> Result<()> {
                 doc_type.as_deref(),
                 Some(&reranker),
                 None,
-            );
+            )?;
 
             if results.is_empty() {
                 println!("No results found for: {query_text}");

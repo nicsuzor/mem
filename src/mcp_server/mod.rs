@@ -256,9 +256,25 @@ impl PkbSearchServer {
         db_path: PathBuf,
         graph: Arc<RwLock<GraphStore>>,
     ) -> Self {
-        let reranker = Arc::new(crate::rerank::CrossEncoderReranker::new(
-            crate::rerank::RerankerConfig::default(),
-        ));
+        let reranker = if embedder.is_dummy() {
+            Arc::new(crate::rerank::CrossEncoderReranker::new(
+                crate::rerank::RerankerConfig {
+                    model_path: None,
+                    tokenizer_path: None,
+                    top_n_candidates: crate::rerank::DEFAULT_RERANK_TOP_N,
+                    query_token_cap: crate::rerank::DEFAULT_QUERY_TOKEN_CAP,
+                    chunk_token_cap: crate::rerank::DEFAULT_CHUNK_TOKEN_CAP,
+                    enabled: false,
+                    tau_h: crate::rerank::DEFAULT_TAU_H,
+                    tau_cos: crate::rerank::DEFAULT_TAU_COS,
+                    tau_s: crate::rerank::DEFAULT_TAU_S,
+                },
+            ))
+        } else {
+            Arc::new(crate::rerank::CrossEncoderReranker::new(
+                crate::rerank::RerankerConfig::default(),
+            ))
+        };
         let initial_scanned = crate::pkb::scan_directory(&pkb_root).len();
         let initial_loaded = graph.read().node_count();
         let initial_file_backed = graph
@@ -304,6 +320,12 @@ impl PkbSearchServer {
             rebuild_mutex: Arc::new(Mutex::new(())),
             rebuild_count: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         }
+    }
+
+    /// Set a custom reranker on the server (useful for tests or custom configurations).
+    pub fn with_reranker(mut self, reranker: Arc<crate::rerank::CrossEncoderReranker>) -> Self {
+        self.reranker = reranker;
+        self
     }
 
     /// Total count of full graph rebuilds that have executed.
