@@ -1287,6 +1287,7 @@ async fn main() -> Result<()> {
                 before.as_deref(),
                 doc_type.as_deref(),
                 Some(&reranker),
+                None,
             );
 
             if results.is_empty() {
@@ -2627,7 +2628,7 @@ async fn main() -> Result<()> {
             let results =
                 store
                     .read()
-                    .search(&query_embedding, limit * 3, &pkb_root, None, None, None);
+                    .search(&query_embedding, limit * 3, &pkb_root, None, None, None, None);
 
             let memory_types = ["memory", "note", "insight", "observation"];
             let mut count = 0;

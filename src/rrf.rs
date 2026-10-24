@@ -65,7 +65,10 @@ pub fn fuse_rrf(
     }
 
     results.sort_by(|a, b| {
-        ordered_float::OrderedFloat(b.score).cmp(&ordered_float::OrderedFloat(a.score))
+        ordered_float::OrderedFloat(b.score)
+            .cmp(&ordered_float::OrderedFloat(a.score))
+            .then_with(|| a.id.cmp(&b.id))
+            .then_with(|| a.chunk_id.cmp(&b.chunk_id))
     });
 
     results.truncate(limit);
@@ -90,6 +93,7 @@ mod tests {
             status: Some("active".to_string()),
             tags: vec![],
             confidence: None,
+            chunk_id: None,
         }
     }
 

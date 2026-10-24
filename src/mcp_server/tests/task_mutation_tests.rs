@@ -2287,7 +2287,7 @@ fn test_update_body_without_expected_modified_still_last_write_wins() {
 fn test_concurrent_field_and_body_writes_to_same_node_both_survive() {
     let (tmp, server) = build_disk_backed_server(&[(
         "tasks/task-concurrent-fb.md",
-        "---\nid: task-concurrent-fb\ntitle: Concurrent Field Body\ntype: task\nstatus: ready\nrepo: old/repo\nfollow_up_tasks: []\n---\n\nInitial body.\n",
+        "---\nid: task-concurrent-fb\ntitle: Concurrent Field Body\ntype: task\nstatus: ready\nrepo: old/repo\ntags: []\n---\n\nInitial body.\n",
     )]);
     let path = tmp.path().join("tasks/task-concurrent-fb.md");
     let server = Arc::new(server);
@@ -2297,7 +2297,7 @@ fn test_concurrent_field_and_body_writes_to_same_node_both_survive() {
     for iter in 0..25 {
         std::fs::write(
             &path,
-            format!("---\nid: task-concurrent-fb\ntitle: Concurrent Field Body\ntype: task\nstatus: ready\nrepo: old/repo\nfollow_up_tasks: []\n---\n\nInitial body {iter}.\n"),
+            format!("---\nid: task-concurrent-fb\ntitle: Concurrent Field Body\ntype: task\nstatus: ready\nrepo: old/repo\ntags: []\n---\n\nInitial body {iter}.\n"),
         ).unwrap();
         server.handle_refresh_graph(&json!({})).unwrap();
 
@@ -2306,16 +2306,16 @@ fn test_concurrent_field_and_body_writes_to_same_node_both_survive() {
         let server1 = Arc::clone(&server);
         let b1 = Arc::clone(&barrier);
         let repo_val = format!("nicsuzor/mem_{iter}");
-        let fu_val = format!("mem_fu_{iter}");
+        let tag_val = format!("tag_{iter}");
         let repo_val_clone = repo_val.clone();
-        let fu_val_clone = fu_val.clone();
+        let tag_val_clone = tag_val.clone();
         let h1 = std::thread::spawn(move || {
             b1.wait();
             server1.handle_update_task(&json!({
                 "id": "task-concurrent-fb",
                 "status": "in_progress",
                 "repo": repo_val_clone,
-                "follow_up_tasks": [fu_val_clone],
+                "tags": [tag_val_clone],
             }))
         });
 
@@ -2347,8 +2347,8 @@ fn test_concurrent_field_and_body_writes_to_same_node_both_survive() {
             "Field update 'repo' was lost in iteration {iter}!\nActual content:\n{disk_content}"
         );
         assert!(
-            disk_content.contains(&format!("mem_fu_{iter}")),
-            "Field update 'follow_up_tasks' was lost in iteration {iter}!\nActual content:\n{disk_content}"
+            disk_content.contains(&format!("tag_{iter}")),
+            "Field update 'tags' was lost in iteration {iter}!\nActual content:\n{disk_content}"
         );
         assert!(
             disk_content.contains(&format!("## Updated Body {iter}")),
@@ -2363,7 +2363,7 @@ fn test_concurrent_field_and_body_writes_to_same_node_both_survive() {
         let task_json: serde_json::Value = serde_json::from_str(task_text).unwrap();
         assert_eq!(task_json["status"], "in_progress");
         assert_eq!(task_json["frontmatter"]["repo"], repo_val);
-        assert_eq!(task_json["frontmatter"]["follow_up_tasks"][0], fu_val);
+        assert_eq!(task_json["frontmatter"]["tags"][0], tag_val);
 
         let doc_res = server
             .handle_get_document(&json!({"id": "task-concurrent-fb"}))
@@ -3563,6 +3563,7 @@ fn test_create_task_rejects_follow_up_tasks() {
 
     let res = server.handle_create_task(&json!({
         "title": "New Task With Follow Ups",
+        "slug": "new-task-with-follow-ups",
         "parent": "task-root",
         "project": "proj",
         "follow_up_tasks": ["task-root"]

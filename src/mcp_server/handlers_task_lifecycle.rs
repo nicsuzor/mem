@@ -575,7 +575,7 @@ impl PkbSearchServer {
         let candidates = self
             .store
             .read()
-            .search(&embedding, 50, &self.pkb_root, None, None, None);
+            .search(&embedding, 50, &self.pkb_root, None, None, None, None);
 
         for candidate in &candidates {
             if candidate.score < CONFIDENCE_THRESHOLD {

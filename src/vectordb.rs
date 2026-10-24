@@ -109,6 +109,18 @@ pub struct OrphanedIndexEntry {
     pub path: String,
 }
 
+/// Candidate passed to gate predicate functions before top-k truncation.
+#[derive(Debug, Clone)]
+pub struct GateCandidate<'a> {
+    pub id: &'a str,
+    pub path: &'a Path,
+    pub title: &'a str,
+    pub doc_type: Option<&'a str>,
+    pub status: Option<&'a str>,
+    pub tags: &'a [String],
+    pub chunk_id: Option<usize>,
+}
+
 /// Search result returned from queries
 #[derive(Debug, Clone)]
 pub struct SearchResult {
@@ -125,6 +137,7 @@ pub struct SearchResult {
     pub status: Option<String>,
     pub tags: Vec<String>,
     pub confidence: Option<f64>,
+    pub chunk_id: Option<usize>,
 }
 
 /// Metadata-only patch produced by [`VectorStore::prepare_upsert`] when the
@@ -849,24 +862,47 @@ impl VectorStore {
         Ok(PreparedUpsert::Full(Box::new(entry)))
     }
 
-    /// Synchronize the in-memory BM25 index with all documents currently in the store.
-    pub fn sync_bm25_all(&self) {
-        let mut bm25 = self.bm25.write();
-        bm25.clear();
-        for entry in self.documents.values() {
-            let body_text = if !entry.chunk_texts.is_empty() {
-                entry.chunk_texts.join(" ")
+fn upsert_entry_to_bm25(bm25: &mut crate::bm25::Bm25Index, entry: &DocumentEntry) {
+    bm25.remove(&entry.id);
+    let chunks: &[String] = if !entry.body_chunks.is_empty() {
+        &entry.body_chunks
+    } else if !entry.chunk_texts.is_empty() {
+        &entry.chunk_texts
+    } else {
+        &[]
+    };
+
+    if chunks.is_empty() {
+        bm25.upsert_chunk(
+            &entry.id,
+            0,
+            entry.path.clone(),
+            &entry.title,
+            entry.doc_type.clone(),
+            entry.status.clone(),
+            entry.tags.clone(),
+            entry.modified.clone(),
+            entry.date.clone(),
+            entry.confidence,
+            String::new(),
+            String::new(),
+            None,
+            &[],
+            "",
+        );
+    } else {
+        for (chunk_id, chunk_text) in chunks.iter().enumerate() {
+            let heading = if chunk_text.trim_start().starts_with('#') {
+                chunk_text
+                    .lines()
+                    .next()
+                    .map(|l| l.trim_start_matches('#').trim())
             } else {
-                String::new()
+                None
             };
-            let snippet = entry
-                .body_chunks
-                .first()
-                .cloned()
-                .unwrap_or_else(|| entry.chunk_texts.first().cloned().unwrap_or_default());
-            let chunk_text = snippet.clone();
-            bm25.upsert(
+            bm25.upsert_chunk(
                 &entry.id,
+                chunk_id,
                 entry.path.clone(),
                 &entry.title,
                 entry.doc_type.clone(),
@@ -875,10 +911,22 @@ impl VectorStore {
                 entry.modified.clone(),
                 entry.date.clone(),
                 entry.confidence,
-                snippet,
+                chunk_text.clone(),
+                chunk_text.clone(),
+                heading,
+                &[],
                 chunk_text,
-                &body_text,
             );
+        }
+    }
+}
+
+    /// Synchronize the in-memory BM25 index with all documents currently in the store.
+    pub fn sync_bm25_all(&self) {
+        let mut bm25 = self.bm25.write();
+        bm25.clear();
+        for entry in self.documents.values() {
+            Self::upsert_entry_to_bm25(&mut bm25, entry);
         }
     }
 
@@ -903,14 +951,8 @@ impl VectorStore {
                     entry.confidence = patch.confidence;
                     entry.file_hash = Some(patch.file_hash);
 
-                    let body_text = entry.chunk_texts.join(" ");
-                    let snippet =
-                        entry.body_chunks.first().cloned().unwrap_or_else(|| {
-                            entry.chunk_texts.first().cloned().unwrap_or_default()
-                        });
-                    self.bm25.write().upsert(
+                    self.bm25.write().update_metadata(
                         &entry.id,
-                        entry.path.clone(),
                         &entry.title,
                         entry.doc_type.clone(),
                         entry.status.clone(),
@@ -918,9 +960,6 @@ impl VectorStore {
                         entry.modified.clone(),
                         entry.date.clone(),
                         entry.confidence,
-                        snippet.clone(),
-                        snippet,
-                        &body_text,
                     );
                 } else {
                     // Race: the entry was removed between prepare and apply.
@@ -932,26 +971,7 @@ impl VectorStore {
                 }
             }
             PreparedUpsert::Full(entry) => {
-                let body_text = entry.chunk_texts.join(" ");
-                let snippet = entry
-                    .body_chunks
-                    .first()
-                    .cloned()
-                    .unwrap_or_else(|| entry.chunk_texts.first().cloned().unwrap_or_default());
-                self.bm25.write().upsert(
-                    &entry.id,
-                    entry.path.clone(),
-                    &entry.title,
-                    entry.doc_type.clone(),
-                    entry.status.clone(),
-                    entry.tags.clone(),
-                    entry.modified.clone(),
-                    entry.date.clone(),
-                    entry.confidence,
-                    snippet.clone(),
-                    snippet,
-                    &body_text,
-                );
+                Self::upsert_entry_to_bm25(&mut self.bm25.write(), &entry);
                 self.documents.insert(entry.id.clone(), *entry);
             }
         }
@@ -1003,25 +1023,7 @@ impl VectorStore {
             body_chunks: body_chunks.clone(),
         };
 
-        let body_text = chunks.join(" ");
-        let snippet = body_chunks
-            .first()
-            .cloned()
-            .unwrap_or_else(|| chunks.first().cloned().unwrap_or_default());
-        self.bm25.write().upsert(
-            &canonical_id,
-            norm_path,
-            &doc.title,
-            doc.doc_type.clone(),
-            doc.status.clone(),
-            doc.tags.clone(),
-            doc.modified.clone(),
-            date,
-            confidence,
-            snippet.clone(),
-            snippet,
-            &body_text,
-        );
+        Self::upsert_entry_to_bm25(&mut self.bm25.write(), &entry);
 
         self.documents.insert(canonical_id, entry);
     }
@@ -1089,10 +1091,11 @@ impl VectorStore {
         since: Option<&str>,
         before: Option<&str>,
         type_filter: Option<&str>,
+        predicate: Option<&dyn Fn(&GateCandidate) -> bool>,
     ) -> Vec<SearchResult> {
         self.bm25
             .read()
-            .search(query, limit, pkb_root, since, before, type_filter)
+            .search(query, limit, pkb_root, since, before, type_filter, predicate)
     }
 
     /// Hybrid search: Combines vector similarity and BM25 lexical retrieval via Reciprocal Rank Fusion (RRF).
@@ -1107,6 +1110,7 @@ impl VectorStore {
         before: Option<&str>,
         type_filter: Option<&str>,
         reranker: Option<&crate::rerank::CrossEncoderReranker>,
+        predicate: Option<&dyn Fn(&GateCandidate) -> bool>,
     ) -> Vec<SearchResult> {
         let tracer = opentelemetry::global::tracer("mem");
         use opentelemetry::trace::Tracer;
@@ -1122,9 +1126,10 @@ impl VectorStore {
             since,
             before,
             type_filter,
+            predicate,
         );
         let bm25_results =
-            self.search_bm25(query, fetch_limit, pkb_root, since, before, type_filter);
+            self.search_bm25(query, fetch_limit, pkb_root, since, before, type_filter, predicate);
 
         let config = crate::rrf::RrfConfig {
             k: crate::rrf::DEFAULT_RRF_K,
@@ -1137,6 +1142,13 @@ impl VectorStore {
         if let Some(r) = reranker {
             r.rerank(query, &mut fused, limit);
         }
+
+        fused.sort_by(|a, b| {
+            ordered_float::OrderedFloat(b.score)
+                .cmp(&ordered_float::OrderedFloat(a.score))
+                .then_with(|| a.id.cmp(&b.id))
+                .then_with(|| a.chunk_id.cmp(&b.chunk_id))
+        });
 
         fused.truncate(limit);
         crate::otel::call_metrics::CallMetrics::record_hybrid_search_duration(start.elapsed());
@@ -1155,6 +1167,7 @@ impl VectorStore {
         since: Option<&str>,
         before: Option<&str>,
         type_filter: Option<&str>,
+        predicate: Option<&dyn Fn(&GateCandidate) -> bool>,
     ) -> Vec<SearchResult> {
         // Build candidate list: for each document, use max similarity across chunks
         let mut results: Vec<SearchResult> = Vec::new();
@@ -1188,6 +1201,28 @@ impl VectorStore {
             }
 
             if best_score > f32::NEG_INFINITY {
+                let abs_path = if entry.path.is_absolute() {
+                    entry.path.clone()
+                } else {
+                    pkb_root.join(&entry.path)
+                };
+
+                // Pre-pool gate predicate
+                if let Some(pred) = predicate {
+                    let cand = GateCandidate {
+                        id: &entry.id,
+                        path: &abs_path,
+                        title: &entry.title,
+                        doc_type: entry.doc_type.as_deref(),
+                        status: entry.status.as_deref(),
+                        tags: &entry.tags,
+                        chunk_id: Some(best_chunk_idx),
+                    };
+                    if !pred(&cand) {
+                        continue;
+                    }
+                }
+
                 // Prefer body_chunks (no frontmatter metadata) for display;
                 // fall back to chunk_texts if body_chunks unavailable
                 let display_source = if !entry.body_chunks.is_empty() {
@@ -1212,11 +1247,6 @@ impl VectorStore {
                     full_chunk[..trunc].to_string()
                 };
 
-                let abs_path = if entry.path.is_absolute() {
-                    entry.path.clone()
-                } else {
-                    pkb_root.join(&entry.path)
-                };
                 results.push(SearchResult {
                     path: abs_path,
                     title: entry.title.clone(),
@@ -1229,13 +1259,17 @@ impl VectorStore {
                     status: entry.status.clone(),
                     tags: entry.tags.clone(),
                     confidence: entry.confidence,
+                    chunk_id: Some(best_chunk_idx),
                 });
             }
         }
 
-        // Sort by score descending
+        // Sort by score descending with deterministic tie-breaking by ID then chunk ID
         results.sort_by(|a, b| {
-            ordered_float::OrderedFloat(b.score).cmp(&ordered_float::OrderedFloat(a.score))
+            ordered_float::OrderedFloat(b.score)
+                .cmp(&ordered_float::OrderedFloat(a.score))
+                .then_with(|| a.id.cmp(&b.id))
+                .then_with(|| a.chunk_id.cmp(&b.chunk_id))
         });
 
         results.truncate(limit);
@@ -1288,6 +1322,7 @@ impl VectorStore {
                 status: entry.status.clone(),
                 tags: entry.tags.clone(),
                 confidence: entry.confidence,
+                chunk_id: None,
             });
         }
 
@@ -1626,7 +1661,7 @@ mod tests {
         let store = build_test_store();
         let root = Path::new("/pkb");
         // Query vector aligned with [1,0,0] should match the task entry
-        let results = store.search(&[1.0, 0.0, 0.0], 10, root, None, None, None);
+        let results = store.search(&[1.0, 0.0, 0.0], 10, root, None, None, None, None);
         assert!(!results.is_empty());
         assert_eq!(results[0].title, "Fix the bug");
         assert!((results[0].score - 1.0).abs() < 0.01);
@@ -1636,7 +1671,7 @@ mod tests {
     fn test_search_respects_limit() {
         let store = build_test_store();
         let root = Path::new("/pkb");
-        let results = store.search(&[0.5, 0.5, 0.5], 2, root, None, None, None);
+        let results = store.search(&[0.5, 0.5, 0.5], 2, root, None, None, None, None);
         assert_eq!(results.len(), 2);
     }
 
@@ -1644,7 +1679,7 @@ mod tests {
     fn test_search_sorted_by_score_descending() {
         let store = build_test_store();
         let root = Path::new("/pkb");
-        let results = store.search(&[0.5, 0.5, 0.0], 10, root, None, None, None);
+        let results = store.search(&[0.5, 0.5, 0.0], 10, root, None, None, None, None);
         for i in 1..results.len() {
             assert!(results[i - 1].score >= results[i].score);
         }
@@ -1654,7 +1689,7 @@ mod tests {
     fn test_search_empty_store() {
         let store = VectorStore::new(3);
         let root = Path::new("/pkb");
-        let results = store.search(&[1.0, 0.0, 0.0], 10, root, None, None, None);
+        let results = store.search(&[1.0, 0.0, 0.0], 10, root, None, None, None, None);
         assert!(results.is_empty());
     }
 
@@ -1692,7 +1727,7 @@ mod tests {
         let store = build_test_store();
         let root = Path::new("/pkb");
         // Store contains 1 task, 1 note, 1 memory
-        let results = store.search(&[0.5, 0.5, 0.5], 10, root, None, None, Some("task"));
+        let results = store.search(&[0.5, 0.5, 0.5], 10, root, None, None, Some("task"), None);
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].doc_type.as_deref(), Some("task"));
         assert_eq!(results[0].title, "Fix the bug");
@@ -1703,7 +1738,7 @@ mod tests {
         let store = build_test_store();
         let root = Path::new("/pkb");
         // !task should return note and memory, excluding task
-        let results = store.search(&[0.5, 0.5, 0.5], 10, root, None, None, Some("!task"));
+        let results = store.search(&[0.5, 0.5, 0.5], 10, root, None, None, Some("!task"), None);
         assert_eq!(results.len(), 2);
         for r in &results {
             assert_ne!(r.doc_type.as_deref(), Some("task"));
@@ -1721,6 +1756,7 @@ mod tests {
             None,
             None,
             Some("nonexistent_type"),
+            None,
         );
         assert!(results.is_empty());
     }
@@ -1729,7 +1765,7 @@ mod tests {
     fn test_search_without_type_filter_returns_all_matches() {
         let store = build_test_store();
         let root = Path::new("/pkb");
-        let results = store.search(&[0.5, 0.5, 0.5], 10, root, None, None, None);
+        let results = store.search(&[0.5, 0.5, 0.5], 10, root, None, None, None, None);
         assert_eq!(results.len(), 3);
     }
 
@@ -1804,6 +1840,7 @@ mod tests {
             None,
             Some("2020-01-01"),
             None,
+            None,
         );
         // Only the 2019 entry qualifies (modified <= 2020-01-01), but that's pre-2020 so it's in.
         // Actually 2019-06-01 <= 2020-01-01 so it should appear.
@@ -1829,6 +1866,7 @@ mod tests {
             None,
             Some("2018-01-01"),
             None,
+            None,
         );
         assert!(
             results.is_empty(),
@@ -1848,6 +1886,7 @@ mod tests {
             Some("2030-01-01"),
             None,
             None,
+            None,
         );
         assert!(
             results.is_empty(),
@@ -1861,8 +1900,8 @@ mod tests {
         // Wide range includes all dated entries; narrow range must be a strict subset.
         let store = build_dated_store();
         let root = Path::new("/pkb");
-        let wide = store.search(&[1.0, 0.0, 0.0], 10, root, Some("2000-01-01"), None, None);
-        let narrow = store.search(&[1.0, 0.0, 0.0], 10, root, Some("2024-01-01"), None, None);
+        let wide = store.search(&[1.0, 0.0, 0.0], 10, root, Some("2000-01-01"), None, None, None);
+        let narrow = store.search(&[1.0, 0.0, 0.0], 10, root, Some("2024-01-01"), None, None, None);
         assert!(
             narrow.len() < wide.len(),
             "narrowing since must reduce result count: wide={} narrow={}",
@@ -1880,6 +1919,7 @@ mod tests {
             10,
             Path::new("/pkb"),
             Some("2000-01-01"),
+            None,
             None,
             None,
         );
@@ -2029,14 +2069,14 @@ mod tests {
         store.insert_precomputed(&doc, vec!["chunk1".to_string()], vec![vec![1.0, 0.0, 0.0]]);
         assert_eq!(store.len(), 1);
         let root = Path::new("/pkb");
-        let results = store.search(&[1.0, 0.0, 0.0], 1, root, None, None, None);
+        let results = store.search(&[1.0, 0.0, 0.0], 1, root, None, None, None, None);
         assert_eq!(results[0].title, "Test Doc");
     }
     #[test]
     fn test_search_uses_chunk_texts_for_snippets() {
         let store = build_test_store();
         let root = Path::new("/pkb");
-        let results = store.search(&[1.0, 0.0, 0.0], 1, root, None, None, None);
+        let results = store.search(&[1.0, 0.0, 0.0], 1, root, None, None, None, None);
         assert!(results[0].snippet.contains("body of"));
     }
 

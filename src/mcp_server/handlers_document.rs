@@ -1523,6 +1523,7 @@ impl PkbSearchServer {
             None,
             None,
             None,
+            None,
         );
 
         let graph = self.graph.read();
