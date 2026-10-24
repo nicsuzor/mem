@@ -91,6 +91,37 @@ pub struct DocumentEntry {
     pub body_chunks: Vec<String>,
 }
 
+impl DocumentEntry {
+    /// Mean of chunk vectors for compatibility (AC3).
+    pub fn vector(&self) -> Vec<f32> {
+        crate::chunker::mean_vector(&self.chunk_embeddings)
+    }
+
+    /// Convert to DocumentRecord view (AC3).
+    pub fn to_document_record(&self) -> crate::chunker::DocumentRecord {
+        let chunks = self
+            .chunk_texts
+            .iter()
+            .zip(self.body_chunks.iter().chain(std::iter::repeat(&String::new())))
+            .zip(self.chunk_embeddings.iter().map(|v| Some(v.clone())).chain(std::iter::repeat(None)))
+            .map(|((text, body), vector)| crate::chunker::ChunkRecord {
+                text: text.clone(),
+                body: body.clone(),
+                heading_path: None,
+                vector,
+                start_offset: 0,
+                end_offset: body.len(),
+            })
+            .collect();
+        crate::chunker::DocumentRecord::new(
+            self.id.clone(),
+            self.title.clone(),
+            self.doc_type.clone(),
+            chunks,
+        )
+    }
+}
+
 /// An index entry whose backing document is absent from disk — a stale
 /// embedding surviving deletion (or move) of its source file. Distinct from
 /// a graph-referenced "ghost node" (an id named in another document's
@@ -802,10 +833,13 @@ impl VectorStore {
         }
 
         // Slow path: re-chunk and re-embed.
-        let embedding_text = doc.embedding_text();
-        let chunks = embeddings::chunk_text(&embedding_text, &embeddings::ChunkConfig::default());
-        let body_chunks =
-            embeddings::chunk_text(doc.body.trim(), &embeddings::ChunkConfig::default());
+        let doc_chunks = crate::chunker::chunk_document(
+            &doc.title,
+            doc.doc_type.as_deref(),
+            &doc.body,
+        );
+        let chunks: Vec<String> = doc_chunks.iter().map(|c| c.text.clone()).collect();
+        let body_chunks: Vec<String> = doc_chunks.into_iter().map(|c| c.body).collect();
         let chunk_refs: Vec<&str> = chunks.iter().map(|s| s.as_str()).collect();
         let chunk_embeddings = embedder.encode_batch(&chunk_refs)?;
 
@@ -977,8 +1011,7 @@ impl VectorStore {
     ) {
         let (id, confidence, date) = Self::extract_frontmatter_fields(doc);
         let canonical_id = id.unwrap_or_else(|| doc.id());
-        let body_chunks =
-            embeddings::chunk_text(doc.body.trim(), &embeddings::ChunkConfig::default());
+        let body_chunks = crate::chunker::chunk_markdown_clean(&doc.body);
         let body_hash = doc.body_hash();
 
         let norm_path = PathBuf::from(doc.path.to_string_lossy().replace('\\', "/"));

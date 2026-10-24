@@ -8,6 +8,7 @@ pub mod otel;
 
 pub mod batch_ops;
 pub mod bm25;
+pub mod chunker;
 pub mod cmd;
 pub mod date_filter;
 pub mod display_rank;
@@ -228,8 +229,12 @@ pub fn index_pkb(
             continue;
         }
 
-        let embedding_text = doc.embedding_text();
-        let chunks = embeddings::chunk_text(&embedding_text, &embeddings::ChunkConfig::default());
+        let doc_chunks = crate::chunker::chunk_document(
+            &doc.title,
+            doc.doc_type.as_deref(),
+            &doc.body,
+        );
+        let chunks: Vec<String> = doc_chunks.into_iter().map(|c| c.text).collect();
         let chunk_start = all_chunks.len();
         let chunk_count = chunks.len();
         all_chunks.extend(chunks);

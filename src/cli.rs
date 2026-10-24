@@ -4320,8 +4320,14 @@ fn index_pkb(
     let parsed: Vec<_> = to_process
         .into_par_iter()
         .map(|doc| {
-            let text = doc.embedding_text();
-            let chunks = embeddings::chunk_text(&text, &embeddings::ChunkConfig::default());
+            let chunks: Vec<String> = mem::chunker::chunk_document(
+                &doc.title,
+                doc.doc_type.as_deref(),
+                &doc.body,
+            )
+            .into_iter()
+            .map(|c| c.text)
+            .collect();
             (doc, chunks)
         })
         .collect();
@@ -4495,8 +4501,14 @@ fn bench_reindex(
         .iter()
         .filter_map(|path| {
             pkb::parse_file_relative(path, pkb_root).map(|doc| {
-                let text = doc.embedding_text();
-                let chunks = embeddings::chunk_text(&text, &embeddings::ChunkConfig::default());
+                let chunks: Vec<String> = mem::chunker::chunk_document(
+                    &doc.title,
+                    doc.doc_type.as_deref(),
+                    &doc.body,
+                )
+                .into_iter()
+                .map(|c| c.text)
+                .collect();
                 (doc, chunks)
             })
         })
