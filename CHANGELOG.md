@@ -5,6 +5,43 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.4](https://github.com/nicsuzor/mem/compare/mem-v0.4.3...mem-v0.4.4) (2026-10-24)
+
+
+### Features
+
+* **crud:** require agent-supplied slug on all PKB create actions ([85ba6f2](https://github.com/nicsuzor/mem/commit/85ba6f2c26629e8d75babbb0fe5fa8f2c25a47a7))
+* **crud:** uncap title length and auto-truncate derived filenames to 80 chars ([fe95149](https://github.com/nicsuzor/mem/commit/fe9514918c6162c27504f4e98c809b273843ab7e))
+* **tasks:** remove follow_up_tasks from PKB tool schemas and handlers ([b4f8719](https://github.com/nicsuzor/mem/commit/b4f87198b251086eba5a6cb31ff325c1798ea16d))
+* **tasks:** remove follow_up_tasks from PKB tool schemas and handlers ([ab809a8](https://github.com/nicsuzor/mem/commit/ab809a876b56e7eb8700b05d06a8480384e40f0b))
+* **vscode:** translate markdown PKB links to editor document links ([8345ace](https://github.com/nicsuzor/mem/commit/8345ace2e6d1318947ca84dd28e78cac0b4b3648))
+
+
+### Bug Fixes
+
+* **batch_merge:** delete merged duplicates outright per pkb-rules §3.3 ([0081363](https://github.com/nicsuzor/mem/commit/0081363c9f552d5b755de786991b71de8f96c2e3))
+* **crud:** serialise concurrent mutating operations per path ([38430f2](https://github.com/nicsuzor/mem/commit/38430f2b90428388e55764be42bc8d17c47c8580))
+* **mcp:** align tool schema intent defaults with spec P4 and test integrity ([a457924](https://github.com/nicsuzor/mem/commit/a4579241e0b0c0a5a1c13078bb8236edb3128eff))
+* **mcp:** clean up startup injection in PKB server and CORE.md ([#749](https://github.com/nicsuzor/mem/issues/749)) ([8b26cf0](https://github.com/nicsuzor/mem/commit/8b26cf0fd504044e3d030e7518ebe3321bfc9bdc))
+* **readiness:** treat cancelled tasks as complete across mem and fix readiness reporting ([d056677](https://github.com/nicsuzor/mem/commit/d056677b6d26d02e74cf6979789baa4bb81d6398))
+* **vscode:** use LogOutputChannel to resolve outChannel.error crash ([a2ac4b6](https://github.com/nicsuzor/mem/commit/a2ac4b612e6acfb8dc4c6970abd70de18ab1884c))
+* **vscode:** use LogOutputChannel to resolve outChannel.error crash ([8b2e7ad](https://github.com/nicsuzor/mem/commit/8b2e7ad03a0e965310dcb6ba46ee6d12bb2003fb))
+
+
+### Documentation
+
+* **spec:** remove hand-writing superseded_by from batch-graph-operations ([0398bd3](https://github.com/nicsuzor/mem/commit/0398bd3f91037636681ed795e9f9b8aff12f6005))
+
+
+### Tests
+
+* supply slug in tests that main added before slug became required ([cd5b382](https://github.com/nicsuzor/mem/commit/cd5b3829b27d33ebf13f776eea4fa943f78e98d9))
+
+
+### Miscellaneous
+
+* release mem-v0.4.5 ([86a1b4b](https://github.com/nicsuzor/mem/commit/86a1b4b803a797c8319ed60fea98c51b34f1ebaa))
+
 ## [0.4.3](https://github.com/nicsuzor/mem/compare/mem-v0.4.2...mem-v0.4.3) (2026-10-20)
 
 
