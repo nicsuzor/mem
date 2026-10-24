@@ -182,11 +182,11 @@ sizes:
 
 .PHONY: extension
 extension:
-	cd editors/vscode && npm run package
+	cd editors/vscode && ([ -d node_modules ] || npm install) && npm run package
 
 .PHONY: install-extension
 install-extension:
-	cd editors/vscode && npm run install-extension
+	cd editors/vscode && ([ -d node_modules ] || npm install) && npm run install-extension
 
 .PHONY: help
 help:
