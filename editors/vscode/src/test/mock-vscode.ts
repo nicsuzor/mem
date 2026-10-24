@@ -91,6 +91,7 @@ export class MockOutputChannel {
   public lines: string[] = [];
   public shown: boolean = false;
   public preserveFocusLast?: boolean;
+  public logLevel: number = 3;
 
   constructor(public name: string) {}
 
@@ -120,6 +121,31 @@ export class MockOutputChannel {
   }
 
   dispose(): void {}
+
+  error(error: string | Error, ..._args: any[]): void {
+    const text = error instanceof Error ? (error.message || String(error)) : String(error);
+    this.appendLine(`[${new Date().toISOString()}] [ERROR] ${text}`);
+  }
+
+  warn(message: string, ..._args: any[]): void {
+    this.appendLine(`[${new Date().toISOString()}] [WARN] ${String(message)}`);
+  }
+
+  info(message: string, ..._args: any[]): void {
+    this.appendLine(`[${new Date().toISOString()}] [INFO] ${String(message)}`);
+  }
+
+  debug(message: string, ..._args: any[]): void {
+    this.appendLine(`[${new Date().toISOString()}] [DEBUG] ${String(message)}`);
+  }
+
+  trace(message: string, ..._args: any[]): void {
+    this.appendLine(`[${new Date().toISOString()}] [DEBUG] ${String(message)}`);
+  }
+
+  onDidChangeLogLevel(_listener: (level: any) => any): { dispose: () => void } {
+    return { dispose: () => {} };
+  }
 }
 
 export class MockUri {
@@ -179,6 +205,14 @@ const baseMock: Record<string, any> = {
   EventEmitter: MockEventEmitter,
   version: '1.91.0',
   OutputChannel: MockOutputChannel,
+  LogLevel: {
+    Off: 0,
+    Trace: 1,
+    Debug: 2,
+    Info: 3,
+    Warning: 4,
+    Error: 5,
+  },
   DiagnosticSeverity: {
     Error: 0,
     Warning: 1,
@@ -223,7 +257,7 @@ const baseMock: Record<string, any> = {
       activeEditorListeners.push(listener);
       return { dispose: () => {} };
     },
-    createOutputChannel: (name: string) => {
+    createOutputChannel: (name: string, _options?: any) => {
       let channel = createdOutputChannels.get(name);
       if (!channel) {
         channel = new MockOutputChannel(name);
