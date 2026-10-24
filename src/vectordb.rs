@@ -1095,7 +1095,8 @@ impl VectorStore {
             .search(query, limit, pkb_root, since, before, type_filter)
     }
 
-    /// Hybrid search: Combines vector similarity and BM25 lexical retrieval via Reciprocal Rank Fusion (RRF).
+    /// Hybrid search: Combines vector similarity and BM25 lexical retrieval via TM2C2
+    /// normalised convex combination, raw-score silence floor, and structural priors.
     /// If a reranker is provided, scores and re-orders the fused candidates.
     pub fn search_hybrid(
         &self,
@@ -1108,37 +1109,66 @@ impl VectorStore {
         type_filter: Option<&str>,
         reranker: Option<&crate::rerank::CrossEncoderReranker>,
     ) -> Vec<SearchResult> {
+        self.search_hybrid_with_context(
+            query,
+            query_embedding,
+            limit,
+            pkb_root,
+            since,
+            before,
+            type_filter,
+            reranker,
+            &(),
+            None,
+        )
+    }
+
+    /// Hybrid search with explicit graph structural lookup and temporal/access hook.
+    pub fn search_hybrid_with_context<G: crate::ranking::GraphStructuralLookup>(
+        &self,
+        query: &str,
+        query_embedding: &[f32],
+        limit: usize,
+        pkb_root: &Path,
+        since: Option<&str>,
+        before: Option<&str>,
+        type_filter: Option<&str>,
+        reranker: Option<&crate::rerank::CrossEncoderReranker>,
+        graph_lookup: &G,
+        temporal_hook: Option<&crate::ranking::TemporalAccessHook>,
+    ) -> Vec<SearchResult> {
         let tracer = opentelemetry::global::tracer("mem");
         use opentelemetry::trace::Tracer;
         let span = tracer.start("search_hybrid");
         let _guard = opentelemetry::trace::mark_span_as_active(span);
         let start = std::time::Instant::now();
 
-        let fetch_limit = (limit * 3).max(20);
+        let fetch_limit_dense = crate::ranking::POOL_SIZE_DENSE.max(limit);
+        let fetch_limit_lex = crate::ranking::POOL_SIZE_LEX.max(limit);
+
         let vector_results = self.search(
             query_embedding,
-            fetch_limit,
+            fetch_limit_dense,
             pkb_root,
             since,
             before,
             type_filter,
         );
         let bm25_results =
-            self.search_bm25(query, fetch_limit, pkb_root, since, before, type_filter);
+            self.search_bm25(query, fetch_limit_lex, pkb_root, since, before, type_filter);
 
-        let config = crate::rrf::RrfConfig {
-            k: crate::rrf::DEFAULT_RRF_K,
-            vector_weight: crate::rrf::DEFAULT_VECTOR_WEIGHT,
-            bm25_weight: crate::rrf::DEFAULT_BM25_WEIGHT,
-        };
+        let config = crate::ranking::RankingConfig::default();
+        let fused = crate::ranking::fuse_tm2c2(
+            vector_results,
+            bm25_results,
+            query,
+            &config,
+            reranker,
+            graph_lookup,
+            temporal_hook,
+            limit,
+        );
 
-        let mut fused = crate::rrf::fuse_rrf(vector_results, bm25_results, &config, fetch_limit);
-
-        if let Some(r) = reranker {
-            r.rerank(query, &mut fused, limit);
-        }
-
-        fused.truncate(limit);
         crate::otel::call_metrics::CallMetrics::record_hybrid_search_duration(start.elapsed());
         fused
     }
