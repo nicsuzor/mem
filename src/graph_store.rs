@@ -404,9 +404,6 @@ impl GraphStore {
             for child in &n.children {
                 referenced_ids.insert(child.clone());
             }
-            for follow in &n.follow_up_tasks {
-                referenced_ids.insert(follow.clone());
-            }
             for link in &n.links {
                 if let Some(ref to) = link.to {
                     referenced_ids.insert(to.clone());

@@ -139,7 +139,6 @@ pub struct TaskFields {
     pub status: Option<String>,
     pub session_id: Option<String>,
     pub issue_url: Option<String>,
-    pub follow_up_tasks: Vec<String>,
     pub release_summary: Option<String>,
     pub contributes_to: Vec<serde_json::Value>,
     pub links: Vec<serde_json::Value>,
@@ -711,9 +710,6 @@ pub fn create_task(root: &Path, fields: TaskFields) -> Result<PathBuf> {
     for dep in &fields.soft_depends_on {
         validate_str_scalar("soft_depends_on", dep, max_len)?;
     }
-    for fut in &fields.follow_up_tasks {
-        validate_str_scalar("follow_up_tasks", fut, max_len)?;
-    }
 
     if let Some(ref t) = fields.task_type {
         if !crate::graph::is_valid_node_type(t) {
@@ -946,13 +942,6 @@ pub fn create_task(root: &Path, fields: TaskFields) -> Result<PathBuf> {
             "release_summary: \"{}\"\n",
             yaml_escape_double_quoted(release_summary)
         ));
-    }
-
-    if !fields.follow_up_tasks.is_empty() {
-        fm.push_str("follow_up_tasks:\n");
-        for task_id in &fields.follow_up_tasks {
-            fm.push_str(&format!("  - {}\n", task_id));
-        }
     }
 
     if !fields.contributes_to.is_empty() {
@@ -7642,6 +7631,9 @@ pub fn validate_update_field(key: &str, value: &serde_json::Value) -> Result<(),
     if key == "superseded_by" {
         return Err("'superseded_by' is a reserved computed keyword and cannot be set manually — it is derived from other nodes' 'supersedes' edges. Set 'supersedes' on the superseding node instead.".to_string());
     }
+    if key == "follow_up_tasks" {
+        return Err("'follow_up_tasks' is no longer supported and cannot be set. The PKB no longer accepts follow-up task input.".to_string());
+    }
     if value.is_null() {
         if key == "title" {
             return Err("title cannot be null or empty; task must have a title".to_string());
@@ -7763,7 +7755,7 @@ pub fn validate_update_field(key: &str, value: &serde_json::Value) -> Result<(),
             }
         }
         "depends_on" | "soft_depends_on" | "blocks" | "soft_blocks" | "_add_depends_on"
-        | "_remove_depends_on" | "supersedes" | "follow_up_tasks" => {
+        | "_remove_depends_on" | "supersedes" => {
             if let Some(arr) = value.as_array() {
                 for (i, item) in arr.iter().enumerate() {
                     if item.is_string() {

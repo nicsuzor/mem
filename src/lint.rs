@@ -878,6 +878,17 @@ fn check_frontmatter(
         ));
     }
 
+    // Deprecated: follow_up_tasks — follow-up tasks must not be filed in PKB frontmatter
+    if fm.contains_key("follow_up_tasks") {
+        diags.push(Diagnostic::simple(
+            Severity::Warning,
+            "fm-deprecated-follow-up-tasks",
+            "'follow_up_tasks' is a deprecated frontmatter key and is no longer supported (run with --fix to drop)",
+            None,
+            true,
+        ));
+    }
+
     // Project field: required for actionable tasks (ready/queued). A task
     // satisfies this by declaring its own `project: <slug>` or by inheriting
     // one from the nearest ancestor (parent chain) that declared one.
@@ -2094,6 +2105,23 @@ fn apply_fixes(
         // (Former Fix 5c removed: an explicit `project:` value is no longer
         // deprecated — it is the polecat.yaml routing slug that declares or
         // overrides the project for this node and its subtree.)
+
+        // Fix: Drop deprecated follow_up_tasks frontmatter key
+        if fm.contains_key("follow_up_tasks") && result.starts_with("---\n") {
+            if let Some(fm_end_rel) = result[3..].find("\n---") {
+                let fm_end = fm_end_rel + 3;
+                let fm_section = result[4..fm_end].to_string();
+                let new_fm = remove_key_from_frontmatter(&fm_section, "follow_up_tasks");
+                let new_fm_str = if new_fm.trim().is_empty() {
+                    String::new()
+                } else if new_fm.ends_with('\n') {
+                    new_fm
+                } else {
+                    format!("{}\n", new_fm)
+                };
+                result = format!("---\n{}---{}", new_fm_str, &result[fm_end + 4..]);
+            }
+        }
 
         // Fix 6: Migrate 'body' frontmatter key → append its value to the markdown body
         if fm.contains_key("body") {
@@ -4511,5 +4539,30 @@ Body.\n",
         let fixed2 = fix_str(unvalued);
         assert!(!fixed2.contains("worth:"), "Must not invent worth: {}", fixed2);
         assert!(!fixed2.contains("deadline_class:"), "Must not invent deadline_class: {}", fixed2);
+    }
+
+    #[test]
+    fn test_follow_up_tasks_deprecated_and_fixed() {
+        let input = "---\nid: test_fut\ntitle: Test Follow Up Tasks\ntype: task\nstatus: active\nfollow_up_tasks:\n  - task_1\n  - task_2\n---\n\nBody content.\n";
+        let tmp = tempfile::tempdir().unwrap();
+        let file_path = tmp.path().join("test_fut.md");
+        std::fs::write(&file_path, input).unwrap();
+
+        let (results, _) = lint_directory(tmp.path(), false, true);
+        let res = results.iter().find(|r| r.path == file_path).unwrap();
+        assert!(
+            res.diagnostics.iter().any(|d| d.rule == "fm-deprecated-follow-up-tasks"),
+            "expected fm-deprecated-follow-up-tasks diagnostic, got: {:?}",
+            res.diagnostics
+        );
+
+        // Run with fix
+        let (_, fixes) = lint_directory(tmp.path(), true, true);
+        assert!(fixes.files_fixed > 0, "expected fix to be applied");
+        let fixed_content = std::fs::read_to_string(&file_path).unwrap();
+        assert!(!fixed_content.contains("follow_up_tasks"), "follow_up_tasks must be removed");
+        assert!(!fixed_content.contains("task_1"), "task_1 must be removed");
+        assert!(!fixed_content.contains("task_2"), "task_2 must be removed");
+        assert!(fixed_content.contains("Body content."), "body content preserved");
     }
 }

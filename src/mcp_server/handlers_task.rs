@@ -201,7 +201,6 @@ impl PkbSearchServer {
                 "status",
                 "session_id",
                 "issue_url",
-                "follow_up_tasks",
                 "release_summary",
                 "contributes_to",
                 "classification",
@@ -367,15 +366,6 @@ impl PkbSearchServer {
                 .get("issue_url")
                 .and_then(|v| v.as_str())
                 .map(String::from),
-            follow_up_tasks: args
-                .get("follow_up_tasks")
-                .and_then(|v| v.as_array())
-                .map(|arr| {
-                    arr.iter()
-                        .filter_map(|v| v.as_str().map(String::from))
-                        .collect()
-                })
-                .unwrap_or_default(),
             release_summary: args
                 .get("release_summary")
                 .and_then(|v| v.as_str())
@@ -1008,7 +998,6 @@ impl PkbSearchServer {
             "goals": node.goals,
             "contributes_to": contributes_to,
             "contributed_by": node.contributed_by,
-            "follow_up_tasks": node.follow_up_tasks,
             "blocked": graph.is_blocked(&node.id),
             "parse_warnings": node.parse_warnings,
             "days_until_due": days_until_due,

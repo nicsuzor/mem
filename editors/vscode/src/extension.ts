@@ -15,8 +15,8 @@ import {
 } from 'vscode-languageclient/node';
 
 let client: LanguageClient | undefined;
-let outputChannel: vscode.OutputChannel | undefined;
-let traceOutputChannel: vscode.OutputChannel | undefined;
+let outputChannel: vscode.LogOutputChannel | undefined;
+let traceOutputChannel: vscode.LogOutputChannel | undefined;
 let statusBarItem: vscode.StatusBarItem | undefined;
 let previewIndex: PkbPreviewIndex | undefined;
 let currentPkbRoot: string = '.';
@@ -35,17 +35,67 @@ const IGNORED_DIRS = new Set([
   '.aops',
 ]);
 
+function formatLogLine(level: 'INFO' | 'WARN' | 'ERROR' | 'DEBUG', message: string): string {
+  return `[${new Date().toISOString()}] [${level}] ${message}`;
+}
+
+/**
+ * Ensure an OutputChannel implements the LogOutputChannel interface expected by LanguageClient.
+ */
+function ensureLogOutputChannel(channel: vscode.OutputChannel): vscode.LogOutputChannel {
+  const logChan = channel as vscode.LogOutputChannel;
+  if (typeof logChan.error !== 'function') {
+    logChan.error = (msg: string | Error, ..._args: any[]) => {
+      const text = msg instanceof Error ? (msg.message || String(msg)) : String(msg);
+      channel.appendLine(formatLogLine('ERROR', text));
+    };
+  }
+  if (typeof logChan.warn !== 'function') {
+    logChan.warn = (msg: string, ..._args: any[]) => {
+      channel.appendLine(formatLogLine('WARN', String(msg)));
+    };
+  }
+  if (typeof logChan.info !== 'function') {
+    logChan.info = (msg: string, ..._args: any[]) => {
+      channel.appendLine(formatLogLine('INFO', String(msg)));
+    };
+  }
+  if (typeof logChan.debug !== 'function') {
+    logChan.debug = (msg: string, ..._args: any[]) => {
+      channel.appendLine(formatLogLine('DEBUG', String(msg)));
+    };
+  }
+  if (typeof logChan.trace !== 'function') {
+    logChan.trace = (msg: string, ..._args: any[]) => {
+      channel.appendLine(formatLogLine('DEBUG', String(msg)));
+    };
+  }
+  if (logChan.logLevel === undefined) {
+    (logChan as any).logLevel = (vscode.LogLevel as any)?.Info ?? 3;
+  }
+  if (typeof logChan.onDidChangeLogLevel !== 'function') {
+    (logChan as any).onDidChangeLogLevel = () => ({ dispose: () => {} });
+  }
+  return logChan;
+}
+
 /**
  * Get or create the primary "Mem PKB LSP" OutputChannel.
  */
-export function getOutputChannel(windowObj: typeof vscode.window = vscode.window): vscode.OutputChannel {
+export function getOutputChannel(windowObj: typeof vscode.window = vscode.window): vscode.LogOutputChannel {
   if (!outputChannel && typeof windowObj?.createOutputChannel === 'function') {
-    outputChannel = windowObj.createOutputChannel('Mem PKB LSP');
+    try {
+      outputChannel = (windowObj as any).createOutputChannel('Mem PKB LSP', { log: true });
+    } catch {
+      outputChannel = (windowObj as any).createOutputChannel('Mem PKB LSP');
+    }
   }
-  if (!outputChannel) {
+  if (outputChannel) {
+    outputChannel = ensureLogOutputChannel(outputChannel);
+  } else {
     // Fallback no-op channel if window.createOutputChannel is unavailable
     const lines: string[] = [];
-    outputChannel = {
+    const fallback = {
       name: 'Mem PKB LSP',
       append: (val: string) => {
         lines.push(val);
@@ -64,6 +114,7 @@ export function getOutputChannel(windowObj: typeof vscode.window = vscode.window
       hide: () => {},
       dispose: () => {},
     } as unknown as vscode.OutputChannel;
+    outputChannel = ensureLogOutputChannel(fallback);
   }
   return outputChannel;
 }
@@ -73,11 +124,17 @@ export function getOutputChannel(windowObj: typeof vscode.window = vscode.window
  */
 export function getTraceOutputChannel(
   windowObj: typeof vscode.window = vscode.window
-): vscode.OutputChannel {
+): vscode.LogOutputChannel {
   if (!traceOutputChannel && typeof windowObj?.createOutputChannel === 'function') {
-    traceOutputChannel = windowObj.createOutputChannel('Mem PKB LSP Trace');
+    try {
+      traceOutputChannel = (windowObj as any).createOutputChannel('Mem PKB LSP Trace', { log: true });
+    } catch {
+      traceOutputChannel = (windowObj as any).createOutputChannel('Mem PKB LSP Trace');
+    }
   }
-  if (!traceOutputChannel) {
+  if (traceOutputChannel) {
+    traceOutputChannel = ensureLogOutputChannel(traceOutputChannel);
+  } else {
     traceOutputChannel = getOutputChannel(windowObj);
   }
   return traceOutputChannel;
@@ -91,10 +148,6 @@ export function resetOutputChannelsForTesting(): void {
   traceOutputChannel = undefined;
   lastServerError = undefined;
   serverStatus = 'stopped';
-}
-
-function formatLogLine(level: 'INFO' | 'WARN' | 'ERROR' | 'DEBUG', message: string): string {
-  return `[${new Date().toISOString()}] [${level}] ${message}`;
 }
 
 export function logInfo(message: string): string {
@@ -2073,8 +2126,8 @@ export function activate(context: vscode.ExtensionContext): { extendMarkdownIt: 
       { scheme: 'file', language: 'markdown' },
       { scheme: 'untitled', language: 'markdown' },
     ],
-    outputChannel: outChannel as any,
-    traceOutputChannel: traceChannel as any,
+    outputChannel: outChannel,
+    traceOutputChannel: traceChannel,
     synchronize: {
       configurationSection: 'mem.lsp',
       fileEvents: watcher,
