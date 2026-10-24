@@ -3436,3 +3436,118 @@ fn test_update_task_link_quantum_reflected_without_restart() {
         "Updated link strength should be 0.75 * 0.8 = 0.6, got {strength_updated}"
     );
 }
+
+#[test]
+fn test_create_task_rejects_follow_up_tasks() {
+    let (_tmp, server) = build_disk_backed_server(&[(
+        "tasks/task-root.md",
+        "---\nid: task-root\ntitle: Root Task\ntype: task\nstatus: ready\n---\n\n# Root Task\n",
+    )]);
+
+    let res = server.handle_create_task(&json!({
+        "title": "New Task With Follow Ups",
+        "parent": "task-root",
+        "project": "proj",
+        "follow_up_tasks": ["task-root"]
+    }));
+
+    let err = res.expect_err("create_task must reject follow_up_tasks");
+    assert!(
+        err.message.contains("follow_up_tasks"),
+        "error message must mention follow_up_tasks, got: {}",
+        err.message
+    );
+}
+
+#[test]
+fn test_update_task_rejects_follow_up_tasks() {
+    let (_tmp, server) = build_disk_backed_server(&[(
+        "tasks/task-target.md",
+        "---\nid: task-target\ntitle: Target Task\ntype: task\nstatus: ready\n---\n\n# Target Task\n",
+    )]);
+
+    // Nested form
+    let res_nested = server.handle_update_task(&json!({
+        "id": "task-target",
+        "updates": {
+            "follow_up_tasks": ["task-other"]
+        }
+    }));
+    let err_nested = res_nested.expect_err("update_task (nested) must reject follow_up_tasks");
+    assert!(
+        err_nested.message.contains("follow_up_tasks") && err_nested.message.contains("no longer supported"),
+        "error must explain follow_up_tasks is no longer supported, got: {}",
+        err_nested.message
+    );
+
+    // Flat form
+    let res_flat = server.handle_update_task(&json!({
+        "id": "task-target",
+        "follow_up_tasks": ["task-other"]
+    }));
+    let err_flat = res_flat.expect_err("update_task (flat) must reject follow_up_tasks");
+    assert!(
+        err_flat.message.contains("follow_up_tasks") && err_flat.message.contains("no longer supported"),
+        "error must explain follow_up_tasks is no longer supported, got: {}",
+        err_flat.message
+    );
+}
+
+#[test]
+fn test_release_task_rejects_follow_up_tasks() {
+    let (_tmp, server) = build_disk_backed_server(&[(
+        "tasks/task-rel.md",
+        "---\nid: task-rel\ntitle: Release Task Test\ntype: task\nstatus: ready\n---\n\n## Acceptance\n- [x] Done\n",
+    )]);
+
+    let res = server.handle_release_task(&json!({
+        "id": "task-rel",
+        "status": "done",
+        "summary": "Completed work cleanly",
+        "follow_up_tasks": ["task-nonexistent"]
+    }));
+
+    let err = res.expect_err("release_task must reject follow_up_tasks");
+    assert!(
+        err.message.contains("follow_up_tasks") && err.message.contains("no longer supported"),
+        "error must explain follow_up_tasks is no longer supported, got: {}",
+        err.message
+    );
+}
+
+#[test]
+fn test_schemas_do_not_expose_follow_up_tasks() {
+    let tools = PkbSearchServer::get_published_tools();
+
+    // Check create_task schema
+    let create_tool = tools.iter().find(|t| t.name == "create_task").expect("create_task tool exists");
+    let create_schema = serde_json::to_string(&create_tool.input_schema).unwrap();
+    assert!(
+        !create_schema.contains("follow_up_tasks"),
+        "create_task input schema must not expose follow_up_tasks"
+    );
+
+    // Check update_task schema
+    let update_tool = tools.iter().find(|t| t.name == "update_task").expect("update_task tool exists");
+    let update_schema = serde_json::to_string(&update_tool.input_schema).unwrap();
+    assert!(
+        !update_schema.contains("follow_up_tasks"),
+        "update_task input schema must not expose follow_up_tasks"
+    );
+
+    // Check release_task schema
+    let release_tool = tools.iter().find(|t| t.name == "release_task").expect("release_task tool exists");
+    let release_schema = serde_json::to_string(&release_tool.input_schema).unwrap();
+    assert!(
+        !release_schema.contains("follow_up_tasks"),
+        "release_task input schema must not expose follow_up_tasks"
+    );
+
+    // Check get_task output schema
+    let get_task_out = PkbSearchServer::output_schema_for_tool("get_task");
+    let get_task_schema = serde_json::to_string(&get_task_out).unwrap();
+    assert!(
+        !get_task_schema.contains("follow_up_tasks"),
+        "get_task output schema must not expose follow_up_tasks"
+    );
+}
