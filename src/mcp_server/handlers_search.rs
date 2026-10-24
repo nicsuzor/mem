@@ -324,17 +324,16 @@ impl PkbSearchServer {
     /// The `search` tool's per-result ranking score: raw semantic `r.score`,
     /// rescaled by graph-proximity `boost`, `type_boost` (knowledge/memory
     /// surfacing, PR #406) and `title_boost` (near-exact title match,
-    /// task_1542e818), plus a small confidence nudge. Pulled out as a pure
+    /// task_1542e818). Pulled out as a pure
     /// function so both the handler and its tests share one formula.
     pub(crate) fn ranked_score(
         query: &str,
         r: &crate::vectordb::SearchResult,
         boost: f32,
-        confidence: f32,
     ) -> f32 {
         let type_boost = Self::type_boost_for(r.doc_type.as_deref());
         let title_boost = Self::title_match_boost(query, &r.title);
-        r.score * (1.0 + boost + type_boost + title_boost) + (confidence * 0.05)
+        r.score * (1.0 + boost + type_boost + title_boost)
     }
 
     /// The `task_search` tool's per-result ranking score. Simpler than
@@ -467,14 +466,13 @@ impl PkbSearchServer {
             .map(|r| {
                 let node = graph.get_node(&r.id);
                 let node_id = node.as_ref().map(|n| n.id.clone());
-                let confidence = node.as_ref().and_then(|n| n.confidence).unwrap_or(0.5) as f32;
 
                 let boost = *node_id
                     .as_ref()
                     .and_then(|nid| boost_map.get(nid))
                     .unwrap_or(&0.0);
 
-                (r, Self::ranked_score(query, r, boost, confidence))
+                (r, Self::ranked_score(query, r, boost))
             })
             .collect();
 
@@ -1212,9 +1210,9 @@ mod title_match_ranking_tests {
             Some("task"),
         );
 
-        let target_score = PkbSearchServer::ranked_score(query, &target, 0.0, 0.5);
-        let memory_score = PkbSearchServer::ranked_score(query, &type_boosted_memory, 0.0, 0.5);
-        let rival_score = PkbSearchServer::ranked_score(query, &higher_raw_score_task, 0.0, 0.5);
+        let target_score = PkbSearchServer::ranked_score(query, &target, 0.0);
+        let memory_score = PkbSearchServer::ranked_score(query, &type_boosted_memory, 0.0);
+        let rival_score = PkbSearchServer::ranked_score(query, &higher_raw_score_task, 0.0);
 
         assert!(
             target_score > memory_score,
@@ -1235,8 +1233,8 @@ mod title_match_ranking_tests {
         let memory_doc = result("Notes on cloud spend patterns", 0.5, Some("memory"));
         let task_doc = result("Fix the flaky deploy pipeline", 0.5, Some("task"));
 
-        let memory_score = PkbSearchServer::ranked_score(query, &memory_doc, 0.0, 0.5);
-        let task_score = PkbSearchServer::ranked_score(query, &task_doc, 0.0, 0.5);
+        let memory_score = PkbSearchServer::ranked_score(query, &memory_doc, 0.0);
+        let task_score = PkbSearchServer::ranked_score(query, &task_doc, 0.0);
 
         assert!(
             memory_score > task_score,
@@ -1625,5 +1623,69 @@ mod search_status_projection_tests {
         assert!(task_result.is_err(), "task_search must error when reranker fails to load");
         let err = task_result.unwrap_err();
         assert_eq!(err.message, "reranker_unavailable");
+    }
+
+    #[test]
+    fn test_search_document_scores_are_invariant_to_frontmatter_confidence() {
+        let score_for_confidence = |confidence: f64| -> f64 {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let pkb_root = dir.path();
+
+            let store = VectorStore::new(EMBEDDING_DIM);
+            let embedder = Embedder::new_dummy();
+            let graph = GraphStore::build_from_directory(pkb_root);
+            let server = PkbSearchServer::new(
+                Arc::new(RwLock::new(store)),
+                Arc::new(embedder),
+                pkb_root.to_path_buf(),
+                pkb_root.join("test-index.bin"),
+                Arc::new(RwLock::new(graph)),
+            );
+
+            let note_path = pkb_root.join("notes").join("note-conf.md");
+            std::fs::create_dir_all(note_path.parent().unwrap()).unwrap();
+            std::fs::write(
+                &note_path,
+                format!(
+                    "---\nid: note-conf\ntitle: \"Architecture Guide\"\ntype: note\nconfidence: {confidence:.1}\n---\n\nIdentical body text for architecture guide."
+                ),
+            )
+            .unwrap();
+
+            let doc = crate::pkb::parse_file(&note_path).unwrap();
+            let emb = server
+                .embedder
+                .encode_query("architecture guide")
+                .unwrap();
+
+            server
+                .store
+                .write()
+                .insert_precomputed(&doc, vec![doc.body.clone()], vec![emb]);
+            server
+                .graph
+                .write()
+                .replace_node(crate::graph::GraphNode::from_pkb_document(&doc));
+
+            let res = server
+                .handle_pkb_search(&serde_json::json!({
+                    "query": "architecture guide",
+                    "format": "json",
+                    "limit": 10,
+                }))
+                .expect("search");
+            let text = result_text(&res);
+            let json_val: serde_json::Value = serde_json::from_str(&text).expect("valid json");
+            let items = json_val["items"].as_array().expect("items array");
+            assert_eq!(items.len(), 1, "expected 1 item, got json: {text}");
+            items[0]["score"].as_f64().expect("score")
+        };
+
+        let score0 = score_for_confidence(0.0);
+        let score1 = score_for_confidence(1.0);
+        assert_eq!(
+            score0, score1,
+            "document scores across search must be invariant to frontmatter confidence; got {score0} vs {score1}"
+        );
     }
 }
