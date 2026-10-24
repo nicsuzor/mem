@@ -13,6 +13,7 @@ import {
   extractReferenceAtPosition,
   formatBodyMicroHeadersHtml,
   getOutputChannel,
+  getTraceOutputChannel,
   handleActiveEditorChanged,
   logDebug,
   logError,
@@ -119,6 +120,78 @@ describe('VS Code Extension - Unit & Behavior Tests', () => {
       'Should log ERROR message with error details'
     );
     assert.ok(joined.includes('[DEBUG] Verbose trace check'), 'Should log DEBUG message');
+  });
+
+  it('provides working LogOutputChannel methods (.error, .warn, .info, .debug, .trace) on OutputChannel', () => {
+    resetOutputChannelsForTesting();
+    createdOutputChannels.clear();
+
+    const channel = getOutputChannel();
+    assert.strictEqual(typeof channel.error, 'function', 'channel.error must be a function');
+    assert.strictEqual(typeof channel.warn, 'function', 'channel.warn must be a function');
+    assert.strictEqual(typeof channel.info, 'function', 'channel.info must be a function');
+    assert.strictEqual(typeof channel.debug, 'function', 'channel.debug must be a function');
+    assert.strictEqual(typeof channel.trace, 'function', 'channel.trace must be a function');
+
+    // Test calling error with string (as vscode-languageclient does when piping stderr)
+    assert.doesNotThrow(() => {
+      channel.error('LSP stderr crash test');
+    });
+
+    // Test calling error with Error object
+    assert.doesNotThrow(() => {
+      channel.error(new Error('LSP transport error'));
+    });
+
+    const lines = (channel as any).lines.join('\n');
+    assert.ok(lines.includes('[ERROR] LSP stderr crash test'), 'Should contain string error');
+    assert.ok(lines.includes('[ERROR] LSP transport error'), 'Should contain Error object message');
+  });
+
+  it('safely polyfills .error on plain OutputChannel lacking LogOutputChannel methods', () => {
+    resetOutputChannelsForTesting();
+
+    const plainLines: string[] = [];
+    const plainMockWindow: any = {
+      createOutputChannel: (name: string) => ({
+        name,
+        append: (v: string) => plainLines.push(v),
+        appendLine: (v: string) => plainLines.push(v),
+        replace: () => {},
+        clear: () => {
+          plainLines.length = 0;
+        },
+        show: () => {},
+        hide: () => {},
+        dispose: () => {},
+      }),
+    };
+
+    const channel = getOutputChannel(plainMockWindow);
+    assert.strictEqual(typeof channel.error, 'function', 'channel.error must be polyfilled');
+
+    // This simulates the vscode-languageclient stderr piping: outputChannel.error(data)
+    assert.doesNotThrow(() => {
+      channel.error('server stderr line');
+    });
+
+    assert.ok(
+      plainLines.some((l) => l.includes('[ERROR] server stderr line')),
+      'Polyfilled .error must append error line to channel'
+    );
+  });
+
+  it('provides working LogOutputChannel on getTraceOutputChannel', () => {
+    resetOutputChannelsForTesting();
+    createdOutputChannels.clear();
+
+    const traceChannel = getTraceOutputChannel();
+    assert.strictEqual(typeof traceChannel.error, 'function');
+    assert.strictEqual(typeof traceChannel.trace, 'function');
+    assert.doesNotThrow(() => {
+      traceChannel.error('Trace error test');
+      traceChannel.trace('Trace verbose test');
+    });
   });
 
   it('resolves pkbRoot across configured, workspace markers, ACA_DATA, and candidate paths with diagnostics', () => {
