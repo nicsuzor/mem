@@ -1,0 +1,58 @@
+name: Build & Publish Extension
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'editors/vscode/**'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: extension-publish-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-and-publish:
+    name: Build & Publish Extension
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+          cache-dependency-path: editors/vscode/package-lock.json
+
+      - name: Install dependencies
+        working-directory: editors/vscode
+        run: npm ci
+
+      - name: Compile TypeScript
+        working-directory: editors/vscode
+        run: npm run compile
+
+      - name: Package extension
+        working-directory: editors/vscode
+        run: npx @vscode/vsce package --no-git-tag-version
+
+      - name: Upload extension artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: mem-vscode
+          path: editors/vscode/*.vsix
+
+      - name: Update GitHub Release asset
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          LATEST_TAG=$(gh release view --json tagName -q .tagName 2>/dev/null || true)
+          if [ -n "$LATEST_TAG" ]; then
+            echo "Attaching extension VSIX to latest release $LATEST_TAG..."
+            gh release upload "$LATEST_TAG" editors/vscode/*.vsix --clobber
+          else
+            echo "No existing GitHub release found; VSIX is stored in workflow artifacts."
+          fi

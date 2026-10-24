@@ -21,11 +21,32 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-  # ─── Step 1: Rust CI ──────────────────────────────────────────────
-  # This project uses Rust, so we run cargo checks here.
+  # ─── Step 1: Detect Changes ───────────────────────────────────────
+  detect-changes:
+    name: Detect Changes
+    needs: [initialize]
+    runs-on: ubuntu-latest
+    outputs:
+      rust: ${{ steps.filter.outputs.rust }}
+      extension: ${{ steps.filter.outputs.extension }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            rust:
+              - '!editors/vscode/**'
+              - '!**.md'
+            extension:
+              - 'editors/vscode/**'
+
+  # ─── Step 2: Rust CI ──────────────────────────────────────────────
+  # This project uses Rust, so we run cargo checks here when Rust/core files change.
   check:
     name: Rust CI
-    needs: [initialize]
+    needs: [initialize, detect-changes]
+    if: needs.detect-changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -47,3 +68,32 @@ jobs:
       - name: Inventory Lint
         run: ./scripts/inventory.py --lint
       - run: cargo build --release
+
+  # ─── Step 3: Extension CI ─────────────────────────────────────────
+  # Automatically builds and tests the VS Code extension when changes occur to editors/vscode/**
+  extension:
+    name: Extension CI
+    needs: [initialize, detect-changes]
+    if: needs.detect-changes.outputs.extension == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+          cache-dependency-path: editors/vscode/package-lock.json
+      - name: Install dependencies
+        working-directory: editors/vscode
+        run: npm ci
+      - name: Compile TypeScript
+        working-directory: editors/vscode
+        run: npm run compile
+      - name: Package extension
+        working-directory: editors/vscode
+        run: npx @vscode/vsce package --no-git-tag-version
+      - name: Upload extension artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: mem-vscode
+          path: editors/vscode/*.vsix

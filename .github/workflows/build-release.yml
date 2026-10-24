@@ -84,8 +84,35 @@ jobs:
           name: ${{ matrix.artifact }}
           path: ${{ env.ARCHIVE }}
 
+  build-extension:
+    name: Extension
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ startsWith(inputs.tag, 'mem-') && inputs.tag || format('mem-{0}', inputs.tag) }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+          cache-dependency-path: editors/vscode/package-lock.json
+
+      - name: Install dependencies
+        working-directory: editors/vscode
+        run: npm ci
+
+      - name: Package extension
+        working-directory: editors/vscode
+        run: npx @vscode/vsce package --no-git-tag-version
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vscode-extension
+          path: editors/vscode/*.vsix
+
   publish:
-    needs: build
+    needs: [build, build-extension]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
@@ -97,7 +124,9 @@ jobs:
         with:
           tag_name: ${{ startsWith(inputs.tag, 'mem-') && inputs.tag || format('mem-{0}', inputs.tag) }}
           prerelease: ${{ inputs.prerelease }}
-          files: mem-*.tar.gz
+          files: |
+            mem-*.tar.gz
+            mem-vscode-*.vsix
 
   publish-image:
     needs: publish
