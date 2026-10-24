@@ -126,7 +126,23 @@ pub fn evaluate_with_mode(
                         continue;
                     }
                 };
-                store.search_hybrid(gq.query, &query_emb, k, pkb_root, None, None, None, reranker.as_ref(), None)
+                match store.try_search_hybrid(
+                    gq.query,
+                    &query_emb,
+                    k,
+                    pkb_root,
+                    None,
+                    None,
+                    None,
+                    reranker.as_ref(),
+                    None,
+                ) {
+                    Ok(res) => res,
+                    Err(e) => {
+                        eprintln!("Failed to rerank query '{}': {e}", gq.query);
+                        continue;
+                    }
+                }
             }
         };
 
