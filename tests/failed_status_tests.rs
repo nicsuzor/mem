@@ -85,23 +85,51 @@ fn extract_task_ids_from_tool_result(res: &rmcp::model::CallToolResult) -> Vec<S
 fn find_task_file(root: &std::path::Path, task_id: &str) -> std::path::PathBuf {
     mem::pkb::scan_directory(root)
         .into_iter()
-        .find(|p| p.file_name().map(|n| n.to_string_lossy().starts_with(task_id)).unwrap_or(false))
+        .find(|p| {
+            p.file_name()
+                .map(|n| n.to_string_lossy().starts_with(task_id))
+                .unwrap_or(false)
+        })
         .unwrap_or_else(|| panic!("task file for {task_id} not found under {root:?}"))
 }
 
 #[test]
 fn test_failed_status_canonical_definitions() {
-    assert!(mem::graph::is_valid_status("failed"), "failed must be a valid status");
-    assert!(mem::graph::VALID_STATUSES.contains(&"failed"), "failed must be in VALID_STATUSES");
-    assert!(mem::graph::COMPLETED_STATUSES.contains(&"failed"), "failed must be in COMPLETED_STATUSES");
-    assert!(mem::graph::FAILURE_HANDBACK_STATUSES.contains(&"failed"), "failed must be in FAILURE_HANDBACK_STATUSES");
-    assert!(mem::graph::is_completed(Some("failed")), "failed must be completed");
-    assert!(mem::graph::is_closed_for_hierarchy(Some("failed")), "failed must be closed for hierarchy");
+    assert!(
+        mem::graph::is_valid_status("failed"),
+        "failed must be a valid status"
+    );
+    assert!(
+        mem::graph::VALID_STATUSES.contains(&"failed"),
+        "failed must be in VALID_STATUSES"
+    );
+    assert!(
+        mem::graph::COMPLETED_STATUSES.contains(&"failed"),
+        "failed must be in COMPLETED_STATUSES"
+    );
+    assert!(
+        mem::graph::FAILURE_HANDBACK_STATUSES.contains(&"failed"),
+        "failed must be in FAILURE_HANDBACK_STATUSES"
+    );
+    assert!(
+        mem::graph::is_completed(Some("failed")),
+        "failed must be completed"
+    );
+    assert!(
+        mem::graph::is_closed_for_hierarchy(Some("failed")),
+        "failed must be closed for hierarchy"
+    );
     assert_eq!(mem::graph::status_group(Some("failed")), "completed");
     assert_eq!(mem::graph::status_rank("failed"), -1);
     assert_eq!(mem::graph::resolve_status_alias("failed"), "failed");
-    assert_eq!(mem::graph::status_to_flow_state(Some("failed")), mem::graph::FlowState::Gone);
-    assert_eq!(mem::flow::status_to_flow_state(Some("failed")), mem::flow::FlowState::Gone);
+    assert_eq!(
+        mem::graph::status_to_flow_state(Some("failed")),
+        mem::graph::FlowState::Gone
+    );
+    assert_eq!(
+        mem::flow::status_to_flow_state(Some("failed")),
+        mem::flow::FlowState::Gone
+    );
 }
 
 #[test]
@@ -114,6 +142,7 @@ fn test_task_created_with_status_failed_leaves_active_listings() {
             "create_task",
             &json!({
                 "title": "Created directly as failed",
+                "slug": "created-failed",
                 "parent": "proj-root",
                 "project": "aops",
                 "status": "failed"
@@ -124,12 +153,18 @@ fn test_task_created_with_status_failed_leaves_active_listings() {
     let text = res.content[0].raw.as_text().unwrap().text.as_str();
     let created: serde_json::Value = serde_json::from_str(text).unwrap();
     let task_id = created.get("id").and_then(|v| v.as_str()).unwrap();
-    assert_eq!(created.get("status").and_then(|v| v.as_str()), Some("failed"));
+    assert_eq!(
+        created.get("status").and_then(|v| v.as_str()),
+        Some("failed")
+    );
 
     // Verify disk content has status: failed
     let path = find_task_file(tmp.path(), task_id);
     let disk = fs::read_to_string(&path).unwrap();
-    assert!(disk.contains("status: failed"), "Disk must have status: failed, got: {disk}");
+    assert!(
+        disk.contains("status: failed"),
+        "Disk must have status: failed, got: {disk}"
+    );
 
     // Verify it leaves active listings (list_tasks without include_done=true)
     let list_res = server
@@ -143,7 +178,10 @@ fn test_task_created_with_status_failed_leaves_active_listings() {
 
     // Verify it appears when include_done=true
     let list_done_res = server
-        .dispatch_tool_sync("list_tasks", &json!({ "format": "json", "include_done": true }))
+        .dispatch_tool_sync(
+            "list_tasks",
+            &json!({ "format": "json", "include_done": true }),
+        )
         .expect("list_tasks with include_done should succeed");
     let done_ids = extract_task_ids_from_tool_result(&list_done_res);
     assert!(
@@ -153,7 +191,10 @@ fn test_task_created_with_status_failed_leaves_active_listings() {
 
     // Verify it appears when status=failed is explicitly queried
     let list_filter_res = server
-        .dispatch_tool_sync("list_tasks", &json!({ "format": "json", "status": "failed" }))
+        .dispatch_tool_sync(
+            "list_tasks",
+            &json!({ "format": "json", "status": "failed" }),
+        )
         .expect("list_tasks with status=failed should succeed");
     let filter_ids = extract_task_ids_from_tool_result(&list_filter_res);
     assert!(
@@ -180,6 +221,7 @@ fn test_task_updated_to_status_failed_leaves_active_listings() {
             "create_task",
             &json!({
                 "title": "Task to update to failed",
+                "slug": "update-failed",
                 "parent": "proj-root",
                 "project": "aops",
                 "status": "ready"
@@ -215,7 +257,10 @@ fn test_task_updated_to_status_failed_leaves_active_listings() {
     // Verify disk content
     let path = find_task_file(tmp.path(), task_id);
     let disk = fs::read_to_string(&path).unwrap();
-    assert!(disk.contains("status: failed"), "Disk must have status: failed, got: {disk}");
+    assert!(
+        disk.contains("status: failed"),
+        "Disk must have status: failed, got: {disk}"
+    );
 
     // Verify it leaves active listings
     let list_after = server
@@ -245,6 +290,7 @@ fn test_task_released_with_status_failed_leaves_active_listings() {
             "create_task",
             &json!({
                 "title": "Task to release as failed",
+                "slug": "release-failed",
                 "parent": "proj-root",
                 "project": "aops",
                 "status": "in_progress"
@@ -288,13 +334,22 @@ fn test_task_released_with_status_failed_leaves_active_listings() {
 
     let release_text = release_res.content[0].raw.as_text().unwrap().text.as_str();
     let release_json: serde_json::Value = serde_json::from_str(release_text).unwrap();
-    assert_eq!(release_json.get("status").and_then(|v| v.as_str()), Some("failed"));
+    assert_eq!(
+        release_json.get("status").and_then(|v| v.as_str()),
+        Some("failed")
+    );
 
     // 3. Verify disk content
     let path = find_task_file(tmp.path(), task_id);
     let disk = fs::read_to_string(&path).unwrap();
-    assert!(disk.contains("status: failed"), "Disk must have status: failed, got: {disk}");
-    assert!(disk.contains("reason: Upstream service was deprecated and no alternative exists"), "Disk must contain reason: {disk}");
+    assert!(
+        disk.contains("status: failed"),
+        "Disk must have status: failed, got: {disk}"
+    );
+    assert!(
+        disk.contains("reason: Upstream service was deprecated and no alternative exists"),
+        "Disk must contain reason: {disk}"
+    );
 
     // 4. Verify it leaves active listings
     let list_res = server

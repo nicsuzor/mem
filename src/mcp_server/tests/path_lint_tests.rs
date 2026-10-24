@@ -38,6 +38,7 @@ fn json_of(res: &CallToolResult) -> serde_json::Value {
 fn create_task(server: &PkbSearchServer, body: &str) -> Result<String, McpError> {
     let res = server.handle_create_task(&json!({
         "title": "Path lint fixture",
+        "slug": "path-lint-fixture",
         "type": "task",
         "project": "proj-test",
         "parent": "proj-test",
@@ -76,6 +77,7 @@ fn create_document_rejects_machine_path_and_names_it() {
     let err = server
         .handle_create_document(&json!({
             "title": "Note",
+            "slug": "note",
             "type": "note",
             "body": format!("See {OFFENDING} for the principle."),
         }))
@@ -92,6 +94,7 @@ fn create_document_passes_relative_path_and_wikilink() {
     let res = server
         .handle_create_document(&json!({
             "title": "Note",
+            "slug": "note",
             "type": "note",
             "body": format!("See `{RELATIVE}` or {WIKILINK} for the principle."),
         }))
@@ -114,6 +117,7 @@ fn create_memory_rejects_machine_path() {
     let err = server
         .handle_create_memory(&json!({
             "title": "Memory",
+            "slug": "memory",
             "body": format!("Read /Users/suzor/brain/{RELATIVE}"),
         }))
         .unwrap_err();
@@ -327,4 +331,186 @@ fn edit_body_ignores_machine_paths_in_removed_and_context_lines() {
     assert_eq!(json_of(&res)["ok"], true);
     let doc = text_of(&server.handle_get_document(&json!({"id": id})).unwrap());
     assert!(!doc.contains(OFFENDING) && doc.contains(RELATIVE), "{doc}");
+}
+
+// ── decompose_task ───────────────────────────────────────────────────────
+
+#[test]
+fn decompose_task_subtask_body_rejects_machine_path_and_writes_nothing() {
+    let tmp = tempfile::tempdir().unwrap();
+    let server = make_server(tmp.path());
+    let parent_id = create_task(&server, "Parent task body.").unwrap();
+    let before_count = server.graph.read().node_count();
+    let err = server
+        .handle_decompose_task(&json!({
+            "parent_id": parent_id,
+            "subtasks": [
+                {
+                    "title": "Subtask with bad body",
+                    "body": format!("See {OFFENDING} for the steps."),
+                }
+            ],
+        }))
+        .unwrap_err();
+    assert_rejected(err, OFFENDING);
+    // Only the pre-existing tasks exist, no subtask written
+    assert_eq!(server.graph.read().node_count(), before_count);
+}
+
+#[test]
+fn decompose_task_subtask_body_passes_relative_path_and_wikilink() {
+    let tmp = tempfile::tempdir().unwrap();
+    let server = make_server(tmp.path());
+    let parent_id = create_task(&server, "Parent task body.").unwrap();
+    let res = server
+        .handle_decompose_task(&json!({
+            "parent_id": parent_id,
+            "subtasks": [
+                {
+                    "title": "Subtask with good body",
+                    "body": format!("See `{RELATIVE}` or {WIKILINK} for the steps."),
+                }
+            ],
+        }))
+        .unwrap();
+    let text = text_of(&res);
+    assert!(text.contains("Created 1 subtasks"));
+    let subtask_id = {
+        let graph = server.graph.read();
+        let subtask = graph
+            .nodes()
+            .find(|n| n.label == "Subtask with good body")
+            .unwrap();
+        subtask.id.clone()
+    };
+    let doc = text_of(
+        &server
+            .handle_get_document(&json!({"id": subtask_id}))
+            .unwrap(),
+    );
+    assert!(doc.contains(RELATIVE) && doc.contains(WIKILINK));
+}
+
+// ── release_task (ad-hoc) ────────────────────────────────────────────────
+
+#[test]
+fn release_task_adhoc_body_rejects_machine_path_and_writes_nothing() {
+    let tmp = tempfile::tempdir().unwrap();
+    let server = make_server(tmp.path());
+    let err = server
+        .handle_release_task(&json!({
+            "project": "proj-test",
+            "status": "done",
+            "summary": "Completed adhoc work",
+            "body": format!("Ad-hoc body with {OFFENDING}"),
+        }))
+        .unwrap_err();
+    assert_rejected(err, OFFENDING);
+    assert_eq!(server.graph.read().node_count(), 0);
+}
+
+#[test]
+fn release_task_adhoc_body_passes_relative_path_and_wikilink() {
+    let tmp = tempfile::tempdir().unwrap();
+    let server = make_server(tmp.path());
+    let res = server
+        .handle_release_task(&json!({
+            "project": "proj-test",
+            "status": "done",
+            "summary": "Completed adhoc work",
+            "body": format!("Ad-hoc body with `{RELATIVE}` and {WIKILINK}"),
+        }))
+        .unwrap();
+    let json = json_of(&res);
+    let id = json["id"].as_str().unwrap();
+    let doc = text_of(&server.handle_get_document(&json!({"id": id})).unwrap());
+    assert!(doc.contains(RELATIVE) && doc.contains(WIKILINK));
+}
+
+// ── batch tools ──────────────────────────────────────────────────────────
+
+#[test]
+fn batch_update_body_rejects_machine_path_and_leaves_documents_unchanged() {
+    let tmp = tempfile::tempdir().unwrap();
+    let server = make_server(tmp.path());
+    let id = create_task(&server, "Original body.").unwrap();
+    let err = server
+        .handle_batch_update(&json!({
+            "ids": [id],
+            "updates": {
+                "body": format!("Batch updated body mentioning {OFFENDING}"),
+            },
+            "dry_run": false,
+        }))
+        .unwrap_err();
+    assert_rejected(err, OFFENDING);
+    let doc = text_of(&server.handle_get_document(&json!({"id": id})).unwrap());
+    assert!(doc.contains("Original body."));
+    assert!(!doc.contains(OFFENDING));
+}
+
+#[test]
+fn batch_update_body_passes_relative_path_and_wikilink() {
+    let tmp = tempfile::tempdir().unwrap();
+    let server = make_server(tmp.path());
+    let id = create_task(&server, "Original body.").unwrap();
+    let res = server
+        .handle_batch_update(&json!({
+            "ids": [id],
+            "updates": {
+                "body": format!("Batch updated body mentioning `{RELATIVE}` and {WIKILINK}"),
+            },
+            "dry_run": false,
+        }))
+        .unwrap();
+    let json = json_of(&res);
+    assert_eq!(json["changed"], 1);
+    let doc = text_of(&server.handle_get_document(&json!({"id": id})).unwrap());
+    assert!(doc.contains(RELATIVE) && doc.contains(WIKILINK));
+}
+
+#[test]
+fn batch_create_epics_body_rejects_machine_path_and_writes_nothing() {
+    let tmp = tempfile::tempdir().unwrap();
+    let server = make_server(tmp.path());
+    let id = create_task(&server, "Child task.").unwrap();
+    let before_count = server.graph.read().node_count();
+    let err = server
+        .handle_batch_create_epics(&json!({
+            "epics": [
+                {
+                    "title": "New Epic",
+                    "task_ids": [id],
+                    "body": format!("Epic body with {OFFENDING}"),
+                }
+            ],
+            "dry_run": false,
+        }))
+        .unwrap_err();
+    assert_rejected(err, OFFENDING);
+    assert_eq!(server.graph.read().node_count(), before_count);
+}
+
+#[test]
+fn batch_create_epics_body_passes_relative_path_and_wikilink() {
+    let tmp = tempfile::tempdir().unwrap();
+    let server = make_server(tmp.path());
+    let id = create_task(&server, "Child task.").unwrap();
+    let res = server
+        .handle_batch_create_epics(&json!({
+            "epics": [
+                {
+                    "title": "New Epic",
+                    "task_ids": [&id],
+                    "body": format!("Epic body with `{RELATIVE}` and {WIKILINK}"),
+                }
+            ],
+            "dry_run": false,
+        }))
+        .unwrap();
+    let json = json_of(&res);
+    assert_eq!(json["changed"], 1);
+    let epic_id = json["tasks"][0]["id"].as_str().unwrap();
+    let doc = text_of(&server.handle_get_document(&json!({"id": epic_id})).unwrap());
+    assert!(doc.contains(RELATIVE) && doc.contains(WIKILINK));
 }

@@ -7,8 +7,7 @@ impl PkbSearchServer {
         for tool in tools {
             if tool.output_schema.is_none() {
                 tool.output_schema = Some(std::sync::Arc::new(
-                    serde_json::from_value(Self::output_schema_for_tool(&tool.name))
-                        .unwrap(),
+                    serde_json::from_value(Self::output_schema_for_tool(&tool.name)).unwrap(),
                 ));
             }
         }
@@ -164,7 +163,7 @@ impl PkbSearchServer {
             .with_annotations(ToolAnnotations::new().read_only(true)),
             Tool::new(
                 "create",
-                "Generic document creation with automatic subdirectory routing (tasks/, projects/, goals/, notes/).",
+                "Create a doc; dir defaults by type (template: `[<project>/]workflows/<snake_id>.md`). Requires a slug (<= 30 chars) used to construct the filename.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -173,11 +172,12 @@ impl PkbSearchServer {
                             "type": "string",
                             "enum": ["task", "learn", "pr", "template", "target", "note", "knowledge", "memory", "insight", "observation", "contact", "document", "reference", "review", "case", "spec", "prototype", "index", "daily"]
                         },
+                        "slug": { "type": "string", "maxLength": 30, "description": "Short filename slug (required, <= 30 characters). Used to construct the node filename." },
                         "id": { "type": "string" },
                         "tags": { "type": "array", "items": { "type": "string" } },
                         "body": { "type": "string", "description": "Markdown body (wikilinks supported; host paths rejected)" },
                         "status": { "type": "string", "enum": ["inbox", "ready", "failed"] },
-                        "intent": { "type": "integer" },
+                        "intent": { "type": "integer", "description": "Intent band 0-4 (P0 Critical .. P4 Backlog). Default when unset: P4 (Backlog)." },
                         "parent": { "type": "string" },
                         "depends_on": { "type": "array", "items": { "type": "string" } },
                         "soft_depends_on": { "type": "array", "items": { "type": "string" } },
@@ -193,13 +193,15 @@ impl PkbSearchServer {
                         "severity": { "type": "integer" },
                         "goal_type": { "type": "string", "enum": GOAL_TYPE_ENUM },
                         "dir": { "type": "string" },
+                        "filename": { "type": "string" },
+                        "project": { "type": "string" },
                         "stakeholder": { "type": "string" },
                         "waiting_since": { "type": "string" },
                         "links": { "type": "array", "items": { "type": "object" } },
                         "worth": { "anyOf": [{ "type": "number" }, { "type": "string" }] },
                         "deadline_class": { "type": "string", "enum": ["fake", "soft", "hard"] }
                     },
-                    "required": ["title", "type"]
+                    "required": ["title", "type", "slug"]
                 }))
                 .unwrap(),
             )
@@ -207,15 +209,16 @@ impl PkbSearchServer {
             .with_annotations(ToolAnnotations::new().read_only(false)),
             Tool::new(
                 "create_task",
-                "Create a new task markdown file with YAML frontmatter. Parent is optional (omitted tasks are root tasks). Project inherits from ancestor if omitted.",
+                "Create a new task markdown file with YAML frontmatter. Requires a slug (<= 30 chars) used to construct the filename. Parent is optional (omitted tasks are root tasks). Project inherits from ancestor if omitted.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
                         "title": { "type": "string", "description": "Task title (required, alias task_title)" },
+                        "slug": { "type": "string", "maxLength": 30, "description": "Short filename slug (required, <= 30 characters). Used to construct the task filename." },
                         "task_title": { "type": "string" },
                         "id": { "type": "string" },
                         "parent": { "type": "string" },
-                        "intent": { "type": "integer" },
+                        "intent": { "type": "integer", "description": "Intent band 0-4 (P0 Critical .. P4 Backlog). Default when unset: P4 (Backlog)." },
                         "tags": { "type": "array", "items": { "type": "string" } },
                         "depends_on": { "type": "array", "items": { "type": "string" } },
                         "soft_depends_on": { "type": "array", "items": { "type": "string" } },
@@ -231,20 +234,20 @@ impl PkbSearchServer {
                         "waiting_since": { "type": "string" },
                         "due": { "type": "string" },
                         "project": { "type": "string" },
+                        "filename": { "type": "string" },
                         "type": { "type": "string", "enum": ["task", "learn", "pr", "target"] },
                         "status": { "type": "string", "enum": ["inbox", "ready", "failed"] },
                         "allow_missing_parent": { "type": "boolean" },
                         "force": { "type": "boolean" },
                         "session_id": { "type": "string" },
                         "issue_url": { "type": "string" },
-                        "follow_up_tasks": { "type": "array", "items": { "type": "string" } },
                         "release_summary": { "type": "string" },
                         "contributes_to": { "type": "array", "items": { "type": "object" } },
                         "links": { "type": "array", "items": { "type": "object" } },
                         "worth": { "anyOf": [{ "type": "number" }, { "type": "string" }] },
                         "deadline_class": { "type": "string", "enum": ["fake", "soft", "hard"] }
                     },
-                    "required": ["title"]
+                    "required": ["title", "slug"]
                 }))
                 .unwrap(),
             )
@@ -289,7 +292,6 @@ impl PkbSearchServer {
                         "project": { "type": "string" },
                         "session_id": { "type": "string" },
                         "issue_url": { "type": "string" },
-                        "follow_up_tasks": { "type": "array", "items": { "type": "string" } },
                         "release_summary": { "type": "string" },
                         "released_at": { "type": "string" },
                         "contributes_to": { "type": "array", "items": { "type": "object" } },
@@ -392,7 +394,7 @@ impl PkbSearchServer {
             .with_annotations(ToolAnnotations::new().destructive(true)),
             Tool::new(
                 "convert_document",
-                "Convert document in place (keeps ID): retype frontmatter, rename to `<dir>/<id>_<slug>.md`, reindex.",
+                "Retype doc (keeps ID), move to `<dir>/<id>_<slug>.md` (template: `[<project>/]workflows/<snake_id>.md`), reindex.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -425,28 +427,28 @@ impl PkbSearchServer {
             .with_annotations(ToolAnnotations::new().read_only(false)),
             Tool::new(
                 "release_task",
-                "Release a task to a terminal or handoff status (done, review, blocked, cancelled, partial, failed). Supersedes complete_task (use status='done'). Performs session handover by recording work history, linking PRs/issues, and tracking follow-up work. If 'id' is omitted, an ad-hoc session task is created (requires `project` parameter). Evidence-or-failure-reason contract: `summary` (or `completion_evidence`) is always required; releasing to done requires all acceptance checklist items in the task body to be ticked (- [x]); releasing to blocked/cancelled/review/partial/failed additionally requires a non-empty `reason` (or `blocker`, for `blocked`) — a handback with neither is rejected. Tasks created before this requirement shipped release under the old, optional rules.",
+                "Release a task to a terminal or handoff status (done, review, blocked, cancelled, partial, failed). Evidence-or-failure-reason contract: `summary` (or `completion_evidence`) is always required; releasing to done requires all acceptance checklist items in the task body to be ticked (- [x]); releasing to blocked/cancelled/review/partial/failed additionally requires a non-empty `reason` (or `blocker`, for `blocked`) — a handback with neither is rejected.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
                         "id": { "type": "string", "description": "Task ID (flexible resolution: ID, filename stem, or title). If omitted, an ad-hoc task is created." },
-                        "project": { "type": "string", "description": "Project routing slug, validated against polecat.yaml (e.g. 'aops', 'mem'). Required when 'id' is omitted (ad-hoc task creation); optional when 'id' is provided." },
+                        "project": { "type": "string", "description": "Project routing slug (required if id omitted)" },
                         "status": {
                             "type": "string",
                             "enum": ["done", "review", "cancelled", "partial", "failed"],
                             "description": "Target status"
                         },
-                        "summary": { "type": "string", "description": "What was done and outcome. 1-3 sentences minimum. Always required (or provide completion_evidence)." },
+                        "summary": { "type": "string", "description": "What was done and outcome (or provide completion_evidence)." },
                         "completion_evidence": { "type": "string", "description": "Alias for summary: what was done and outcome (required when status is done). Releasing as done requires all acceptance checklist items to be checked (- [x])." },
                         "pr_url": { "type": "string", "description": "Pull request or commit URL" },
                         "branch": { "type": "string", "description": "Git branch name (optional)" },
-                        "blocker": { "type": "string", "description": "What is blocking this task. Required (non-empty), together with `reason`, when status=blocked — at least one of the two must be given." },
+                        "blocker": { "type": "string", "description": "Required when status=blocked (or provide reason)" },
                         "reason": { "type": "string", "description": "Why the task didn't ship cleanly. Required (non-empty) when status is blocked/cancelled/review/partial/failed (for status=blocked, `blocker` may be given instead)." },
-                        "session_id": { "type": "string", "description": "Active session ID. Falls back to $AOPS_SESSION_ID if omitted." },
+                        "session_id": { "type": "string", "description": "Active session ID" },
                         "issue_url": { "type": "string", "description": "External issue/ticket URL" },
-                        "follow_up_tasks": { "type": "array", "items": { "type": "string" }, "description": "IDs of new tasks created as follow-ups. Validated for existence." },
                         "release_summary": { "type": "string", "description": "Detailed technical summary for the release. Warning if > 500 chars." },
-                        "recursive": { "type": "boolean", "description": "Cascade-close all open descendant tasks when releasing as done. Default: false." }
+                        "body": { "type": "string", "description": "Markdown body for ad-hoc tasks (wikilinks supported; host paths rejected)" },
+                        "recursive": { "type": "boolean", "description": "Cascade-close open descendant tasks when releasing as done. Default: false." }
                     },
                     "required": ["status", "summary"]
                 }))
@@ -468,7 +470,7 @@ impl PkbSearchServer {
                                 "properties": {
                                     "title": { "type": "string" },
                                     "id": { "type": "string" },
-                                    "intent": { "type": "integer" },
+                                    "intent": { "type": "integer", "description": "Intent band 0-4 (P0 Critical .. P4 Backlog). Default when unset: P4 (Backlog)." },
                                     "depends_on": { "type": "array", "items": { "type": "string" } },
                                     "tags": { "type": "array", "items": { "type": "string" } },
                                     "assignee": { "type": "string" },
@@ -834,14 +836,14 @@ impl PkbSearchServer {
             .with_annotations(ToolAnnotations::new().read_only(true)),
             Tool::new(
                 "batch_merge",
-                "Merge multiple duplicate tasks or knowledge nodes into a single canonical task. Sets each source to status `cancelled` (never `done` — the source's work was not performed) and appends a note naming the canonical; records the merge as `supersedes: [sources]` on the canonical so each source's `superseded_by` computes. Unions tags and depends_on onto the canonical, reparents children and redirects parent/depends_on/soft_depends_on/soft_blocks references. Source bodies are NOT carried across — write the consolidated body on the canonical yourself. A rejected merge (e.g. dependency cycle) writes nothing. Idempotent. Supersedes merge_node.",
+                "Merge multiple duplicate tasks or knowledge nodes into a single canonical task. Deletes merged duplicates outright (leaving no cancelled stub, per specs/pkb-rules.md §3.3); records the merge as `supersedes: [sources]` on the canonical. Unions tags and depends_on onto the canonical, reparents children and redirects all inbound references (parent/depends_on/soft_depends_on/blocks/soft_blocks/supersedes/closes/links). Source bodies are NOT carried across — write the consolidated body on the canonical yourself. A rejected merge (e.g. dependency cycle) writes nothing. Idempotent. Supersedes merge_node.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
                         "canonical": { "type": "string", "description": "ID of the node to keep (alias: canonical_id)" },
                         "canonical_id": { "type": "string", "description": "Alias for canonical: ID of the node to keep" },
-                        "merge_ids": { "type": "array", "items": { "type": "string" }, "description": "IDs of duplicates/source nodes to merge into canonical and archive (alias: source_ids)" },
-                        "source_ids": { "type": "array", "items": { "type": "string" }, "description": "Alias for merge_ids: IDs of duplicate/source nodes to merge into canonical and archive" },
+                        "merge_ids": { "type": "array", "items": { "type": "string" }, "description": "IDs of duplicates/source nodes to merge into canonical and delete (alias: source_ids)" },
+                        "source_ids": { "type": "array", "items": { "type": "string" }, "description": "Alias for merge_ids: IDs of duplicate/source nodes to merge into canonical and delete" },
                         "dry_run": { "type": "boolean", "description": "Preview only (default: true — must explicitly set false to execute)" }
                     },
                     "required": ["canonical", "merge_ids"]
@@ -864,10 +866,10 @@ impl PkbSearchServer {
                                 "properties": {
                                     "title": { "type": "string", "description": "Epic title (required)" },
                                     "id": { "type": "string", "description": "Optional custom epic ID (auto-generated if omitted)" },
-                                    "intent": { "type": "integer", "description": "Intent band 0-4 (P0 Critical .. P4 Backlog)" },
+                                    "intent": { "type": "integer", "description": "Intent band 0-4 (P0 Critical .. P4 Backlog). Default when unset: P4 (Backlog)." },
                                     "task_ids": { "type": "array", "items": { "type": "string" }, "description": "Existing task IDs to reparent under this new epic (required; unresolvable IDs are reported as errors, not fatal)" },
                                     "depends_on": { "type": "array", "items": { "type": "string" }, "description": "IDs the epic itself depends on" },
-                                    "body": { "type": "string", "description": "Markdown body for the epic" }
+                                    "body": { "type": "string", "description": "Markdown body for the epic. Refer to other PKB files by wikilink (`[[id]]`) or PKB-root-relative path; a machine-specific path such as `~/brain/...` or `/home/nic/brain/...` is rejected with error_type `machine_specific_path`." }
                                 },
                                 "required": ["title", "task_ids"]
                             },
@@ -1175,7 +1177,6 @@ impl PkbSearchServer {
                     "goals": { "type": "array", "items": { "type": "object" } },
                     "contributes_to": { "type": "array", "items": { "type": "object" } },
                     "contributed_by": { "type": "array", "items": { "type": "string" } },
-                    "follow_up_tasks": { "type": "array", "items": { "type": "string" } },
                     "blocked": { "type": "boolean" },
                     "parse_warnings": { "type": "array", "items": { "type": "string" } },
                     "days_until_due": { "type": "integer" },
@@ -1261,7 +1262,7 @@ impl PkbSearchServer {
                     "ready": { "type": "array", "items": { "type": "string" } },
                     "blocked": { "type": "array", "items": { "type": "string" } },
                     "roots": { "type": "array", "items": { "type": "string" } },
-                    "focus": { "type": "string" }
+                    "cliff": { "type": "array", "items": { "type": "string" } }
                 }
             }),
             "diff_excalidraw" => serde_json::json!({

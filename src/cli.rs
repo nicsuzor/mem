@@ -30,8 +30,8 @@ struct Cli {
     )]
     root: String,
 
-    /// Path to the persistent vector database file
-    #[arg(long, global = true, default_value_t = default_db_path())]
+    /// Path to the persistent vector database file (sidecar .stamps/.wal/.lock files live beside it)
+    #[arg(long, global = true, env = "PKB_DB_PATH", default_value_t = default_db_path())]
     db_path: String,
 
     #[command(subcommand)]
@@ -44,7 +44,7 @@ enum TaskFilter {
     Ready,
     /// Tasks waiting on unfinished dependencies
     Blocked,
-    /// All open tasks (excludes done/cancelled/failed)
+    /// All open tasks (excludes done/cancelled/failed/archived)
     All,
 }
 
@@ -364,7 +364,7 @@ enum Commands {
         /// Task ID
         id: String,
 
-        /// Status (inbox, ready, queued, in_progress, review, blocked, paused, someday, done, cancelled, partial, failed)
+        /// Status (inbox, ready, queued, in_progress, review, blocked, paused, someday, done, cancelled, partial, failed, archived)
         #[arg(short, long)]
         status: Option<String>,
 
@@ -1278,7 +1278,7 @@ async fn main() -> Result<()> {
             let query_embedding = embedder.encode_query(&query_text)?;
             let reranker =
                 mem::rerank::CrossEncoderReranker::new(mem::rerank::RerankerConfig::default());
-            let results = store.read().search_hybrid(
+            let results = store.read().try_search_hybrid(
                 &query_text,
                 &query_embedding,
                 limit,
@@ -1287,7 +1287,8 @@ async fn main() -> Result<()> {
                 before.as_deref(),
                 doc_type.as_deref(),
                 Some(&reranker),
-            );
+                None,
+            )?;
 
             if results.is_empty() {
                 println!("No results found for: {query_text}");
@@ -1746,9 +1747,7 @@ async fn main() -> Result<()> {
                         for (target, val) in &flow.loop_extra {
                             println!("    Loop extra [{}]: {:.2}", target, val);
                         }
-                        if let Some((_routes, _trunc, explanation)) =
-                            gs.routes_for_node(&node.id)
-                        {
+                        if let Some((_routes, _trunc, explanation)) = gs.routes_for_node(&node.id) {
                             if !explanation.is_empty() {
                                 println!("    Explanation:     {explanation}");
                             }
@@ -2629,7 +2628,7 @@ async fn main() -> Result<()> {
             let results =
                 store
                     .read()
-                    .search(&query_embedding, limit * 3, &pkb_root, None, None, None);
+                    .search(&query_embedding, limit * 3, &pkb_root, None, None, None, None);
 
             let memory_types = ["memory", "note", "insight", "observation"];
             let mut count = 0;
@@ -3515,8 +3514,8 @@ async fn main() -> Result<()> {
             if http {
                 // HTTP/SSE mode
                 use rmcp::transport::streamable_http_server::{
-                    session::local::LocalSessionManager, StreamableHttpServerConfig,
-                    StreamableHttpService,
+                    session::local::LocalSessionManager, session::never::NeverSessionManager,
+                    StreamableHttpServerConfig, StreamableHttpService,
                 };
 
                 let ct = tokio_util::sync::CancellationToken::new();
@@ -3525,7 +3524,7 @@ async fn main() -> Result<()> {
                     .with_stateful_mode(true)
                     .with_cancellation_token(ct.clone());
                 if !allowed_hosts.is_empty() {
-                    config = config.with_allowed_hosts(allowed_hosts);
+                    config = config.with_allowed_hosts(allowed_hosts.clone());
                 }
                 eprintln!("   Allowed Host headers: {:?}", config.allowed_hosts);
 
@@ -3538,11 +3537,47 @@ async fn main() -> Result<()> {
                     Some(std::time::Duration::from_secs(24 * 3600));
                 let session_manager = std::sync::Arc::new(session_manager_inner);
 
-                let mcp_service =
-                    StreamableHttpService::new(move || Ok(server.clone()), session_manager, config);
+                let server_stateful = server.clone();
+                let mcp_service = StreamableHttpService::new(
+                    move || Ok(server_stateful.clone()),
+                    session_manager,
+                    config,
+                );
+
+                let mut stateless_config = StreamableHttpServerConfig::default()
+                    .with_stateful_mode(false)
+                    .with_json_response(true)
+                    .with_cancellation_token(ct.clone());
+                if !allowed_hosts.is_empty() {
+                    stateless_config = stateless_config.with_allowed_hosts(allowed_hosts);
+                }
+
+                let stateless_session_manager = std::sync::Arc::new(NeverSessionManager::default());
+                let server_stateless = server.clone();
+                let stateless_service = StreamableHttpService::new(
+                    move || Ok(server_stateless.clone()),
+                    stateless_session_manager,
+                    stateless_config,
+                );
 
                 let app = axum::Router::new()
                     .route("/mcp", axum::routing::any_service(mcp_service))
+                    .route(
+                        "/mcp/stateless",
+                        axum::routing::any_service(stateless_service.clone()),
+                    )
+                    .route(
+                        "/mcp/sessionless",
+                        axum::routing::any_service(stateless_service.clone()),
+                    )
+                    .route(
+                        "/stateless",
+                        axum::routing::any_service(stateless_service.clone()),
+                    )
+                    .route(
+                        "/sessionless",
+                        axum::routing::any_service(stateless_service),
+                    )
                     .layer(axum::middleware::from_fn(
                         |mut req: axum::extract::Request, next: axum::middleware::Next| async move {
                             // Ensure Host header is present for HTTP/2 requests where the :authority pseudo-header
@@ -3554,6 +3589,25 @@ async fn main() -> Result<()> {
                                     }
                                 }
                             }
+                            // Normalize Accept header to include text/event-stream so clients sending
+                            // only application/json or */* do not get rejected by rmcp's accept check
+                            if let Some(accept) = req.headers().get(http::header::ACCEPT) {
+                                if let Ok(s) = accept.to_str() {
+                                    if !s.contains("text/event-stream") {
+                                        let new_accept = format!("{s}, text/event-stream");
+                                        if let Ok(val) = http::HeaderValue::from_str(&new_accept) {
+                                            req.headers_mut().insert(http::header::ACCEPT, val);
+                                        }
+                                    }
+                                }
+                            } else {
+                                req.headers_mut().insert(
+                                    http::header::ACCEPT,
+                                    http::HeaderValue::from_static(
+                                        "application/json, text/event-stream",
+                                    ),
+                                );
+                            }
                             next.run(req).await
                         },
                     ));
@@ -3561,7 +3615,7 @@ async fn main() -> Result<()> {
                 let addr: std::net::SocketAddr = format!("{host}:{port}").parse()?;
                 let listener = tokio::net::TcpListener::bind(addr).await?;
                 let bound_addr = listener.local_addr()?;
-                eprintln!("   Starting MCP HTTP/SSE server on http://{bound_addr}/mcp");
+                eprintln!("   Starting MCP HTTP/SSE server on http://{bound_addr}/mcp (stateless: http://{bound_addr}/mcp/stateless)");
 
                 use axum::serve::ListenerExt;
                 let keepalive = socket2::TcpKeepalive::new()
@@ -4267,8 +4321,14 @@ fn index_pkb(
     let parsed: Vec<_> = to_process
         .into_par_iter()
         .map(|doc| {
-            let text = doc.embedding_text();
-            let chunks = embeddings::chunk_text(&text, &embeddings::ChunkConfig::default());
+            let chunks: Vec<String> = mem::chunker::chunk_document(
+                &doc.title,
+                doc.doc_type.as_deref(),
+                &doc.body,
+            )
+            .into_iter()
+            .map(|c| c.text)
+            .collect();
             (doc, chunks)
         })
         .collect();
@@ -4442,8 +4502,14 @@ fn bench_reindex(
         .iter()
         .filter_map(|path| {
             pkb::parse_file_relative(path, pkb_root).map(|doc| {
-                let text = doc.embedding_text();
-                let chunks = embeddings::chunk_text(&text, &embeddings::ChunkConfig::default());
+                let chunks: Vec<String> = mem::chunker::chunk_document(
+                    &doc.title,
+                    doc.doc_type.as_deref(),
+                    &doc.body,
+                )
+                .into_iter()
+                .map(|c| c.text)
+                .collect();
                 (doc, chunks)
             })
         })
@@ -4773,6 +4839,26 @@ fn print_dashboard(tasks: &[&graph::GraphNode], filter: &TaskFilter) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_db_path_reads_pkb_db_path_env() {
+        use clap::CommandFactory;
+        let cmd = Cli::command();
+        let arg = cmd
+            .get_arguments()
+            .find(|a| a.get_id() == "db_path")
+            .expect("db_path arg");
+        assert_eq!(arg.get_env(), Some(std::ffi::OsStr::new("PKB_DB_PATH")));
+    }
+
+    #[test]
+    fn test_db_path_sidecars_follow_db_path() {
+        let db = std::path::Path::new("/data/cache/pkb_vectors.bin");
+        assert_eq!(
+            vectordb::stamps_path(db).parent(),
+            Some(std::path::Path::new("/data/cache"))
+        );
+    }
 
     // #686: "2026-01-0é" is 11 bytes; byte 10 is inside 'é' (bytes 9..11).
     const MULTIBYTE_DATE: &str = "2026-01-0\u{e9}";

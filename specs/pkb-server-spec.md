@@ -210,8 +210,11 @@ queued -> in_progress -> done
             |              |
          blocked         review
 ```
+**Statuses**: canonical set per [[aops-core/skills/remember/references/TAXONOMY.md#status-values-and-transitions]] — `inbox`, `ready`, `queued`, `in_progress`, `review`, `done`, `blocked`, `paused`, `someday`, `cancelled`, `partial`, `failed`, `archived`.
 
-**Statuses**: canonical set per [[aops-core/skills/remember/references/TAXONOMY.md#status-values-and-transitions]] — `inbox`, `ready`, `queued`, `in_progress`, `review`, `done`, `blocked`, `paused`, `someday`, `cancelled`, `partial`.
+**Archived notes**: `archived` is accepted as a status on any note (both tasks and non-task documents). An archive script moves every PKB note with status `archived` into the sessions repository (`archived/`) and removes it from the PKB.
+
+**Retention and deletion**: Settled tasks are deleted after a retention period once their durable knowledge has been extracted to canonical notes.
 
 **Success criteria**:
 
@@ -288,7 +291,31 @@ The CLI and MCP server share the same core engine but have different affordances
 
 **Principle**: CLI optimises for human scanning (tree views, colour, truncation). MCP optimises for machine parsing (full data, structured output).
 
+## HTTP Routes
+
+When the MCP server runs over Streamable HTTP (`pkb mcp --http`):
+
+| Route | Mode | Session Requirement | Response Format | Purpose |
+| ----- | ---- | ------------------- | --------------- | ------- |
+| `/mcp` | Stateful | Required (`Mcp-Session-Id` header after `initialize`) | SSE (`text/event-stream`) | Stateful MCP transport used by Claude Code, the portal, and the dashboard. Enforces `initialize` handshake and session lifecycle. |
+| `/mcp/stateless` | Stateless | None (sessionless) | Direct JSON (`application/json`) | Stateless one-shot route for prompt hydration and short-lived queries. Bypasses `initialize` and `Mcp-Session-Id`. Binds nothing; attributes caller via `x-session-id` and W3C `traceparent`. Alias: `/mcp/sessionless`. |
+
+### Route Semantics
+
+1. **/mcp (Stateful)**:
+   - Initial request must be an `initialize` request, returning an `Mcp-Session-Id` header.
+   - Subsequent calls (like `tools/call`) must provide `Mcp-Session-Id`. Calls omitting `Mcp-Session-Id` are rejected with HTTP 400 Bad Request. Stale/unknown session IDs are rejected with HTTP 404 Not Found.
+   - Connections and session bindings persist across requests per [[caller-session]].
+
+2. **/mcp/stateless (Stateless / Sessionless)**:
+   - Accepts single-shot JSON-RPC `tools/call` POST requests without requiring an `initialize` handshake or `Mcp-Session-Id` header.
+   - Returns responses directly formatted as `application/json`, eliminating Server-Sent Events framing overhead.
+   - Caller attribution resolves per-request from `x-session-id`, `_meta.session_id`, or `_session` argument; trace context is parented under any supplied W3C `traceparent`.
+   - Never creates or updates connection bindings.
+   - `/mcp/sessionless` is supported as an identical route alias.
+
 ## Data Format
+
 
 ### Files
 

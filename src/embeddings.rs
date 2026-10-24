@@ -12,6 +12,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
 
 pub const EMBEDDING_DIM: usize = 1024;
+pub const DEFAULT_QUERY_DENSE_TOKEN_CAP: usize = 160;
 const MODEL_REPO: &str = "BAAI/bge-m3";
 
 /// Instruction prefix for query encoding (asymmetric retrieval).
@@ -108,6 +109,7 @@ pub struct EmbeddingConfig {
     pub model_path: PathBuf,
     pub tokenizer_path: PathBuf,
     pub max_length: usize,
+    pub query_dense_token_cap: usize,
 }
 
 impl Default for EmbeddingConfig {
@@ -139,10 +141,16 @@ impl EmbeddingConfig {
 
         let model_file = Self::find_model(&base_path).unwrap_or_else(|| "model.onnx".to_string());
 
+        let query_dense_token_cap = std::env::var("AOPS_QUERY_DENSE_TOKEN_CAP")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(DEFAULT_QUERY_DENSE_TOKEN_CAP);
+
         Self {
             model_path: base_path.join(model_file),
             tokenizer_path: base_path.join("tokenizer.json"),
             max_length: 512,
+            query_dense_token_cap,
         }
     }
 
@@ -995,6 +1003,7 @@ impl Embedder {
                 model_path: PathBuf::new(),
                 tokenizer_path: PathBuf::new(),
                 max_length: 512,
+                query_dense_token_cap: DEFAULT_QUERY_DENSE_TOKEN_CAP,
             },
             pool: OnceLock::new(),
             override_max_sessions: 0,
@@ -1012,6 +1021,10 @@ impl Embedder {
 
     pub fn query_cache_len(&self) -> usize {
         self.query_cache.lock().len()
+    }
+
+    pub fn is_dummy(&self) -> bool {
+        self.is_dummy
     }
 
     pub fn set_dummy_delay(&mut self, delay: std::time::Duration) {
@@ -1066,7 +1079,11 @@ impl Embedder {
         }
 
         let prefixed = format!("{QUERY_PREFIX}{text}");
-        let res = self.encode(&prefixed)?;
+        let results = self.encode_batch_with_cap(&[&prefixed], self.config.query_dense_token_cap)?;
+        let res = results
+            .into_iter()
+            .next()
+            .unwrap_or_else(|| vec![0.0; EMBEDDING_DIM]);
 
         self.query_cache.lock().insert(text.to_string(), res.clone());
         crate::otel::call_metrics::CallMetrics::record_embed_duration(start.elapsed());
@@ -1110,6 +1127,10 @@ impl Embedder {
     const MAX_BATCH_GPU: usize = 256;
 
     pub fn encode_batch(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>> {
+        self.encode_batch_with_cap(texts, self.config.max_length)
+    }
+
+    pub fn encode_batch_with_cap(&self, texts: &[&str], token_cap: usize) -> Result<Vec<Vec<f32>>> {
         if texts.is_empty() {
             return Ok(vec![]);
         }
@@ -1150,11 +1171,11 @@ impl Embedder {
         // GPU mode: single session, sequential large batches (GPU parallelizes internally)
         if pool.gpu_mode.load(Ordering::Relaxed) {
             if texts.len() <= max_batch {
-                return self.encode_single_batch(texts, pool);
+                return self.encode_single_batch(texts, pool, token_cap);
             }
             let mut all = Vec::with_capacity(texts.len());
             for chunk in texts.chunks(max_batch) {
-                all.extend(self.encode_single_batch(chunk, pool)?);
+                all.extend(self.encode_single_batch(chunk, pool, token_cap)?);
             }
             return Ok(all);
         }
@@ -1173,7 +1194,7 @@ impl Embedder {
             let results: Vec<Result<Vec<Vec<f32>>>> = sub_batches
                 .par_iter()
                 .map(|batch| {
-                    let r = self.encode_single_batch(batch, pool);
+                    let r = self.encode_single_batch(batch, pool, token_cap);
                     let completed = done.fetch_add(1, Ordering::Relaxed) + 1;
                     if completed.is_multiple_of(10) || completed == total_batches {
                         let pct = (completed * 100) / total_batches;
@@ -1190,15 +1211,16 @@ impl Embedder {
             return Ok(all);
         }
 
-        self.encode_single_batch(texts, pool)
+        self.encode_single_batch(texts, pool, token_cap)
     }
 
     fn encode_single_batch(
         &self,
         texts: &[&str],
         pool: &Arc<SessionPool>,
+        token_cap: usize,
     ) -> Result<Vec<Vec<f32>>> {
-        let configured_max = self.config.max_length;
+        let configured_max = self.config.max_length.min(token_cap);
         let batch_size = texts.len();
 
         // Tokenize all texts at once

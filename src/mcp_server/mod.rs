@@ -47,6 +47,51 @@ pub(crate) const GOAL_TYPE_ENUM: &[&str] = &["committed", "aspirational", "learn
 /// (e.g. `pkb_orphans`) are exempt for the unlimited case by design.
 pub(crate) const MAX_RESULTS: usize = 1000;
 
+/// Validate and extract required `slug` parameter from create action arguments.
+/// Must be present, non-empty, and at most 30 characters.
+pub(crate) fn parse_and_validate_slug(args: &JsonValue) -> Result<String, McpError> {
+    match args.get("slug") {
+        Some(v) if v.is_null() => Err(McpError {
+            code: ErrorCode::INVALID_PARAMS,
+            message: Cow::from("Missing required parameter: slug (limit is 30 characters)"),
+            data: None,
+        }),
+        Some(v) => {
+            let s = v.as_str().ok_or_else(|| McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from("Parameter 'slug' must be a string (limit is 30 characters)"),
+                data: None,
+            })?;
+            let trimmed = s.trim();
+            if trimmed.is_empty() {
+                return Err(McpError {
+                    code: ErrorCode::INVALID_PARAMS,
+                    message: Cow::from("Missing required parameter: slug (limit is 30 characters)"),
+                    data: None,
+                });
+            }
+            let len = trimmed.chars().count();
+            if len > crate::document_crud::MAX_SLUG_LEN {
+                return Err(McpError {
+                    code: ErrorCode::INVALID_PARAMS,
+                    message: Cow::from(format!(
+                        "Parameter 'slug' is too long ({} characters). Limit is {} characters.",
+                        len,
+                        crate::document_crud::MAX_SLUG_LEN
+                    )),
+                    data: None,
+                });
+            }
+            Ok(trimmed.to_string())
+        }
+        None => Err(McpError {
+            code: ErrorCode::INVALID_PARAMS,
+            message: Cow::from("Missing required parameter: slug (limit is 30 characters)"),
+            data: None,
+        }),
+    }
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ReindexStatus {
     pub timestamp: String,
@@ -212,9 +257,25 @@ impl PkbSearchServer {
         db_path: PathBuf,
         graph: Arc<RwLock<GraphStore>>,
     ) -> Self {
-        let reranker = Arc::new(crate::rerank::CrossEncoderReranker::new(
-            crate::rerank::RerankerConfig::default(),
-        ));
+        let reranker = if embedder.is_dummy() {
+            Arc::new(crate::rerank::CrossEncoderReranker::new(
+                crate::rerank::RerankerConfig {
+                    model_path: None,
+                    tokenizer_path: None,
+                    top_n_candidates: crate::rerank::DEFAULT_RERANK_TOP_N,
+                    query_token_cap: crate::rerank::DEFAULT_QUERY_TOKEN_CAP,
+                    chunk_token_cap: crate::rerank::DEFAULT_CHUNK_TOKEN_CAP,
+                    enabled: false,
+                    tau_h: crate::rerank::DEFAULT_TAU_H,
+                    tau_cos: crate::rerank::DEFAULT_TAU_COS,
+                    tau_s: crate::rerank::DEFAULT_TAU_S,
+                },
+            ))
+        } else {
+            Arc::new(crate::rerank::CrossEncoderReranker::new(
+                crate::rerank::RerankerConfig::default(),
+            ))
+        };
         let initial_scanned = crate::pkb::scan_directory(&pkb_root).len();
         let initial_loaded = graph.read().node_count();
         let initial_file_backed = graph
@@ -268,6 +329,12 @@ impl PkbSearchServer {
     /// Set the clock for time-dependent salience decay and recency calculations.
     pub fn set_clock(&self, clock: Arc<dyn crate::salience::Clock>) {
         self.salience_store.write().set_clock(clock);
+    }
+
+    /// Set a custom reranker on the server (useful for tests or custom configurations).
+    pub fn with_reranker(mut self, reranker: Arc<crate::rerank::CrossEncoderReranker>) -> Self {
+        self.reranker = reranker;
+        self
     }
 
     /// Total count of full graph rebuilds that have executed.
@@ -1569,7 +1636,8 @@ impl PkbSearchServer {
     pub fn list_tools_result(&self) -> rmcp::model::ListToolsResult {
         let tools = Self::get_published_tools();
         let mut meta = rmcp::model::Meta::new();
-        meta.0.insert("ttlMs".to_string(), serde_json::json!(86_400_000));
+        meta.0
+            .insert("ttlMs".to_string(), serde_json::json!(86_400_000));
         let mut result = rmcp::model::ListToolsResult::with_all_items(tools);
         result.meta = Some(meta);
         result
@@ -1670,6 +1738,19 @@ impl PkbSearchServer {
         res
     }
 
+    pub fn is_read_only_tool(name: &str) -> bool {
+        static READ_ONLY_TOOLS: std::sync::OnceLock<std::collections::HashSet<String>> =
+            std::sync::OnceLock::new();
+        let set = READ_ONLY_TOOLS.get_or_init(|| {
+            Self::get_all_tools()
+                .into_iter()
+                .filter(|t| t.annotations.as_ref().and_then(|a| a.read_only_hint) == Some(true))
+                .map(|t| t.name.to_string())
+                .collect()
+        });
+        set.contains(name)
+    }
+
     pub async fn execute_tool_call(
         &self,
         tool_name: &str,
@@ -1679,23 +1760,34 @@ impl PkbSearchServer {
     ) -> Result<CallToolResult, McpError> {
         let start = std::time::Instant::now();
         let tool_name = tool_name.to_string();
-        let args = args.clone();
+        let mut args = args.clone();
 
         let client_context = crate::otel::client_context::ClientContext::extract(
             parts,
             meta,
+            &mut args,
             &self.session_registry,
         );
 
         if let Some(ref mcp_id) = client_context.mcp_session_id {
-            self.session_registry
-                .update_activity(mcp_id, Some(client_context.session_id.clone()));
+            self.session_registry.update_activity(mcp_id);
         }
-        let session_id = client_context.session_id.clone();
+
+        let canonical_name = match tool_name.as_str() {
+            "pkb_trace" | "pkb_orphans" => tool_name.clone(),
+            other => other.strip_prefix("pkb_").unwrap_or(other).to_string(),
+        };
+
+        let is_read_only = Self::is_read_only_tool(&canonical_name);
+        let is_mutating = !is_read_only;
+        let is_unattributed =
+            client_context.session_source == crate::otel::client_context::SessionSource::None;
+        let session_mode = crate::otel::config::SessionMode::from_env();
+        let log_session_id = client_context.session_id.clone();
 
         let (tx, rx) = tokio::sync::oneshot::channel();
         let this_task = self.clone();
-        let tool_name_task = tool_name.clone();
+        let canonical_name_task = canonical_name.clone();
 
         tokio::task::spawn_blocking(move || {
             crate::otel::call_metrics::CallMetrics::start_recording();
@@ -1707,21 +1799,40 @@ impl PkbSearchServer {
             let tracer = opentelemetry::global::tracer("mem");
             use opentelemetry::trace::Tracer;
 
-            let canonical_name = match tool_name_task.as_str() {
-                "pkb_trace" | "pkb_orphans" => tool_name_task.clone(),
-                other => other.strip_prefix("pkb_").unwrap_or(other).to_string(),
-            };
-
             let mut builder = tracer
-                .span_builder(format!("mcp.{}", canonical_name))
+                .span_builder(format!("mcp.{}", canonical_name_task))
                 .with_kind(opentelemetry::trace::SpanKind::Server);
 
             let mut attrs = vec![
                 opentelemetry::KeyValue::new("openinference.span.kind", "TOOL"),
-                opentelemetry::KeyValue::new("tool.name", canonical_name.clone()),
-                opentelemetry::KeyValue::new("session.id", client_context.session_id.clone()),
+                opentelemetry::KeyValue::new("tool.name", canonical_name_task.clone()),
+                opentelemetry::KeyValue::new(
+                    "aops.session.source",
+                    client_context.session_source.as_str(),
+                ),
             ];
 
+            if let Some(ref sid) = client_context.session_id {
+                attrs.push(opentelemetry::KeyValue::new("session.id", sid.clone()));
+            }
+            if let Some(ref rebound) = client_context.rebound_from {
+                attrs.push(opentelemetry::KeyValue::new(
+                    "aops.session.rebound_from",
+                    rebound.clone(),
+                ));
+            }
+            if let Some(ref aid) = client_context.agent_id {
+                attrs.push(opentelemetry::KeyValue::new("agent.id", aid.clone()));
+            }
+            if let Some(ref pid) = client_context.prompt_id {
+                attrs.push(opentelemetry::KeyValue::new("prompt.id", pid.clone()));
+            }
+            if is_mutating
+                && is_unattributed
+                && session_mode == crate::otel::config::SessionMode::Warn
+            {
+                attrs.push(opentelemetry::KeyValue::new("aops.session.missing", true));
+            }
             if let Some(ref tid) = client_context.task_id {
                 attrs.push(opentelemetry::KeyValue::new(
                     "tag.tags",
@@ -1749,9 +1860,31 @@ impl PkbSearchServer {
             let cx = parent_cx.with_span(span);
             let _guard = cx.clone().attach();
 
-            let res = this_task.dispatch_tool_sync(&canonical_name, &args);
+            let res = if is_mutating
+                && is_unattributed
+                && session_mode == crate::otel::config::SessionMode::Enforce
+            {
+                Err(McpError {
+                    code: ErrorCode::INVALID_PARAMS,
+                    message: Cow::from(format!(
+                        "Unattributed write refused: tool '{canonical_name_task}' requires a caller session ID when PKB_SESSION_MODE=enforce. \
+                         Supply your session ID via the `_session` argument (e.g. `{{\"_session\": {{\"session_id\": \"<your-session-id>\"}}}}`). \
+                         You can find your session ID in the environment variable AOPS_SESSION_ID or your agent session context."
+                    )),
+                    data: None,
+                })
+            } else {
+                if is_mutating && is_unattributed {
+                    tracing::warn!(
+                        "Unattributed write to tool '{}' in warning mode (missing session id)",
+                        canonical_name_task
+                    );
+                }
+                this_task.dispatch_tool_sync(&canonical_name_task, &args)
+            };
 
-            let metrics = crate::otel::call_metrics::CallMetrics::finish_recording().unwrap_or_default();
+            let metrics =
+                crate::otel::call_metrics::CallMetrics::finish_recording().unwrap_or_default();
 
             // Add output attributes
             let is_error = res.is_err();
@@ -1812,14 +1945,10 @@ impl PkbSearchServer {
             ));
 
             let embed_time_ms = (metrics.embed_time_us as f64) / 1000.0;
-            current_span.set_attribute(opentelemetry::KeyValue::new(
-                "embed_time_ms",
-                embed_time_ms,
-            ));
-            current_span.set_attribute(opentelemetry::KeyValue::new(
-                "embed.time_ms",
-                embed_time_ms,
-            ));
+            current_span
+                .set_attribute(opentelemetry::KeyValue::new("embed_time_ms", embed_time_ms));
+            current_span
+                .set_attribute(opentelemetry::KeyValue::new("embed.time_ms", embed_time_ms));
 
             let hybrid_search_time_ms = (metrics.hybrid_search_time_us as f64) / 1000.0;
             current_span.set_attribute(opentelemetry::KeyValue::new(
@@ -1854,25 +1983,28 @@ impl PkbSearchServer {
         let latency = start.elapsed().as_millis();
         crate::telemetry::record_call(&tool_name, response_bytes, latency, is_error);
 
-        if session_id == "unknown" {
-            tracing::info!(
-                target: "pkb::tool_call",
-                tool = %tool_name,
-                status = %if is_error { "error" } else { "ok" },
-                latency_ms = latency as u64,
-                response_bytes,
-                "tool call"
-            );
-        } else {
-            tracing::info!(
-                target: "pkb::tool_call",
-                tool = %tool_name,
-                status = %if is_error { "error" } else { "ok" },
-                latency_ms = latency as u64,
-                response_bytes,
-                session = %session_id,
-                "tool call"
-            );
+        match &log_session_id {
+            None => {
+                tracing::info!(
+                    target: "pkb::tool_call",
+                    tool = %tool_name,
+                    status = %if is_error { "error" } else { "ok" },
+                    latency_ms = latency as u64,
+                    response_bytes,
+                    "tool call"
+                );
+            }
+            Some(sid) => {
+                tracing::info!(
+                    target: "pkb::tool_call",
+                    tool = %tool_name,
+                    status = %if is_error { "error" } else { "ok" },
+                    latency_ms = latency as u64,
+                    response_bytes,
+                    session = %sid,
+                    "tool call"
+                );
+            }
         }
 
         result
@@ -1957,30 +2089,23 @@ impl ServerHandler for PkbSearchServer {
     }
 
     fn get_info(&self) -> ServerInfo {
-        let mut instructions = String::from(
-            "PKB Search — semantic search + task graph over personal knowledge base. \
-             A suite of tools for search, documents, tasks, and knowledge graph. \
-             Use MCP prompts (find-task, explore-topic, navigate-graph, find-by-tag) for search pattern guidance. \
-            session_registry: crate::otel::session_registry::SessionRegistry::new(),
-             Use get_stats to view per-tool usage telemetry.",
-        );
-        if self.stale_count > 0 {
-            instructions.push_str(&format!(
-                " WARNING: Index is stale — {} document(s) need re-indexing. \
-                 Search results may be incomplete or outdated. \
-                 Run `pkb reindex` to update.",
-                self.stale_count
-            ));
-        }
-        ServerInfo::new(
+        let mut info = ServerInfo::new(
             ServerCapabilities::builder()
                 .enable_tools()
                 .enable_prompts()
                 .build(),
         )
         .with_protocol_version(ProtocolVersion::V_2024_11_05)
-        .with_server_info(Implementation::new("pkb", env!("CARGO_PKG_VERSION")))
-        .with_instructions(instructions)
+        .with_server_info(Implementation::new("pkb", env!("CARGO_PKG_VERSION")));
+
+        if self.stale_count > 0 {
+            info = info.with_instructions(format!(
+                "WARNING: Index is stale — {} document(s) need re-indexing. \
+                 Search results may be incomplete or outdated.",
+                self.stale_count
+            ));
+        }
+        info
     }
 }
 

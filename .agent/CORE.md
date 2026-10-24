@@ -26,7 +26,7 @@ Semantic search + knowledge graph MCP server for a personal knowledge base (PKB)
 ```
 src/
   cli.rs            — main() for pkb binary (CLI + MCP server via `pkb mcp`)
-  mcp_server.rs     — MCP ServerHandler: 44 tools, dispatch, tool registrations
+  mcp_server/       — MCP server module: tool schemas, dispatch, handlers
   graph_store.rs    — GraphStore: builds/queries knowledge graph from PKB docs
   graph.rs          — GraphNode (fields include stakeholder, waiting_since), Edge, EdgeType, link resolution helpers
   graph_display.rs  — Graph rendering/display utilities
@@ -64,7 +64,7 @@ editors/
 - `claim_task` — instantiate a `type: template` node; creates a datestamped instance and returns it via get_task
 - `update_task` — patch frontmatter fields
 - `complete_task` — set status=done; returns `{ok, id, status, message, neighborhood}` JSON envelope with compact graph context (see `specs/mutation-neighborhood.md`)
-- `release_task` — terminal status release and session handover (populates session_id, pr_url, issue_url, follow_up_tasks, release_summary); handles ad-hoc creation if ID omitted; returns `{ok, id, status, message, neighborhood}` JSON envelope with compact graph context (see `specs/mutation-neighborhood.md`)
+- `release_task` — terminal status release and session handover (populates session_id, pr_url, issue_url, release_summary); handles ad-hoc creation if ID omitted; returns `{ok, id, status, message, neighborhood}` JSON envelope with compact graph context (see `specs/mutation-neighborhood.md`)
 - `decompose_task` — batch create subtasks under a parent
 - `get_dependency_tree` — upstream/downstream dependency tree
 - `get_task_children` — direct/recursive children with completion counts
@@ -79,10 +79,10 @@ editors/
 - `list_memories` — list memory-type documents
 
 ### Document CRUD
-- `create` — generic document creation (any doc type: notes, specs, goals, targets, contacts, etc. — not just tasks/memories)
+- `create` — generic document creation (any doc type: notes, specs, goals, targets, contacts, etc. — not just tasks/memories); templates (workflows) are filed as `<snake_case id>.md` in `workflows/` or `<project>/workflows/`
 - `append` — timestamped append to existing doc
 - `update_body` — atomically rewrite a document's prose body, preserving frontmatter
-- `convert_document` — convert an existing doc in place, keeping its ID: replace frontmatter `type`, move + rename the same file to `<dir>/<id>_<slug>.md` (default dir by type), reindex. Retype and rename are separate git commits so history shows a rename. Built for capture intake (note → task)
+- `convert_document` — convert an existing doc in place, keeping its ID: replace frontmatter `type`, move + rename the same file to `<dir>/<id>_<slug>.md` (default dir by type; templates go to `[<project>/]workflows/<snake_case id>.md`), reindex. Retype and rename are separate git commits so history shows a rename. Built for capture intake (note → task)
 - `delete` — remove doc from disk + index; optional `type` param guards deletion to a matching node type (e.g. `type: "memory"` restricts to memory/note/insight/observation, replacing the old dedicated `delete_memory` tool)
 
 ### Knowledge Graph
@@ -118,7 +118,7 @@ Canvases are files, not graph nodes, and are never indexed (the scan only reads 
 ## Key Patterns
 
 ### Tool dispatch
-`mcp_server.rs` uses a manual `match` in `call_tool()` mapping tool name strings to `handle_*` methods. Tool registrations are in `list_tools()` as a `Vec<Tool>`. Both must stay in sync.
+`src/mcp_server/mod.rs` dispatches tool calls mapping tool name strings to handlers in `src/mcp_server/handlers_*.rs`. Tool registrations are in `src/mcp_server/schemas.rs`. Both must stay in sync.
 
 ### Graph rebuild — in-place patch + coalesced background rebuild
 Single-doc CRUD operations patch the graph in place on the request thread and defer the full pipeline to a coalesced background worker.
@@ -156,4 +156,4 @@ make release    # bump patch, build both, install, tag, push
 
 **Local install**: Always use `cargo install --path .` — never manually copy binaries to /usr/local/bin.
 
-Requires: Rust >= 1.88, zig 0.13 for cross-compile.
+Requires: Rust >= 1.91, zig 0.13 for cross-compile.

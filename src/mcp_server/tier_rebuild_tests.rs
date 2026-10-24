@@ -620,5 +620,219 @@ mod tier_rebuild_tests {
              the swap"
         );
     }
+
+    /// T-carryover (A27, R16): after an in-place write, `get_task`, `list_tasks`
+    /// and `export_graph` show the node's previous figures until the rebuild lands;
+    /// a new node shows 0 / 0 / 0 with ok. After the rebuild, all show recomputed figures.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn flow_carried_over_until_rebuild() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::create_dir_all(root.join("tasks")).unwrap();
+
+        let target_file = root.join("tasks/target-1.md");
+        std::fs::write(
+            &target_file,
+            "---\nid: target-1\ntitle: Target 1\ntype: target\nstatus: ready\nworth: 1.0\n---\nBody.\n",
+        )
+        .unwrap();
+
+        let task_a_file = root.join("tasks/task-a.md");
+        std::fs::write(
+            &task_a_file,
+            "---\nid: task-a\ntitle: Task A\ntype: task\nstatus: ready\nlinks:\n  - to: target-1\n    label: serves\n    quantum: 1.0\n---\nBody.\n",
+        )
+        .unwrap();
+
+        let task_b_file = root.join("tasks/task-b.md");
+        std::fs::write(
+            &task_b_file,
+            "---\nid: task-b\ntitle: Task B\ntype: task\nstatus: ready\nlinks:\n  - to: target-1\n    label: serves\n    quantum: 0.5\n---\nBody.\n",
+        )
+        .unwrap();
+
+        let doc_t = crate::pkb::parse_file(&target_file).unwrap();
+        let doc_a = crate::pkb::parse_file(&task_a_file).unwrap();
+        let doc_b = crate::pkb::parse_file(&task_b_file).unwrap();
+
+        let graph = GraphStore::build(&[doc_t, doc_a, doc_b], root);
+        let store = VectorStore::new(3);
+        let embedder = Embedder::new_dummy();
+        let server = Arc::new(PkbSearchServer::new(
+            Arc::new(RwLock::new(store)),
+            Arc::new(embedder),
+            root.to_path_buf(),
+            root.join("db"),
+            Arc::new(RwLock::new(graph)),
+        ));
+
+        // Initial sanity check: task-a has gain 1.0, task-b has gain 0.5.
+        // In export_graph, task-a is display_rank 1 and task-b is display_rank 2.
+        {
+            let res = server.handle_get_task(&json!({"id": "task-a"})).unwrap();
+            let text: String = res.content.iter().filter_map(|c| c.raw.as_text().map(|t| t.text.as_str())).collect();
+            let val: serde_json::Value = serde_json::from_str(&text).unwrap();
+            let flow = val.get("flow").expect("initial get_task must have flow");
+            assert_eq!(flow.get("gain").and_then(|v| v.as_f64()), Some(1.0));
+            assert_eq!(flow.get("loss_averted").and_then(|v| v.as_f64()), Some(0.0));
+            assert_eq!(flow.get("decision_value").and_then(|v| v.as_f64()), Some(0.0));
+
+            let exp_res = server.handle_export_graph(&json!({"format": "json"})).unwrap();
+            let exp_text: String = exp_res.content.iter().filter_map(|c| c.raw.as_text().map(|t| t.text.as_str())).collect();
+            let exp_val: serde_json::Value = serde_json::from_str(&exp_text).unwrap();
+            let nodes = exp_val.get("nodes").and_then(|n| n.as_array()).unwrap();
+
+            let node_a = nodes.iter().find(|n| n.get("id").and_then(|id| id.as_str()) == Some("task-a")).unwrap();
+            assert_eq!(node_a.get("display_rank").and_then(|r| r.as_u64()), Some(2));
+        }
+
+        // Slow down Tier-2 rebuild so we can inspect in-memory state before it lands.
+        server.set_tier2_sleep_ms(300);
+
+        // Update task-a on disk so quantum is 0.2 instead of 1.0 (now lower than task-b's 0.5).
+        std::fs::write(
+            &task_a_file,
+            "---\nid: task-a\ntitle: Task A Patched\ntype: task\nstatus: ready\nlinks:\n  - to: target-1\n    label: serves\n    quantum: 0.2\n---\nBody.\n",
+        )
+        .unwrap();
+
+        // Perform in-place write
+        let updated_a = crate::pkb::parse_file(&task_a_file).unwrap();
+        server.rebuild_graph_for_pkb_document(&updated_a);
+
+        // Also create a brand new task-c
+        let task_c_file = root.join("tasks/task-c.md");
+        std::fs::write(
+            &task_c_file,
+            "---\nid: task-c\ntitle: Task C New\ntype: task\nstatus: ready\n---\nBody.\n",
+        )
+        .unwrap();
+        let new_c = crate::pkb::parse_file(&task_c_file).unwrap();
+        server.rebuild_graph_for_pkb_document(&new_c);
+
+        // BEFORE Tier-2 rebuild lands:
+        // 1. get_task: task-a keeps previous flow (gain 1.0, loss_averted 0.0, decision_value 0.0); task-c shows 0/0/0 ok
+        {
+            let res = server.handle_get_task(&json!({"id": "task-a"})).unwrap();
+            let text: String = res.content.iter().filter_map(|c| c.raw.as_text().map(|t| t.text.as_str())).collect();
+            let val: serde_json::Value = serde_json::from_str(&text).unwrap();
+            let flow = val.get("flow").filter(|v| !v.is_null()).expect("patched get_task must have flow");
+            assert_eq!(
+                flow.get("gain").and_then(|v| v.as_f64()),
+                Some(1.0),
+                "task-a must keep previous gain (1.0) before rebuild"
+            );
+            assert_eq!(
+                flow.get("loss_averted").and_then(|v| v.as_f64()),
+                Some(0.0),
+                "task-a must keep previous loss_averted (0.0) before rebuild"
+            );
+            assert_eq!(
+                flow.get("decision_value").and_then(|v| v.as_f64()),
+                Some(0.0),
+                "task-a must keep previous decision_value (0.0) before rebuild"
+            );
+
+            // New node task-c has 0 / 0 / 0 with ok
+            let res_c = server.handle_get_task(&json!({"id": "task-c"})).unwrap();
+            let text_c: String = res_c.content.iter().filter_map(|c| c.raw.as_text().map(|t| t.text.as_str())).collect();
+            let val_c: serde_json::Value = serde_json::from_str(&text_c).unwrap();
+            let flow_c = val_c.get("flow").filter(|v| !v.is_null()).expect("new node task-c must have flow");
+            assert_eq!(flow_c.get("gain").and_then(|v| v.as_f64()), Some(0.0));
+            assert_eq!(flow_c.get("loss_averted").and_then(|v| v.as_f64()), Some(0.0));
+            assert_eq!(flow_c.get("decision_value").and_then(|v| v.as_f64()), Some(0.0));
+            assert_eq!(flow_c.get("flow_status").and_then(|v| v.as_str()), Some("ok"));
+        }
+
+        // 2. list_tasks: task-a keeps previous figures (gain 1.0, loss_averted 0.0, decision_value 0.0)
+        {
+            let res = server.handle_list_tasks(&json!({"format": "json"})).unwrap();
+            let text: String = res.content.iter().filter_map(|c| c.raw.as_text().map(|t| t.text.as_str())).collect();
+            let val: serde_json::Value = serde_json::from_str(&text).unwrap();
+            let tasks = val.get("tasks").and_then(|t| t.as_array()).unwrap();
+            let task_a = tasks.iter().find(|t| t.get("id").and_then(|id| id.as_str()) == Some("task-a")).unwrap();
+            assert_eq!(
+                task_a.get("gain").and_then(|v| v.as_f64()),
+                Some(1.0),
+                "list_tasks task-a must keep previous gain (1.0) before rebuild"
+            );
+            assert_eq!(
+                task_a.get("loss_averted").and_then(|v| v.as_f64()),
+                Some(0.0),
+                "list_tasks task-a must keep previous loss_averted (0.0) before rebuild"
+            );
+            assert_eq!(
+                task_a.get("decision_value").and_then(|v| v.as_f64()),
+                Some(0.0),
+                "list_tasks task-a must keep previous decision_value (0.0) before rebuild"
+            );
+        }
+
+        // 3. export_graph: task-a keeps previous figures and display_rank 2 (above task-b's 0.5 at rank 3)
+        {
+            let exp_res = server.handle_export_graph(&json!({"format": "json"})).unwrap();
+            let exp_text: String = exp_res.content.iter().filter_map(|c| c.raw.as_text().map(|t| t.text.as_str())).collect();
+            let exp_val: serde_json::Value = serde_json::from_str(&exp_text).unwrap();
+            let nodes = exp_val.get("nodes").and_then(|n| n.as_array()).unwrap();
+            let node_a = nodes.iter().find(|n| n.get("id").and_then(|id| id.as_str()) == Some("task-a")).unwrap();
+            let flow_a = node_a.get("flow").filter(|v| !v.is_null()).expect("export_graph task-a must have flow");
+            assert_eq!(flow_a.get("gain").and_then(|v| v.as_f64()), Some(1.0));
+            assert_eq!(flow_a.get("decision_value").and_then(|v| v.as_f64()), Some(0.0));
+            assert_eq!(
+                node_a.get("display_rank").and_then(|r| r.as_u64()),
+                Some(2),
+                "export_graph task-a must keep previous display_rank (2) before rebuild"
+            );
+        }
+
+        // Wait for Tier-2 rebuild to drain.
+        for _ in 0..100 {
+            tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+            if !server.graph_rebuild_pending() {
+                break;
+            }
+        }
+
+        // AFTER Tier-2 rebuild lands:
+        // Figures are recomputed: task-a has gain 0.2, decision_value 0.0; display_rank is now 3 (below task-b's 0.5 at rank 2).
+        // 1. get_task
+        {
+            let res = server.handle_get_task(&json!({"id": "task-a"})).unwrap();
+            let text: String = res.content.iter().filter_map(|c| c.raw.as_text().map(|t| t.text.as_str())).collect();
+            let val: serde_json::Value = serde_json::from_str(&text).unwrap();
+            let flow = val.get("flow").expect("after rebuild get_task must have flow");
+            assert_eq!(flow.get("gain").and_then(|v| v.as_f64()), Some(0.2));
+            assert_eq!(flow.get("decision_value").and_then(|v| v.as_f64()), Some(0.0));
+        }
+
+        // 2. list_tasks
+        {
+            let res = server.handle_list_tasks(&json!({"format": "json"})).unwrap();
+            let text: String = res.content.iter().filter_map(|c| c.raw.as_text().map(|t| t.text.as_str())).collect();
+            let val: serde_json::Value = serde_json::from_str(&text).unwrap();
+            let tasks = val.get("tasks").and_then(|t| t.as_array()).unwrap();
+            let task_a = tasks.iter().find(|t| t.get("id").and_then(|id| id.as_str()) == Some("task-a")).unwrap();
+            assert_eq!(task_a.get("gain").and_then(|v| v.as_f64()), Some(0.2));
+            assert_eq!(task_a.get("decision_value").and_then(|v| v.as_f64()), Some(0.0));
+        }
+
+        // 3. export_graph
+        {
+            let exp_res = server.handle_export_graph(&json!({"format": "json"})).unwrap();
+            let exp_text: String = exp_res.content.iter().filter_map(|c| c.raw.as_text().map(|t| t.text.as_str())).collect();
+            let exp_val: serde_json::Value = serde_json::from_str(&exp_text).unwrap();
+            let nodes = exp_val.get("nodes").and_then(|n| n.as_array()).unwrap();
+            let node_a = nodes.iter().find(|n| n.get("id").and_then(|id| id.as_str()) == Some("task-a")).unwrap();
+            let flow_a = node_a.get("flow").expect("export_graph task-a must have flow");
+            assert_eq!(flow_a.get("gain").and_then(|v| v.as_f64()), Some(0.2));
+            assert_eq!(flow_a.get("decision_value").and_then(|v| v.as_f64()), Some(0.0));
+            assert_eq!(
+                node_a.get("display_rank").and_then(|r| r.as_u64()),
+                Some(3),
+                "export_graph task-a must show recomputed display_rank (3) after rebuild"
+            );
+        }
+    }
 }
+
 

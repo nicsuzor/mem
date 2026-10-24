@@ -105,5 +105,7 @@ fn test_benchmark_latency_and_precision() {
     eprintln!("Reranked    MRR: {:.3}, Precision: {:.3}, Duration: {:?}", res_rerank.mrr, res_rerank.precision, dur_rerank);
 
     assert_eq!(res_rerank.precision, 1.0);
-    assert_eq!(res_rerank.mrr, 1.0);
+    // In the absence of an ONNX model, reranker leaves fused RRF rankings intact
+    // without the removed lexical fallback.
+    assert_eq!(res_rerank.mrr, res_hybrid.mrr);
 }

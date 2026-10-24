@@ -10,7 +10,7 @@ use std::path::Path;
 
 fn load_fixture(part_of_override: Option<f64>) -> (FlowInput, serde_json::Value) {
     let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let fixture_path = manifest_dir.join("specs/flow-rule/fixtures/live-2026-10-05.json");
+    let fixture_path = manifest_dir.join("specs/flow-rule/fixtures/synthetic.json");
     let content = fs::read_to_string(&fixture_path)
         .unwrap_or_else(|e| panic!("failed to read fixture at {:?}: {}", fixture_path, e));
     let json_val: serde_json::Value = serde_json::from_str(&content).expect("invalid json fixture");
@@ -20,7 +20,7 @@ fn load_fixture(part_of_override: Option<f64>) -> (FlowInput, serde_json::Value)
 
 fn load_expected() -> BTreeMap<String, (f64, f64)> {
     let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let expected_path = manifest_dir.join("specs/pkb-flow-engine/expected-live-2026-10-05.json");
+    let expected_path = manifest_dir.join("specs/pkb-flow-engine/expected-synthetic.json");
     let content = fs::read_to_string(&expected_path)
         .unwrap_or_else(|e| panic!("failed to read expected json at {:?}: {}", expected_path, e));
     let parsed: BTreeMap<String, serde_json::Value> =
@@ -37,19 +37,19 @@ fn load_expected() -> BTreeMap<String, (f64, f64)> {
 
 // ── Acceptance Criteria ──────────────────────────────────────────────────────
 
-/// T-parity (A13): 1,502 fixture rows within 1e-9 of expected-live-2026-10-05.json.
+/// T-parity (A13): 1,147 fixture rows within 1e-9 of expected-synthetic.json.
 #[test]
-fn test_t_parity_1502_fixture_rows() {
+fn test_t_parity_1147_fixture_rows() {
     let (input, _) = load_fixture(Some(PART_OF_QUANTUM));
     let expected = load_expected();
 
-    assert_eq!(expected.len(), 1502, "expected fixture must have 1,502 rows");
+    assert_eq!(expected.len(), 1147, "expected fixture must have 1,147 rows");
 
     let outputs = compute_flow(&input);
     assert_eq!(
         outputs.len(),
-        1502,
-        "compute_flow must return exactly 1,502 open nodes"
+        1147,
+        "compute_flow must return exactly 1,147 open nodes"
     );
 
     let mut carrying_count = 0;
@@ -86,8 +86,8 @@ fn test_t_parity_1502_fixture_rows() {
     }
 
     assert_eq!(
-        carrying_count, 49,
-        "exactly 49 open nodes must carry worth on the fixture"
+        carrying_count, 21,
+        "exactly 21 open nodes must carry worth on the fixture"
     );
 }
 
@@ -155,7 +155,7 @@ fn test_t_fail_flow_failure_is_null_and_local() {
 #[test]
 fn test_flow_inv01_parallel_prerequisites_full_worth() {
     let (input, _) = load_fixture(None);
-    let b = "brain_448bb804";
+    let b = "syn_task_prereq_head";
 
     let pre: Vec<String> = input
         .edges
@@ -168,7 +168,7 @@ fn test_flow_inv01_parallel_prerequisites_full_worth() {
 
     let outputs = compute_flow(&input);
     let b_gain = outputs[b].gain.unwrap();
-    assert_eq!(clean_num(b_gain), 0.95);
+    assert_eq!(clean_num(b_gain), 0.80);
 
     for p in &pre {
         let p_gain = outputs[p].gain.unwrap();
@@ -195,7 +195,7 @@ fn test_flow_inv01_parallel_prerequisites_full_worth() {
 #[test]
 fn test_flow_inv02_split_changes_nothing_unrelated() {
     let (input, _) = load_fixture(None);
-    let p = "personal_033d02b8";
+    let p = "syn_task_split";
     let w_orig = compute_flow(&input);
     let orig_gain = w_orig[p].gain.unwrap();
 
@@ -239,19 +239,19 @@ fn test_flow_inv02_split_changes_nothing_unrelated() {
 #[test]
 fn test_flow_inv03_one_source_once_two_add() {
     let (input, _) = load_fixture(None);
-    let u = "proj-76fbc546";
+    let u = "syn_task_multi_route";
     let outputs = compute_flow(&input);
     let out = &outputs[u];
 
-    let stake_4e = out.deltas.get("targ_4e2cc92a").copied().unwrap_or(0.0);
-    let stake_7d = out.deltas.get("task_7d6f78ad").copied().unwrap_or(0.0);
+    let stake_alpha = out.deltas.get("syn_targ_alpha").copied().unwrap_or(0.0);
+    let stake_beta = out.deltas.get("syn_targ_beta").copied().unwrap_or(0.0);
 
-    assert!(stake_4e <= 1.0 + 1e-9 && stake_4e > 0.0);
-    assert_eq!(clean_num(stake_4e), 1.0);
-    assert_eq!(clean_num(stake_7d), 1.0);
+    assert!(stake_alpha <= 1.0 + 1e-9 && stake_alpha > 0.0);
+    assert_eq!(clean_num(stake_alpha), 1.0);
+    assert_eq!(clean_num(stake_beta), 1.0);
 
-    // gain = 0.60 * 1.0 + 0.35 * 1.0 = 0.95
-    assert_eq!(clean_num(out.gain.unwrap()), 0.95);
+    // gain = 0.50 * 1.0 + 0.30 * 1.0 = 0.80
+    assert_eq!(clean_num(out.gain.unwrap()), 0.80);
 }
 
 /// T-I4 (I4 / A4): a reinforcing loop converges to a finite value and is bounded.
@@ -259,9 +259,9 @@ fn test_flow_inv03_one_source_once_two_add() {
 fn test_flow_inv04_reinforcing_loop_bounded() {
     let (input, _) = load_fixture(None);
     let loop_nodes = [
-        "aops_twin_cost_monitor",
-        "aops_bootstrap_dogfood",
-        "aops_otel_full_text_container_spans",
+        "syn_loop_1",
+        "syn_loop_2",
+        "syn_loop_3",
     ];
 
     // Closed loop
@@ -286,18 +286,18 @@ fn test_flow_inv04_reinforcing_loop_bounded() {
     let feeder_opened = w_opened["feeder"].gain.unwrap();
 
     assert!(feeder_closed >= feeder_opened - 1e-9);
-    assert!((feeder_closed - 0.2965).abs() < 1e-4);
-    assert!((feeder_opened - 0.2801).abs() < 1e-4);
+    assert!((feeder_closed - 0.0533).abs() < 1e-4);
+    assert!((feeder_opened - 0.0500).abs() < 1e-4);
 }
 
 /// T-I5 (I5 / A5): a blocked task passes worth to its unblockers.
 #[test]
 fn test_flow_inv05_blocked_passes_worth() {
     let (input, _) = load_fixture(None);
-    let b = "brain_448bb804";
+    let b = "syn_task_prereq_head";
     let outputs = compute_flow(&input);
     let b_gain = outputs[b].gain.unwrap();
-    assert_eq!(clean_num(b_gain), 0.95);
+    assert_eq!(clean_num(b_gain), 0.80);
 
     let pre: Vec<String> = input
         .edges
@@ -333,7 +333,7 @@ fn test_flow_inv07_unlinked_is_default() {
     let (input, _) = load_fixture(None);
     let outputs = compute_flow(&input);
 
-    for unlinked in ["academic-b738bdc7", "task_d5f610e6"] {
+    for unlinked in ["syn_task_unlinked_1", "syn_task_unlinked_2"] {
         let out = &outputs[unlinked];
         assert_eq!(out.gain, Some(0.0));
         assert_eq!(out.loss_averted, Some(0.0));
@@ -347,12 +347,12 @@ fn test_flow_inv07_unlinked_is_default() {
 #[test]
 fn test_flow_inv08_last_step_full_worth() {
     let (input, _) = load_fixture(None);
-    let parent = "proj-f8b942d5";
-    let last = "admin-3e02c20b";
+    let parent = "syn_task_parent_last";
+    let last = "syn_task_child_last";
     let outputs = compute_flow(&input);
 
-    assert_eq!(clean_num(outputs[parent].gain.unwrap()), 1.11);
-    assert_eq!(clean_num(outputs[last].gain.unwrap()), 1.11);
+    assert_eq!(clean_num(outputs[parent].gain.unwrap()), 0.40);
+    assert_eq!(clean_num(outputs[last].gain.unwrap()), 0.40);
 }
 
 /// T-I9 (I9 / A9): adding an opportunity takes one node and changes only upstream nodes.
@@ -363,24 +363,24 @@ fn test_flow_inv09_opportunity_one_node() {
 
     let mut g2 = input.clone();
     g2.add_node("opportunity", FlowState::Open, Some(0.35));
-    g2.add_edge(FlowEdge::new("admin-3e02c20b", "opportunity", 1.0));
+    g2.add_edge(FlowEdge::new("syn_task_child_last", "opportunity", 1.0));
 
     let w2 = compute_flow(&g2);
     assert_eq!(
-        clean_num(w2["admin-3e02c20b"].gain.unwrap()),
-        clean_num(w_orig["admin-3e02c20b"].gain.unwrap() + 0.35)
+        clean_num(w2["syn_task_child_last"].gain.unwrap()),
+        clean_num(w_orig["syn_task_child_last"].gain.unwrap() + 0.35)
     );
-    assert_eq!(clean_num(w2["admin-3e02c20b"].gain.unwrap()), 1.46);
+    assert_eq!(clean_num(w2["syn_task_child_last"].gain.unwrap()), 0.75);
 }
 
 /// T-I10 (I10 / A10): open decision weights settle work by EVPI.
 #[test]
 fn test_flow_inv10_decision_value() {
     let (input, _) = load_fixture(None);
-    let d = "brain_bf2be9d8";
-    let a = "brain_7f772690";
-    let b = "proj-f8b942d5";
-    let s = "personal_92d5909f";
+    let d = "syn_task_decision";
+    let a = "syn_task_opt_a";
+    let b = "syn_task_opt_b";
+    let s = "syn_task_settles";
 
     let run_scenario = |scale: f64, decided: bool| {
         let mut g = input.clone();
@@ -430,8 +430,8 @@ fn test_flow_inv10_decision_value() {
     let v2 = run_scenario(2.0, false);
     let v0 = run_scenario(1.0, true);
 
-    assert_eq!(clean_num(v1), 0.1998);
-    assert_eq!(clean_num(v2), 0.3996);
+    assert_eq!(clean_num(v1), 0.072);
+    assert_eq!(clean_num(v2), 0.144);
     assert_eq!(clean_num(v0), 0.0);
 }
 
@@ -485,31 +485,31 @@ fn test_flow_inv12_routes_explain() {
         }
     }
 
-    // Node n_d663317dd7 carries loop extra on targ-7d49f8a0: 0.9712 against loop-free bound 0.9449
-    let node = "n_d663317dd7";
+    // Node syn_task_loop_extra carries loop extra on syn_targ_gamma: 0.5 against loop-free bound 0.375
+    let node = "syn_task_loop_extra";
     let tr = compute_routes(&input, &outputs[node], node);
-    let targ = "targ-7d49f8a0";
+    let targ = "syn_targ_gamma";
     assert!(tr.contains_key(targ));
-    let loop_extra = tr[targ].loop_extra.expect("expected loop extra on live loop");
-    assert!((loop_extra - 0.0263).abs() < 1e-4);
+    let loop_extra = tr[targ].loop_extra.expect("expected loop extra on synthetic loop");
+    assert!((loop_extra - 0.125).abs() < 1e-4);
 }
 
-/// T-I13 (I13 / A13): calibration cases on real fixture (U1–U6).
+/// T-I13 (I13 / A13): calibration cases on synthetic fixture (U1–U6).
 #[test]
-fn test_flow_inv13_calibration_cases_live_fixture() {
+fn test_flow_inv13_calibration_cases_synthetic_fixture() {
     let (input, _) = load_fixture(Some(PART_OF_QUANTUM));
     let outputs = compute_flow(&input);
 
-    // Case 2: unlinked leaves carry 0.0 on the live fixture
-    assert_eq!(clean_num(outputs["academic-b738bdc7"].gain.unwrap_or(0.0)), 0.0);
+    // Case 2: unlinked leaves carry 0.0 on synthetic fixture
+    assert_eq!(clean_num(outputs["syn_task_unlinked_1"].gain.unwrap_or(0.0)), 0.0);
 
-    // Case 4: admin-3e02c20b carries 0.0 (unlinked to priced targets under part_of 0.0)
-    assert_eq!(clean_num(outputs["admin-3e02c20b"].gain.unwrap_or(0.0)), 0.0);
+    // Case 4: syn_task_child_last carries 0.0 (unlinked to priced targets under part_of 0.0)
+    assert_eq!(clean_num(outputs["syn_task_child_last"].gain.unwrap_or(0.0)), 0.0);
 
-    // Case 6: proj-76fbc546 carries 0.95 direct contribution to priced targets
-    let p_gain = outputs["proj-76fbc546"].gain.unwrap_or(0.0);
-    assert_eq!(clean_num(p_gain), 0.95);
-    let p_loss = outputs["proj-76fbc546"].loss_averted.unwrap_or(0.0);
+    // Case 6: syn_task_multi_route carries 0.80 direct contribution to priced targets
+    let p_gain = outputs["syn_task_multi_route"].gain.unwrap_or(0.0);
+    assert_eq!(clean_num(p_gain), 0.80);
+    let p_loss = outputs["syn_task_multi_route"].loss_averted.unwrap_or(0.0);
     assert_eq!(clean_num(p_loss), 0.0);
 }
 
@@ -517,19 +517,19 @@ fn test_flow_inv13_calibration_cases_live_fixture() {
 #[test]
 fn test_flow_inv14_negative_target_symmetry() {
     let (input, _) = load_fixture(None);
-    let safety_nodes = ["proj-db6ded3c", "proj-76fbc546", "personal_344a9ec6"];
+    let safety_nodes = ["syn_task_safety_1", "syn_task_multi_route", "syn_task_safety_2"];
     let w_orig = compute_flow(&input);
 
     // Positive target
     let mut g_pos = input.clone();
-    g_pos.add_node("targ_safety", FlowState::Open, Some(0.35));
+    g_pos.add_node("syn_targ_shield", FlowState::Open, Some(0.35));
     let w_pos = compute_flow(&g_pos);
 
     // Negative target (harm to avoid)
     let mut g_neg = input.clone();
     g_neg.add_node("harm_someone_hurt", FlowState::Open, Some(-0.35));
     for e in &input.edges {
-        if e.dst == "targ_safety" {
+        if e.dst == "syn_targ_shield" {
             let mut e_harm = e.clone();
             e_harm.dst = "harm_someone_hurt".to_string();
             e_harm.effect = FlowEffect::Harms;
@@ -572,9 +572,9 @@ fn test_flow_inv15_gain_and_loss_not_netted() {
 fn test_flow_inv16_harmful_loop_settles() {
     let (input, _) = load_fixture(None);
     let loop_nodes = [
-        "aops_twin_cost_monitor",
-        "aops_bootstrap_dogfood",
-        "aops_otel_full_text_container_spans",
+        "syn_loop_1",
+        "syn_loop_2",
+        "syn_loop_3",
     ];
 
     // Live quantum harms closing edge
@@ -590,7 +590,7 @@ fn test_flow_inv16_harmful_loop_settles() {
         }
     }
     let w_harm = compute_flow(&g_harm);
-    assert!((w_harm["feeder"].gain.unwrap() - 0.0396).abs() < 1e-4);
+    assert!((w_harm["feeder"].gain.unwrap() - 0.0556).abs() < 1e-4);
 
     // Pure negative feedback loop at quantum 1.0
     let mut g_neg_loop = g_harm.clone();
@@ -600,7 +600,7 @@ fn test_flow_inv16_harmful_loop_settles() {
         }
     }
     let w_neg_loop = compute_flow(&g_neg_loop);
-    assert!((w_neg_loop["feeder"].gain.unwrap() - 0.0156).abs() < 1e-4);
+    assert!((w_neg_loop["feeder"].gain.unwrap() - 0.0200).abs() < 1e-4);
 }
 
 /// T-I17 (I17 / A17): constants and isolation of cliff lane parameters.
@@ -647,9 +647,9 @@ fn test_routes_cap_and_explanation() {
 fn test_flow_cost_budget() {
     let (mut input, _) = load_fixture(Some(PART_OF_QUANTUM));
 
-    // Price all 26 targets at 0.35
+    // Price all targets at 0.35
     for (id, st) in &input.state {
-        if *st == FlowState::Open && (id.starts_with("targ_") || id.starts_with("targ-")) {
+        if *st == FlowState::Open && (id.starts_with("syn_targ") || id.starts_with("targ_") || id.starts_with("targ-")) {
             input.worth.insert(id.clone(), 0.35);
         }
     }

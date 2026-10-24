@@ -5,16 +5,23 @@ import * as os from 'os';
 import {
   activate,
   collectDescendants,
+  computeDocumentLinks,
+  computeGutterBadges,
+  computeHeaderCodeLenses,
+  computeInlayHints,
+  computeSemanticTokens,
   createMarkdownItPlugin,
   extractReferenceAtPosition,
   formatBodyMicroHeadersHtml,
   getOutputChannel,
+  getTraceOutputChannel,
   handleActiveEditorChanged,
   logDebug,
   logError,
   logInfo,
   logWarn,
   openReferencedFile,
+  PkbDocumentLinkProvider,
   PkbPreviewIndex,
   PkbPreviewNode,
   renderHoverCardHtml,
@@ -115,6 +122,78 @@ describe('VS Code Extension - Unit & Behavior Tests', () => {
       'Should log ERROR message with error details'
     );
     assert.ok(joined.includes('[DEBUG] Verbose trace check'), 'Should log DEBUG message');
+  });
+
+  it('provides working LogOutputChannel methods (.error, .warn, .info, .debug, .trace) on OutputChannel', () => {
+    resetOutputChannelsForTesting();
+    createdOutputChannels.clear();
+
+    const channel = getOutputChannel();
+    assert.strictEqual(typeof channel.error, 'function', 'channel.error must be a function');
+    assert.strictEqual(typeof channel.warn, 'function', 'channel.warn must be a function');
+    assert.strictEqual(typeof channel.info, 'function', 'channel.info must be a function');
+    assert.strictEqual(typeof channel.debug, 'function', 'channel.debug must be a function');
+    assert.strictEqual(typeof channel.trace, 'function', 'channel.trace must be a function');
+
+    // Test calling error with string (as vscode-languageclient does when piping stderr)
+    assert.doesNotThrow(() => {
+      channel.error('LSP stderr crash test');
+    });
+
+    // Test calling error with Error object
+    assert.doesNotThrow(() => {
+      channel.error(new Error('LSP transport error'));
+    });
+
+    const lines = (channel as any).lines.join('\n');
+    assert.ok(lines.includes('[ERROR] LSP stderr crash test'), 'Should contain string error');
+    assert.ok(lines.includes('[ERROR] LSP transport error'), 'Should contain Error object message');
+  });
+
+  it('safely polyfills .error on plain OutputChannel lacking LogOutputChannel methods', () => {
+    resetOutputChannelsForTesting();
+
+    const plainLines: string[] = [];
+    const plainMockWindow: any = {
+      createOutputChannel: (name: string) => ({
+        name,
+        append: (v: string) => plainLines.push(v),
+        appendLine: (v: string) => plainLines.push(v),
+        replace: () => {},
+        clear: () => {
+          plainLines.length = 0;
+        },
+        show: () => {},
+        hide: () => {},
+        dispose: () => {},
+      }),
+    };
+
+    const channel = getOutputChannel(plainMockWindow);
+    assert.strictEqual(typeof channel.error, 'function', 'channel.error must be polyfilled');
+
+    // This simulates the vscode-languageclient stderr piping: outputChannel.error(data)
+    assert.doesNotThrow(() => {
+      channel.error('server stderr line');
+    });
+
+    assert.ok(
+      plainLines.some((l) => l.includes('[ERROR] server stderr line')),
+      'Polyfilled .error must append error line to channel'
+    );
+  });
+
+  it('provides working LogOutputChannel on getTraceOutputChannel', () => {
+    resetOutputChannelsForTesting();
+    createdOutputChannels.clear();
+
+    const traceChannel = getTraceOutputChannel();
+    assert.strictEqual(typeof traceChannel.error, 'function');
+    assert.strictEqual(typeof traceChannel.trace, 'function');
+    assert.doesNotThrow(() => {
+      traceChannel.error('Trace error test');
+      traceChannel.trace('Trace verbose test');
+    });
   });
 
   it('resolves pkbRoot across configured, workspace markers, ACA_DATA, and candidate paths with diagnostics', () => {
@@ -629,4 +708,294 @@ Child body.
       fs.rmSync(tmpPkb, { recursive: true, force: true });
     }
   });
+
+  it('computes inline hints with target title, status, and weight', () => {
+    const tmpPkb = fs.mkdtempSync(path.join(os.tmpdir(), 'pkb-inlay-test-'));
+    try {
+      const taskPath = path.join(tmpPkb, 'task-inlay.md');
+      fs.writeFileSync(
+        taskPath,
+        `---
+id: task-inlay
+title: Inlay Hint Target
+type: task
+status: ready
+weight: 2.5
+---
+Body text.
+`
+      );
+
+      const index = new PkbPreviewIndex(tmpPkb);
+      const docText = 'Check [[task-inlay]] today.';
+      const hints = computeInlayHints(docText, index);
+
+      assert.strictEqual(hints.length, 1);
+      assert.strictEqual(hints[0].position.line, 0);
+      assert.strictEqual(hints[0].position.character, 20);
+      assert.ok(hints[0].label.includes('Inlay Hint Target'), 'Hint should have target title');
+      assert.ok(hints[0].label.includes('ready'), 'Hint should have status');
+      assert.ok(hints[0].label.includes('2.5') || hints[0].label.includes('w:'), 'Hint should have weight');
+    } finally {
+      fs.rmSync(tmpPkb, { recursive: true, force: true });
+    }
+  });
+
+  it('computes semantic tokens with distinct types for task states and node types', () => {
+    const tmpPkb = fs.mkdtempSync(path.join(os.tmpdir(), 'pkb-sem-test-'));
+    try {
+      fs.writeFileSync(
+        path.join(tmpPkb, 't-ready.md'),
+        '---\nid: t-ready\ntitle: Ready\ntype: task\nstatus: ready\n---\n'
+      );
+      fs.writeFileSync(
+        path.join(tmpPkb, 't-done.md'),
+        '---\nid: t-done\ntitle: Done\ntype: task\nstatus: done\n---\n'
+      );
+      fs.writeFileSync(
+        path.join(tmpPkb, 't-blocked.md'),
+        '---\nid: t-blocked\ntitle: Blocked\ntype: task\nstatus: blocked\n---\n'
+      );
+      fs.writeFileSync(
+        path.join(tmpPkb, 'n-info.md'),
+        '---\nid: n-info\ntitle: Info\ntype: info\n---\n'
+      );
+      fs.writeFileSync(
+        path.join(tmpPkb, 'n-index.md'),
+        '---\nid: n-index\ntitle: Index\ntype: index\n---\n'
+      );
+
+      const index = new PkbPreviewIndex(tmpPkb);
+      const docText = '[[t-ready]] [[t-done]] [[t-blocked]] [[n-info]] [[n-index]]';
+      const tokens = computeSemanticTokens(docText, index);
+
+      assert.strictEqual(tokens.length, 5);
+      // ready: 0, done: 1, blocked: 2, info: 4, index: 5
+      assert.strictEqual(tokens[0].tokenType, 0, 'Ready task has tokenType 0');
+      assert.strictEqual(tokens[1].tokenType, 1, 'Done task has tokenType 1');
+      assert.strictEqual(tokens[2].tokenType, 2, 'Blocked task has tokenType 2');
+      assert.strictEqual(tokens[3].tokenType, 4, 'Info node has tokenType 4');
+      assert.strictEqual(tokens[4].tokenType, 5, 'Index node has tokenType 5');
+    } finally {
+      fs.rmSync(tmpPkb, { recursive: true, force: true });
+    }
+  });
+
+  it('computes header bar CodeLens with parent by title, backlinks, subtasks by status, and dispatch action', () => {
+    const tmpPkb = fs.mkdtempSync(path.join(os.tmpdir(), 'pkb-lens-test-'));
+    try {
+      fs.writeFileSync(
+        path.join(tmpPkb, 'parent-node.md'),
+        '---\nid: parent-node\ntitle: Epic Root\ntype: task\nstatus: in_progress\n---\n'
+      );
+      fs.writeFileSync(
+        path.join(tmpPkb, 'sub-ready.md'),
+        '---\nid: sub-ready\ntitle: Child 1\ntype: task\nstatus: ready\nparent: main-doc\n---\n'
+      );
+      fs.writeFileSync(
+        path.join(tmpPkb, 'sub-done.md'),
+        '---\nid: sub-done\ntitle: Child 2\ntype: task\nstatus: done\nparent: main-doc\n---\n'
+      );
+      fs.writeFileSync(
+        path.join(tmpPkb, 'linker.md'),
+        '---\nid: linker\ntitle: Linker\ntype: note\n---\nReferences [[main-doc]] here.\n'
+      );
+      fs.writeFileSync(
+        path.join(tmpPkb, 'main-doc.md'),
+        '---\nid: main-doc\ntitle: Main Document\ntype: task\nstatus: in_progress\nparent: parent-node\n---\nMain content\n'
+      );
+
+      const index = new PkbPreviewIndex(tmpPkb);
+      const docText = fs.readFileSync(path.join(tmpPkb, 'main-doc.md'), 'utf8');
+      const lenses = computeHeaderCodeLenses(path.join(tmpPkb, 'main-doc.md'), docText, index);
+
+      assert.strictEqual(lenses.length, 4, 'Header bar should have 4 CodeLens items');
+
+      const titles = lenses.map((l) => l.command?.title || '');
+      assert.ok(
+        titles.some((t) => t.includes('Parent: Epic Root')),
+        `Should show parent by title, got: ${titles.join(' | ')}`
+      );
+      assert.ok(
+        titles.some((t) => t.includes('backlink')),
+        `Should show backlink count, got: ${titles.join(' | ')}`
+      );
+      assert.ok(
+        titles.some((t) => t.includes('Subtasks:') && t.includes('ready') && t.includes('done')),
+        `Should show subtasks by status, got: ${titles.join(' | ')}`
+      );
+      assert.ok(
+        lenses.some((l) => l.command?.command === 'mem.dispatch'),
+        `Should include dispatch command action, got: ${titles.join(' | ')}`
+      );
+    } finally {
+      fs.rmSync(tmpPkb, { recursive: true, force: true });
+    }
+  });
+
+  it('computes gutter badges on lines containing task links', () => {
+    const tmpPkb = fs.mkdtempSync(path.join(os.tmpdir(), 'pkb-gutter-test-'));
+    try {
+      fs.writeFileSync(
+        path.join(tmpPkb, 'task-r.md'),
+        '---\nid: task-r\ntitle: Task Ready\ntype: task\nstatus: ready\n---\n'
+      );
+      fs.writeFileSync(
+        path.join(tmpPkb, 'task-b.md'),
+        '---\nid: task-b\ntitle: Task Blocked\ntype: task\nstatus: blocked\n---\n'
+      );
+      fs.writeFileSync(
+        path.join(tmpPkb, 'note-plain.md'),
+        '---\nid: note-plain\ntitle: Plain Note\ntype: note\n---\n'
+      );
+
+      const index = new PkbPreviewIndex(tmpPkb);
+      const text =
+        'Line 0: [[task-r]] here\n' +
+        'Line 1: [[note-plain]] only\n' +
+        'Line 2: [[task-b]] blocker\n' +
+        'Line 3: no links';
+
+      const badges = computeGutterBadges(text, index);
+      assert.strictEqual(badges.length, 2, 'Should only produce gutter badges for lines with task links');
+      assert.strictEqual(badges[0].line, 0);
+      assert.strictEqual(badges[0].badge, 'ready');
+      assert.strictEqual(badges[1].line, 2);
+      assert.strictEqual(badges[1].badge, 'blocked');
+    } finally {
+      fs.rmSync(tmpPkb, { recursive: true, force: true });
+    }
+  });
+
+  it('translates markdown PKB links (wikilinks, obsidian URIs, markdown links, bare IDs) and clicking opens the linked node', async () => {
+    const tmpPkb = fs.mkdtempSync(path.join(os.tmpdir(), 'pkb-links-test-'));
+    try {
+      const tasksDir = path.join(tmpPkb, 'tasks');
+      fs.mkdirSync(tasksDir, { recursive: true });
+
+      const targetPath = path.join(tasksDir, 'task-link-target.md');
+      const targetContent = [
+        '---',
+        'id: task-link-target',
+        'title: Target Task Title',
+        'type: task',
+        'status: ready',
+        '---',
+        'Body content of the target task.',
+      ].join('\n');
+      fs.writeFileSync(targetPath, targetContent);
+
+      const index = new PkbPreviewIndex(tmpPkb);
+      assert.strictEqual(index.size, 1);
+
+      // 1. Test index.resolve on Obsidian URIs
+      const resObs1 = index.resolve('obsidian://open?vault=brain&file=task-link-target');
+      assert.ok(resObs1, 'Must resolve obsidian:// URI with bare node ID');
+      assert.strictEqual(resObs1.id, 'task-link-target');
+
+      const resObs2 = index.resolve('obsidian://open?vault=brain&file=tasks%2Ftask-link-target.md');
+      assert.ok(resObs2, 'Must resolve obsidian:// URI with encoded relative path');
+      assert.strictEqual(resObs2.id, 'task-link-target');
+
+      const resObs3 = index.resolve('obsidian://open?file=tasks/task-link-target.md');
+      assert.ok(resObs3, 'Must resolve obsidian:// URI with unencoded relative path');
+      assert.strictEqual(resObs3.id, 'task-link-target');
+
+      // 2. Test extractReferenceAtPosition on Obsidian URI
+      const lineWithObsidian = 'Open this: obsidian://open?vault=brain&file=task-link-target now';
+      const extractedObs = extractReferenceAtPosition(lineWithObsidian, 20);
+      assert.ok(extractedObs, 'Should extract obsidian URI at cursor');
+      assert.strictEqual(extractedObs.target, 'obsidian://open?vault=brain&file=task-link-target');
+
+      // 3. Test document link translation across all markdown PKB link variants
+      const markdownDoc = [
+        'Line 0: [[task-link-target]]',
+        'Line 1: [[task-link-target|Custom Alias]]',
+        'Line 2: [Standard Link](task-link-target)',
+        'Line 3: [Obsidian Link](obsidian://open?vault=brain&file=task-link-target)',
+        'Line 4: obsidian://open?vault=brain&file=task-link-target',
+        'Line 5: task-link-target',
+      ].join('\n');
+
+      const docLinks = computeDocumentLinks(markdownDoc, index);
+      console.log('\n--- SPECIMEN CAPTURE: TRANSLATED MARKDOWN PKB LINKS ---');
+      docLinks.forEach((dl: any, i: number) => {
+        console.log(`[Link ${i}] line=${dl.range.start.line} char=${dl.range.start.character}-${dl.range.end.character} target=${dl.target.toString()} tooltip="${dl.tooltip}"`);
+      });
+      console.log('--- END SPECIMEN CAPTURE ---\n');
+
+      assert.strictEqual(docLinks.length, 6, 'Must translate all 6 PKB link variants into DocumentLinks');
+      const expectedUriStr = `file://${targetPath}`;
+
+      for (let i = 0; i < 6; i++) {
+        const link = docLinks[i];
+        assert.ok(link, `Link ${i} must exist`);
+        assert.ok(link.target, `Link ${i} target must exist`);
+        assert.strictEqual(link.range.start.line, i, `Link ${i} must be on line ${i}`);
+        assert.strictEqual(
+          link.target.toString(),
+          expectedUriStr,
+          `Link ${i} must point to file://${targetPath}`
+        );
+        assert.ok(
+          link.tooltip?.includes('Target Task Title') || link.tooltip?.includes('task-link-target'),
+          `Link ${i} tooltip must reference target title or ID`
+        );
+      }
+
+      // 4. Test clicking/activating a translated link opens the linked node in a permanent new editor tab (preview: false)
+      const mockOpenedDocs: any[] = [];
+      const mockShowOptions: any[] = [];
+      const mockWorkspace: any = {
+        openTextDocument: async (uri: any) => {
+          mockOpenedDocs.push(uri);
+          return { uri, getText: () => targetContent };
+        },
+      };
+      const mockWindow: any = {
+        showTextDocument: async (doc: any, options: any) => {
+          mockShowOptions.push(options);
+          return { document: doc };
+        },
+      };
+
+      // Simulate clicking the translated wikilink (Link 0)
+      const link0Target = docLinks[0]?.target?.toString();
+      assert.ok(link0Target, 'Link 0 target must exist');
+      const clickedEditor0 = await openReferencedFile(
+        link0Target,
+        { preview: false },
+        mockWorkspace,
+        mockWindow
+      );
+      assert.ok(clickedEditor0, 'Clicking wikilink must open target document');
+      assert.strictEqual(mockShowOptions[0].preview, false, 'Must open in new tab (preview: false)');
+      assert.strictEqual(clickedEditor0.document.getText(), targetContent);
+
+      // Simulate clicking the translated obsidian URI link (Link 3)
+      const link3Target = docLinks[3]?.target?.toString();
+      assert.ok(link3Target, 'Link 3 target must exist');
+      const clickedEditor3 = await openReferencedFile(
+        link3Target,
+        { preview: false },
+        mockWorkspace,
+        mockWindow
+      );
+      assert.ok(clickedEditor3, 'Clicking obsidian link must open target document');
+      assert.strictEqual(mockShowOptions[1].preview, false, 'Must open in new tab (preview: false)');
+
+      // 5. Test PkbDocumentLinkProvider class
+      const provider = new PkbDocumentLinkProvider(index);
+      const fakeDoc: any = {
+        getText: () => markdownDoc,
+        lineCount: 6,
+        lineAt: (n: number) => ({ text: markdownDoc.split('\n')[n] }),
+      };
+      const provided = provider.provideDocumentLinks(fakeDoc);
+      assert.strictEqual(provided.length, 6, 'PkbDocumentLinkProvider must return all 6 translated links');
+    } finally {
+      fs.rmSync(tmpPkb, { recursive: true, force: true });
+    }
+  });
+
 });

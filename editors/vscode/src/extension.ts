@@ -15,8 +15,8 @@ import {
 } from 'vscode-languageclient/node';
 
 let client: LanguageClient | undefined;
-let outputChannel: vscode.OutputChannel | undefined;
-let traceOutputChannel: vscode.OutputChannel | undefined;
+let outputChannel: vscode.LogOutputChannel | undefined;
+let traceOutputChannel: vscode.LogOutputChannel | undefined;
 let statusBarItem: vscode.StatusBarItem | undefined;
 let previewIndex: PkbPreviewIndex | undefined;
 let currentPkbRoot: string = '.';
@@ -35,17 +35,67 @@ const IGNORED_DIRS = new Set([
   '.aops',
 ]);
 
+function formatLogLine(level: 'INFO' | 'WARN' | 'ERROR' | 'DEBUG', message: string): string {
+  return `[${new Date().toISOString()}] [${level}] ${message}`;
+}
+
+/**
+ * Ensure an OutputChannel implements the LogOutputChannel interface expected by LanguageClient.
+ */
+function ensureLogOutputChannel(channel: vscode.OutputChannel): vscode.LogOutputChannel {
+  const logChan = channel as vscode.LogOutputChannel;
+  if (typeof logChan.error !== 'function') {
+    logChan.error = (msg: string | Error, ..._args: any[]) => {
+      const text = msg instanceof Error ? (msg.message || String(msg)) : String(msg);
+      channel.appendLine(formatLogLine('ERROR', text));
+    };
+  }
+  if (typeof logChan.warn !== 'function') {
+    logChan.warn = (msg: string, ..._args: any[]) => {
+      channel.appendLine(formatLogLine('WARN', String(msg)));
+    };
+  }
+  if (typeof logChan.info !== 'function') {
+    logChan.info = (msg: string, ..._args: any[]) => {
+      channel.appendLine(formatLogLine('INFO', String(msg)));
+    };
+  }
+  if (typeof logChan.debug !== 'function') {
+    logChan.debug = (msg: string, ..._args: any[]) => {
+      channel.appendLine(formatLogLine('DEBUG', String(msg)));
+    };
+  }
+  if (typeof logChan.trace !== 'function') {
+    logChan.trace = (msg: string, ..._args: any[]) => {
+      channel.appendLine(formatLogLine('DEBUG', String(msg)));
+    };
+  }
+  if (logChan.logLevel === undefined) {
+    (logChan as any).logLevel = (vscode.LogLevel as any)?.Info ?? 3;
+  }
+  if (typeof logChan.onDidChangeLogLevel !== 'function') {
+    (logChan as any).onDidChangeLogLevel = () => ({ dispose: () => {} });
+  }
+  return logChan;
+}
+
 /**
  * Get or create the primary "Mem PKB LSP" OutputChannel.
  */
-export function getOutputChannel(windowObj: typeof vscode.window = vscode.window): vscode.OutputChannel {
+export function getOutputChannel(windowObj: typeof vscode.window = vscode.window): vscode.LogOutputChannel {
   if (!outputChannel && typeof windowObj?.createOutputChannel === 'function') {
-    outputChannel = windowObj.createOutputChannel('Mem PKB LSP');
+    try {
+      outputChannel = (windowObj as any).createOutputChannel('Mem PKB LSP', { log: true });
+    } catch {
+      outputChannel = (windowObj as any).createOutputChannel('Mem PKB LSP');
+    }
   }
-  if (!outputChannel) {
+  if (outputChannel) {
+    outputChannel = ensureLogOutputChannel(outputChannel);
+  } else {
     // Fallback no-op channel if window.createOutputChannel is unavailable
     const lines: string[] = [];
-    outputChannel = {
+    const fallback = {
       name: 'Mem PKB LSP',
       append: (val: string) => {
         lines.push(val);
@@ -64,6 +114,7 @@ export function getOutputChannel(windowObj: typeof vscode.window = vscode.window
       hide: () => {},
       dispose: () => {},
     } as unknown as vscode.OutputChannel;
+    outputChannel = ensureLogOutputChannel(fallback);
   }
   return outputChannel;
 }
@@ -73,11 +124,17 @@ export function getOutputChannel(windowObj: typeof vscode.window = vscode.window
  */
 export function getTraceOutputChannel(
   windowObj: typeof vscode.window = vscode.window
-): vscode.OutputChannel {
+): vscode.LogOutputChannel {
   if (!traceOutputChannel && typeof windowObj?.createOutputChannel === 'function') {
-    traceOutputChannel = windowObj.createOutputChannel('Mem PKB LSP Trace');
+    try {
+      traceOutputChannel = (windowObj as any).createOutputChannel('Mem PKB LSP Trace', { log: true });
+    } catch {
+      traceOutputChannel = (windowObj as any).createOutputChannel('Mem PKB LSP Trace');
+    }
   }
-  if (!traceOutputChannel) {
+  if (traceOutputChannel) {
+    traceOutputChannel = ensureLogOutputChannel(traceOutputChannel);
+  } else {
     traceOutputChannel = getOutputChannel(windowObj);
   }
   return traceOutputChannel;
@@ -91,10 +148,6 @@ export function resetOutputChannelsForTesting(): void {
   traceOutputChannel = undefined;
   lastServerError = undefined;
   serverStatus = 'stopped';
-}
-
-function formatLogLine(level: 'INFO' | 'WARN' | 'ERROR' | 'DEBUG', message: string): string {
-  return `[${new Date().toISOString()}] [${level}] ${message}`;
 }
 
 export function logInfo(message: string): string {
@@ -295,9 +348,15 @@ export interface PkbPreviewNode {
   type?: string;
   status?: string;
   intent?: string | number;
+  weight?: string | number;
+  downstreamWeight?: number;
+  backlinkCount?: number;
+  children?: string[];
+  subtasks?: string[];
   tags: string[];
   parent?: string;
   aliases: string[];
+  outgoingLinks?: string[];
   bodyExcerpt: string;
   hasMoreBody: boolean;
   absPath: string;
@@ -377,6 +436,12 @@ export function parseMarkdownNode(
     fields.intent !== undefined && fields.intent !== ''
       ? fields.intent
       : undefined;
+  const weight =
+    fields.weight !== undefined && fields.weight !== ''
+      ? fields.weight
+      : (fields.downstream_weight !== undefined && fields.downstream_weight !== ''
+          ? fields.downstream_weight
+          : undefined);
 
   let tags: string[] = [];
   if (Array.isArray(fields.tags)) {
@@ -412,15 +477,24 @@ export function parseMarkdownNode(
   const bodyExcerpt = bodyLines.slice(0, 12).join('\n');
   const hasMoreBody = bodyLines.length > 12;
 
+  const wikiLinkRe = /\[\[([a-zA-Z0-9_\-\.\/]+)(?:\|[^\]]+)?\]\]/g;
+  const outgoingLinks: string[] = [];
+  let linkMatch: RegExpExecArray | null;
+  while ((linkMatch = wikiLinkRe.exec(body)) !== null) {
+    outgoingLinks.push(linkMatch[1].trim());
+  }
+
   return {
     id,
     label,
     type,
     status,
     intent,
+    weight,
     tags,
     parent,
     aliases,
+    outgoingLinks,
     bodyExcerpt,
     hasMoreBody,
     absPath,
@@ -506,6 +580,7 @@ export class PkbPreviewIndex {
     };
 
     scanDir(pkbRoot);
+    this.computeGraphRelationships();
 
     if (this.nodes.length === 0) {
       logWarn(`PKB preview index found 0 markdown nodes in pkbRoot: ${pkbRoot}`);
@@ -514,6 +589,42 @@ export class PkbPreviewIndex {
     }
 
     return this.nodes.length;
+  }
+
+  public computeGraphRelationships(): void {
+    for (const node of this.nodes) {
+      node.backlinkCount = 0;
+      node.children = [];
+      node.subtasks = [];
+    }
+
+    const wikiRe = /\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g;
+    for (const node of this.nodes) {
+      if (node.parent) {
+        const pnode = this.resolve(node.parent);
+        if (pnode) {
+          if (!pnode.children) pnode.children = [];
+          if (!pnode.children.includes(node.id)) {
+            pnode.children.push(node.id);
+          }
+          if (node.type === 'subtask') {
+            if (!pnode.subtasks) pnode.subtasks = [];
+            if (!pnode.subtasks.includes(node.id)) {
+              pnode.subtasks.push(node.id);
+            }
+          }
+        }
+      }
+
+      // Count backlinks across full document body
+      const links = node.outgoingLinks || [];
+      for (const target of links) {
+        const targetNode = this.resolve(target);
+        if (targetNode) {
+          targetNode.backlinkCount = (targetNode.backlinkCount || 0) + 1;
+        }
+      }
+    }
   }
 
   public indexNode(node: PkbPreviewNode): void {
@@ -575,6 +686,25 @@ export class PkbPreviewIndex {
       return undefined;
     }
     let clean = rawTarget.trim();
+    if (clean.startsWith('obsidian://')) {
+      try {
+        const parsedUrl = new URL(clean);
+        const fileParam = parsedUrl.searchParams.get('file');
+        if (fileParam) {
+          clean = fileParam;
+        }
+      } catch {
+        const match = /[?&]file=([^&#]+)/i.exec(clean);
+        if (match) {
+          clean = match[1];
+        }
+      }
+    }
+    try {
+      clean = decodeURIComponent(clean);
+    } catch {
+      // ignore malformed percent encoding
+    }
     if (clean.startsWith('[[') && clean.endsWith(']]')) {
       clean = clean.slice(2, -2).split('|')[0].trim();
     }
@@ -652,6 +782,517 @@ export function getPreviewIndex(): PkbPreviewIndex {
   }
   return previewIndex;
 }
+
+export interface PkbInlayHintItem {
+  position: { line: number; character: number };
+  label: string;
+  kind?: number;
+  tooltip?: string;
+}
+
+export function computeInlayHints(
+  documentText: string,
+  index: PkbPreviewIndex
+): PkbInlayHintItem[] {
+  const hints: PkbInlayHintItem[] = [];
+  const lines = documentText.split('\n');
+  const wikiRe = /\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g;
+
+  for (let lineIdx = 0; lineIdx < lines.length; lineIdx++) {
+    const line = lines[lineIdx];
+    let match: RegExpExecArray | null;
+    wikiRe.lastIndex = 0;
+    while ((match = wikiRe.exec(line)) !== null) {
+      const fullMatch = match[0];
+      const target = match[1].trim();
+      const endChar = match.index + fullMatch.length;
+      const node = index.resolve(target);
+      if (node) {
+        let weightStr: string | undefined;
+        if (node.weight !== undefined && node.weight !== '') {
+          weightStr = String(node.weight);
+        } else if (node.intent !== undefined && node.intent !== '') {
+          weightStr = String(node.intent);
+        }
+
+        let label: string;
+        if (node.status && weightStr) {
+          label = `: ${node.label} [${node.status} · w:${weightStr}]`;
+        } else if (node.status) {
+          label = `: ${node.label} [${node.status}]`;
+        } else if (weightStr) {
+          label = `: ${node.label} [w:${weightStr}]`;
+        } else {
+          label = `: ${node.label}`;
+        }
+
+        hints.push({
+          position: { line: lineIdx, character: endChar },
+          label,
+          tooltip: `${node.id}: ${node.label}`,
+        });
+      }
+    }
+  }
+  return hints;
+}
+
+export interface PkbCodeLensItem {
+  range: { start: { line: number; character: number }; end: { line: number; character: number } };
+  command?: { title: string; command: string; arguments?: any[] };
+}
+
+export function computeHeaderCodeLenses(
+  documentUri: string,
+  documentText: string,
+  index: PkbPreviewIndex
+): PkbCodeLensItem[] {
+  let node: PkbPreviewNode | undefined;
+  for (const line of documentText.split('\n')) {
+    const trimmed = line.trim();
+    if (trimmed.startsWith('id:')) {
+      const idVal = trimmed.slice(3).trim().replace(/^['"]|['"]$/g, '');
+      if (idVal) {
+        node = index.resolve(idVal);
+        break;
+      }
+    }
+  }
+  if (!node) {
+    node = index.resolve(documentUri);
+  }
+  if (!node) {
+    return [];
+  }
+
+  const lenses: PkbCodeLensItem[] = [];
+  const range = {
+    start: { line: 0, character: 0 },
+    end: { line: 0, character: 0 },
+  };
+
+  // 1. Parent
+  let parentTitle = 'Parent: none';
+  let parentArgs: any[] | undefined;
+  if (node.parent) {
+    const parentNode = index.resolve(node.parent);
+    if (parentNode) {
+      parentTitle = `Parent: ${parentNode.label}`;
+      parentArgs = [parentNode.absPath || parentNode.id];
+    } else {
+      parentTitle = `Parent: ${node.parent}`;
+      parentArgs = [node.parent];
+    }
+  }
+  lenses.push({
+    range,
+    command: {
+      title: parentTitle,
+      command: parentArgs ? 'mem.openReference' : '',
+      arguments: parentArgs,
+    },
+  });
+
+  // 2. Backlinks
+  const backlinks = node.backlinkCount || 0;
+  lenses.push({
+    range,
+    command: {
+      title: backlinks === 1 ? '1 backlink' : `${backlinks} backlinks`,
+      command: '',
+    },
+  });
+
+  // 3. Subtasks by status
+  const subtaskIds = [...(node.children || []), ...(node.subtasks || [])];
+  const uniqueSubtasks = Array.from(new Set(subtaskIds));
+  const counts: Record<string, number> = {};
+  for (const sid of uniqueSubtasks) {
+    const snode = index.resolve(sid);
+    const st = snode?.status || 'unknown';
+    counts[st] = (counts[st] || 0) + 1;
+  }
+
+  let subtaskTitle = 'Subtasks: 0';
+  if (Object.keys(counts).length > 0) {
+    const order = ['ready', 'in_progress', 'blocked', 'done'];
+    const parts: string[] = [];
+    for (const key of order) {
+      if (counts[key]) {
+        parts.push(`${counts[key]} ${key}`);
+      }
+    }
+    for (const key of Object.keys(counts)) {
+      if (!order.includes(key)) {
+        parts.push(`${counts[key]} ${key}`);
+      }
+    }
+    subtaskTitle = `Subtasks: ${parts.join(' · ')}`;
+  }
+  lenses.push({
+    range,
+    command: {
+      title: subtaskTitle,
+      command: '',
+    },
+  });
+
+  // 4. Dispatch action
+  lenses.push({
+    range,
+    command: {
+      title: 'Dispatch',
+      command: 'mem.dispatch',
+      arguments: [node.id],
+    },
+  });
+
+  return lenses;
+}
+
+export const SEMANTIC_TOKEN_TYPES = [
+  'pkbTaskReady',
+  'pkbTaskDone',
+  'pkbTaskBlocked',
+  'pkbTaskOther',
+  'pkbNodeInfo',
+  'pkbNodeIndex',
+  'pkbNodeChapter',
+  'pkbNodeDefault',
+];
+
+export const SEMANTIC_TOKEN_MODIFIERS = [
+  'ready',
+  'done',
+  'blocked',
+  'inProgress',
+  'task',
+  'info',
+  'index',
+  'chapter',
+];
+
+export interface PkbRawSemanticToken {
+  line: number;
+  start: number;
+  length: number;
+  tokenType: number;
+  tokenModifiers: number;
+}
+
+export function computeSemanticTokens(
+  documentText: string,
+  index: PkbPreviewIndex
+): PkbRawSemanticToken[] {
+  const tokens: PkbRawSemanticToken[] = [];
+  const lines = documentText.split('\n');
+  const wikiRe = /\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g;
+
+  for (let lineIdx = 0; lineIdx < lines.length; lineIdx++) {
+    const line = lines[lineIdx];
+    let match: RegExpExecArray | null;
+    wikiRe.lastIndex = 0;
+    while ((match = wikiRe.exec(line)) !== null) {
+      const fullMatch = match[0];
+      const target = match[1].trim();
+      const start = match.index;
+      const length = fullMatch.length;
+      const node = index.resolve(target);
+      if (node) {
+        const ntype = node.type || 'task';
+        const status = node.status;
+        let tokenType = 7; // pkbNodeDefault
+        let tokenModifiers = 0;
+
+        if (
+          ntype === 'task' ||
+          ntype === 'subtask' ||
+          ntype === 'epic' ||
+          ntype === 'project' ||
+          node.id.startsWith('task-')
+        ) {
+          if (status === 'ready') {
+            tokenType = 0;
+            tokenModifiers = 1 | 16;
+          } else if (status === 'done') {
+            tokenType = 1;
+            tokenModifiers = 2 | 16;
+          } else if (status === 'blocked') {
+            tokenType = 2;
+            tokenModifiers = 4 | 16;
+          } else if (status === 'in_progress') {
+            tokenType = 3;
+            tokenModifiers = 8 | 16;
+          } else {
+            tokenType = 3;
+            tokenModifiers = 16;
+          }
+        } else if (['info', 'knowledge', 'reference'].includes(ntype)) {
+          tokenType = 4;
+          tokenModifiers = 32;
+        } else if (['index', 'topic'].includes(ntype)) {
+          tokenType = 5;
+          tokenModifiers = 64;
+        } else if (['chapter', 'spec'].includes(ntype)) {
+          tokenType = 6;
+          tokenModifiers = 128;
+        }
+
+        tokens.push({
+          line: lineIdx,
+          start,
+          length,
+          tokenType,
+          tokenModifiers,
+        });
+      }
+    }
+  }
+  return tokens;
+}
+
+export interface PkbGutterBadge {
+  line: number;
+  taskId: string;
+  title: string;
+  status?: string;
+  weight?: number;
+  badge: 'ready' | 'done' | 'blocked' | 'in_progress' | 'task';
+}
+
+export function computeGutterBadges(
+  documentText: string,
+  index: PkbPreviewIndex
+): PkbGutterBadge[] {
+  const badges: PkbGutterBadge[] = [];
+  const lines = documentText.split('\n');
+  const wikiRe = /\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g;
+
+  for (let lineIdx = 0; lineIdx < lines.length; lineIdx++) {
+    const line = lines[lineIdx];
+    let match: RegExpExecArray | null;
+    let foundTask: PkbGutterBadge | null = null;
+    wikiRe.lastIndex = 0;
+
+    while ((match = wikiRe.exec(line)) !== null) {
+      const target = match[1].trim();
+      const node = index.resolve(target);
+      if (node) {
+        const ntype = node.type || 'task';
+        if (
+          ntype === 'task' ||
+          ntype === 'subtask' ||
+          ntype === 'epic' ||
+          ntype === 'project' ||
+          node.id.startsWith('task-')
+        ) {
+          let badge: PkbGutterBadge['badge'] = 'task';
+          if (node.status === 'ready') badge = 'ready';
+          else if (node.status === 'done') badge = 'done';
+          else if (node.status === 'blocked') badge = 'blocked';
+          else if (node.status === 'in_progress') badge = 'in_progress';
+
+          foundTask = {
+            line: lineIdx,
+            taskId: node.id,
+            title: node.label,
+            status: node.status,
+            weight: typeof node.weight === 'number' ? node.weight : undefined,
+            badge,
+          };
+          break;
+        }
+      }
+    }
+
+    if (foundTask) {
+      badges.push(foundTask);
+    }
+  }
+
+  return badges;
+}
+
+export function applyGutterBadges(
+  editor: vscode.TextEditor,
+  badges: Array<{ line: number; badge?: string; [key: string]: any }>,
+  decorationTypes: Record<string, vscode.TextEditorDecorationType>
+): void {
+  if (!editor || !editor.document) {
+    return;
+  }
+  const grouped: Record<string, vscode.Range[]> = {
+    ready: [],
+    done: [],
+    blocked: [],
+    in_progress: [],
+    task: [],
+  };
+
+  for (const b of badges) {
+    const line = typeof b.line === 'number' ? b.line : 0;
+    const range = new vscode.Range(line, 0, line, 0);
+    const badgeKey = b.badge && grouped[b.badge] ? b.badge : 'task';
+    grouped[badgeKey].push(range);
+  }
+
+  for (const [badgeKey, decType] of Object.entries(decorationTypes)) {
+    if (decType && typeof editor.setDecorations === 'function') {
+      editor.setDecorations(decType, grouped[badgeKey] || []);
+    }
+  }
+}
+
+export function updateEditorGutterBadges(
+  editor: vscode.TextEditor,
+  index: PkbPreviewIndex,
+  decorationTypes: Record<string, vscode.TextEditorDecorationType>
+): void {
+  if (!editor || !editor.document) {
+    return;
+  }
+  const text = editor.document.getText();
+  const badges = computeGutterBadges(text, index);
+  applyGutterBadges(editor, badges, decorationTypes);
+}
+
+/**
+ * Compute clickable document links for all PKB link references in markdown text:
+ * 1. Wikilinks [[target]] or [[target|alias]]
+ * 2. Markdown links [label](target) targeting PKB nodes or Obsidian URIs
+ * 3. Obsidian URIs in text (obsidian://open?vault=...&file=...)
+ * 4. Bare PKB node IDs matching indexed nodes
+ */
+export function computeDocumentLinks(
+  documentText: string,
+  index: PkbPreviewIndex
+): vscode.DocumentLink[] {
+  const links: vscode.DocumentLink[] = [];
+  const lines = documentText.split('\n');
+
+  const wikiRe = /\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g;
+  const mdLinkRe = /\[([^\]]+)\]\(([^)]+)\)/g;
+  const obsidianRe = /obsidian:\/\/[^\s\)\>\]]+/g;
+  const wordRe = /[a-zA-Z0-9_\-\.]+/g;
+
+  for (let lineIdx = 0; lineIdx < lines.length; lineIdx++) {
+    const line = lines[lineIdx];
+    const occupiedRanges: { start: number; end: number }[] = [];
+
+    const isOccupied = (start: number, end: number): boolean => {
+      return occupiedRanges.some((r) => start < r.end && end > r.start);
+    };
+
+    // 1. Wikilinks [[target]] or [[target|alias]]
+    wikiRe.lastIndex = 0;
+    let match: RegExpExecArray | null;
+    while ((match = wikiRe.exec(line)) !== null) {
+      const start = match.index;
+      const end = match.index + match[0].length;
+      const target = match[1].trim();
+      const node = index.resolve(target);
+      if (node) {
+        occupiedRanges.push({ start, end });
+        const range = new vscode.Range(lineIdx, start, lineIdx, end);
+        const link = new vscode.DocumentLink(range, vscode.Uri.file(node.absPath));
+        link.tooltip = `Open PKB note: ${node.label} (${node.id})`;
+        links.push(link);
+      }
+    }
+
+    // 2. Standard markdown links [label](target) targeting PKB nodes or Obsidian URIs
+    mdLinkRe.lastIndex = 0;
+    while ((match = mdLinkRe.exec(line)) !== null) {
+      const start = match.index;
+      const end = match.index + match[0].length;
+      if (isOccupied(start, end)) {
+        continue;
+      }
+      const rawTarget = match[2].trim();
+      if (
+        !rawTarget.startsWith('http://') &&
+        !rawTarget.startsWith('https://') &&
+        !rawTarget.startsWith('mailto:') &&
+        !rawTarget.startsWith('#')
+      ) {
+        const node = index.resolve(rawTarget);
+        if (node) {
+          occupiedRanges.push({ start, end });
+          const range = new vscode.Range(lineIdx, start, lineIdx, end);
+          const link = new vscode.DocumentLink(range, vscode.Uri.file(node.absPath));
+          link.tooltip = `Open PKB note: ${node.label} (${node.id})`;
+          links.push(link);
+        }
+      }
+    }
+
+    // 3. Obsidian URIs in text: obsidian://open?...
+    obsidianRe.lastIndex = 0;
+    while ((match = obsidianRe.exec(line)) !== null) {
+      const start = match.index;
+      const end = match.index + match[0].length;
+      if (isOccupied(start, end)) {
+        continue;
+      }
+      const rawUri = match[0];
+      const node = index.resolve(rawUri);
+      if (node) {
+        occupiedRanges.push({ start, end });
+        const range = new vscode.Range(lineIdx, start, lineIdx, end);
+        const link = new vscode.DocumentLink(range, vscode.Uri.file(node.absPath));
+        link.tooltip = `Open PKB note: ${node.label} (${node.id})`;
+        links.push(link);
+      }
+    }
+
+    // 4. Bare PKB node IDs in text
+    wordRe.lastIndex = 0;
+    while ((match = wordRe.exec(line)) !== null) {
+      let word = match[0];
+      const start = match.index;
+      let end = match.index + word.length;
+      while (
+        word.endsWith('.') ||
+        word.endsWith(',') ||
+        word.endsWith(';') ||
+        word.endsWith(':')
+      ) {
+        word = word.slice(0, -1);
+        end -= 1;
+      }
+      if (!word || isOccupied(start, end)) {
+        continue;
+      }
+      const node = index.resolveBareId(word);
+      if (node) {
+        occupiedRanges.push({ start, end });
+        const range = new vscode.Range(lineIdx, start, lineIdx, end);
+        const link = new vscode.DocumentLink(range, vscode.Uri.file(node.absPath));
+        link.tooltip = `Open PKB note: ${node.label} (${node.id})`;
+        links.push(link);
+      }
+    }
+  }
+
+  return links;
+}
+
+export class PkbDocumentLinkProvider implements vscode.DocumentLinkProvider {
+  private customIndex?: PkbPreviewIndex;
+
+  constructor(index?: PkbPreviewIndex) {
+    this.customIndex = index;
+  }
+
+  public provideDocumentLinks(
+    document: vscode.TextDocument,
+    _token?: vscode.CancellationToken
+  ): vscode.DocumentLink[] {
+    const idx = this.customIndex || getPreviewIndex();
+    return computeDocumentLinks(document.getText(), idx);
+  }
+}
+
 
 function escapeHtml(text: string): string {
   return text
@@ -1056,6 +1697,18 @@ export function transformPreviewHtml(html: string, index: PkbPreviewIndex): stri
     return savePlaceholder(renderUnresolvedRefAnchor(target, display, index.pkbRoot));
   });
 
+  // 3b. Transform raw obsidian:// URIs in plain text
+  working = working.replace(/obsidian:\/\/[^\s<>"'\)]+/g, (rawUri) => {
+    if (rawUri.includes('\u0000MEMPKB_')) {
+      return rawUri;
+    }
+    const node = index.resolve(rawUri);
+    if (node) {
+      return savePlaceholder(renderResolvedRefAnchor(node, escapeHtml(rawUri), index));
+    }
+    return rawUri;
+  });
+
   // 4. Transform bare PKB IDs in plain text
   working = working.replace(/[a-zA-Z0-9_\-\.]+/g, (token) => {
     if (token.includes('\u0000MEMPKB_')) {
@@ -1305,7 +1958,21 @@ export function extractReferenceAtPosition(
     }
   }
 
-  // 3. Bare PKB IDs (e.g. task_5b905e12, mem_1e3f8515, task-123)
+  // 3. Obsidian URIs (e.g. obsidian://open?vault=brain&file=task-123)
+  const obsidianRegex = /obsidian:\/\/[^\s\)\>\]]+/g;
+  while ((match = obsidianRegex.exec(lineText)) !== null) {
+    const start = match.index;
+    const end = match.index + match[0].length;
+    if (charIndex >= start && charIndex <= end) {
+      return {
+        target: match[0],
+        start,
+        end,
+      };
+    }
+  }
+
+  // 4. Bare PKB IDs (e.g. task_5b905e12, mem_1e3f8515, task-123)
   const wordRegex = /[a-zA-Z0-9_\-\.]+/g;
   while ((match = wordRegex.exec(lineText)) !== null) {
     let word = match[0];
@@ -1459,8 +2126,8 @@ export function activate(context: vscode.ExtensionContext): { extendMarkdownIt: 
       { scheme: 'file', language: 'markdown' },
       { scheme: 'untitled', language: 'markdown' },
     ],
-    outputChannel: outChannel as any,
-    traceOutputChannel: traceChannel as any,
+    outputChannel: outChannel,
+    traceOutputChannel: traceChannel,
     synchronize: {
       configurationSection: 'mem.lsp',
       fileEvents: watcher,
@@ -1844,13 +2511,120 @@ export function activate(context: vscode.ExtensionContext): { extendMarkdownIt: 
     }
   );
 
+  // Register command to dispatch PKB tasks
+  const dispatchCmd = vscode.commands.registerCommand(
+    'mem.dispatch',
+    async (taskId?: string) => {
+      const idToDispatch = taskId || 'current';
+      logInfo(`Dispatching PKB task: ${idToDispatch}`);
+      vscode.window.showInformationMessage(`Dispatching task ${idToDispatch}...`);
+    }
+  );
+
+  // Setup gutter badge decorations
+  const badgesDir = path.join(context.extensionPath || __dirname, '..', 'media', 'badges');
+  const getBadgeUri = (name: string) => {
+    const file = path.join(badgesDir, `${name}.svg`);
+    if (fs.existsSync(file)) {
+      return vscode.Uri.file(file);
+    }
+    const altFile = path.join(__dirname, 'media', 'badges', `${name}.svg`);
+    if (fs.existsSync(altFile)) {
+      return vscode.Uri.file(altFile);
+    }
+    return undefined;
+  };
+
+  const decorationTypes: Record<string, vscode.TextEditorDecorationType> = {
+    ready: vscode.window.createTextEditorDecorationType({
+      gutterIconPath: getBadgeUri('ready'),
+      gutterIconSize: 'contain',
+    }),
+    done: vscode.window.createTextEditorDecorationType({
+      gutterIconPath: getBadgeUri('done'),
+      gutterIconSize: 'contain',
+    }),
+    blocked: vscode.window.createTextEditorDecorationType({
+      gutterIconPath: getBadgeUri('blocked'),
+      gutterIconSize: 'contain',
+    }),
+    in_progress: vscode.window.createTextEditorDecorationType({
+      gutterIconPath: getBadgeUri('in_progress'),
+      gutterIconSize: 'contain',
+    }),
+    task: vscode.window.createTextEditorDecorationType({
+      gutterIconPath: getBadgeUri('task'),
+      gutterIconSize: 'contain',
+    }),
+  };
+
+  for (const dec of Object.values(decorationTypes)) {
+    context.subscriptions.push(dec);
+  }
+
+  const triggerGutterUpdate = async (editor?: vscode.TextEditor) => {
+    if (!editor || !editor.document || editor.document.languageId !== 'markdown') {
+      return;
+    }
+    if (client) {
+      try {
+        const uri = editor.document.uri.toString();
+        const badges: any = await client.sendRequest('mem/gutterBadges', {
+          textDocument: { uri },
+        });
+        if (Array.isArray(badges)) {
+          applyGutterBadges(editor, badges, decorationTypes);
+          return;
+        }
+      } catch (err) {
+        logDebug(`Failed to fetch gutterBadges from LSP: ${err}`);
+      }
+    }
+    updateEditorGutterBadges(editor, getPreviewIndex(), decorationTypes);
+  };
+
+  if (vscode.window.activeTextEditor) {
+    triggerGutterUpdate(vscode.window.activeTextEditor);
+  }
+
+  if (typeof vscode.window.onDidChangeActiveTextEditor === 'function') {
+    context.subscriptions.push(
+      vscode.window.onDidChangeActiveTextEditor((editor) => {
+        triggerGutterUpdate(editor);
+      })
+    );
+  }
+  if (typeof vscode.workspace.onDidChangeTextDocument === 'function') {
+    context.subscriptions.push(
+      vscode.workspace.onDidChangeTextDocument((event) => {
+        if (
+          vscode.window.activeTextEditor &&
+          event.document === vscode.window.activeTextEditor.document
+        ) {
+          triggerGutterUpdate(vscode.window.activeTextEditor);
+        }
+      })
+    );
+  }
+
+  // Register document link provider for markdown files to translate PKB links into editor links
+  const linkProvider = new PkbDocumentLinkProvider();
+  if (typeof vscode.languages?.registerDocumentLinkProvider === 'function') {
+    const docLinkDisposable = vscode.languages.registerDocumentLinkProvider(
+      { language: 'markdown' },
+      linkProvider
+    );
+    context.subscriptions.push(docLinkDisposable);
+  }
+
   context.subscriptions.push(
     showLogsCmd,
     openCmd,
     openAtCursorCmd,
     subtreeCmd,
     restartCmd,
-    showVersionCmd
+    showVersionCmd,
+    dispatchCmd
   );
 
   const mdPlugin = createMarkdownItPlugin(previewIndex);

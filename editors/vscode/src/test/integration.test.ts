@@ -4,8 +4,10 @@ import * as fs from 'fs';
 import * as os from 'os';
 import { spawn } from 'child_process';
 import {
+  computeDocumentLinks,
   createMarkdownItPlugin,
   openReferencedFile,
+  PkbDocumentLinkProvider,
   PkbPreviewIndex,
 } from '../extension';
 
@@ -134,6 +136,9 @@ It must be shown in hover preview and opened in a new tab.
     assert.strictEqual(initResp.id, 1);
     assert.ok(initResp.result.capabilities.hoverProvider, 'Server must advertise hover capability');
     assert.ok(initResp.result.capabilities.definitionProvider, 'Server must advertise definition capability');
+    assert.ok(initResp.result.capabilities.inlayHintProvider, 'Server must advertise inlay hint capability');
+    assert.ok(initResp.result.capabilities.semanticTokensProvider, 'Server must advertise semantic tokens capability');
+    assert.ok(initResp.result.capabilities.codeLensProvider, 'Server must advertise code lens capability');
 
     // Send initialized
     writeLspMessage(pkbProc.stdin, {
@@ -367,5 +372,140 @@ It must be shown in hover preview and opened in a new tab.
 
     assert.strictEqual(editor.document.getText(), fullContent);
     assert.strictEqual(mockShowOptions[0].preview, false);
+  });
+
+  it('Translates markdown PKB links in editor and clicking opens the linked node in a new tab', async () => {
+    const index = new PkbPreviewIndex(tmpDir);
+    const docPath = path.join(tmpDir, 'notes', 'link-translation.md');
+    const docText = [
+      '# PKB Link Translation Test',
+      '1. Wikilink: [[task-integration]]',
+      '2. Aliased: [[task-integration|Integration Task Alias]]',
+      '3. Markdown link: [Integration](task-integration)',
+      '4. Obsidian URI link: [Obsidian](obsidian://open?vault=brain&file=task-integration)',
+      '5. Raw Obsidian URI: obsidian://open?vault=brain&file=task-integration',
+      '6. Bare ID: task-integration',
+    ].join('\n');
+    fs.mkdirSync(path.dirname(docPath), { recursive: true });
+    fs.writeFileSync(docPath, docText);
+
+    const docLinks = computeDocumentLinks(docText, index);
+    assert.strictEqual(docLinks.length, 6, 'Must translate all 6 PKB link forms into DocumentLinks');
+
+    const expectedTaskPath = path.join(tmpDir, 'tasks', 'task-integration.md');
+    const expectedUriStr = `file://${expectedTaskPath}`;
+
+    for (let i = 0; i < docLinks.length; i++) {
+      const link = docLinks[i];
+      assert.ok(link.target, `Link ${i} must have target`);
+      assert.strictEqual(
+        link.target.toString(),
+        expectedUriStr,
+        `Link ${i} must resolve to ${expectedUriStr}`
+      );
+    }
+
+    // Simulate clicking any translated link: opens the whole referenced file with preview: false
+    const mockShowOptions: any[] = [];
+    const fullContent = fs.readFileSync(expectedTaskPath, 'utf8');
+    const editor = await openReferencedFile(
+      docLinks[0].target!.toString(),
+      { preview: false },
+      {
+        openTextDocument: async (uri: any) => ({ uri, getText: () => fullContent }),
+      } as any,
+      {
+        showTextDocument: async (doc: any, options: any) => {
+          mockShowOptions.push(options);
+          return { document: doc };
+        },
+      } as any
+    );
+
+    assert.strictEqual(editor.document.getText(), fullContent);
+    assert.strictEqual(mockShowOptions[0].preview, false);
+  });
+
+  it('Live LSP returns inlay hints showing target title, status, and weight', async () => {
+    const docUri = `file://${path.join(tmpDir, 'notes', 'referencing.md')}`;
+    writeLspMessage(pkbProc.stdin, {
+      jsonrpc: '2.0',
+      id: 4,
+      method: 'textDocument/inlayHint',
+      params: {
+        textDocument: { uri: docUri },
+        range: {
+          start: { line: 0, character: 0 },
+          end: { line: 10, character: 0 },
+        },
+      },
+    });
+
+    const resp = await reader.nextMessage();
+    assert.strictEqual(resp.id, 4);
+    assert.ok(Array.isArray(resp.result), 'Inlay hints result must be an array');
+    assert.strictEqual(resp.result.length, 1);
+    const hint = resp.result[0];
+    assert.strictEqual(hint.position.line, 2);
+    assert.ok(hint.label.includes('E2E Integration Task'), `Hint label must include title, got: ${hint.label}`);
+    assert.ok(hint.label.includes('ready'), `Hint label must include status 'ready', got: ${hint.label}`);
+    assert.ok(hint.label.includes('w:'), `Hint label must include weight 'w:', got: ${hint.label}`);
+  });
+
+  it('Live LSP returns semantic tokens for PKB link nodes', async () => {
+    const docUri = `file://${path.join(tmpDir, 'notes', 'referencing.md')}`;
+    writeLspMessage(pkbProc.stdin, {
+      jsonrpc: '2.0',
+      id: 5,
+      method: 'textDocument/semanticTokens/full',
+      params: {
+        textDocument: { uri: docUri },
+      },
+    });
+
+    const resp = await reader.nextMessage();
+    assert.strictEqual(resp.id, 5);
+    assert.ok(resp.result && Array.isArray(resp.result.data), 'Semantic tokens result must contain data array');
+    assert.ok(resp.result.data.length >= 5, 'Must contain at least 1 encoded semantic token');
+  });
+
+  it('Live LSP returns CodeLens header bar with parent, backlinks, subtasks, and dispatch action', async () => {
+    const docUri = `file://${path.join(tmpDir, 'notes', 'referencing.md')}`;
+    writeLspMessage(pkbProc.stdin, {
+      jsonrpc: '2.0',
+      id: 6,
+      method: 'textDocument/codeLens',
+      params: {
+        textDocument: { uri: docUri },
+      },
+    });
+
+    const resp = await reader.nextMessage();
+    assert.strictEqual(resp.id, 6);
+    assert.ok(Array.isArray(resp.result), 'CodeLens result must be an array');
+    assert.ok(resp.result.length >= 2, 'Should have header bar lens and dispatch lens');
+    const titles = resp.result.map((cl: any) => cl.command?.title);
+    assert.ok(titles.some((t: string) => t && t.includes('Dispatch')), `Must include Dispatch lens, got: ${titles}`);
+  });
+
+  it('Live LSP returns gutter badges for lines containing task links', async () => {
+    const docUri = `file://${path.join(tmpDir, 'notes', 'referencing.md')}`;
+    writeLspMessage(pkbProc.stdin, {
+      jsonrpc: '2.0',
+      id: 7,
+      method: 'mem/gutterBadges',
+      params: {
+        textDocument: { uri: docUri },
+      },
+    });
+
+    const resp = await reader.nextMessage();
+    assert.strictEqual(resp.id, 7);
+    assert.ok(Array.isArray(resp.result), 'Gutter badges result must be an array');
+    assert.strictEqual(resp.result.length, 1);
+    const badge = resp.result[0];
+    assert.strictEqual(badge.line, 2);
+    assert.strictEqual(badge.status, 'ready');
+    assert.strictEqual(badge.taskId || badge.task_id, 'task-integration');
   });
 });

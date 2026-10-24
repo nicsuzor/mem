@@ -36,6 +36,7 @@ fn test_partial_status_release_and_list_roundtrip() {
         &server
             .handle_create_task(&json!({
                 "title": "Partial round-trip task",
+                "slug": "partial-round-trip-task",
                 "type": "task",
                 "project": "proj-partial",
                 "parent": "proj-partial",
@@ -49,6 +50,7 @@ fn test_partial_status_release_and_list_roundtrip() {
         &server
             .handle_create_task(&json!({
                 "title": "Control open task",
+                "slug": "control-open-task",
                 "type": "task",
                 "project": "proj-partial",
                 "parent": "proj-partial",
@@ -104,6 +106,7 @@ fn test_create_task_severity_coercion() {
     let res_target = server
         .handle_create_task(&json!({
             "title": "target with sev",
+            "slug": "target-with-sev",
             "type": "target",
             "severity": 3,
             "project": "proj-alpha",
@@ -134,6 +137,7 @@ fn test_create_task_severity_coercion() {
     let res_task = server
         .handle_create_task(&json!({
             "title": "task with sev",
+            "slug": "task-with-sev",
             "type": "task",
             "severity": 3,
             "project": "proj-alpha",
@@ -180,6 +184,7 @@ fn test_decompose_task_severity_coercion() {
     let parent_res = server
         .handle_create_task(&json!({
             "title": "Parent Task for Decompose",
+            "slug": "parent-task-for-decompose",
             "type": "task",
             "project": "proj-alpha",
             "parent": "proj-alpha"
@@ -245,6 +250,7 @@ fn test_decompose_task_accepts_agent_intent() {
     let parent_res = server
         .handle_create_task(&json!({
             "title": "Parent Task for Decompose Intent",
+            "slug": "parent-decompose-intent",
             "type": "task",
             "project": "proj-alpha",
             "parent": "proj-alpha"
@@ -293,6 +299,7 @@ fn test_subtask_identity_visible_on_get_task_and_children() {
     let parent_res = server
         .handle_create_task(&json!({
             "title": "Parent Epic for Identity Display",
+            "slug": "parent-identity-display",
             "type": "task",
             "project": "proj-alpha",
             "parent": "proj-alpha"
@@ -413,6 +420,7 @@ fn test_create_task_allows_missing_project() {
     let result = server
         .handle_create_task(&json!({
             "title": "no project",
+            "slug": "no-project",
             "parent": "proj-alpha"
         }))
         .expect("missing project should be allowed when parent resolves project");
@@ -425,6 +433,7 @@ fn test_create_task_allows_blank_project() {
     let result = server
         .handle_create_task(&json!({
             "title": "blank project",
+            "slug": "blank-project",
             "parent": "proj-alpha",
             "project": "   "
         }))
@@ -478,6 +487,7 @@ fn test_update_task_accepts_agent_intent_nested() {
     server
         .handle_create_task(&json!({
             "title": "Update Intent Nested Task",
+            "slug": "update-intent-nested",
             "type": "task",
             "project": "proj-alpha",
             "parent": "proj-alpha",
@@ -507,6 +517,7 @@ fn test_update_task_accepts_agent_intent_flat() {
     server
         .handle_create_task(&json!({
             "title": "Update Intent Flat Task",
+            "slug": "update-intent-flat",
             "type": "task",
             "project": "proj-alpha",
             "parent": "proj-alpha",
@@ -673,6 +684,7 @@ fn test_create_task_rejects_closed_parent() {
     let err = server
         .handle_create_task(&json!({
             "title": "child of done parent",
+            "slug": "child-of-done-parent",
             "project": "test",
             "parent": "task-a3"
         }))
@@ -697,6 +709,7 @@ fn test_create_task_allows_force_override_for_closed_parent() {
     let server = build_test_server();
     let result = server.handle_create_task(&json!({
         "title": "child of done parent with force",
+        "slug": "child-of-done-parent-force",
         "project": "test",
         "parent": "task-a3",
         "force": true
@@ -1819,6 +1832,7 @@ fn test_setting_merge_ready_is_rejected() {
     let err_create = server
         .handle_create_task(&json!({
             "title": "New task with merge_ready",
+            "slug": "merge-ready-task",
             "parent": "task-test",
             "status": "merge_ready",
         }))
@@ -1964,22 +1978,22 @@ fn test_list_tasks_status_ready_includes_unblocked_non_leaf_node() {
 }
 
 #[test]
-fn test_list_tasks_status_archived_is_rejected_not_aliased_to_done() {
-    let (_tmp, server) = build_disk_backed_server(&[(
+fn test_list_tasks_status_archived_is_accepted_and_not_aliased_to_done() {
+    let (_tmp, server) = build_disk_backed_server(&[
+        (
             "tasks/task-done.md",
             "---\nid: task-done\ntitle: Done\ntype: task\nstatus: done\ncreated: 2026-07-23T10:00:00+00:00\n---\n\n# Done\n",
-        )]);
-    let err = server
+        ),
+        (
+            "tasks/task-archived.md",
+            "---\nid: task-archived\ntitle: Archived\ntype: task\nstatus: archived\ncreated: 2026-07-23T10:00:00+00:00\n---\n\n# Archived\n",
+        ),
+    ]);
+    let res = server
         .handle_list_tasks(&json!({"status": "archived", "format": "json"}))
-        .expect_err(
-            "status=\"archived\" is not a supported stored value and must be rejected, \
-                 not silently aliased to the done set",
-        );
-    assert!(
-        matches!(err.code, ErrorCode::INVALID_PARAMS),
-        "got: {:?}",
-        err.code
-    );
+        .expect("status=\"archived\" is a valid status and must succeed");
+    let ids = extract_task_ids(&res);
+    assert_eq!(ids, vec!["task-archived"]);
 }
 
 #[test]
@@ -2267,6 +2281,101 @@ fn test_update_body_without_expected_modified_still_last_write_wins() {
     );
 }
 
+// ── mem_12ca511b: concurrent field write and body write to same node ──
+
+#[test]
+fn test_concurrent_field_and_body_writes_to_same_node_both_survive() {
+    let (tmp, server) = build_disk_backed_server(&[(
+        "tasks/task-concurrent-fb.md",
+        "---\nid: task-concurrent-fb\ntitle: Concurrent Field Body\ntype: task\nstatus: ready\nrepo: old/repo\ntags: []\n---\n\nInitial body.\n",
+    )]);
+    let path = tmp.path().join("tasks/task-concurrent-fb.md");
+    let server = Arc::new(server);
+
+    // Across multiple iterations, field updates and body updates issued in parallel
+    // must both land; neither write may lose the other's changes.
+    for iter in 0..25 {
+        std::fs::write(
+            &path,
+            format!("---\nid: task-concurrent-fb\ntitle: Concurrent Field Body\ntype: task\nstatus: ready\nrepo: old/repo\ntags: []\n---\n\nInitial body {iter}.\n"),
+        ).unwrap();
+        server.handle_refresh_graph(&json!({})).unwrap();
+
+        let barrier = Arc::new(std::sync::Barrier::new(2));
+
+        let server1 = Arc::clone(&server);
+        let b1 = Arc::clone(&barrier);
+        let repo_val = format!("nicsuzor/mem_{iter}");
+        let tag_val = format!("tag_{iter}");
+        let repo_val_clone = repo_val.clone();
+        let tag_val_clone = tag_val.clone();
+        let h1 = std::thread::spawn(move || {
+            b1.wait();
+            server1.handle_update_task(&json!({
+                "id": "task-concurrent-fb",
+                "status": "in_progress",
+                "repo": repo_val_clone,
+                "tags": [tag_val_clone],
+            }))
+        });
+
+        let server2 = Arc::clone(&server);
+        let b2 = Arc::clone(&barrier);
+        let body_val = format!("## Updated Body {iter}\n\nConcurrent body content.\n");
+        let h2 = std::thread::spawn(move || {
+            b2.wait();
+            server2.handle_update_body(&json!({
+                "id": "task-concurrent-fb",
+                "new_body": body_val,
+            }))
+        });
+
+        let res1 = h1.join().unwrap();
+        let res2 = h2.join().unwrap();
+        assert!(res1.is_ok(), "update_task must succeed: {res1:?}");
+        assert!(res2.is_ok(), "update_body must succeed: {res2:?}");
+
+        let disk_content = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            disk_content.contains("status: in_progress")
+                || disk_content.contains("status: 'in_progress'"),
+            "Field update 'status' was lost in iteration {iter}!\nActual content:\n{disk_content}"
+        );
+        assert!(
+            disk_content.contains(&format!("repo: nicsuzor/mem_{iter}"))
+                || disk_content.contains(&format!("repo: 'nicsuzor/mem_{iter}'")),
+            "Field update 'repo' was lost in iteration {iter}!\nActual content:\n{disk_content}"
+        );
+        assert!(
+            disk_content.contains(&format!("tag_{iter}")),
+            "Field update 'tags' was lost in iteration {iter}!\nActual content:\n{disk_content}"
+        );
+        assert!(
+            disk_content.contains(&format!("## Updated Body {iter}")),
+            "Body update was lost in iteration {iter}!\nActual content:\n{disk_content}"
+        );
+
+        // Verify read-back via server public interface
+        let task_res = server
+            .handle_get_task(&json!({"id": "task-concurrent-fb"}))
+            .unwrap();
+        let task_text = &task_res.content[0].raw.as_text().unwrap().text;
+        let task_json: serde_json::Value = serde_json::from_str(task_text).unwrap();
+        assert_eq!(task_json["status"], "in_progress");
+        assert_eq!(task_json["frontmatter"]["repo"], repo_val);
+        assert_eq!(task_json["frontmatter"]["tags"][0], tag_val);
+
+        let doc_res = server
+            .handle_get_document(&json!({"id": "task-concurrent-fb"}))
+            .unwrap();
+        let doc_text = &doc_res.content[0].raw.as_text().unwrap().text;
+        assert!(
+            doc_text.contains(&format!("## Updated Body {iter}")),
+            "get_document must reflect updated body in iteration {iter}"
+        );
+    }
+}
+
 #[test]
 fn test_update_body_with_get_document_wrapper_does_not_duplicate_frontmatter() {
     let (tmp, server) = build_disk_backed_server(&[(
@@ -2490,6 +2599,7 @@ fn test_mcp_endpoints_never_disclose_server_paths() {
     let create_doc_res = server
         .handle_create_document(&json!({
             "title": "Doc Without Path Leak",
+            "slug": "doc-no-leak",
             "type": "note",
             "body": "Body content"
         }))
@@ -2510,6 +2620,7 @@ fn test_mcp_endpoints_never_disclose_server_paths() {
     let create_mem_res = server
         .handle_create_memory(&json!({
             "title": "Memory Without Path Leak",
+            "slug": "mem-no-leak",
             "body": "Memory body"
         }))
         .unwrap();
@@ -2530,6 +2641,7 @@ fn test_mcp_endpoints_never_disclose_server_paths() {
     let _del_target_res = server
         .handle_create_document(&json!({
             "title": "Doc To Delete",
+            "slug": "doc-to-delete",
             "type": "note",
             "id": "note-todelete"
         }))
@@ -2551,6 +2663,7 @@ fn test_mcp_endpoints_never_disclose_server_paths() {
     let parent_res = server
         .handle_create_task(&json!({
             "title": "Parent For Decompose",
+            "slug": "parent-for-decompose",
             "type": "task",
             "project": "proj-alpha",
             "parent": "proj-alpha",
@@ -2774,6 +2887,7 @@ fn test_hard_cycle_rejected_on_create_task() {
         .handle_create_task(&json!({
             "id": "task-b",
             "title": "Task B",
+            "slug": "task-b",
             "type": "task",
             "parent": "task-a",
             "allow_missing_parent": true,
@@ -2797,6 +2911,7 @@ fn test_classification_field_create_get_list_update_roundtrip() {
         .handle_create_task(&json!({
             "id": "task-bug-1",
             "title": "Fix critical race condition",
+            "slug": "fix-critical-race",
             "type": "task",
             "parent": "epic-root",
             "classification": "bug",
@@ -3114,7 +3229,8 @@ fn test_decompose_duplicate_subtask_title_brief_subject() {
         "---\nid: epic-parent\ntitle: Epic Parent\ntype: epic\nstatus: ready\n---\n\n# Epic Parent\n",
     )]);
 
-    let long_title = "Make the reasoning-steps design note the single source for the report-arguments";
+    let long_title =
+        "Make the reasoning-steps design note the single source for the report-arguments";
     let err = server
         .handle_decompose_task(&json!({
             "parent_id": "epic-parent",
@@ -3189,4 +3305,367 @@ fn test_delete_type_guard_mismatch_leads_with_reason() {
     );
 }
 
+#[test]
+fn test_create_task_reports_actual_written_id_on_hex_title() {
+    let (_tmp, server) = build_disk_backed_server(&[]);
 
+    // Title contains an 8-hex string (18585412).
+    // On unpatched code, the regex in handle_create_task greedily matched past the real ID
+    // into the slug (aops_<hash>_fix_18585412), causing get_task to fail and returning
+    // the "not yet visible in graph" error with the bogus ID instead of a success result.
+    let res = server.handle_create_task(&json!({
+        "title": "Fix 18585412 in parser",
+        "slug": "fix-18585412",
+        "type": "task",
+        "project": "aops",
+        "parent": "aops",
+        "allow_missing_parent": true,
+    }));
+
+    // Find the file written on disk to inspect the actual ID in its frontmatter
+    let files = crate::pkb::scan_directory(&server.pkb_root);
+    let task_file = files
+        .iter()
+        .find(|p| p.to_string_lossy().contains("18585412"))
+        .expect("task file must be written to disk");
+    let written_doc = crate::pkb::parse_file(task_file).expect("file must be parseable");
+    let actual_written_id = written_doc.id();
+
+    // 1. Success result: create_task must succeed (Ok), not fail with not-yet-visible error
+    assert!(
+        res.is_ok(),
+        "create_task must succeed with Ok, but failed with: {:?}",
+        res.as_ref().err().map(|e| &e.message)
+    );
+    let ok_res = res.unwrap();
+    let text = ok_res
+        .content
+        .iter()
+        .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+        .collect::<String>();
+    let val: serde_json::Value = serde_json::from_str(&text).unwrap();
+    let returned_id = val.get("id").and_then(|v| v.as_str()).unwrap();
+
+    // 2. Returned ID must equal the actual written document ID from frontmatter,
+    // not a regex-mangled stem.
+    assert_eq!(
+        returned_id, actual_written_id,
+        "returned ID '{returned_id}' must match actual written document ID '{actual_written_id}'"
+    );
+    assert!(
+        !returned_id.contains("18585412"),
+        "returned ID '{returned_id}' must not contain hex slug fragment '18585412'"
+    );
+}
+
+#[test]
+fn test_decompose_subtasks_report_actual_written_id_on_hex_title() {
+    let (_tmp, server) = build_disk_backed_server(&[(
+        "tasks/parent.md",
+        "---\nid: parent\ntitle: Parent\ntype: task\nstatus: ready\n---\n",
+    )]);
+
+    let res = server
+        .handle_decompose_task(&json!({
+            "parent_id": "parent",
+            "subtasks": [
+                {
+                    "title": "Fix 18585412 in parser",
+                    "type": "task",
+                    "project": "aops",
+                }
+            ]
+        }))
+        .unwrap();
+
+    let text = res.content[0].raw.as_text().unwrap().text.clone();
+    let files = crate::pkb::scan_directory(&server.pkb_root);
+    let subtask_file = files
+        .iter()
+        .find(|p| p.to_string_lossy().contains("18585412"))
+        .expect("subtask file must be written to disk");
+    let doc = crate::pkb::parse_file(subtask_file).expect("file must be parseable");
+    let actual_id = doc.id();
+
+    assert!(
+        text.contains(&format!("- `{actual_id}` — ")),
+        "output must contain the actual written subtask ID '{actual_id}', got:\n{text}"
+    );
+    assert!(
+        !text.contains("18585412`"),
+        "output ID must not absorb hex slug suffix"
+    );
+}
+
+#[test]
+fn test_create_task_link_quantum_word_and_float_stored_and_indexed() {
+    let (_tmp, server) = build_disk_backed_server(&[
+        (
+            "tasks/parent-task.md",
+            "---\nid: parent-task\ntitle: Parent Task\ntype: task\nstatus: ready\n---\n\n# Parent Task\n",
+        ),
+        (
+            "tasks/target-a.md",
+            "---\nid: target-a\ntitle: Target A\ntype: target\nstatus: open\nworth: 0.8\n---\n\n# Target A\n",
+        ),
+        (
+            "tasks/target-b.md",
+            "---\nid: target-b\ntitle: Target B\ntype: target\nstatus: open\nworth: 0.5\n---\n\n# Target B\n",
+        ),
+    ]);
+
+    let res = server
+        .handle_create_task(&json!({
+            "title": "Task with Word and Float Quantum",
+            "slug": "quantum-task",
+            "type": "task",
+            "parent": "parent-task",
+            "links": [
+                {
+                    "to": "target-a",
+                    "label": "serves",
+                    "quantum": "most",
+                    "probability": 0.85,
+                    "set_by": "agent-proposed"
+                },
+                {
+                    "to": "target-b",
+                    "label": "serves",
+                    "quantum": 0.75,
+                    "probability": 0.5,
+                    "set_by": "agent-proposed"
+                }
+            ]
+        }))
+        .unwrap();
+
+    let text = res
+        .content
+        .iter()
+        .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+        .collect::<String>();
+    let created: serde_json::Value = serde_json::from_str(&text).unwrap();
+    let task_id = created.get("id").and_then(|v| v.as_str()).unwrap();
+
+    let get_res = server.handle_get_task(&json!({ "id": task_id })).unwrap();
+    let get_text = get_res
+        .content
+        .iter()
+        .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+        .collect::<String>();
+    let task: serde_json::Value = serde_json::from_str(&get_text).unwrap();
+
+    let links_out = task.get("links_out").and_then(|v| v.as_array()).unwrap();
+    let link_a = links_out
+        .iter()
+        .find(|l| l.get("to").and_then(|v| v.as_str()) == Some("target-a"))
+        .unwrap();
+    let link_b = links_out
+        .iter()
+        .find(|l| l.get("to").and_then(|v| v.as_str()) == Some("target-b"))
+        .unwrap();
+
+    // "most" maps to 0.60
+    assert_eq!(
+        link_a.get("quantum").and_then(|v| v.as_f64()),
+        Some(0.60),
+        "Link with word 'most' should read back as quantum 0.60"
+    );
+    let strength_a = link_a.get("strength").and_then(|v| v.as_f64()).unwrap();
+    assert!(
+        (strength_a - 0.60 * 0.85).abs() < 1e-9,
+        "Link A strength should be quantum * probability = 0.60 * 0.85 = 0.51, got {strength_a}"
+    );
+
+    // 0.75 maps to 0.75
+    assert_eq!(
+        link_b.get("quantum").and_then(|v| v.as_f64()),
+        Some(0.75),
+        "Link with float 0.75 should read back as quantum 0.75"
+    );
+    let strength_b = link_b.get("strength").and_then(|v| v.as_f64()).unwrap();
+    assert!(
+        (strength_b - 0.75 * 0.5).abs() < 1e-9,
+        "Link B strength should be quantum * probability = 0.75 * 0.5 = 0.375, got {strength_b}"
+    );
+}
+
+#[test]
+fn test_update_task_link_quantum_reflected_without_restart() {
+    let (_tmp, server) = build_disk_backed_server(&[
+        (
+            "tasks/target-a.md",
+            "---\nid: target-a\ntitle: Target A\ntype: target\nstatus: open\nworth: 0.8\n---\n\n# Target A\n",
+        ),
+        (
+            "tasks/task-existing.md",
+            "---\nid: task-existing\ntitle: Existing Task\ntype: task\nstatus: ready\nlinks:\n  - to: target-a\n    label: serves\n    quantum: 0.25\n    probability: 0.8\n    set_by: agent-proposed\n---\n\n# Existing Task\n",
+        ),
+    ]);
+
+    // Update link quantum to 0.75
+    server
+        .handle_update_task(&json!({
+            "id": "task-existing",
+            "updates": {
+                "links": [
+                    {
+                        "to": "target-a",
+                        "label": "serves",
+                        "quantum": 0.75,
+                        "probability": 0.8,
+                        "set_by": "agent-proposed"
+                    }
+                ]
+            }
+        }))
+        .unwrap();
+
+    // Verify graph reflects the update immediately without server restart
+    let get_updated = server
+        .handle_get_task(&json!({ "id": "task-existing" }))
+        .unwrap();
+    let get_updated_text = get_updated
+        .content
+        .iter()
+        .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+        .collect::<String>();
+    let task_updated: serde_json::Value = serde_json::from_str(&get_updated_text).unwrap();
+    let links_updated = task_updated
+        .get("links_out")
+        .and_then(|v| v.as_array())
+        .unwrap();
+    let link_updated = links_updated
+        .iter()
+        .find(|l| l.get("to").and_then(|v| v.as_str()) == Some("target-a"))
+        .unwrap();
+    assert_eq!(
+        link_updated.get("quantum").and_then(|v| v.as_f64()),
+        Some(0.75),
+        "Updated link should reflect new quantum 0.75 without restart"
+    );
+    let strength_updated = link_updated
+        .get("strength")
+        .and_then(|v| v.as_f64())
+        .unwrap();
+    assert!(
+        (strength_updated - 0.75 * 0.8).abs() < 1e-9,
+        "Updated link strength should be 0.75 * 0.8 = 0.6, got {strength_updated}"
+    );
+}
+
+#[test]
+fn test_create_task_rejects_follow_up_tasks() {
+    let (_tmp, server) = build_disk_backed_server(&[(
+        "tasks/task-root.md",
+        "---\nid: task-root\ntitle: Root Task\ntype: task\nstatus: ready\n---\n\n# Root Task\n",
+    )]);
+
+    let res = server.handle_create_task(&json!({
+        "title": "New Task With Follow Ups",
+        "slug": "new-task-with-follow-ups",
+        "parent": "task-root",
+        "project": "proj",
+        "follow_up_tasks": ["task-root"]
+    }));
+
+    let err = res.expect_err("create_task must reject follow_up_tasks");
+    assert!(
+        err.message.contains("follow_up_tasks"),
+        "error message must mention follow_up_tasks, got: {}",
+        err.message
+    );
+}
+
+#[test]
+fn test_update_task_rejects_follow_up_tasks() {
+    let (_tmp, server) = build_disk_backed_server(&[(
+        "tasks/task-target.md",
+        "---\nid: task-target\ntitle: Target Task\ntype: task\nstatus: ready\n---\n\n# Target Task\n",
+    )]);
+
+    // Nested form
+    let res_nested = server.handle_update_task(&json!({
+        "id": "task-target",
+        "updates": {
+            "follow_up_tasks": ["task-other"]
+        }
+    }));
+    let err_nested = res_nested.expect_err("update_task (nested) must reject follow_up_tasks");
+    assert!(
+        err_nested.message.contains("follow_up_tasks") && err_nested.message.contains("no longer supported"),
+        "error must explain follow_up_tasks is no longer supported, got: {}",
+        err_nested.message
+    );
+
+    // Flat form
+    let res_flat = server.handle_update_task(&json!({
+        "id": "task-target",
+        "follow_up_tasks": ["task-other"]
+    }));
+    let err_flat = res_flat.expect_err("update_task (flat) must reject follow_up_tasks");
+    assert!(
+        err_flat.message.contains("follow_up_tasks") && err_flat.message.contains("no longer supported"),
+        "error must explain follow_up_tasks is no longer supported, got: {}",
+        err_flat.message
+    );
+}
+
+#[test]
+fn test_release_task_rejects_follow_up_tasks() {
+    let (_tmp, server) = build_disk_backed_server(&[(
+        "tasks/task-rel.md",
+        "---\nid: task-rel\ntitle: Release Task Test\ntype: task\nstatus: ready\n---\n\n## Acceptance\n- [x] Done\n",
+    )]);
+
+    let res = server.handle_release_task(&json!({
+        "id": "task-rel",
+        "status": "done",
+        "summary": "Completed work cleanly",
+        "follow_up_tasks": ["task-nonexistent"]
+    }));
+
+    let err = res.expect_err("release_task must reject follow_up_tasks");
+    assert!(
+        err.message.contains("follow_up_tasks") && err.message.contains("no longer supported"),
+        "error must explain follow_up_tasks is no longer supported, got: {}",
+        err.message
+    );
+}
+
+#[test]
+fn test_schemas_do_not_expose_follow_up_tasks() {
+    let tools = PkbSearchServer::get_published_tools();
+
+    // Check create_task schema
+    let create_tool = tools.iter().find(|t| t.name == "create_task").expect("create_task tool exists");
+    let create_schema = serde_json::to_string(&create_tool.input_schema).unwrap();
+    assert!(
+        !create_schema.contains("follow_up_tasks"),
+        "create_task input schema must not expose follow_up_tasks"
+    );
+
+    // Check update_task schema
+    let update_tool = tools.iter().find(|t| t.name == "update_task").expect("update_task tool exists");
+    let update_schema = serde_json::to_string(&update_tool.input_schema).unwrap();
+    assert!(
+        !update_schema.contains("follow_up_tasks"),
+        "update_task input schema must not expose follow_up_tasks"
+    );
+
+    // Check release_task schema
+    let release_tool = tools.iter().find(|t| t.name == "release_task").expect("release_task tool exists");
+    let release_schema = serde_json::to_string(&release_tool.input_schema).unwrap();
+    assert!(
+        !release_schema.contains("follow_up_tasks"),
+        "release_task input schema must not expose follow_up_tasks"
+    );
+
+    // Check get_task output schema
+    let get_task_out = PkbSearchServer::output_schema_for_tool("get_task");
+    let get_task_schema = serde_json::to_string(&get_task_out).unwrap();
+    assert!(
+        !get_task_schema.contains("follow_up_tasks"),
+        "get_task output schema must not expose follow_up_tasks"
+    );
+}

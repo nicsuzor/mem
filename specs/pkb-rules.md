@@ -178,7 +178,7 @@ Material brought in from outside (documents, diagrams, old notes, transcripts) i
 
 ### 3.1. The durability bar
 
-When a task settles, its durable knowledge moves to a canonical note and the task is deleted. Ask four questions, in order, of every proposition in a settled task:
+When a task settles, its durable knowledge moves to a canonical note. Settled tasks are deleted after a retention period. Ask four questions, in order, of every proposition in a settled task:
 
 1. **Does it persist beyond the task?** Checklist state, branch names, PR links and debug flags stop mattering once the criteria are met. Drop them.
 2. **Is it narration?** Retry logs, test output, diffs and commit SHAs are history. Only the surviving lesson passes forward.
@@ -203,7 +203,8 @@ Duplicate detection returns candidates, not verdicts. A `find_duplicates` score 
 
 Invariants:
 
-- Deletion is outright: no tombstones, no `status: archived`, no archive folders.
+- The PKB accepts `archived` as a status on any note. An archive script moves every PKB note with status `archived` out of the PKB into the sessions repository and removes it from the PKB.
+- Settled tasks are deleted after a retention period once durable knowledge is captured.
 - A consolidation that produces concatenated bodies has failed.
 - Hygiene runs in every consolidation pass and whenever a task is released as done; it does not wait to be asked for.
 
@@ -250,6 +251,10 @@ Nic, 2026-09-18, as a standing mandate for every session:
 - **Place work where its scope is shared.** Place a node under the highest container whose whole scope it serves, not under the nearest or current one. Work that affects several projects is not buried in one project's leaf. It reaches the goal or target it serves through `contributes_to` (§2.6), never by being parented to it.
 - **No task flooding.** Never batch-generate unverified nodes. Each node minted is checked for duplicates first (§3.8).
 - **A review is its own node only when a separate evaluator must discharge it in a different session.** Otherwise it is a checklist line on the task it reviews. An empty placeholder review node is deleted.
+
+### 3.10. Workflow placement
+
+A workflow (`type: template`) is filed as `<snake_case id>.md`: the id only, never the title. It lives in `workflows/` when it has no `project`, and in `<project>/workflows/` when it is project-scoped, so the directory shows its tier. The whole name is snake_case, id included (Nic, 2026-10-20). The frontmatter `id` is unchanged and remains what resolution reads. `create` and `convert_document` apply this placement by default.
 
 ---
 
@@ -310,6 +315,7 @@ Status values and transitions are specified in `references/TAXONOMY.md`. The rul
 - **Age is not staleness.** Age alone never justifies cancelling, archiving or deprioritising. The only valid cancellation reason is irrelevance: the opportunity closed, the request was withdrawn, the context was eliminated.
 - **Blocked tasks surface through their blockers.** An overdue blocked task with no linked blocker is an integrity defect. A dependency on other work is a `depends_on` edge, not a hand-set `status: blocked`.
 - **State lives in fields, never only in prose.** Every reader of the graph decides done, blocked or ready from the stored `status` and the dependency edges, never from body text. Set terminal states with `release_task`, which carries the evidence or the reason. Body prose may explain a state; it never substitutes for one.
+- **"Complete" means no longer actionable and not waiting on anything, not "successful".** Every tool and calculation treats a cancelled task as complete: a dependent is not blocked by it, and no readiness, ranking, flow or listing path counts it as failed or pending.
 - **Never leave a status the body denies.** Pick the value that is true; if none fits, say so on the node rather than choosing the least-wrong value.
 - **`queued` is Nic's gate.** Only Nic promotes `ready` to `queued`; workers pull only from `queued`.
 - **Workers write `done`.** A worker with PKB access marks its task `done` after `/pull`, with completion evidence; asserting that tests ran suffices for the claim. `merge_ready` is not a status in use. The reconcile check that follows is specified in the academicOps `reconcile` skill (§8.7).
@@ -415,6 +421,10 @@ These constraints bind every future change to the score.
 - **Deliberately not built**, so not proposed again: Birnbaum importance proper (structure functions, cut sets, partial derivatives), POMDPs, per-item pairwise AHP.
 - **Deliberately impure**, not a defect to normalise away: the must-not-miss floor outside the maths (`specs/flow-rule.md` §4.5, §7), and elicited worths and link values wherever outcome data does not exist.
 - **How the model is judged.** By review and reasoning against the shipped code, not a frozen regression corpus. Three properties define good: a documentation-hygiene artefact falls out of the top of the queue; honestly recording effort never lowers a task's own rank; the importance channel shows real dynamic range across the corpus. Calibration case the model must order correctly: a certain contribution to a well-priced target above an overdue email tied to a barely-priced one.
+- **Pricing tests.** The engine stays as it is; prices and links must make these orderings come out right, and a failure means the pricing is wrong, not the engine:
+  - an overdue task outranks its day-before self, because a bad consequence becomes more likely the longer the work is delayed;
+  - an undated P0 sits above a low-value overdue email;
+  - a task a named stakeholder has long waited on sits above both, because stakeholders carry weight that flows through the graph to the work they wait on.
 
 ### 6.9. Closed exclusions
 

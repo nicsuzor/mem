@@ -135,13 +135,24 @@ pub(crate) fn parse_status_filter(
 
 impl PkbSearchServer {
     pub(crate) fn handle_create_task(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
-        if args.get("filename").is_some() || args.get("path").is_some() {
+        if args.get("path").is_some() {
             return Err(McpError {
                 code: ErrorCode::INVALID_PARAMS,
-                message: Cow::from("filename and path arguments are no longer supported. Use dir and project instead."),
+                message: Cow::from(
+                    "The 'path' parameter is no longer supported. Please use 'dir' instead.",
+                ),
                 data: None,
             });
         }
+
+        let slug = super::parse_and_validate_slug(args)?;
+
+        let filename = args
+            .get("filename")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(String::from);
 
         // Accept `title` (preferred) or `task_title` (alias — some skill docs use this name)
         let title = args
@@ -184,11 +195,12 @@ impl PkbSearchServer {
                 "due",
                 "project",
                 "dir",
+                "filename",
+                "slug",
                 "type",
                 "status",
                 "session_id",
                 "issue_url",
-                "follow_up_tasks",
                 "release_summary",
                 "contributes_to",
                 "classification",
@@ -270,6 +282,8 @@ impl PkbSearchServer {
         let fields = crate::document_crud::TaskFields {
             title: title.to_string(),
             id: args.get("id").and_then(|v| v.as_str()).map(String::from),
+            filename,
+            slug: Some(slug),
             parent: args
                 .get("parent")
                 .and_then(|v| v.as_str())
@@ -352,15 +366,6 @@ impl PkbSearchServer {
                 .get("issue_url")
                 .and_then(|v| v.as_str())
                 .map(String::from),
-            follow_up_tasks: args
-                .get("follow_up_tasks")
-                .and_then(|v| v.as_array())
-                .map(|arr| {
-                    arr.iter()
-                        .filter_map(|v| v.as_str().map(String::from))
-                        .collect()
-                })
-                .unwrap_or_default(),
             release_summary: args
                 .get("release_summary")
                 .and_then(|v| v.as_str())
@@ -397,7 +402,7 @@ impl PkbSearchServer {
                     Ok(query_embedding) => {
                         let candidates = {
                             let store = self.store.read();
-                            store.search(&query_embedding, 50, &self.pkb_root, None, None, None)
+                            store.search(&query_embedding, 50, &self.pkb_root, None, None, None, None)
                         };
                         let mut suggestions: Vec<serde_json::Value> = Vec::new();
                         for r in candidates {
@@ -524,12 +529,19 @@ impl PkbSearchServer {
         let t_total = std::time::Instant::now();
 
         let t = std::time::Instant::now();
-        let path =
-            crate::document_crud::create_task(&self.pkb_root, fields).map_err(|e| McpError {
-                code: ErrorCode::INTERNAL_ERROR,
-                message: Cow::from(format!("Failed to create task: {e}")),
+        let path = crate::document_crud::create_task(&self.pkb_root, fields).map_err(|e| {
+            let msg = e.to_string();
+            let code = if msg.contains("is too long") {
+                ErrorCode::INVALID_PARAMS
+            } else {
+                ErrorCode::INTERNAL_ERROR
+            };
+            McpError {
+                code,
+                message: Cow::from(format!("Failed to create task: {msg}")),
                 data: None,
-            })?;
+            }
+        })?;
         let elapsed_write = t.elapsed();
         tracing::debug!(target: "perf::create_task", phase = "write_file", elapsed_ms = elapsed_write.as_secs_f64() * 1000.0);
 
@@ -537,6 +549,31 @@ impl PkbSearchServer {
         let parsed = crate::pkb::parse_file_relative(&path, &self.pkb_root);
         let elapsed_parse = t.elapsed();
         tracing::debug!(target: "perf::create_task", phase = "parse", elapsed_ms = elapsed_parse.as_secs_f64() * 1000.0);
+
+        // Extract ID directly from parsed frontmatter (or fallback to reading the file on disk),
+        // never guess via regex on filename stems which can misidentify slug fragments as IDs.
+        let task_id = parsed.as_ref().map(|d| d.id()).unwrap_or_else(|| {
+            crate::pkb::parse_file(&path)
+                .map(|d| d.id())
+                .or_else(|| {
+                    std::fs::read_to_string(&path).ok().and_then(|content| {
+                        for line in content.lines() {
+                            let trimmed = line.trim();
+                            if let Some(rest) = trimmed.strip_prefix("id:") {
+                                let id = rest.trim().trim_matches('"').trim_matches('\'').trim();
+                                if !id.is_empty() {
+                                    return Some(id.to_string());
+                                }
+                            }
+                            if trimmed == "---" && !line.starts_with("---") {
+                                break;
+                            }
+                        }
+                        None
+                    })
+                })
+                .unwrap_or_else(|| crate::pkb::fallback_id(&path))
+        });
 
         // Incremental graph update for the new file
         if let Some(doc) = parsed {
@@ -560,22 +597,6 @@ impl PkbSearchServer {
         }
 
         tracing::debug!(target: "perf::create_task", phase = "TOTAL", elapsed_ms = t_total.elapsed().as_secs_f64() * 1000.0);
-
-        // Extract ID from filename stem (e.g. "task-a1b2c3d4-some-title.md" -> "task-a1b2c3d4").
-        // generate_id() always emits exactly 8 hex chars, so anchor the pattern to {8}
-        // rather than `+` — keeps an accidental hex-shaped slug suffix from being absorbed.
-        let task_id = path
-            .file_stem()
-            .map(|s| {
-                let stem = s.to_string_lossy();
-                static RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
-                    regex::Regex::new(r"^([a-z0-9_]+_[0-9a-f]{8}|[a-z]+-[0-9a-f]{8})").unwrap()
-                });
-                RE.find(&stem)
-                    .map(|m| m.as_str().to_string())
-                    .unwrap_or_else(|| stem.to_string())
-            })
-            .unwrap_or_default();
 
         // Return structured JSON matching get_task shape. If the post-create graph
         // lookup fails (graph rebuild raced or the file landed in an un-scanned
@@ -647,7 +668,9 @@ impl PkbSearchServer {
                     Ok(res) => {
                         if let Some(val) = res.structured_content {
                             items.push(val);
-                        } else if let Some(first) = res.content.first().and_then(|c| c.raw.as_text()) {
+                        } else if let Some(first) =
+                            res.content.first().and_then(|c| c.raw.as_text())
+                        {
                             if let Ok(v) = serde_json::from_str::<serde_json::Value>(&first.text) {
                                 items.push(v);
                             }
@@ -672,7 +695,10 @@ impl PkbSearchServer {
         self.handle_get_task_single(args)
     }
 
-    pub(crate) fn handle_get_task_single(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+    pub(crate) fn handle_get_task_single(
+        &self,
+        args: &JsonValue,
+    ) -> Result<CallToolResult, McpError> {
         let id = args
             .get("id")
             .and_then(|v| v.as_str())
@@ -942,9 +968,12 @@ impl PkbSearchServer {
             crate::graph::DeadlineClass::Soft => crate::display_rank::DeadlineClass::Soft,
             crate::graph::DeadlineClass::Hard => crate::display_rank::DeadlineClass::Hard,
         });
-        let due_date = node.due.as_deref().and_then(crate::display_rank::parse_due_date);
+        let due_date = node
+            .due
+            .as_deref()
+            .and_then(crate::display_rank::parse_due_date);
         let display = crate::display_rank::TaskDisplay::new(
-            node.classification.as_deref() == Some("ready"),
+            graph.is_ready(&node.id),
             graph.is_blocked(&node.id),
             due_date,
             mapped_deadline_class,
@@ -969,7 +998,6 @@ impl PkbSearchServer {
             "goals": node.goals,
             "contributes_to": contributes_to,
             "contributed_by": node.contributed_by,
-            "follow_up_tasks": node.follow_up_tasks,
             "blocked": graph.is_blocked(&node.id),
             "parse_warnings": node.parse_warnings,
             "days_until_due": days_until_due,
@@ -984,11 +1012,10 @@ impl PkbSearchServer {
 
         if include_routes {
             if let Some((routes, truncated, explanation)) = graph.routes_for_node(&node.id) {
-                let routes_map: std::collections::BTreeMap<String, Vec<crate::flow::Route>> = routes
-                    .into_iter()
-                    .map(|(t, tr)| (t, tr.routes))
-                    .collect();
-                result["routes"] = serde_json::to_value(&routes_map).unwrap_or(serde_json::json!({}));
+                let routes_map: std::collections::BTreeMap<String, Vec<crate::flow::Route>> =
+                    routes.into_iter().map(|(t, tr)| (t, tr.routes)).collect();
+                result["routes"] =
+                    serde_json::to_value(&routes_map).unwrap_or(serde_json::json!({}));
                 result["routes_truncated"] = serde_json::json!(truncated);
                 result["explanation"] = serde_json::json!(explanation);
             } else {
@@ -1345,14 +1372,13 @@ impl PkbSearchServer {
             .and_then(|v| v.as_bool())
             .or_else(|| args.get("include_closed").and_then(|v| v.as_bool()))
             .unwrap_or(false);
-        let format = args
-            .get("format")
-            .and_then(|v| v.as_str())
-            .unwrap_or(if args.get("fields").is_some() || args.get("budget_ms").is_some() {
+        let format = args.get("format").and_then(|v| v.as_str()).unwrap_or(
+            if args.get("fields").is_some() || args.get("budget_ms").is_some() {
                 "json"
             } else {
                 "markdown"
-            });
+            },
+        );
         let fields_filter: Option<HashSet<String>> = args.get("fields").and_then(|v| {
             if let Some(arr) = v.as_array() {
                 Some(
@@ -1394,7 +1420,10 @@ impl PkbSearchServer {
             .map(|statuses| {
                 statuses.iter().any(|s| {
                     let canonical = crate::graph::resolve_status_alias(s);
-                    canonical == "done" || canonical == "cancelled" || canonical == "failed"
+                    canonical == "done"
+                        || canonical == "cancelled"
+                        || canonical == "failed"
+                        || canonical == "archived"
                 })
             })
             .unwrap_or(false);
@@ -1422,7 +1451,10 @@ impl PkbSearchServer {
                     .as_deref()
                     .map(|s| {
                         let canonical = crate::graph::resolve_status_alias(s);
-                        canonical != "done" && canonical != "cancelled" && canonical != "failed"
+                        canonical != "done"
+                            && canonical != "cancelled"
+                            && canonical != "failed"
+                            && canonical != "archived"
                     })
                     .unwrap_or(true)
             });
@@ -1432,9 +1464,7 @@ impl PkbSearchServer {
             tasks.retain(|t| t.intent.unwrap_or(4) <= pri);
         }
         if let Some(min_gain) = gain_gte {
-            tasks.retain(|t| {
-                t.flow.as_ref().and_then(|f| f.gain).unwrap_or(0.0) >= min_gain
-            });
+            tasks.retain(|t| t.flow.as_ref().and_then(|f| f.gain).unwrap_or(0.0) >= min_gain);
         }
         if let Some(min_loss) = loss_averted_gte {
             tasks.retain(|t| {
@@ -1672,8 +1702,17 @@ impl PkbSearchServer {
                     crate::graph::DeadlineClass::Soft => crate::display_rank::DeadlineClass::Soft,
                     crate::graph::DeadlineClass::Hard => crate::display_rank::DeadlineClass::Hard,
                 });
-                let due_date = t.due.as_deref().and_then(crate::display_rank::parse_due_date);
-                let on_cliff = crate::display_rank::is_on_cliff(due_date, mapped_deadline_class, eff, today, buffer_days);
+                let due_date = t
+                    .due
+                    .as_deref()
+                    .and_then(crate::display_rank::parse_due_date);
+                let on_cliff = crate::display_rank::is_on_cliff(
+                    due_date,
+                    mapped_deadline_class,
+                    eff,
+                    today,
+                    buffer_days,
+                );
                 let mut obj = serde_json::json!({
                     "id": t.task_id.as_deref().unwrap_or(&t.id),
                     "title": t.label,
@@ -1682,7 +1721,7 @@ impl PkbSearchServer {
                     "loss_averted": flow.and_then(|f| f.loss_averted),
                     "decision_value": flow.and_then(|f| f.decision_value),
                     "flow_status": flow.map(|f| f.flow_status).unwrap_or(crate::flow::FlowStatus::Ok),
-                    "ready": t.classification.as_deref() == Some("ready"),
+                    "ready": graph.is_ready(&t.id),
                     "blocked": graph.is_blocked(&t.id),
                     "on_cliff": on_cliff,
                     "due": t.due,
@@ -1732,7 +1771,8 @@ impl PkbSearchServer {
                     let excerpt = if let Ok(abs_path) = self.abs_path_for_node(t, Some(&graph)) {
                         if abs_path.is_file() {
                             if let Ok(content) = std::fs::read_to_string(&abs_path) {
-                                let matter = gray_matter::Matter::<gray_matter::engine::YAML>::new();
+                                let matter =
+                                    gray_matter::Matter::<gray_matter::engine::YAML>::new();
                                 let parsed = matter.parse(&content);
                                 let body_text = parsed.content.trim();
                                 let mut chars = body_text.chars();
@@ -1856,8 +1896,17 @@ impl PkbSearchServer {
                     crate::graph::DeadlineClass::Soft => crate::display_rank::DeadlineClass::Soft,
                     crate::graph::DeadlineClass::Hard => crate::display_rank::DeadlineClass::Hard,
                 });
-                let due_date = t.due.as_deref().and_then(crate::display_rank::parse_due_date);
-                let on_cliff = crate::display_rank::is_on_cliff(due_date, mapped_deadline_class, eff, today, buffer_days);
+                let due_date = t
+                    .due
+                    .as_deref()
+                    .and_then(crate::display_rank::parse_due_date);
+                let on_cliff = crate::display_rank::is_on_cliff(
+                    due_date,
+                    mapped_deadline_class,
+                    eff,
+                    today,
+                    buffer_days,
+                );
                 let cliff_str = if on_cliff { "yes" } else { "-" };
 
                 let due_str = t
@@ -1886,7 +1935,9 @@ impl PkbSearchServer {
                                 format!("{}d{}", d, class_suffix)
                             }
                         })
-                        .unwrap_or_else(|| format!("{}{}", &due[..due.floor_char_boundary(len)], class_suffix))
+                        .unwrap_or_else(|| {
+                            format!("{}{}", &due[..due.floor_char_boundary(len)], class_suffix)
+                        })
                     })
                     .unwrap_or_else(|| "-".to_string());
 
@@ -2418,7 +2469,14 @@ impl PkbSearchServer {
         tracing::debug!(target: "perf::update_task", phase = "TOTAL", elapsed_ms = t_total.elapsed().as_secs_f64() * 1000.0);
 
         // Soft warning if setting a terminal status via update_task instead of release_task
-        let terminal_statuses = ["done", "review", "blocked", "cancelled", "partial", "failed"];
+        let terminal_statuses = [
+            "done",
+            "review",
+            "blocked",
+            "cancelled",
+            "partial",
+            "failed",
+        ];
         let hint = updates
             .get("status")
             .and_then(|v| v.as_str())
@@ -2600,8 +2658,17 @@ impl PkbSearchServer {
                 crate::graph::DeadlineClass::Soft => crate::display_rank::DeadlineClass::Soft,
                 crate::graph::DeadlineClass::Hard => crate::display_rank::DeadlineClass::Hard,
             });
-            let due_date = task.due.as_deref().and_then(crate::display_rank::parse_due_date);
-            if crate::display_rank::is_on_cliff(due_date, mapped_deadline_class, eff, today, buffer_days) {
+            let due_date = task
+                .due
+                .as_deref()
+                .and_then(crate::display_rank::parse_due_date);
+            if crate::display_rank::is_on_cliff(
+                due_date,
+                mapped_deadline_class,
+                eff,
+                today,
+                buffer_days,
+            ) {
                 on_cliff += 1;
             }
 

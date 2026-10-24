@@ -3,7 +3,23 @@ export class MockPosition {
 }
 
 export class MockRange {
-  constructor(public start: MockPosition = new MockPosition(), public end: MockPosition = new MockPosition()) {}
+  public start: MockPosition;
+  public end: MockPosition;
+
+  constructor(
+    startOrLine: MockPosition | number = new MockPosition(),
+    endOrChar: MockPosition | number = new MockPosition(),
+    endLine?: number,
+    endChar?: number
+  ) {
+    if (typeof startOrLine === 'number' && typeof endOrChar === 'number') {
+      this.start = new MockPosition(startOrLine, endOrChar);
+      this.end = new MockPosition(endLine ?? startOrLine, endChar ?? endOrChar);
+    } else {
+      this.start = (startOrLine as MockPosition) || new MockPosition();
+      this.end = (endOrChar as MockPosition) || new MockPosition();
+    }
+  }
 }
 
 export class MockLocation {
@@ -15,7 +31,7 @@ export class MockHover {
 }
 
 export class MockDocumentLink {
-  constructor(public range: any = null, public target?: any) {}
+  constructor(public range: any = null, public target?: any, public tooltip?: string) {}
 }
 
 export class MockCompletionItem {
@@ -91,6 +107,7 @@ export class MockOutputChannel {
   public lines: string[] = [];
   public shown: boolean = false;
   public preserveFocusLast?: boolean;
+  public logLevel: number = 3;
 
   constructor(public name: string) {}
 
@@ -120,6 +137,31 @@ export class MockOutputChannel {
   }
 
   dispose(): void {}
+
+  error(error: string | Error, ..._args: any[]): void {
+    const text = error instanceof Error ? (error.message || String(error)) : String(error);
+    this.appendLine(`[${new Date().toISOString()}] [ERROR] ${text}`);
+  }
+
+  warn(message: string, ..._args: any[]): void {
+    this.appendLine(`[${new Date().toISOString()}] [WARN] ${String(message)}`);
+  }
+
+  info(message: string, ..._args: any[]): void {
+    this.appendLine(`[${new Date().toISOString()}] [INFO] ${String(message)}`);
+  }
+
+  debug(message: string, ..._args: any[]): void {
+    this.appendLine(`[${new Date().toISOString()}] [DEBUG] ${String(message)}`);
+  }
+
+  trace(message: string, ..._args: any[]): void {
+    this.appendLine(`[${new Date().toISOString()}] [DEBUG] ${String(message)}`);
+  }
+
+  onDidChangeLogLevel(_listener: (level: any) => any): { dispose: () => void } {
+    return { dispose: () => {} };
+  }
 }
 
 export class MockUri {
@@ -179,6 +221,14 @@ const baseMock: Record<string, any> = {
   EventEmitter: MockEventEmitter,
   version: '1.91.0',
   OutputChannel: MockOutputChannel,
+  LogLevel: {
+    Off: 0,
+    Trace: 1,
+    Debug: 2,
+    Info: 3,
+    Warning: 4,
+    Error: 5,
+  },
   DiagnosticSeverity: {
     Error: 0,
     Warning: 1,
@@ -223,7 +273,7 @@ const baseMock: Record<string, any> = {
       activeEditorListeners.push(listener);
       return { dispose: () => {} };
     },
-    createOutputChannel: (name: string) => {
+    createOutputChannel: (name: string, _options?: any) => {
       let channel = createdOutputChannels.get(name);
       if (!channel) {
         channel = new MockOutputChannel(name);
@@ -246,6 +296,21 @@ const baseMock: Record<string, any> = {
       command: '',
       show: () => {},
       hide: () => {},
+      dispose: () => {},
+    }),
+    createTextEditorDecorationType: (options: any) => ({
+      key: `dec-${Math.random()}`,
+      options,
+      dispose: () => {},
+    }),
+  },
+  languages: {
+    registerInlayHintsProvider: (_selector: any, _provider: any) => ({ dispose: () => {} }),
+    registerCodeLensProvider: (_selector: any, _provider: any) => ({ dispose: () => {} }),
+    registerDocumentSemanticTokensProvider: (_selector: any, _provider: any, _legend: any) => ({
+      dispose: () => {},
+    }),
+    registerDocumentLinkProvider: (_selector: any, _provider: any) => ({
       dispose: () => {},
     }),
   },

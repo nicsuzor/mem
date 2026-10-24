@@ -20,7 +20,8 @@ impl PkbSearchServer {
                 data: None,
             })?;
 
-        let limit = (args.get("limit").and_then(|v| v.as_u64()).unwrap_or(10) as usize).min(MAX_RESULTS);
+        let limit =
+            (args.get("limit").and_then(|v| v.as_u64()).unwrap_or(10) as usize).min(MAX_RESULTS);
         let include_subtasks = args
             .get("include_subtasks")
             .and_then(|v| v.as_bool())
@@ -47,6 +48,14 @@ impl PkbSearchServer {
 
         let _date_filter = crate::date_filter::DateFilter::from_args(args)?;
 
+        if self.reranker.is_enabled() && !self.reranker.is_model_loaded() {
+            return Err(McpError {
+                code: ErrorCode::INTERNAL_ERROR,
+                message: Cow::from("reranker_unavailable"),
+                data: None,
+            });
+        }
+
         let query_embedding = self.embedder.encode_query(query).map_err(|e| McpError {
             code: ErrorCode::INTERNAL_ERROR,
             message: Cow::from(format!("Embedding error: {e}")),
@@ -64,16 +73,23 @@ impl PkbSearchServer {
         } else {
             limit * 3
         };
-        let results = store.search_hybrid(
-            query,
-            &query_embedding,
-            fetch_limit,
-            &self.pkb_root,
-            since,
-            before,
-            None,
-            Some(&self.reranker),
-        );
+        let results = store
+            .try_search_hybrid(
+                query,
+                &query_embedding,
+                fetch_limit,
+                &self.pkb_root,
+                since,
+                before,
+                None,
+                Some(&self.reranker),
+                None,
+            )
+            .map_err(|e| McpError {
+                code: ErrorCode::INTERNAL_ERROR,
+                message: Cow::from(e.to_string()),
+                data: None,
+            })?;
 
         let graph = self.graph.read();
 
@@ -99,12 +115,20 @@ impl PkbSearchServer {
             let is_target = effective_type == Some("target")
                 || r.doc_type
                     .as_deref()
-                    .map(|t| t.eq_ignore_ascii_case("target") || t.eq_ignore_ascii_case("goal") || t.eq_ignore_ascii_case("capability"))
+                    .map(|t| {
+                        t.eq_ignore_ascii_case("target")
+                            || t.eq_ignore_ascii_case("goal")
+                            || t.eq_ignore_ascii_case("capability")
+                    })
                     .unwrap_or(false);
             let explicit_target = is_target
                 && type_filter
                     .as_ref()
-                    .map(|f| f.iter().any(|t| t.eq_ignore_ascii_case("target") || t.eq_ignore_ascii_case("goal")))
+                    .map(|f| {
+                        f.iter().any(|t| {
+                            t.eq_ignore_ascii_case("target") || t.eq_ignore_ascii_case("goal")
+                        })
+                    })
                     .unwrap_or(false);
 
             let is_task = effective_type
@@ -132,9 +156,18 @@ impl PkbSearchServer {
             }
             if let Some(ref filter) = type_filter {
                 let matches = filter.iter().any(|f| {
-                    effective_type.map(|t| t.eq_ignore_ascii_case(f)).unwrap_or(false)
-                        || r.doc_type.as_deref().map(|t| t.eq_ignore_ascii_case(f)).unwrap_or(false)
-                        || node.raw_node_type.as_deref().map(|t| t.eq_ignore_ascii_case(f)).unwrap_or(false)
+                    effective_type
+                        .map(|t| t.eq_ignore_ascii_case(f))
+                        .unwrap_or(false)
+                        || r.doc_type
+                            .as_deref()
+                            .map(|t| t.eq_ignore_ascii_case(f))
+                            .unwrap_or(false)
+                        || node
+                            .raw_node_type
+                            .as_deref()
+                            .map(|t| t.eq_ignore_ascii_case(f))
+                            .unwrap_or(false)
                 });
                 if !matches {
                     continue;
@@ -187,10 +220,8 @@ impl PkbSearchServer {
                     let g = flow.gain.unwrap_or(0.0);
                     let l = flow.loss_averted.unwrap_or(0.0);
                     if g > 0.0 || l > 0.0 {
-                        output.push_str(&format!(
-                            "**Flow:** gain={:.2} loss_averted={:.2}\n",
-                            g, l
-                        ));
+                        output
+                            .push_str(&format!("**Flow:** gain={:.2} loss_averted={:.2}\n", g, l));
                     }
                 }
             } else if let Some(node) = graph.resolve(&r.id) {
@@ -293,12 +324,16 @@ impl PkbSearchServer {
     /// The `search` tool's per-result ranking score: raw semantic `r.score`,
     /// rescaled by graph-proximity `boost`, `type_boost` (knowledge/memory
     /// surfacing, PR #406) and `title_boost` (near-exact title match,
-    /// task_1542e818), plus a small confidence nudge. Pulled out as a pure
+    /// task_1542e818). Pulled out as a pure
     /// function so both the handler and its tests share one formula.
-    pub(crate) fn ranked_score(query: &str, r: &crate::vectordb::SearchResult, boost: f32, confidence: f32) -> f32 {
+    pub(crate) fn ranked_score(
+        query: &str,
+        r: &crate::vectordb::SearchResult,
+        boost: f32,
+    ) -> f32 {
         let type_boost = Self::type_boost_for(r.doc_type.as_deref());
         let title_boost = Self::title_match_boost(query, &r.title);
-        r.score * (1.0 + boost + type_boost + title_boost) + (confidence * 0.05)
+        r.score * (1.0 + boost + type_boost + title_boost)
     }
 
     /// The `task_search` tool's per-result ranking score. Simpler than
@@ -323,7 +358,8 @@ impl PkbSearchServer {
                 data: None,
             })?;
 
-        let limit = (args.get("limit").and_then(|v| v.as_u64()).unwrap_or(10) as usize).min(MAX_RESULTS);
+        let limit =
+            (args.get("limit").and_then(|v| v.as_u64()).unwrap_or(10) as usize).min(MAX_RESULTS);
 
         let boost_id = args.get("boost_id").and_then(|v| v.as_str());
         let detail = args
@@ -356,6 +392,21 @@ impl PkbSearchServer {
 
         let _date_filter = crate::date_filter::DateFilter::from_args(args)?;
 
+        if self.reranker.is_enabled() && !self.reranker.is_model_loaded() {
+            return Err(McpError {
+                code: ErrorCode::INTERNAL_ERROR,
+                message: Cow::from("reranker_unavailable"),
+                data: None,
+            });
+        }
+
+        let ranking_label = if self.reranker.is_enabled() && self.reranker.is_model_loaded() {
+            "reranked"
+        } else {
+            "fused"
+        };
+        let reranker_loaded = self.reranker.is_model_loaded();
+
         let query_embedding = self.embedder.encode_query(query).map_err(|e| McpError {
             code: ErrorCode::INTERNAL_ERROR,
             message: Cow::from(format!("Embedding error: {e}")),
@@ -372,16 +423,23 @@ impl PkbSearchServer {
         } else {
             limit * 2
         };
-        let results = store.search_hybrid(
-            query,
-            &query_embedding,
-            fetch_limit,
-            &self.pkb_root,
-            since,
-            before,
-            doc_type,
-            Some(&self.reranker),
-        );
+        let results = store
+            .try_search_hybrid(
+                query,
+                &query_embedding,
+                fetch_limit,
+                &self.pkb_root,
+                since,
+                before,
+                doc_type,
+                Some(&self.reranker),
+                None,
+            )
+            .map_err(|e| McpError {
+                code: ErrorCode::INTERNAL_ERROR,
+                message: Cow::from(e.to_string()),
+                data: None,
+            })?;
 
         // Build proximity boost map if boost_id provided
         let boost_map: std::collections::HashMap<String, f32> = if let Some(bid) = boost_id {
@@ -416,10 +474,9 @@ impl PkbSearchServer {
             .map(|r| {
                 let node = graph.get_node(&r.id).or_else(|| graph.resolve(&r.id));
                 let node_id = node.as_ref().map(|n| n.id.clone()).unwrap_or_else(|| r.id.clone());
-                let confidence = node.as_ref().and_then(|n| n.confidence).unwrap_or(0.5) as f32;
 
                 let boost = boost_map.get(&node_id).copied().unwrap_or(0.0);
-                let base_score = Self::ranked_score(query, r, boost, confidence);
+                let base_score = Self::ranked_score(query, r, boost);
 
                 let doc_type = r.doc_type.as_deref().or_else(|| node.as_ref().and_then(|n| n.node_type.as_deref()));
                 let date = r.date.as_deref();
@@ -478,8 +535,13 @@ impl PkbSearchServer {
                 "items": [],
                 "count": 0,
                 "results": [],
+                "ranking": ranking_label,
+                "reranker_loaded": reranker_loaded,
             });
-            return Ok(Self::structured_result("No results found.".to_string(), zero));
+            return Ok(Self::structured_result(
+                "No results found.".to_string(),
+                zero,
+            ));
         }
 
         if ids_only {
@@ -500,6 +562,8 @@ impl PkbSearchServer {
                 "count": id_list.len(),
                 "ids": id_list.clone(),
                 "items": id_list,
+                "ranking": ranking_label,
+                "reranker_loaded": reranker_loaded,
             });
 
             if format.eq_ignore_ascii_case("json") {
@@ -572,6 +636,8 @@ impl PkbSearchServer {
                 "count": json_results.len(),
                 "items": json_results.clone(),
                 "results": json_results,
+                "ranking": ranking_label,
+                "reranker_loaded": reranker_loaded,
             });
             let json_str = serde_json::to_string_pretty(&payload).unwrap_or_default();
             return Ok(Self::structured_result(json_str, payload));
@@ -633,13 +699,22 @@ impl PkbSearchServer {
                     // Read full document from disk
                     let abs_path = node
                         .and_then(|n| self.abs_path_for_node(n, None).ok())
-                        .unwrap_or_else(|| if r.path.as_os_str().is_empty() { PathBuf::new() } else { r.path.clone() });
+                        .unwrap_or_else(|| {
+                            if r.path.as_os_str().is_empty() {
+                                PathBuf::new()
+                            } else {
+                                r.path.clone()
+                            }
+                        });
                     if !abs_path.as_os_str().is_empty() {
                         match std::fs::read_to_string(&abs_path) {
                             Ok(content) => {
                                 if content.len() > max_bytes {
-                                    let mut truncated = Self::truncate_body(content, Some(max_bytes));
-                                    truncated.push_str(&format!("\n... [truncated at {max_bytes} bytes]"));
+                                    let mut truncated =
+                                        Self::truncate_body(content, Some(max_bytes));
+                                    truncated.push_str(&format!(
+                                        "\n... [truncated at {max_bytes} bytes]"
+                                    ));
                                     std::borrow::Cow::Owned(truncated)
                                 } else {
                                     std::borrow::Cow::Owned(content)
@@ -664,6 +739,8 @@ impl PkbSearchServer {
             "total": scored.len(),
             "showing": scored.len(),
             "count": scored.len(),
+            "ranking": ranking_label,
+            "reranker_loaded": reranker_loaded,
             "items": scored.iter().map(|(r, score, recency_decay, read_boost, salience)| {
                 serde_json::json!({
                     "id": r.id,
@@ -879,7 +956,10 @@ impl PkbSearchServer {
         Ok(CallToolResult::success(vec![Content::text(output)]))
     }
 
-    pub(crate) fn handle_get_semantic_neighbors(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+    pub(crate) fn handle_get_semantic_neighbors(
+        &self,
+        args: &JsonValue,
+    ) -> Result<CallToolResult, McpError> {
         self.ensure_graph_fresh();
         let id = args
             .get("id")
@@ -895,7 +975,8 @@ impl PkbSearchServer {
             .get("threshold")
             .and_then(|v| v.as_f64())
             .unwrap_or(0.85);
-        let limit = (args.get("limit").and_then(|v| v.as_u64()).unwrap_or(10) as usize).min(MAX_RESULTS);
+        let limit =
+            (args.get("limit").and_then(|v| v.as_u64()).unwrap_or(10) as usize).min(MAX_RESULTS);
 
         let graph = self.graph.read();
         let store = self.acquire_store_read();
@@ -931,7 +1012,10 @@ impl PkbSearchServer {
         Ok(CallToolResult::success(vec![Content::text(output)]))
     }
 
-    pub(crate) fn handle_search_by_tag(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+    pub(crate) fn handle_search_by_tag(
+        &self,
+        args: &JsonValue,
+    ) -> Result<CallToolResult, McpError> {
         self.ensure_graph_fresh();
         let tags: Vec<String> = args
             .get("tags")
@@ -956,7 +1040,8 @@ impl PkbSearchServer {
         }
 
         let type_filter = args.get("type").and_then(|v| v.as_str());
-        let limit = (args.get("limit").and_then(|v| v.as_u64()).unwrap_or(50) as usize).min(MAX_RESULTS);
+        let limit =
+            (args.get("limit").and_then(|v| v.as_u64()).unwrap_or(50) as usize).min(MAX_RESULTS);
 
         let store = self.acquire_store_read();
         let all = store.list_documents(None, type_filter, None, &self.pkb_root);
@@ -1004,7 +1089,10 @@ impl PkbSearchServer {
         Ok(CallToolResult::success(vec![Content::text(output)]))
     }
 
-    pub(crate) fn handle_find_duplicates(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+    pub(crate) fn handle_find_duplicates(
+        &self,
+        args: &JsonValue,
+    ) -> Result<CallToolResult, McpError> {
         self.ensure_graph_fresh();
         let filters = crate::batch_ops::filters::parse_filter_set(args);
         let mode_str = args.get("mode").and_then(|v| v.as_str()).unwrap_or("both");
@@ -1017,7 +1105,8 @@ impl PkbSearchServer {
             .get("similarity_threshold")
             .and_then(|v| v.as_f64())
             .unwrap_or(0.85);
-        let limit = (args.get("limit").and_then(|v| v.as_u64()).unwrap_or(100) as usize).min(MAX_RESULTS);
+        let limit =
+            (args.get("limit").and_then(|v| v.as_u64()).unwrap_or(100) as usize).min(MAX_RESULTS);
 
         let graph = self.graph.read();
         let store = self.acquire_store_read();
@@ -1041,7 +1130,6 @@ impl PkbSearchServer {
         let json = serde_json::to_string_pretty(&report).unwrap_or_default();
         Ok(CallToolResult::success(vec![Content::text(json)]))
     }
-
     pub(crate) fn handle_get_salience(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
         self.ensure_graph_fresh();
         let id = args
@@ -1109,6 +1197,7 @@ mod title_match_ranking_tests {
             status: None,
             tags: vec![],
             confidence: None,
+            chunk_id: None,
         }
     }
 
@@ -1170,8 +1259,8 @@ mod title_match_ranking_tests {
     /// raw≈0.667 (displayed 0.692). Without `title_boost` this test fails exactly
     /// as production did (task_764ea48c is neither #1 nor even #2).
     #[test]
-    fn ranked_score_surfaces_near_exact_title_match_ahead_of_type_boosted_and_higher_raw_score_rivals()
-    {
+    fn ranked_score_surfaces_near_exact_title_match_ahead_of_type_boosted_and_higher_raw_score_rivals(
+    ) {
         let query = "write reference for Jo Gray promotion university of sydney";
 
         let target = result(
@@ -1190,9 +1279,9 @@ mod title_match_ranking_tests {
             Some("task"),
         );
 
-        let target_score = PkbSearchServer::ranked_score(query, &target, 0.0, 0.5);
-        let memory_score = PkbSearchServer::ranked_score(query, &type_boosted_memory, 0.0, 0.5);
-        let rival_score = PkbSearchServer::ranked_score(query, &higher_raw_score_task, 0.0, 0.5);
+        let target_score = PkbSearchServer::ranked_score(query, &target, 0.0);
+        let memory_score = PkbSearchServer::ranked_score(query, &type_boosted_memory, 0.0);
+        let rival_score = PkbSearchServer::ranked_score(query, &higher_raw_score_task, 0.0);
 
         assert!(
             target_score > memory_score,
@@ -1213,8 +1302,8 @@ mod title_match_ranking_tests {
         let memory_doc = result("Notes on cloud spend patterns", 0.5, Some("memory"));
         let task_doc = result("Fix the flaky deploy pipeline", 0.5, Some("task"));
 
-        let memory_score = PkbSearchServer::ranked_score(query, &memory_doc, 0.0, 0.5);
-        let task_score = PkbSearchServer::ranked_score(query, &task_doc, 0.0, 0.5);
+        let memory_score = PkbSearchServer::ranked_score(query, &memory_doc, 0.0);
+        let task_score = PkbSearchServer::ranked_score(query, &task_doc, 0.0);
 
         assert!(
             memory_score > task_score,
@@ -1258,15 +1347,16 @@ mod title_match_ranking_tests {
         let unrelated_score =
             PkbSearchServer::task_search_score(query, &keyword_stuffed_unrelated_title);
 
-        assert!(target_score > rival_score, "{target_score} vs {rival_score}");
+        assert!(
+            target_score > rival_score,
+            "{target_score} vs {rival_score}"
+        );
         assert!(
             target_score > unrelated_score,
             "{target_score} vs {unrelated_score}"
         );
     }
 }
-
-
 
 /// AC2 for the semantic-search surfaces (`search`, `task_search`): every task/
 /// node hit must carry a `status` field in the DEFAULT projection. These methods
@@ -1278,10 +1368,10 @@ mod title_match_ranking_tests {
 #[cfg(test)]
 mod search_status_projection_tests {
     use super::*;
-    use parking_lot::RwLock;
     use crate::embeddings::{Embedder, EMBEDDING_DIM};
     use crate::graph_store::GraphStore;
     use crate::vectordb::VectorStore;
+    use parking_lot::RwLock;
     use std::path::Path;
     use std::sync::Arc;
 
@@ -1323,6 +1413,7 @@ mod search_status_projection_tests {
             server
                 .handle_create_task(&serde_json::json!({
                     "title": title,
+                    "slug": "slug",
                     "body": body,
                     "parent": "p",
                     "project": "p",
@@ -1349,11 +1440,27 @@ mod search_status_projection_tests {
         // Insert into vector store & graph
         let note_doc = crate::pkb::parse_file(&note_path).unwrap();
         let tmpl_doc = crate::pkb::parse_file(&tmpl_path).unwrap();
-        let emb = server.embedder.encode_query("widget architecture note retrieval").unwrap();
-        server.store.write().insert_precomputed(&note_doc, vec![note_doc.body.clone()], vec![emb.clone()]);
-        server.store.write().insert_precomputed(&tmpl_doc, vec![tmpl_doc.body.clone()], vec![emb]);
-        server.graph.write().replace_node(crate::graph::GraphNode::from_pkb_document(&note_doc));
-        server.graph.write().replace_node(crate::graph::GraphNode::from_pkb_document(&tmpl_doc));
+        let emb = server
+            .embedder
+            .encode_query("widget architecture note retrieval")
+            .unwrap();
+        server.store.write().insert_precomputed(
+            &note_doc,
+            vec![note_doc.body.clone()],
+            vec![emb.clone()],
+        );
+        server
+            .store
+            .write()
+            .insert_precomputed(&tmpl_doc, vec![tmpl_doc.body.clone()], vec![emb]);
+        server
+            .graph
+            .write()
+            .replace_node(crate::graph::GraphNode::from_pkb_document(&note_doc));
+        server
+            .graph
+            .write()
+            .replace_node(crate::graph::GraphNode::from_pkb_document(&tmpl_doc));
 
         server
     }
@@ -1399,7 +1506,9 @@ mod search_status_projection_tests {
         let server = build_seeded_server(dir.path());
 
         let result = server
-            .handle_pkb_search(&serde_json::json!({"query": "widget retrieval", "type": "task", "limit": 5}))
+            .handle_pkb_search(
+                &serde_json::json!({"query": "widget retrieval", "type": "task", "limit": 5}),
+            )
             .expect("search");
         let text = result_text(&result);
 
@@ -1426,8 +1535,14 @@ mod search_status_projection_tests {
 
         assert!(!text.contains("No results found"));
         assert!(text.contains("**Type:** task"));
-        assert!(!text.contains("**Type:** note"), "task-only search must not return note");
-        assert!(!text.contains("**Type:** template"), "task-only search must not return template");
+        assert!(
+            !text.contains("**Type:** note"),
+            "task-only search must not return note"
+        );
+        assert!(
+            !text.contains("**Type:** template"),
+            "task-only search must not return template"
+        );
     }
 
     #[test]
@@ -1436,12 +1551,17 @@ mod search_status_projection_tests {
         let server = build_seeded_server(dir.path());
 
         let result = server
-            .handle_pkb_search(&serde_json::json!({"query": "widget", "type": "!task", "limit": 10}))
+            .handle_pkb_search(
+                &serde_json::json!({"query": "widget", "type": "!task", "limit": 10}),
+            )
             .expect("search");
         let text = result_text(&result);
 
         assert!(!text.contains("No results found"));
-        assert!(!text.contains("**Type:** task"), "!task search must exclude tasks");
+        assert!(
+            !text.contains("**Type:** task"),
+            "!task search must exclude tasks"
+        );
         assert!(text.contains("**Type:** note") || text.contains("**Type:** template"));
     }
 
@@ -1451,7 +1571,9 @@ mod search_status_projection_tests {
         let server = build_seeded_server(dir.path());
 
         let result = server
-            .handle_pkb_search(&serde_json::json!({"query": "widget", "type": "template", "limit": 10}))
+            .handle_pkb_search(
+                &serde_json::json!({"query": "widget", "type": "template", "limit": 10}),
+            )
             .expect("search");
         let text = result_text(&result);
 
@@ -1467,7 +1589,9 @@ mod search_status_projection_tests {
         let server = build_seeded_server(dir.path());
 
         let result = server
-            .handle_pkb_search(&serde_json::json!({"query": "widget", "type": "nonexistent_xyz", "limit": 10}))
+            .handle_pkb_search(
+                &serde_json::json!({"query": "widget", "type": "nonexistent_xyz", "limit": 10}),
+            )
             .expect("search");
         let text = result_text(&result);
 
@@ -1500,9 +1624,137 @@ mod search_status_projection_tests {
             .expect("search");
         let text = result_text(&result);
 
-        assert!(text.contains("**Type:** note"), "hit must be unambiguously labelled as note");
+        assert!(
+            text.contains("**Type:** note"),
+            "hit must be unambiguously labelled as note"
+        );
         // note-widget-1 had status: ready in frontmatter, but must NOT present **Status:** in search results (AC3 / aops_9d3be3b3)
-        assert!(!text.contains("**Status:**"), "non-task note must not present actionable task status: {text}");
+        assert!(
+            !text.contains("**Status:**"),
+            "non-task note must not present actionable task status: {text}"
+        );
+    }
+
+    #[test]
+    fn test_search_reports_fused_when_reranker_off() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut server = build_seeded_server(dir.path());
+        let reranker = Arc::new(crate::rerank::CrossEncoderReranker::new(
+            crate::rerank::RerankerConfig {
+                model_path: None,
+                tokenizer_path: None,
+                top_n_candidates: 10,
+                query_token_cap: 160,
+                chunk_token_cap: 352,
+                enabled: false,
+                tau_h: crate::rerank::DEFAULT_TAU_H,
+                tau_cos: crate::rerank::DEFAULT_TAU_COS,
+                tau_s: crate::rerank::DEFAULT_TAU_S,
+            },
+        ));
+        server = server.with_reranker(reranker);
+
+        let result = server
+            .handle_pkb_search(&serde_json::json!({"query": "widget", "format": "json"}))
+            .expect("search must succeed");
+
+        let text = result_text(&result);
+        let parsed: serde_json::Value = serde_json::from_str(&text).expect("valid json output");
+        assert_eq!(parsed["ranking"], "fused");
+        assert_eq!(parsed["reranker_loaded"], false);
+    }
+
+    #[test]
+    fn test_search_raises_reranker_unavailable_when_configured_on_and_fails_to_load() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut server = build_seeded_server(dir.path());
+        let reranker = Arc::new(crate::rerank::CrossEncoderReranker::new(
+            crate::rerank::RerankerConfig {
+                model_path: Some(PathBuf::from("/nonexistent/model.onnx")),
+                tokenizer_path: Some(PathBuf::from("/nonexistent/tokenizer.json")),
+                top_n_candidates: 10,
+                query_token_cap: 160,
+                chunk_token_cap: 352,
+                enabled: true,
+                tau_h: crate::rerank::DEFAULT_TAU_H,
+                tau_cos: crate::rerank::DEFAULT_TAU_COS,
+                tau_s: crate::rerank::DEFAULT_TAU_S,
+            },
+        ));
+        server = server.with_reranker(reranker);
+
+        let result = server.handle_pkb_search(&serde_json::json!({"query": "widget"}));
+        assert!(result.is_err(), "search must error when reranker fails to load");
+        let err = result.unwrap_err();
+        assert_eq!(err.message, "reranker_unavailable");
+
+        let task_result = server.handle_task_search(&serde_json::json!({"query": "widget"}));
+        assert!(task_result.is_err(), "task_search must error when reranker fails to load");
+        let err = task_result.unwrap_err();
+        assert_eq!(err.message, "reranker_unavailable");
+    }
+
+    #[test]
+    fn test_search_document_scores_are_invariant_to_frontmatter_confidence() {
+        let score_for_confidence = |confidence: f64| -> f64 {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let pkb_root = dir.path();
+
+            let store = VectorStore::new(EMBEDDING_DIM);
+            let embedder = Embedder::new_dummy();
+            let graph = GraphStore::build_from_directory(pkb_root);
+            let server = PkbSearchServer::new(
+                Arc::new(RwLock::new(store)),
+                Arc::new(embedder),
+                pkb_root.to_path_buf(),
+                pkb_root.join("test-index.bin"),
+                Arc::new(RwLock::new(graph)),
+            );
+
+            let note_path = pkb_root.join("notes").join("note-conf.md");
+            std::fs::create_dir_all(note_path.parent().unwrap()).unwrap();
+            std::fs::write(
+                &note_path,
+                format!(
+                    "---\nid: note-conf\ntitle: \"Architecture Guide\"\ntype: note\nconfidence: {confidence:.1}\n---\n\nIdentical body text for architecture guide."
+                ),
+            )
+            .unwrap();
+
+            let doc = crate::pkb::parse_file(&note_path).unwrap();
+            let emb = server
+                .embedder
+                .encode_query("architecture guide")
+                .unwrap();
+
+            server
+                .store
+                .write()
+                .insert_precomputed(&doc, vec![doc.body.clone()], vec![emb]);
+            server
+                .graph
+                .write()
+                .replace_node(crate::graph::GraphNode::from_pkb_document(&doc));
+
+            let res = server
+                .handle_pkb_search(&serde_json::json!({
+                    "query": "architecture guide",
+                    "format": "json",
+                    "limit": 10,
+                }))
+                .expect("search");
+            let text = result_text(&res);
+            let json_val: serde_json::Value = serde_json::from_str(&text).expect("valid json");
+            let items = json_val["items"].as_array().expect("items array");
+            assert_eq!(items.len(), 1, "expected 1 item, got json: {text}");
+            items[0]["score"].as_f64().expect("score")
+        };
+
+        let score0 = score_for_confidence(0.0);
+        let score1 = score_for_confidence(1.0);
+        assert_eq!(
+            score0, score1,
+            "document scores across search must be invariant to frontmatter confidence; got {score0} vs {score1}"
+        );
     }
 }
-

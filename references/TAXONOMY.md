@@ -138,6 +138,8 @@ A `template` node holds the canonical body and metadata for a recurring workflow
 | `project`     | Project identifier — inherited by each instance                                         |
 | `template_id` | (On instances only) Back-reference to the template that spawned this instance           |
 
+**Placement**: a template is filed as `<snake_case id>.md` (id only, no title) in `workflows/`, or in `<project>/workflows/` when it has a `project`. `create` and `convert_document` route templates there by default (see `specs/pkb-rules.md` §3.10).
+
 **Pattern for recurring workflows** (`/daily`, `/retro`, `/sleep`, `/supervisor` session logs, `/issue-sweep` cycles):
 
 1. Create a template node with `type: template` and a short, stable ID.
@@ -191,11 +193,12 @@ The tree hierarchy is a **spanning tree** of the underlying dependency graph. It
 | `in_progress` | Claimed by an agent or human — actively being worked                             |
 | `review`      | Worker asking for help from the agent that next picks it up — mid-flight handback or escalation |
 | `partial`     | Worker legitimately stopped at a scope seam — draft PR plus a live follow-up task. Not merge-ready, not done; the follow-up child carries the remainder |
-| `done`        | Complete — no further action required                                            |
+| `done`        | Complete (with deliverable) — no further action required                         |
 | `paused`      | Intentionally stopped with intent to resume — work was in-flight but deferred    |
 | `someday`     | Parked idea — may never be worked; differs from `inbox` by explicit deferral     |
-| `cancelled`   | Will not be done — decision made to drop                                         |
+| `cancelled`   | Complete (dropped or withdrawn) — will not be done; decision made to drop        |
 | `failed`      | Attempted and will not be completed — terminal failure, distinct from `cancelled` (no longer wanted) and `done` |
+| `archived`    | Retired note or historical record — marked for removal to the sessions repository |
 
 **Default is `inbox`**: Every new node starts as `inbox` regardless of how it was created.
 
@@ -204,6 +207,10 @@ The tree hierarchy is a **spanning tree** of the underlying dependency graph. It
 **`queued` is a human gate**: The user promotes tasks from `ready` to `queued` to make them available for agent dispatch. A direct request from the user for a piece of work is that promotion: the task created for it (e.g. by a user-invoked `/q` or `/dispatch`) may be written straight to `queued`. Agents must not write `queued` on work the user did not ask for — tasks an agent originates stay at `inbox`/`ready` until the user promotes them. This preserves human control over what agents work on next. Agents pull only from `queued`.
 
 **Propagation**: Completion of a node should trigger readiness re-evaluation of all nodes that depend on it. The system surfaces dependency chains so that cascading unblocks are visible.
+
+### "Complete" vs. "Successful"
+
+In `mem`, "complete" means no longer actionable and not waiting on anything, not "successful". Every tool and calculation treats a `cancelled` task as complete: a dependent is not blocked by it, and no readiness, ranking, flow or listing path counts it as failed or pending. Both `done` (completed with deliverable) and `cancelled` (withdrawn or abandoned) represent terminal, complete states that unblock downstream dependencies.
 
 ### Actionable vs. Ready
 
@@ -273,7 +280,7 @@ If A blocks B and B blocks A, the decomposition is wrong. Restructure — either
 
 ### 4. Ready means all blockers resolved
 
-A task is ready when every one of its DependsOn edges points to a completed node, it is not transitively downstream of anything blocked, it is a leaf, its status is `ready`/`queued` (or `inbox` with acceptance criteria), and its type is claimable. "Leaf" alone is not sufficient. Uncertainty is **not** part of the predicate — `classify_tasks` never consults it.
+A task is ready when every one of its DependsOn edges points to a completed node (where "complete" means no longer actionable and not waiting on anything, including `done` and `cancelled`), it is not transitively downstream of anything blocked, it is a leaf, its status is `ready`/`queued` (or `inbox` with acceptance criteria), and its type is claimable. "Leaf" alone is not sufficient. Uncertainty is **not** part of the predicate — `classify_tasks` never consults it.
 
 ### 5. The hierarchy provides context
 

@@ -185,6 +185,11 @@ pub fn batch_merge(
         let node = match graph.resolve(merge_id) {
             Some(n) => n,
             None => {
+                if canonical.supersedes.contains(merge_id) {
+                    // Already merged into this canonical and deleted — idempotent
+                    summary.skipped += 1;
+                    continue;
+                }
                 summary.errors.push(TaskError {
                     id: merge_id.clone(),
                     error: "task not found".to_string(),
@@ -214,8 +219,23 @@ pub fn batch_merge(
             if other.soft_depends_on.contains(&node.id) {
                 backlinks_to_update.push((other.id.clone(), "soft_depends_on".to_string()));
             }
+            if other.blocks.contains(&node.id) {
+                backlinks_to_update.push((other.id.clone(), "blocks".to_string()));
+            }
             if other.soft_blocks.contains(&node.id) {
                 backlinks_to_update.push((other.id.clone(), "soft_blocks".to_string()));
+            }
+            if other.closes.contains(&node.id) {
+                backlinks_to_update.push((other.id.clone(), "closes".to_string()));
+            }
+            if other.supersedes.contains(&node.id) {
+                backlinks_to_update.push((other.id.clone(), "supersedes".to_string()));
+            }
+            if other.contributes_to.iter().any(|ct| ct.to == node.id) {
+                backlinks_to_update.push((other.id.clone(), "contributes_to".to_string()));
+            }
+            if other.links.iter().any(|l| l.to.as_deref() == Some(&node.id) || l.from.as_deref() == Some(&node.id)) {
+                backlinks_to_update.push((other.id.clone(), "links".to_string()));
             }
         }
 
@@ -252,6 +272,8 @@ pub fn batch_merge(
     for (node_id, field) in &backlinks_to_update {
         if field == "parent" || field == "depends_on" {
             proposed_edges.push((node_id.as_str(), &canonical_id));
+        } else if field == "blocks" {
+            proposed_edges.push((&canonical_id, node_id.as_str()));
         }
     }
 
@@ -276,38 +298,19 @@ pub fn batch_merge(
         return summary;
     }
 
-    // Archive merged sources as `cancelled`, not `done`: the source's work
-    // was not performed, it was folded into the canonical. Bodies are not
-    // carried across; each source gets a note naming the canonical.
-    // `superseded_by` is never written directly (mem_8035b002) — it is a
-    // computed reverse index of the canonical's `supersedes` list, below.
-    for node in sources {
-        if canonical.supersedes.contains(&node.id) && node.status.as_deref() == Some("cancelled") {
-            // Already merged into this canonical — keep the call idempotent.
-            merged_ids_for_supersedes.push(node.id.clone());
-            continue;
-        }
-        let mut updates = HashMap::new();
-        updates.insert(
-            "status".to_string(),
-            serde_json::Value::String("cancelled".to_string()),
-        );
-        let note = format!(
-            "Merged into [[{canonical_id}]] by batch_merge; status set to cancelled. \
-             This task's work was not performed here — see the canonical."
-        );
-        let result = match ctx.update_task(&node.id, updates) {
-            Ok(()) => ctx.append_to_task(&node.id, &note),
-            Err(e) => Err(e),
-        };
-        match result {
-            Ok(()) => {
+    // Delete merged duplicate tasks outright (specs/pkb-rules.md §3.3).
+    // No cancelled stubs or tombstones remain on disk.
+    // The canonical task records the merge in its `supersedes` list.
+    for node in &sources {
+        match ctx.delete_task(&node.id) {
+            Ok(abs_path) => {
                 summary.changed += 1;
+                summary.removed_paths.push(abs_path);
                 summary.tasks.push(TaskAction {
                     id: node.id.clone(),
                     title: node.label.clone(),
                     action: "merged".to_string(),
-                    detail: Some(format!("cancelled, superseded by {canonical_id}")),
+                    detail: Some(format!("deleted, merged into {canonical_id}")),
                     old_value: None,
                     new_value: None,
                 });
@@ -369,6 +372,13 @@ pub fn batch_merge(
                 supersedes_vec.push(id.clone());
             }
         }
+        for node in &sources {
+            for id in &node.supersedes {
+                if !supersedes_vec.contains(id) && id != &canonical_id {
+                    supersedes_vec.push(id.clone());
+                }
+            }
+        }
         canonical_updates.insert(
             "supersedes".to_string(),
             serde_json::Value::Array(
@@ -411,86 +421,203 @@ pub fn batch_merge(
         }
     }
 
-    // Update backlinks
-    for (node_id, field) in &backlinks_to_update {
-        if let Some(node) = graph.get_node(node_id) {
+    // Update backlinks: group fields by node_id
+    let mut backlink_map: HashMap<String, HashSet<String>> = HashMap::new();
+    for (node_id, field) in backlinks_to_update {
+        backlink_map.entry(node_id).or_default().insert(field);
+    }
+
+    for (node_id, fields) in backlink_map {
+        if let Some(node) = graph.get_node(&node_id) {
             let mut updates = HashMap::new();
-            match field.as_str() {
-                "parent" => {
-                    updates.insert(
-                        "parent".to_string(),
-                        serde_json::Value::String(canonical_id.clone()),
-                    );
-                }
-                "depends_on" => {
-                    let new_deps: Vec<String> = node
-                        .depends_on
-                        .iter()
-                        .map(|d| {
-                            if merge_ids.contains(d) {
-                                canonical_id.clone()
-                            } else {
-                                d.clone()
-                            }
-                        })
-                        .collect();
-                    updates.insert(
-                        "depends_on".to_string(),
-                        serde_json::Value::Array(
-                            new_deps
-                                .into_iter()
-                                .map(serde_json::Value::String)
-                                .collect(),
-                        ),
-                    );
-                }
-                "soft_depends_on" => {
-                    let new_deps: Vec<String> = node
-                        .soft_depends_on
-                        .iter()
-                        .map(|d| {
-                            if merge_ids.contains(d) {
-                                canonical_id.clone()
-                            } else {
-                                d.clone()
-                            }
-                        })
-                        .collect();
-                    updates.insert(
-                        "soft_depends_on".to_string(),
-                        serde_json::Value::Array(
-                            new_deps
-                                .into_iter()
-                                .map(serde_json::Value::String)
-                                .collect(),
-                        ),
-                    );
-                }
-                "soft_blocks" => {
-                    let new_blocks: Vec<String> = node
-                        .soft_blocks
-                        .iter()
-                        .map(|d| {
-                            if merge_ids.contains(d) {
-                                canonical_id.clone()
-                            } else {
-                                d.clone()
-                            }
-                        })
-                        .collect();
-                    updates.insert(
-                        "soft_blocks".to_string(),
-                        serde_json::Value::Array(
-                            new_blocks
-                                .into_iter()
-                                .map(serde_json::Value::String)
-                                .collect(),
-                        ),
-                    );
-                }
-                _ => {}
+            if fields.contains("parent") {
+                updates.insert(
+                    "parent".to_string(),
+                    serde_json::Value::String(canonical_id.clone()),
+                );
             }
-            let _ = ctx.update_task(node_id, updates);
+            if fields.contains("depends_on") {
+                let mut new_deps: Vec<String> = node
+                    .depends_on
+                    .iter()
+                    .map(|d| {
+                        if merge_ids.contains(d) {
+                            canonical_id.clone()
+                        } else {
+                            d.clone()
+                        }
+                    })
+                    .filter(|d| d != &node.id)
+                    .collect();
+                crate::graph::deduplicate_vec(&mut new_deps);
+                updates.insert(
+                    "depends_on".to_string(),
+                    serde_json::Value::Array(
+                        new_deps
+                            .into_iter()
+                            .map(serde_json::Value::String)
+                            .collect(),
+                    ),
+                );
+            }
+            if fields.contains("soft_depends_on") {
+                let mut new_deps: Vec<String> = node
+                    .soft_depends_on
+                    .iter()
+                    .map(|d| {
+                        if merge_ids.contains(d) {
+                            canonical_id.clone()
+                        } else {
+                            d.clone()
+                        }
+                    })
+                    .filter(|d| d != &node.id)
+                    .collect();
+                crate::graph::deduplicate_vec(&mut new_deps);
+                updates.insert(
+                    "soft_depends_on".to_string(),
+                    serde_json::Value::Array(
+                        new_deps
+                            .into_iter()
+                            .map(serde_json::Value::String)
+                            .collect(),
+                    ),
+                );
+            }
+            if fields.contains("blocks") {
+                let mut new_blocks: Vec<String> = node
+                    .blocks
+                    .iter()
+                    .map(|d| {
+                        if merge_ids.contains(d) {
+                            canonical_id.clone()
+                        } else {
+                            d.clone()
+                        }
+                    })
+                    .filter(|d| d != &node.id)
+                    .collect();
+                crate::graph::deduplicate_vec(&mut new_blocks);
+                updates.insert(
+                    "blocks".to_string(),
+                    serde_json::Value::Array(
+                        new_blocks
+                            .into_iter()
+                            .map(serde_json::Value::String)
+                            .collect(),
+                    ),
+                );
+            }
+            if fields.contains("soft_blocks") {
+                let mut new_blocks: Vec<String> = node
+                    .soft_blocks
+                    .iter()
+                    .map(|d| {
+                        if merge_ids.contains(d) {
+                            canonical_id.clone()
+                        } else {
+                            d.clone()
+                        }
+                    })
+                    .filter(|d| d != &node.id)
+                    .collect();
+                crate::graph::deduplicate_vec(&mut new_blocks);
+                updates.insert(
+                    "soft_blocks".to_string(),
+                    serde_json::Value::Array(
+                        new_blocks
+                            .into_iter()
+                            .map(serde_json::Value::String)
+                            .collect(),
+                    ),
+                );
+            }
+            if fields.contains("closes") {
+                let mut new_closes: Vec<String> = node
+                    .closes
+                    .iter()
+                    .map(|d| {
+                        if merge_ids.contains(d) {
+                            canonical_id.clone()
+                        } else {
+                            d.clone()
+                        }
+                    })
+                    .filter(|d| d != &node.id)
+                    .collect();
+                crate::graph::deduplicate_vec(&mut new_closes);
+                updates.insert(
+                    "closes".to_string(),
+                    serde_json::Value::Array(
+                        new_closes
+                            .into_iter()
+                            .map(serde_json::Value::String)
+                            .collect(),
+                    ),
+                );
+            }
+            if fields.contains("supersedes") {
+                let mut new_supersedes: Vec<String> = node
+                    .supersedes
+                    .iter()
+                    .map(|d| {
+                        if merge_ids.contains(d) {
+                            canonical_id.clone()
+                        } else {
+                            d.clone()
+                        }
+                    })
+                    .filter(|d| d != &node.id)
+                    .collect();
+                crate::graph::deduplicate_vec(&mut new_supersedes);
+                updates.insert(
+                    "supersedes".to_string(),
+                    serde_json::Value::Array(
+                        new_supersedes
+                            .into_iter()
+                            .map(serde_json::Value::String)
+                            .collect(),
+                    ),
+                );
+            }
+            if fields.contains("contributes_to") {
+                let new_ct: Vec<serde_json::Value> = node
+                    .contributes_to
+                    .iter()
+                    .map(|ct| {
+                        let mut val = serde_json::to_value(ct).unwrap();
+                        if merge_ids.contains(&ct.to) {
+                            val["to"] = serde_json::Value::String(canonical_id.clone());
+                        }
+                        val
+                    })
+                    .collect();
+                updates.insert("contributes_to".to_string(), serde_json::Value::Array(new_ct));
+            }
+            if fields.contains("links") {
+                let new_links: Vec<serde_json::Value> = node
+                    .links
+                    .iter()
+                    .map(|l| {
+                        let mut val = serde_json::to_value(l).unwrap();
+                        if let Some(ref to) = l.to {
+                            if merge_ids.contains(to) {
+                                val["to"] = serde_json::Value::String(canonical_id.clone());
+                            }
+                        }
+                        if let Some(ref from) = l.from {
+                            if merge_ids.contains(from) {
+                                val["from"] = serde_json::Value::String(canonical_id.clone());
+                            }
+                        }
+                        val
+                    })
+                    .collect();
+                updates.insert("links".to_string(), serde_json::Value::Array(new_links));
+            }
+            if !updates.is_empty() {
+                let _ = ctx.update_task(&node_id, updates);
+            }
         }
     }
 

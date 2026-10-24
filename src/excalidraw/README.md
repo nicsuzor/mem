@@ -65,7 +65,7 @@ One shape plus one container-bound text element per node ([`layout.rs:623-761`](
   ```
   The reader accepts the snake_case aliases `node_id`, `priority`, etc. ([`schema.rs:630-693`](schema.rs#L630-L693)).
 - **Bound text** — a header line `[STATUS · P{intent} · now]`, an optional markers line (`LSL`, `WORK`, and the node's `effort`; [L722-L759](layout.rs#L722-L759)), the title **truncated to 36 characters**, then whole `#tag` tokens fitting within **32 characters** (with `...` appended if additional tags exist, never splitting a tag token in half) ([L465-L495](layout.rs#L465-L495), [L722-L740](layout.rs#L722-L740)). Because full `title` and `tags` are preserved in `customData.pkb`, unmodified exports round-trip idempotently without writing truncated text back to frontmatter.
-- **Size** — widths S 200 / M 240 / L 300 / A 380, height 84, chosen by type and stated intent only ([`schema.rs:83-127`](schema.rs#L83-L127)).
+- **Size** — widths S 200 / M 240 / L 300 / A 380, height 84. Anchor nodes (targets and goals) use Tier A (380). Non-anchor task cards are sized by their flow figures following E14: by the larger of `gain` and `|loss_averted|` (never their sum), with Tier L (300) for high flow ($\ge 0.60$), Tier M (240) for moderate flow ($0.30 \le v < 0.60$), and Tier S (200) for floor/low flow ($< 0.30$) and unvalued nodes or nodes without flow figures ([`schema.rs:83-127`](schema.rs#L83-L127)).
 - **Colour** — by type first (epic, target/goal, area, learn, memory/note), then by status (ready, queued/active, blocked/waiting, review/testing, done, cancelled, default inbox/draft) ([`schema.rs:196-235`](schema.rs#L196-L235)). A red `#e03131` ring marks stakeholder-flagged or in-review nodes ([`schema.rs:75-80`](schema.rs#L75-L80)).
 - **Not drawn** — nodes whose status is `someday`, `cancelled` or `abandoned`, and their edges ([`schema.rs:67-72`](schema.rs#L67-L72), [`layout.rs:519-530`](layout.rs#L519-L530)).
 
@@ -118,7 +118,7 @@ Commands:
 
 Options:
       --pkb-root <PKB_ROOT>  Path to the PKB root directory [default: $ACA_DATA]
-      --db-path <DB_PATH>    Path to the persistent vector database file [default: $ACA_DATA/pkb_vectors.bin]
+      --db-path <DB_PATH>    Path to the persistent vector database file [env: PKB_DB_PATH=] [default: $ACA_DATA/pkb_vectors.bin]
 ```
 
 ```bash

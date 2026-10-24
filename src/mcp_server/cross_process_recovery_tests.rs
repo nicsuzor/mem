@@ -46,6 +46,7 @@ mod cross_process_recovery_tests {
         let result = server
             .handle_create_task(&serde_json::json!({
                 "title": "First Task",
+                "slug": "first-task",
                 "parent": "p",
                 "project": "p",
             }))
@@ -83,6 +84,7 @@ mod cross_process_recovery_tests {
         server
             .handle_create_task(&serde_json::json!({
                 "title": "Deferred Task",
+                "slug": "deferred-task",
                 "parent": "p",
                 "project": "p",
             }))
@@ -124,5 +126,3 @@ mod cross_process_recovery_tests {
 // ===========================================================================
 // mem-e394a6d0 — semantic-search status projection (AC2)
 // ===========================================================================
-
-

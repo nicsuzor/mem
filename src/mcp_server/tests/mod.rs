@@ -19,6 +19,7 @@ mod path_lint_tests;
 mod index_warning_tests;
 mod excalidraw_files_tests;
 mod convert_document_tests;
+mod workflow_placement_tests;
 mod span_truncation_tests;
 mod otel_spans_tests;
 mod daily_note_tests;
@@ -27,6 +28,8 @@ mod slow_tail_tests;
 mod catalog_tests;
 mod field_format_validation_tests;
 mod salience_mcp_tests;
+mod caller_session_tests;
+mod title_and_filename_rules_tests;
 
 
 pub(crate) fn make_doc(

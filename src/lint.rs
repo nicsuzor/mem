@@ -878,6 +878,17 @@ fn check_frontmatter(
         ));
     }
 
+    // Deprecated: follow_up_tasks — follow-up tasks must not be filed in PKB frontmatter
+    if fm.contains_key("follow_up_tasks") {
+        diags.push(Diagnostic::simple(
+            Severity::Warning,
+            "fm-deprecated-follow-up-tasks",
+            "'follow_up_tasks' is a deprecated frontmatter key and is no longer supported (run with --fix to drop)",
+            None,
+            true,
+        ));
+    }
+
     // Project field: required for actionable tasks (ready/queued). A task
     // satisfies this by declaring its own `project: <slug>` or by inheriting
     // one from the nearest ancestor (parent chain) that declared one.
@@ -1044,22 +1055,9 @@ fn check_frontmatter(
             }
         }
 
-        // `supersedes` accepts a scalar, comma-joined string, or YAML
-        // sequence (mem_8035b002) — check every named target, not just a
-        // bare scalar.
-        for ref_id in
-            crate::graph::parse_string_array(&serde_json::Value::Object(fm.clone()), "supersedes")
-        {
-            if !known_ids.contains(ref_id.as_str()) {
-                diags.push(Diagnostic::simple(
-                    Severity::Warning,
-                    "ref-broken-dep",
-                    format!("supersedes reference '{}' not found in PKB", ref_id),
-                    None,
-                    false,
-                ));
-            }
-        }
+        // `supersedes` records nodes that were replaced or merged away.
+        // Merged duplicates are deleted outright per specs/pkb-rules.md §3.3 (mem_1e796e90,
+        // mem_316e3fbf), so supersedes targets are not required to exist in known_ids.
         // `superseded_by` is a reserved computed keyword going forward
         // (mem_8035b002) — a hand-written value in legacy data is itself a
         // lint issue, separate from whether it happens to resolve.
@@ -2107,6 +2105,23 @@ fn apply_fixes(
         // (Former Fix 5c removed: an explicit `project:` value is no longer
         // deprecated — it is the polecat.yaml routing slug that declares or
         // overrides the project for this node and its subtree.)
+
+        // Fix: Drop deprecated follow_up_tasks frontmatter key
+        if fm.contains_key("follow_up_tasks") && result.starts_with("---\n") {
+            if let Some(fm_end_rel) = result[3..].find("\n---") {
+                let fm_end = fm_end_rel + 3;
+                let fm_section = result[4..fm_end].to_string();
+                let new_fm = remove_key_from_frontmatter(&fm_section, "follow_up_tasks");
+                let new_fm_str = if new_fm.trim().is_empty() {
+                    String::new()
+                } else if new_fm.ends_with('\n') {
+                    new_fm
+                } else {
+                    format!("{}\n", new_fm)
+                };
+                result = format!("---\n{}---{}", new_fm_str, &result[fm_end + 4..]);
+            }
+        }
 
         // Fix 6: Migrate 'body' frontmatter key → append its value to the markdown body
         if fm.contains_key("body") {
@@ -4468,7 +4483,7 @@ Body.\n",
     #[test]
     fn lint_retired_rules_absent() {
         // G18: No retired rule id (dep-hard-cycle, task-no-parent, ref-broken-parent) is emitted,
-        // and ref-broken-dep is emitted only for supersedes and, before migration, stored blocks and soft_blocks
+        // and ref-broken-dep is emitted only for stored blocks and soft_blocks (supersedes targets may be deleted outright)
         let tmp = tempfile::tempdir().unwrap();
         std::fs::write(
             tmp.path().join("noparent.md"),
@@ -4501,7 +4516,7 @@ Body.\n",
         }
         let b_res = results.iter().find(|r| r.path.file_name().unwrap() == "blocks_test.md").unwrap();
         let broken_deps: Vec<_> = b_res.diagnostics.iter().filter(|d| d.rule == "ref-broken-dep").collect();
-        assert_eq!(broken_deps.len(), 2, "Expected 2 ref-broken-dep (blocks and supersedes), got: {:?}", broken_deps);
+        assert_eq!(broken_deps.len(), 1, "Expected 1 ref-broken-dep (blocks only; supersedes allows deleted targets), got: {:?}", broken_deps);
     }
 
     #[test]
@@ -4524,5 +4539,30 @@ Body.\n",
         let fixed2 = fix_str(unvalued);
         assert!(!fixed2.contains("worth:"), "Must not invent worth: {}", fixed2);
         assert!(!fixed2.contains("deadline_class:"), "Must not invent deadline_class: {}", fixed2);
+    }
+
+    #[test]
+    fn test_follow_up_tasks_deprecated_and_fixed() {
+        let input = "---\nid: test_fut\ntitle: Test Follow Up Tasks\ntype: task\nstatus: active\nfollow_up_tasks:\n  - task_1\n  - task_2\n---\n\nBody content.\n";
+        let tmp = tempfile::tempdir().unwrap();
+        let file_path = tmp.path().join("test_fut.md");
+        std::fs::write(&file_path, input).unwrap();
+
+        let (results, _) = lint_directory(tmp.path(), false, true);
+        let res = results.iter().find(|r| r.path == file_path).unwrap();
+        assert!(
+            res.diagnostics.iter().any(|d| d.rule == "fm-deprecated-follow-up-tasks"),
+            "expected fm-deprecated-follow-up-tasks diagnostic, got: {:?}",
+            res.diagnostics
+        );
+
+        // Run with fix
+        let (_, fixes) = lint_directory(tmp.path(), true, true);
+        assert!(fixes.files_fixed > 0, "expected fix to be applied");
+        let fixed_content = std::fs::read_to_string(&file_path).unwrap();
+        assert!(!fixed_content.contains("follow_up_tasks"), "follow_up_tasks must be removed");
+        assert!(!fixed_content.contains("task_1"), "task_1 must be removed");
+        assert!(!fixed_content.contains("task_2"), "task_2 must be removed");
+        assert!(fixed_content.contains("Body content."), "body content preserved");
     }
 }

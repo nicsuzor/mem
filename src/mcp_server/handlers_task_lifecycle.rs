@@ -229,15 +229,21 @@ impl PkbSearchServer {
         let elapsed_parse = t.elapsed();
         tracing::debug!(target: "perf::claim_task", phase = "parse", elapsed_ms = elapsed_parse.as_secs_f64() * 1000.0);
 
+        let instance_id = parsed.as_ref().map(|d| d.id()).unwrap_or_else(|| {
+            crate::pkb::parse_file(&instance_path)
+                .map(|d| d.id())
+                .unwrap_or_else(|| crate::pkb::fallback_id(&instance_path))
+        });
+
         // Register instance in the graph.
-        if let Some(doc) = parsed {
+        if let Some(ref doc) = parsed {
             let t = std::time::Instant::now();
-            self.rebuild_graph_for_pkb_document(&doc);
+            self.rebuild_graph_for_pkb_document(doc);
             let elapsed_graph = t.elapsed();
             tracing::debug!(target: "perf::claim_task", phase = "rebuild_graph_fast", elapsed_ms = elapsed_graph.as_secs_f64() * 1000.0);
 
             let t = std::time::Instant::now();
-            self.try_upsert_document(&doc);
+            self.try_upsert_document(doc);
             let elapsed_upsert = t.elapsed();
             tracing::debug!(target: "perf::claim_task", phase = "vector_upsert_and_save", elapsed_ms = elapsed_upsert.as_secs_f64() * 1000.0);
         } else {
@@ -251,17 +257,6 @@ impl PkbSearchServer {
         }
 
         tracing::debug!(target: "perf::claim_task", phase = "TOTAL", elapsed_ms = t_total.elapsed().as_secs_f64() * 1000.0);
-
-        // Return via get_task for consistent shape.
-        let instance_id = instance_path
-            .file_stem()
-            .map(|s| s.to_string_lossy().to_string())
-            .unwrap_or_else(|| {
-                instance_path
-                    .file_name()
-                    .map(|s| s.to_string_lossy().to_string())
-                    .unwrap_or_default()
-            });
 
         let get_args = serde_json::json!({ "id": instance_id });
         self.handle_get_task(&get_args).map_err(|e| McpError {
@@ -580,7 +575,7 @@ impl PkbSearchServer {
         let candidates = self
             .store
             .read()
-            .search(&embedding, 50, &self.pkb_root, None, None, None);
+            .search(&embedding, 50, &self.pkb_root, None, None, None, None);
 
         for candidate in &candidates {
             if candidate.score < CONFIDENCE_THRESHOLD {
@@ -726,6 +721,11 @@ impl PkbSearchServer {
                 data: None,
             })?;
 
+        let body = args.get("body").and_then(|v| v.as_str());
+        if let Some(b) = body {
+            self.reject_machine_paths(b, None)?;
+        }
+
         let summary = args.get("summary").and_then(|v| v.as_str()).unwrap_or("");
 
         // Dynamically clamp title length based on project prefix length so generated filename
@@ -812,15 +812,7 @@ impl PkbSearchServer {
                 .get("release_summary")
                 .and_then(|v| v.as_str())
                 .map(String::from),
-            follow_up_tasks: args
-                .get("follow_up_tasks")
-                .and_then(|v| v.as_array())
-                .map(|arr| {
-                    arr.iter()
-                        .filter_map(|v| v.as_str().map(String::from))
-                        .collect()
-                })
-                .unwrap_or_default(),
+            body: body.map(String::from),
             ..Default::default()
         };
 
@@ -839,14 +831,9 @@ impl PkbSearchServer {
             doc_id
         } else {
             self.rebuild_graph();
-            static ID_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
-                regex::Regex::new(r"^([a-z0-9_]+_[0-9a-f]{8}|[a-z0-9_]+-[0-9a-f]{8})").unwrap()
-            });
-            path.file_stem()
-                .and_then(|s| s.to_str())
-                .map(|s| ID_RE.find(s).map(|m| m.as_str()).unwrap_or(s))
-                .unwrap_or("task-unknown")
-                .to_string()
+            crate::pkb::parse_file(&path)
+                .map(|d| d.id())
+                .unwrap_or_else(|| crate::pkb::fallback_id(&path))
         };
 
         Ok(id)
@@ -866,7 +853,14 @@ impl PkbSearchServer {
             })?;
 
         // Validate status enum with helpful suggestions
-        let valid_statuses = ["done", "review", "blocked", "cancelled", "partial", "failed"];
+        let valid_statuses = [
+            "done",
+            "review",
+            "blocked",
+            "cancelled",
+            "partial",
+            "failed",
+        ];
         if !valid_statuses.contains(&status) {
             let suggestion = match status {
                 "complete" | "completed" | "merge_ready" | "merge-ready" => {
@@ -925,40 +919,24 @@ impl PkbSearchServer {
         let reason = args.get("reason").and_then(|v| v.as_str());
         let session_id_arg = args.get("session_id").and_then(|v| v.as_str());
         let issue_url = args.get("issue_url").and_then(|v| v.as_str());
-        let follow_up_tasks = args.get("follow_up_tasks").and_then(|v| v.as_array());
+        if args.get("follow_up_tasks").is_some() {
+            return Err(McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from(
+                    "'follow_up_tasks' is no longer supported. The PKB no longer accepts follow-up task input.",
+                ),
+                data: None,
+            });
+        }
         let release_summary = args.get("release_summary").and_then(|v| v.as_str());
 
-        // Resolve task and validate follow_up_tasks
+        // Resolve task
         let graph = self.graph.read();
         let node = graph.resolve(id).ok_or_else(|| McpError {
             code: ErrorCode::INVALID_PARAMS,
             message: Cow::from(format!("Task not found: {id}")),
             data: None,
         })?;
-
-        let mut follow_up_ids = Vec::new();
-        if let Some(arr) = follow_up_tasks {
-            let mut unresolved = Vec::new();
-            for v in arr {
-                if let Some(id_str) = v.as_str() {
-                    if graph.resolve(id_str).is_none() {
-                        unresolved.push(id_str.to_string());
-                    } else {
-                        follow_up_ids.push(id_str.to_string());
-                    }
-                }
-            }
-            if !unresolved.is_empty() {
-                return Err(McpError {
-                    code: ErrorCode::INVALID_PARAMS,
-                    message: Cow::from(format!(
-                        "Unresolved follow_up_tasks: {}",
-                        unresolved.join(", ")
-                    )),
-                    data: None,
-                });
-            }
-        }
 
         // Check task is not already terminal
         let current_status = node.status.as_deref().unwrap_or("inbox");
@@ -1164,17 +1142,6 @@ impl PkbSearchServer {
             );
         }
 
-        if !follow_up_ids.is_empty() {
-            updates.insert(
-                "follow_up_tasks".to_string(),
-                serde_json::Value::Array(
-                    follow_up_ids
-                        .into_iter()
-                        .map(serde_json::Value::String)
-                        .collect(),
-                ),
-            );
-        }
 
         if let Some(rs) = release_summary {
             updates.insert(
@@ -1363,6 +1330,12 @@ impl PkbSearchServer {
             });
         }
 
+        for subtask in subtasks {
+            if let Some(body) = subtask.get("body").and_then(|v| v.as_str()) {
+                self.reject_machine_paths(body, None)?;
+            }
+        }
+
         let (project_prefix, parent_project) = {
             let graph = self.graph.read();
             match graph.resolve(parent_id) {
@@ -1497,11 +1470,6 @@ impl PkbSearchServer {
         }
 
         let mut created: Vec<(String, String, PathBuf)> = Vec::new();
-        static ID_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
-            regex::Regex::new(r"^([a-z0-9_]+_[0-9a-f]{8}|[a-z]+-[0-9a-f]{8})")
-                .expect("valid static regex")
-        });
-
         let mut severity_warning = false;
 
         // Pre-resolve dependencies and check for hard dependency cycles across all subtasks
@@ -1564,6 +1532,7 @@ impl PkbSearchServer {
             let fields = crate::document_crud::TaskFields {
                 title: title.to_string(),
                 id: Some(subtask_ids[i].clone()),
+                slug: None,
                 parent: Some(parent_id.to_string()),
                 intent: subtask
                     .get("intent")
@@ -1645,7 +1614,6 @@ impl PkbSearchServer {
                     .map(String::from),
                 session_id: None,
                 issue_url: None,
-                follow_up_tasks: vec![],
                 release_summary: None,
                 contributes_to: vec![],
                 links: vec![],
@@ -1655,6 +1623,7 @@ impl PkbSearchServer {
                     .get("classification")
                     .and_then(|v| v.as_str())
                     .map(String::from),
+                filename: None,
             };
 
             let path = crate::document_crud::create_task(&self.pkb_root, fields).map_err(|e| {
@@ -1668,16 +1637,12 @@ impl PkbSearchServer {
                 }
             })?;
 
-            let id_str = path
-                .file_stem()
-                .map(|s| {
-                    let stem = s.to_string_lossy();
-                    ID_RE
-                        .find(&stem)
-                        .map(|m| m.as_str().to_string())
-                        .unwrap_or_else(|| stem.to_string())
-                })
-                .unwrap_or_default();
+            let doc = crate::pkb::parse_file_relative(&path, &self.pkb_root);
+            let id_str = doc.as_ref().map(|d| d.id()).unwrap_or_else(|| {
+                crate::pkb::parse_file(&path)
+                    .map(|d| d.id())
+                    .unwrap_or_else(|| crate::pkb::fallback_id(&path))
+            });
             let filename = path
                 .file_stem()
                 .map(|s| s.to_string_lossy().into_owned())

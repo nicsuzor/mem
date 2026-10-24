@@ -103,10 +103,10 @@ pub fn evaluate_with_mode(
                         continue;
                     }
                 };
-                store.search(&query_emb, k, pkb_root, None, None, None)
+                store.search(&query_emb, k, pkb_root, None, None, None, None)
             }
             EvalMode::Bm25Only => {
-                store.search_bm25(gq.query, k, pkb_root, None, None, None)
+                store.search_bm25(gq.query, k, pkb_root, None, None, None, None)
             }
             EvalMode::Hybrid => {
                 let query_emb = match embedder.encode_query(gq.query) {
@@ -116,7 +116,7 @@ pub fn evaluate_with_mode(
                         continue;
                     }
                 };
-                store.search_hybrid(gq.query, &query_emb, k, pkb_root, None, None, None, None)
+                store.search_hybrid(gq.query, &query_emb, k, pkb_root, None, None, None, None, None)
             }
             EvalMode::HybridReranked => {
                 let query_emb = match embedder.encode_query(gq.query) {
@@ -126,7 +126,23 @@ pub fn evaluate_with_mode(
                         continue;
                     }
                 };
-                store.search_hybrid(gq.query, &query_emb, k, pkb_root, None, None, None, reranker.as_ref())
+                match store.try_search_hybrid(
+                    gq.query,
+                    &query_emb,
+                    k,
+                    pkb_root,
+                    None,
+                    None,
+                    None,
+                    reranker.as_ref(),
+                    None,
+                ) {
+                    Ok(res) => res,
+                    Err(e) => {
+                        eprintln!("Failed to rerank query '{}': {e}", gq.query);
+                        continue;
+                    }
+                }
             }
         };
 

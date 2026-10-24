@@ -95,6 +95,7 @@ fn test_exact_pr_and_env_var_retrieval() {
         None,
         None,
         None,
+        None,
     );
     assert!(!results_pr.is_empty());
     assert_eq!(results_pr[0].id, "mem_7cc72ed8");
@@ -105,6 +106,7 @@ fn test_exact_pr_and_env_var_retrieval() {
         &[0.9, 0.9, 0.9],
         5,
         root,
+        None,
         None,
         None,
         None,
@@ -123,6 +125,7 @@ fn test_exact_pr_and_env_var_retrieval() {
         None,
         None,
         None,
+        None,
     );
     assert!(!results_fn.is_empty());
     assert_eq!(results_fn[0].id, "task_function");
@@ -133,6 +136,7 @@ fn test_exact_pr_and_env_var_retrieval() {
         &[0.9, 0.9, 0.9],
         5,
         root,
+        None,
         None,
         None,
         None,
@@ -179,6 +183,7 @@ fn test_hybrid_search_type_filter_and_negation() {
         None,
         Some("task"),
         None,
+        None,
     );
     assert_eq!(tasks.len(), 1);
     assert_eq!(tasks[0].id, "t1");
@@ -192,6 +197,7 @@ fn test_hybrid_search_type_filter_and_negation() {
         None,
         None,
         Some("!task"),
+        None,
         None,
     );
     assert_eq!(non_tasks.len(), 1);
@@ -215,12 +221,12 @@ fn test_hybrid_search_incremental_updates() {
 
     store.insert_precomputed(&doc, vec![doc.body.clone()], vec![vec![1.0, 0.0, 0.0]]);
 
-    let r1 = store.search_hybrid("ALPHA_KEYWORD", &[1.0, 0.0, 0.0], 5, root, None, None, None, None);
+    let r1 = store.search_hybrid("ALPHA_KEYWORD", &[1.0, 0.0, 0.0], 5, root, None, None, None, None, None);
     assert_eq!(r1.len(), 1);
     assert_eq!(r1[0].id, "doc_up");
 
     // Remove document
     store.remove("doc_up");
-    let r2 = store.search_hybrid("ALPHA_KEYWORD", &[1.0, 0.0, 0.0], 5, root, None, None, None, None);
+    let r2 = store.search_hybrid("ALPHA_KEYWORD", &[1.0, 0.0, 0.0], 5, root, None, None, None, None, None);
     assert!(r2.is_empty());
 }

@@ -1,11 +1,44 @@
 use std::env;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionMode {
+    Warn,
+    Enforce,
+}
+
+impl SessionMode {
+    pub fn from_env() -> Self {
+        match env::var("PKB_SESSION_MODE").as_deref() {
+            Ok(val) if val.eq_ignore_ascii_case("enforce") => SessionMode::Enforce,
+            _ => SessionMode::Warn,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct OtelConfig {
     pub endpoint: String,
     pub protocol: String,
     pub task_id: Option<String>,
     pub project_name: Option<String>,
+    /// Request headers for the OTLP exporter, from `GENAI_ENGINE_API_KEY` in
+    /// `k1=v1,k2=v2` form (e.g. Cloudflare Access service-token headers).
+    pub headers: std::collections::HashMap<String, String>,
+}
+
+/// Parse `k1=v1,k2=v2` into headers. Each pair splits on its first `=`, so a
+/// value may itself contain `=`. Pairs without `=` or with an empty key are skipped.
+pub fn parse_headers(raw: &str) -> std::collections::HashMap<String, String> {
+    raw.split(',')
+        .filter_map(|pair| {
+            let (k, v) = pair.split_once('=')?;
+            let k = k.trim();
+            if k.is_empty() {
+                return None;
+            }
+            Some((k.to_string(), v.trim().to_string()))
+        })
+        .collect()
 }
 
 impl OtelConfig {
@@ -43,11 +76,16 @@ impl OtelConfig {
             .ok()
             .filter(|s| !s.is_empty());
 
+        let headers = env::var("GENAI_ENGINE_API_KEY")
+            .map(|raw| parse_headers(&raw))
+            .unwrap_or_default();
+
         Some(Self {
             endpoint,
             protocol,
             task_id,
             project_name,
+            headers,
         })
     }
 }
@@ -81,5 +119,19 @@ mod tests {
         let config = OtelConfig::from_env().unwrap();
         assert_eq!(config.endpoint, "http://host:4318/v1/traces");
         env::remove_var("OTEL_EXPORTER_OTLP_ENDPOINT");
+    }
+
+    #[test]
+    fn test_parse_headers_access_token_form() {
+        let h = parse_headers("CF-Access-Client-Id=abc.access, CF-Access-Client-Secret=x=y");
+        assert_eq!(h.get("CF-Access-Client-Id").map(String::as_str), Some("abc.access"));
+        assert_eq!(h.get("CF-Access-Client-Secret").map(String::as_str), Some("x=y"));
+        assert_eq!(h.len(), 2);
+    }
+
+    #[test]
+    fn test_parse_headers_skips_malformed_pairs() {
+        assert!(parse_headers("").is_empty());
+        assert!(parse_headers("noequals,=novalue").is_empty());
     }
 }

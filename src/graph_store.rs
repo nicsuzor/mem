@@ -404,9 +404,6 @@ impl GraphStore {
             for child in &n.children {
                 referenced_ids.insert(child.clone());
             }
-            for follow in &n.follow_up_tasks {
-                referenced_ids.insert(follow.clone());
-            }
             for link in &n.links {
                 if let Some(ref to) = link.to {
                     referenced_ids.insert(to.clone());
@@ -838,6 +835,14 @@ impl GraphStore {
             if new_node.project.is_none() {
                 new_node.project = old.project;
             }
+            if new_node.flow.is_none() {
+                new_node.flow = old.flow;
+            }
+        }
+
+        // R16, A27: carry over previous flow, or initialize new open nodes with 0 / 0 / 0 with ok.
+        if new_node.flow.is_none() && !crate::graph::is_completed(new_node.status.as_deref()) {
+            new_node.flow = Some(crate::flow::FlowOutput::zero());
         }
 
         // Synchronously fix parent→child edges when a reparent occurred.
@@ -1017,6 +1022,11 @@ impl GraphStore {
     pub fn is_blocked(&self, id: &str) -> bool {
         let lower = id.to_lowercase();
         self.blocked.iter().any(|s| s.to_lowercase() == lower)
+    }
+
+    pub fn is_ready(&self, id: &str) -> bool {
+        let lower = id.to_lowercase();
+        self.ready.iter().any(|s| s.to_lowercase() == lower)
     }
 
     /// Sort a slice of node refs in place by canonical flow display order (display_cmp).
@@ -2607,11 +2617,16 @@ pub fn build_flow_input(nodes: &[GraphNode]) -> crate::flow::FlowInput {
     }
     let (resolved_edges, _) = resolve_flow_edges_from_nodes(nodes);
     for e in resolved_edges {
+        let quantum = if e.set_by == crate::graph::LinkSetBy::AgentProposed {
+            0.0
+        } else {
+            e.quantum
+        };
         flow_input.add_edge(crate::flow::FlowEdge {
             src: e.src,
             dst: e.dst,
             label: e.label.as_str().to_string(),
-            quantum: e.quantum,
+            quantum,
             probability: e.probability,
             effect: match e.effect {
                 crate::graph::LinkEffect::Helps => crate::flow::FlowEffect::Helps,
