@@ -1055,22 +1055,9 @@ fn check_frontmatter(
             }
         }
 
-        // `supersedes` accepts a scalar, comma-joined string, or YAML
-        // sequence (mem_8035b002) — check every named target, not just a
-        // bare scalar.
-        for ref_id in
-            crate::graph::parse_string_array(&serde_json::Value::Object(fm.clone()), "supersedes")
-        {
-            if !known_ids.contains(ref_id.as_str()) {
-                diags.push(Diagnostic::simple(
-                    Severity::Warning,
-                    "ref-broken-dep",
-                    format!("supersedes reference '{}' not found in PKB", ref_id),
-                    None,
-                    false,
-                ));
-            }
-        }
+        // `supersedes` records nodes that were replaced or merged away.
+        // Merged duplicates are deleted outright per specs/pkb-rules.md §3.3 (mem_1e796e90,
+        // mem_316e3fbf), so supersedes targets are not required to exist in known_ids.
         // `superseded_by` is a reserved computed keyword going forward
         // (mem_8035b002) — a hand-written value in legacy data is itself a
         // lint issue, separate from whether it happens to resolve.
@@ -4496,7 +4483,7 @@ Body.\n",
     #[test]
     fn lint_retired_rules_absent() {
         // G18: No retired rule id (dep-hard-cycle, task-no-parent, ref-broken-parent) is emitted,
-        // and ref-broken-dep is emitted only for supersedes and, before migration, stored blocks and soft_blocks
+        // and ref-broken-dep is emitted only for stored blocks and soft_blocks (supersedes targets may be deleted outright)
         let tmp = tempfile::tempdir().unwrap();
         std::fs::write(
             tmp.path().join("noparent.md"),
@@ -4529,7 +4516,7 @@ Body.\n",
         }
         let b_res = results.iter().find(|r| r.path.file_name().unwrap() == "blocks_test.md").unwrap();
         let broken_deps: Vec<_> = b_res.diagnostics.iter().filter(|d| d.rule == "ref-broken-dep").collect();
-        assert_eq!(broken_deps.len(), 2, "Expected 2 ref-broken-dep (blocks and supersedes), got: {:?}", broken_deps);
+        assert_eq!(broken_deps.len(), 1, "Expected 1 ref-broken-dep (blocks only; supersedes allows deleted targets), got: {:?}", broken_deps);
     }
 
     #[test]

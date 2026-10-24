@@ -86,6 +86,7 @@ fn test_pkb_search_ids_only_mode() {
         .handle_create_task(&json!({
             "id": "task-1",
             "title": "Alpha task",
+            "slug": "alpha-task",
             "type": "task",
             "project": "proj-test",
             "parent": "proj-test",
@@ -96,6 +97,7 @@ fn test_pkb_search_ids_only_mode() {
         .handle_create_task(&json!({
             "id": "task-2",
             "title": "Beta task",
+            "slug": "beta-task",
             "type": "task",
             "project": "proj-test",
             "parent": "proj-test",
@@ -161,7 +163,9 @@ fn test_list_tasks_projects_body_excerpt_and_relationship_summary() {
         }))
         .expect("list_tasks should succeed");
     let structured = res.structured_content.expect("structuredContent required");
-    let items = structured["items"].as_array().expect("items array required");
+    let items = structured["items"]
+        .as_array()
+        .expect("items array required");
     assert!(!items.is_empty());
 
     let child_item = items
@@ -208,7 +212,9 @@ fn test_list_tasks_honours_budget_ms_and_returns_timed_out() {
         let p = root.join(format!("tasks/task_{i}.md"));
         std::fs::write(
             &p,
-            format!("---\nid: task-{i}\ntitle: Task {i}\ntype: task\nstatus: ready\n---\nBody {i}\n"),
+            format!(
+                "---\nid: task-{i}\ntitle: Task {i}\ntype: task\nstatus: ready\n---\nBody {i}\n"
+            ),
         )
         .unwrap();
     }
@@ -226,7 +232,9 @@ fn test_list_tasks_honours_budget_ms_and_returns_timed_out() {
         structured.get("timed_out").is_some(),
         "Expected 'timed_out' field in response"
     );
-    let timed_out = structured["timed_out"].as_array().expect("timed_out must be an array");
+    let timed_out = structured["timed_out"]
+        .as_array()
+        .expect("timed_out must be an array");
     assert!(
         !timed_out.is_empty(),
         "With 0 budget_ms, items should time out"
@@ -256,13 +264,18 @@ fn test_batch_get_task_and_document_honour_budget_ms_and_return_timed_out() {
             "budget_ms": 0
         }))
         .expect("batch get_task should succeed");
-    let structured_task = res_task.structured_content.expect("structuredContent required");
+    let structured_task = res_task
+        .structured_content
+        .expect("structuredContent required");
     assert!(
         structured_task.get("timed_out").is_some(),
         "Expected 'timed_out' in batch get_task: {structured_task:?}"
     );
     let to_task = structured_task["timed_out"].as_array().unwrap();
-    assert!(!to_task.is_empty(), "Expected timed_out IDs in batch get_task");
+    assert!(
+        !to_task.is_empty(),
+        "Expected timed_out IDs in batch get_task"
+    );
 
     // 2. get_document batch with budget_ms: 0
     let res_doc = server
@@ -271,13 +284,18 @@ fn test_batch_get_task_and_document_honour_budget_ms_and_return_timed_out() {
             "budget_ms": 0
         }))
         .expect("batch get_document should succeed");
-    let structured_doc = res_doc.structured_content.expect("structuredContent required");
+    let structured_doc = res_doc
+        .structured_content
+        .expect("structuredContent required");
     assert!(
         structured_doc.get("timed_out").is_some(),
         "Expected 'timed_out' in batch get_document: {structured_doc:?}"
     );
     let to_doc = structured_doc["timed_out"].as_array().unwrap();
-    assert!(!to_doc.is_empty(), "Expected timed_out IDs in batch get_document");
+    assert!(
+        !to_doc.is_empty(),
+        "Expected timed_out IDs in batch get_document"
+    );
 }
 
 #[test]
@@ -291,6 +309,7 @@ fn test_list_documents_honours_budget_ms_and_returns_timed_out() {
             .handle_create_memory(&json!({
                 "id": format!("doc-{i}"),
                 "title": format!("Document {i}"),
+                "slug": format!("doc-{i}"),
                 "body": format!("Body {i}"),
             }))
             .unwrap();
@@ -307,7 +326,9 @@ fn test_list_documents_honours_budget_ms_and_returns_timed_out() {
         structured.get("timed_out").is_some(),
         "Expected 'timed_out' field in response"
     );
-    let timed_out = structured["timed_out"].as_array().expect("timed_out must be an array");
+    let timed_out = structured["timed_out"]
+        .as_array()
+        .expect("timed_out must be an array");
     assert!(
         !timed_out.is_empty(),
         "With 0 budget_ms, items should time out"

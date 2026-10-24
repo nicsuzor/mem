@@ -26,7 +26,7 @@ Semantic search + knowledge graph MCP server for a personal knowledge base (PKB)
 ```
 src/
   cli.rs            — main() for pkb binary (CLI + MCP server via `pkb mcp`)
-  mcp_server.rs     — MCP ServerHandler: 44 tools, dispatch, tool registrations
+  mcp_server/       — MCP server module: tool schemas, dispatch, handlers
   graph_store.rs    — GraphStore: builds/queries knowledge graph from PKB docs
   graph.rs          — GraphNode (fields include stakeholder, waiting_since), Edge, EdgeType, link resolution helpers
   graph_display.rs  — Graph rendering/display utilities
@@ -118,7 +118,7 @@ Canvases are files, not graph nodes, and are never indexed (the scan only reads 
 ## Key Patterns
 
 ### Tool dispatch
-`mcp_server.rs` uses a manual `match` in `call_tool()` mapping tool name strings to `handle_*` methods. Tool registrations are in `list_tools()` as a `Vec<Tool>`. Both must stay in sync.
+`src/mcp_server/mod.rs` dispatches tool calls mapping tool name strings to handlers in `src/mcp_server/handlers_*.rs`. Tool registrations are in `src/mcp_server/schemas.rs`. Both must stay in sync.
 
 ### Graph rebuild — in-place patch + coalesced background rebuild
 Single-doc CRUD operations patch the graph in place on the request thread and defer the full pipeline to a coalesced background worker.
@@ -156,4 +156,4 @@ make release    # bump patch, build both, install, tag, push
 
 **Local install**: Always use `cargo install --path .` — never manually copy binaries to /usr/local/bin.
 
-Requires: Rust >= 1.88, zig 0.13 for cross-compile.
+Requires: Rust >= 1.91, zig 0.13 for cross-compile.

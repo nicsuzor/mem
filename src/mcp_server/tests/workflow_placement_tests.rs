@@ -47,6 +47,7 @@ fn create_template_without_project_lands_in_workflows_by_snake_id() {
     server
         .handle_create_document(&json!({
             "title": "Email sweep",
+            "slug": "email-sweep",
             "type": "template",
             "id": "wf-email-sweep",
         }))
@@ -72,6 +73,7 @@ fn create_template_with_project_lands_in_project_workflows() {
     server
         .handle_create_document(&json!({
             "title": "Dev task",
+            "slug": "dev-task",
             "type": "template",
             "id": "aops-wf-dev-task",
             "project": "aops",
@@ -94,6 +96,7 @@ fn create_template_canonicalises_project_alias() {
     server
         .handle_create_document(&json!({
             "title": "Alpha flow",
+            "slug": "alpha-flow",
             "type": "template",
             "id": "wf-alpha-flow",
             "project": "ProjectAlpha",
@@ -113,6 +116,7 @@ fn create_template_rejects_unregistered_project() {
 
     let res = server.handle_create_document(&json!({
         "title": "Ghost",
+        "slug": "ghost",
         "type": "template",
         "id": "wf-ghost",
         "project": "no-such-project",
@@ -130,6 +134,7 @@ fn create_template_explicit_dir_overrides_default() {
     server
         .handle_create_document(&json!({
             "title": "Elsewhere",
+            "slug": "elsewhere",
             "type": "template",
             "id": "wf-elsewhere",
             "project": "aops",
@@ -150,6 +155,7 @@ fn create_non_template_filename_unchanged() {
     server
         .handle_create_document(&json!({
             "title": "Some note",
+            "slug": "some_note",
             "type": "note",
             "id": "note-abc",
         }))
@@ -167,6 +173,7 @@ fn create_non_template_ignores_project() {
     server
         .handle_create_document(&json!({
             "title": "Some note",
+            "slug": "some_note",
             "type": "note",
             "id": "note-proj",
             "project": "not-a-registered-project",

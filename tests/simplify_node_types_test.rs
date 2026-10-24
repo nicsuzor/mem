@@ -147,6 +147,7 @@ fn test_root_level_task_accepts_empty_parent() {
     let res = server
         .bench_create_task(&json!({
             "title": "Standalone Root Task",
+            "slug": "standalone-root",
             "type": "task"
         }))
         .unwrap();
@@ -384,6 +385,7 @@ fn test_create_task_missing_parent_error_message() {
             "create_task",
             &json!({
                 "title": "PR Item",
+                "slug": "pr-item",
                 "type": "pr"
             }),
         )

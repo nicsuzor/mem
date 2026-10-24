@@ -82,6 +82,7 @@ fn test_create_get_indexer_bind_replay() {
         .bench_create_task(&json!({
             "id": "task-test1",
             "title": "Immediate task",
+            "slug": "immediate-task",
             "project": "aops",
             "parent": "proj-root"
         }))
@@ -162,6 +163,7 @@ fn test_filtered_list_ready_tasks_replay() {
         .bench_create_task(&json!({
             "id": "task-ready-aops",
             "title": "Ready task in aops",
+            "slug": "ready-aops",
             "project": "aops",
             "parent": "proj-root",
             "status": "ready"
@@ -173,6 +175,7 @@ fn test_filtered_list_ready_tasks_replay() {
         .bench_create_task(&json!({
             "id": "task-done-aops",
             "title": "Done task in aops",
+            "slug": "done-aops",
             "project": "aops",
             "parent": "proj-root",
             "status": "done"
@@ -184,6 +187,7 @@ fn test_filtered_list_ready_tasks_replay() {
         .bench_create_task(&json!({
             "id": "task-ready-beta",
             "title": "Ready task in beta",
+            "slug": "ready-beta",
             "project": "beta",
             "parent": "proj-root",
             "status": "ready"
@@ -244,6 +248,7 @@ fn test_add_depends_on_persistence_replay() {
         .bench_create_task(&json!({
             "id": "task-a",
             "title": "Task A",
+            "slug": "task-a",
             "project": "aops",
             "parent": "proj-root"
         }))
@@ -253,6 +258,7 @@ fn test_add_depends_on_persistence_replay() {
         .bench_create_task(&json!({
             "id": "task-b",
             "title": "Task B",
+            "slug": "task-b",
             "project": "aops",
             "parent": "proj-root"
         }))
@@ -335,13 +341,15 @@ fn test_create_task_missing_parent_returns_suggested_parents() {
 
     // A plain task without parent succeeds as a root-level task (epic collapsed into task).
     let root_task = server
-        .bench_create_task(&json!({ "title": "Root Project related work" }))
+        .bench_create_task(&json!({ "title": "Root Project related work", "slug": "root-work" }))
         .expect("create_task without parent must succeed as a root task");
     assert!(!root_task.content.is_empty());
 
     // Non-root types like `pr` without parent must fail and return suggested parents.
     let err = server
-        .bench_create_task(&json!({ "title": "Root Project related work", "type": "pr" }))
+        .bench_create_task(
+            &json!({ "title": "Root Project related work", "slug": "root-work", "type": "pr" }),
+        )
         .expect_err("create_task without parent on pr type must return an error");
 
     let data = err
@@ -357,9 +365,10 @@ fn test_create_task_missing_parent_returns_suggested_parents() {
         "suggested_parents must contain at least one candidate; got empty list"
     );
 
-    let has_container = suggestions
-        .iter()
-        .any(|s| s.get("type").and_then(|v| v.as_str()) == Some("epic") || s.get("type").and_then(|v| v.as_str()) == Some("task"));
+    let has_container = suggestions.iter().any(|s| {
+        s.get("type").and_then(|v| v.as_str()) == Some("epic")
+            || s.get("type").and_then(|v| v.as_str()) == Some("task")
+    });
     assert!(
         has_container,
         "suggested_parents must include the seeded epic/task container; got: {:?}",
@@ -375,7 +384,9 @@ fn test_create_task_missing_parent_empty_store_data_is_none() {
     let (server, _graph) = build_server(tmp.path(), &db_path);
 
     let err = server
-        .bench_create_task(&json!({ "title": "Something unrelated", "type": "pr" }))
+        .bench_create_task(
+            &json!({ "title": "Something unrelated", "slug": "something-unrelated", "type": "pr" }),
+        )
         .expect_err("create_task without parent on pr type must return an error");
 
     assert!(

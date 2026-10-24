@@ -80,6 +80,7 @@ fn create_task(server: &PkbSearchServer, title: &str) -> String {
     let res = server
         .handle_create_task(&json!({
             "title": title,
+            "slug": "slug",
             "type": "task",
             "project": "proj-partial",
             "parent": "proj-partial",
@@ -257,7 +258,11 @@ fn released_at_is_clearable_through_both_update_task_and_batch_update() {
             "dry_run": false,
         }))
         .unwrap();
-    assert_eq!(batch_errors(&set_res), Vec::<String>::new(), "batch_update must accept released_at");
+    assert_eq!(
+        batch_errors(&set_res),
+        Vec::<String>::new(),
+        "batch_update must accept released_at"
+    );
     assert_eq!(batch_changed(&set_res), 1);
 
     let clear_res = server

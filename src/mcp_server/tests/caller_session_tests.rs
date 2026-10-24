@@ -27,15 +27,24 @@ async fn test_session_source_header() {
     assert!(!res.content.is_empty());
 
     let spans = exporter.spans.lock().unwrap().clone();
-    let span = spans.iter().find(|s| s.name == "mcp.search").expect("mcp.search span");
+    let span = spans
+        .iter()
+        .find(|s| s.name == "mcp.search")
+        .expect("mcp.search span");
     let attrs: std::collections::HashMap<String, String> = span
         .attributes
         .iter()
         .map(|kv| (kv.key.as_str().to_string(), kv.value.to_string()))
         .collect();
 
-    assert_eq!(attrs.get("session.id").map(|s| s.as_str()), Some("header-sess-123"));
-    assert_eq!(attrs.get("aops.session.source").map(|s| s.as_str()), Some("header"));
+    assert_eq!(
+        attrs.get("session.id").map(|s| s.as_str()),
+        Some("header-sess-123")
+    );
+    assert_eq!(
+        attrs.get("aops.session.source").map(|s| s.as_str()),
+        Some("header")
+    );
 }
 
 #[tokio::test]
@@ -59,15 +68,24 @@ async fn test_session_source_meta() {
     assert!(!res.content.is_empty());
 
     let spans = exporter.spans.lock().unwrap().clone();
-    let span = spans.iter().find(|s| s.name == "mcp.search").expect("mcp.search span");
+    let span = spans
+        .iter()
+        .find(|s| s.name == "mcp.search")
+        .expect("mcp.search span");
     let attrs: std::collections::HashMap<String, String> = span
         .attributes
         .iter()
         .map(|kv| (kv.key.as_str().to_string(), kv.value.to_string()))
         .collect();
 
-    assert_eq!(attrs.get("session.id").map(|s| s.as_str()), Some("meta-sess-456"));
-    assert_eq!(attrs.get("aops.session.source").map(|s| s.as_str()), Some("meta"));
+    assert_eq!(
+        attrs.get("session.id").map(|s| s.as_str()),
+        Some("meta-sess-456")
+    );
+    assert_eq!(
+        attrs.get("aops.session.source").map(|s| s.as_str()),
+        Some("meta")
+    );
 }
 
 #[tokio::test]
@@ -96,17 +114,29 @@ async fn test_session_source_argument_and_stripping() {
     assert!(!res.content.is_empty());
 
     let spans = exporter.spans.lock().unwrap().clone();
-    let span = spans.iter().find(|s| s.name == "mcp.search").expect("mcp.search span");
+    let span = spans
+        .iter()
+        .find(|s| s.name == "mcp.search")
+        .expect("mcp.search span");
     let attrs: std::collections::HashMap<String, String> = span
         .attributes
         .iter()
         .map(|kv| (kv.key.as_str().to_string(), kv.value.to_string()))
         .collect();
 
-    assert_eq!(attrs.get("session.id").map(|s| s.as_str()), Some("arg-sess-789"));
-    assert_eq!(attrs.get("aops.session.source").map(|s| s.as_str()), Some("argument"));
+    assert_eq!(
+        attrs.get("session.id").map(|s| s.as_str()),
+        Some("arg-sess-789")
+    );
+    assert_eq!(
+        attrs.get("aops.session.source").map(|s| s.as_str()),
+        Some("argument")
+    );
     assert_eq!(attrs.get("agent.id").map(|s| s.as_str()), Some("agent-xyz"));
-    assert_eq!(attrs.get("prompt.id").map(|s| s.as_str()), Some("prompt-uvw"));
+    assert_eq!(
+        attrs.get("prompt.id").map(|s| s.as_str()),
+        Some("prompt-uvw")
+    );
 }
 
 #[tokio::test]
@@ -147,8 +177,14 @@ async fn test_session_precedence() {
         .iter()
         .map(|kv| (kv.key.as_str().to_string(), kv.value.to_string()))
         .collect();
-    assert_eq!(attrs1.get("session.id").map(|s| s.as_str()), Some("header-wins"));
-    assert_eq!(attrs1.get("aops.session.source").map(|s| s.as_str()), Some("header"));
+    assert_eq!(
+        attrs1.get("session.id").map(|s| s.as_str()),
+        Some("header-wins")
+    );
+    assert_eq!(
+        attrs1.get("aops.session.source").map(|s| s.as_str()),
+        Some("header")
+    );
 
     // 2. Meta beats Argument
     let req = http::Request::builder()
@@ -176,8 +212,14 @@ async fn test_session_precedence() {
         .iter()
         .map(|kv| (kv.key.as_str().to_string(), kv.value.to_string()))
         .collect();
-    assert_eq!(attrs2.get("session.id").map(|s| s.as_str()), Some("meta-wins"));
-    assert_eq!(attrs2.get("aops.session.source").map(|s| s.as_str()), Some("meta"));
+    assert_eq!(
+        attrs2.get("session.id").map(|s| s.as_str()),
+        Some("meta-wins")
+    );
+    assert_eq!(
+        attrs2.get("aops.session.source").map(|s| s.as_str()),
+        Some("meta")
+    );
 }
 
 #[tokio::test]
@@ -251,22 +293,49 @@ async fn test_direct_connection_binding_and_rebinding() {
     };
 
     let a1 = get_attrs(0);
-    assert_eq!(a1.get("session.id").map(|s| s.as_str()), Some("sess-bound-1"));
-    assert_eq!(a1.get("aops.session.source").map(|s| s.as_str()), Some("header"));
+    assert_eq!(
+        a1.get("session.id").map(|s| s.as_str()),
+        Some("sess-bound-1")
+    );
+    assert_eq!(
+        a1.get("aops.session.source").map(|s| s.as_str()),
+        Some("header")
+    );
     assert!(!a1.contains_key("aops.session.rebound_from"));
 
     let a2 = get_attrs(1);
-    assert_eq!(a2.get("session.id").map(|s| s.as_str()), Some("sess-bound-1"));
-    assert_eq!(a2.get("aops.session.source").map(|s| s.as_str()), Some("binding"));
+    assert_eq!(
+        a2.get("session.id").map(|s| s.as_str()),
+        Some("sess-bound-1")
+    );
+    assert_eq!(
+        a2.get("aops.session.source").map(|s| s.as_str()),
+        Some("binding")
+    );
 
     let a3 = get_attrs(2);
-    assert_eq!(a3.get("session.id").map(|s| s.as_str()), Some("sess-bound-2"));
-    assert_eq!(a3.get("aops.session.source").map(|s| s.as_str()), Some("header"));
-    assert_eq!(a3.get("aops.session.rebound_from").map(|s| s.as_str()), Some("sess-bound-1"));
+    assert_eq!(
+        a3.get("session.id").map(|s| s.as_str()),
+        Some("sess-bound-2")
+    );
+    assert_eq!(
+        a3.get("aops.session.source").map(|s| s.as_str()),
+        Some("header")
+    );
+    assert_eq!(
+        a3.get("aops.session.rebound_from").map(|s| s.as_str()),
+        Some("sess-bound-1")
+    );
 
     let a4 = get_attrs(3);
-    assert_eq!(a4.get("session.id").map(|s| s.as_str()), Some("sess-bound-2"));
-    assert_eq!(a4.get("aops.session.source").map(|s| s.as_str()), Some("binding"));
+    assert_eq!(
+        a4.get("session.id").map(|s| s.as_str()),
+        Some("sess-bound-2")
+    );
+    assert_eq!(
+        a4.get("aops.session.source").map(|s| s.as_str()),
+        Some("binding")
+    );
 }
 
 #[tokio::test]
@@ -320,8 +389,14 @@ async fn test_gateway_client_never_binds() {
         .iter()
         .map(|kv| (kv.key.as_str().to_string(), kv.value.to_string()))
         .collect();
-    assert_eq!(a1.get("session.id").map(|s| s.as_str()), Some("agent-session-via-gw"));
-    assert_eq!(a1.get("aops.session.source").map(|s| s.as_str()), Some("header"));
+    assert_eq!(
+        a1.get("session.id").map(|s| s.as_str()),
+        Some("agent-session-via-gw")
+    );
+    assert_eq!(
+        a1.get("aops.session.source").map(|s| s.as_str()),
+        Some("header")
+    );
 
     let a2: std::collections::HashMap<String, String> = mcp_spans[1]
         .attributes
@@ -329,8 +404,14 @@ async fn test_gateway_client_never_binds() {
         .map(|kv| (kv.key.as_str().to_string(), kv.value.to_string()))
         .collect();
     // session.id must be UNSET
-    assert!(!a2.contains_key("session.id"), "session.id must be unset on gateway call with no explicit id");
-    assert_eq!(a2.get("aops.session.source").map(|s| s.as_str()), Some("none"));
+    assert!(
+        !a2.contains_key("session.id"),
+        "session.id must be unset on gateway call with no explicit id"
+    );
+    assert_eq!(
+        a2.get("aops.session.source").map(|s| s.as_str()),
+        Some("none")
+    );
     assert_eq!(a2.get("mcp.session_id").map(|s| s.as_str()), Some(conn_id));
 
     std::env::remove_var("PKB_GATEWAY_CLIENTS");
@@ -368,9 +449,18 @@ async fn test_no_invented_session() {
         .collect();
 
     // Neither AOPS_SESSION_ID, nor mcp_session_id, nor "unknown" should be in session.id
-    assert!(!attrs.contains_key("session.id"), "session.id must be unset when unattributed");
-    assert_eq!(attrs.get("aops.session.source").map(|s| s.as_str()), Some("none"));
-    assert_eq!(attrs.get("mcp.session_id").map(|s| s.as_str()), Some("transport-conn-no-explicit"));
+    assert!(
+        !attrs.contains_key("session.id"),
+        "session.id must be unset when unattributed"
+    );
+    assert_eq!(
+        attrs.get("aops.session.source").map(|s| s.as_str()),
+        Some("none")
+    );
+    assert_eq!(
+        attrs.get("mcp.session_id").map(|s| s.as_str()),
+        Some("transport-conn-no-explicit")
+    );
 
     std::env::remove_var("AOPS_SESSION_ID");
 }
@@ -390,12 +480,16 @@ async fn test_session_mode_warn_and_enforce() {
     std::env::set_var("PKB_SESSION_MODE", "warn");
     let create_args = json!({
         "title": "Unattributed Task Warn",
+        "slug": "unattributed-warn",
         "project": "proj-test"
     });
     let res_warn = server
         .execute_tool_call("create_task", &create_args, None, None)
         .await;
-    assert!(res_warn.is_ok(), "warn mode must allow unattributed write to succeed");
+    assert!(
+        res_warn.is_ok(),
+        "warn mode must allow unattributed write to succeed"
+    );
 
     let spans1 = exporter.spans.lock().unwrap().clone();
     let create_span = spans1.iter().find(|s| s.name == "mcp.create_task").unwrap();
@@ -404,8 +498,14 @@ async fn test_session_mode_warn_and_enforce() {
         .iter()
         .map(|kv| (kv.key.as_str().to_string(), kv.value.to_string()))
         .collect();
-    assert_eq!(attrs1.get("aops.session.source").map(|s| s.as_str()), Some("none"));
-    assert_eq!(attrs1.get("aops.session.missing").map(|s| s.as_str()), Some("true"));
+    assert_eq!(
+        attrs1.get("aops.session.source").map(|s| s.as_str()),
+        Some("none")
+    );
+    assert_eq!(
+        attrs1.get("aops.session.missing").map(|s| s.as_str()),
+        Some("true")
+    );
     assert!(!attrs1.contains_key("session.id"));
 
     // Read-only tool in warn mode: succeeds and does NOT set aops.session.missing
@@ -420,19 +520,29 @@ async fn test_session_mode_warn_and_enforce() {
         .iter()
         .map(|kv| (kv.key.as_str().to_string(), kv.value.to_string()))
         .collect();
-    assert_eq!(attrs2.get("aops.session.source").map(|s| s.as_str()), Some("none"));
-    assert!(!attrs2.contains_key("aops.session.missing"), "read-only tool should not have missing flag");
+    assert_eq!(
+        attrs2.get("aops.session.source").map(|s| s.as_str()),
+        Some("none")
+    );
+    assert!(
+        !attrs2.contains_key("aops.session.missing"),
+        "read-only tool should not have missing flag"
+    );
 
     // 2. Enforce mode: mutating tool without session is REFUSED with error naming _session and AOPS_SESSION_ID
     std::env::set_var("PKB_SESSION_MODE", "enforce");
     let create_args_enforce = json!({
         "title": "Unattributed Task Enforce",
+        "slug": "unattributed-enforce",
         "project": "proj-test"
     });
     let res_enforce = server
         .execute_tool_call("create_task", &create_args_enforce, None, None)
         .await;
-    assert!(res_enforce.is_err(), "enforce mode must refuse unattributed write");
+    assert!(
+        res_enforce.is_err(),
+        "enforce mode must refuse unattributed write"
+    );
     let err = res_enforce.unwrap_err();
     assert!(
         err.message.contains("_session"),
@@ -448,19 +558,26 @@ async fn test_session_mode_warn_and_enforce() {
     // Mutating tool with _session in enforce mode succeeds
     let create_args_with_session = json!({
         "title": "Attributed Task Enforce",
+        "slug": "attributed-enforce",
         "project": "proj-test",
         "_session": { "session_id": "session-enforce-ok" }
     });
     let res_with_session = server
         .execute_tool_call("create_task", &create_args_with_session, None, None)
         .await;
-    assert!(res_with_session.is_ok(), "enforce mode must allow attributed write");
+    assert!(
+        res_with_session.is_ok(),
+        "enforce mode must allow attributed write"
+    );
 
     // Read-only tool in enforce mode without session still succeeds
     let res_read = server
         .execute_tool_call("search", &json!({"query": "alpha"}), None, None)
         .await;
-    assert!(res_read.is_ok(), "read-only tool in enforce mode must succeed even without session");
+    assert!(
+        res_read.is_ok(),
+        "read-only tool in enforce mode must succeed even without session"
+    );
 
     std::env::remove_var("PKB_SESSION_MODE");
 }
@@ -492,7 +609,10 @@ async fn test_sessionless_call_attribution_and_no_binding() {
         .execute_tool_call("search", &json!({"query": "alpha"}), Some(&parts), None)
         .await
         .unwrap();
-    assert!(!res.content.is_empty(), "sessionless search must return results");
+    assert!(
+        !res.content.is_empty(),
+        "sessionless search must return results"
+    );
 
     let spans = exporter.spans.lock().unwrap().clone();
     let span = spans
@@ -557,4 +677,3 @@ async fn test_sessionless_call_attribution_and_no_binding() {
     );
     assert_eq!(attrs2.get("session.id"), None);
 }
-

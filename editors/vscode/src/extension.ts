@@ -686,6 +686,25 @@ export class PkbPreviewIndex {
       return undefined;
     }
     let clean = rawTarget.trim();
+    if (clean.startsWith('obsidian://')) {
+      try {
+        const parsedUrl = new URL(clean);
+        const fileParam = parsedUrl.searchParams.get('file');
+        if (fileParam) {
+          clean = fileParam;
+        }
+      } catch {
+        const match = /[?&]file=([^&#]+)/i.exec(clean);
+        if (match) {
+          clean = match[1];
+        }
+      }
+    }
+    try {
+      clean = decodeURIComponent(clean);
+    } catch {
+      // ignore malformed percent encoding
+    }
     if (clean.startsWith('[[') && clean.endsWith(']]')) {
       clean = clean.slice(2, -2).split('|')[0].trim();
     }
@@ -1137,6 +1156,143 @@ export function updateEditorGutterBadges(
   applyGutterBadges(editor, badges, decorationTypes);
 }
 
+/**
+ * Compute clickable document links for all PKB link references in markdown text:
+ * 1. Wikilinks [[target]] or [[target|alias]]
+ * 2. Markdown links [label](target) targeting PKB nodes or Obsidian URIs
+ * 3. Obsidian URIs in text (obsidian://open?vault=...&file=...)
+ * 4. Bare PKB node IDs matching indexed nodes
+ */
+export function computeDocumentLinks(
+  documentText: string,
+  index: PkbPreviewIndex
+): vscode.DocumentLink[] {
+  const links: vscode.DocumentLink[] = [];
+  const lines = documentText.split('\n');
+
+  const wikiRe = /\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g;
+  const mdLinkRe = /\[([^\]]+)\]\(([^)]+)\)/g;
+  const obsidianRe = /obsidian:\/\/[^\s\)\>\]]+/g;
+  const wordRe = /[a-zA-Z0-9_\-\.]+/g;
+
+  for (let lineIdx = 0; lineIdx < lines.length; lineIdx++) {
+    const line = lines[lineIdx];
+    const occupiedRanges: { start: number; end: number }[] = [];
+
+    const isOccupied = (start: number, end: number): boolean => {
+      return occupiedRanges.some((r) => start < r.end && end > r.start);
+    };
+
+    // 1. Wikilinks [[target]] or [[target|alias]]
+    wikiRe.lastIndex = 0;
+    let match: RegExpExecArray | null;
+    while ((match = wikiRe.exec(line)) !== null) {
+      const start = match.index;
+      const end = match.index + match[0].length;
+      const target = match[1].trim();
+      const node = index.resolve(target);
+      if (node) {
+        occupiedRanges.push({ start, end });
+        const range = new vscode.Range(lineIdx, start, lineIdx, end);
+        const link = new vscode.DocumentLink(range, vscode.Uri.file(node.absPath));
+        link.tooltip = `Open PKB note: ${node.label} (${node.id})`;
+        links.push(link);
+      }
+    }
+
+    // 2. Standard markdown links [label](target) targeting PKB nodes or Obsidian URIs
+    mdLinkRe.lastIndex = 0;
+    while ((match = mdLinkRe.exec(line)) !== null) {
+      const start = match.index;
+      const end = match.index + match[0].length;
+      if (isOccupied(start, end)) {
+        continue;
+      }
+      const rawTarget = match[2].trim();
+      if (
+        !rawTarget.startsWith('http://') &&
+        !rawTarget.startsWith('https://') &&
+        !rawTarget.startsWith('mailto:') &&
+        !rawTarget.startsWith('#')
+      ) {
+        const node = index.resolve(rawTarget);
+        if (node) {
+          occupiedRanges.push({ start, end });
+          const range = new vscode.Range(lineIdx, start, lineIdx, end);
+          const link = new vscode.DocumentLink(range, vscode.Uri.file(node.absPath));
+          link.tooltip = `Open PKB note: ${node.label} (${node.id})`;
+          links.push(link);
+        }
+      }
+    }
+
+    // 3. Obsidian URIs in text: obsidian://open?...
+    obsidianRe.lastIndex = 0;
+    while ((match = obsidianRe.exec(line)) !== null) {
+      const start = match.index;
+      const end = match.index + match[0].length;
+      if (isOccupied(start, end)) {
+        continue;
+      }
+      const rawUri = match[0];
+      const node = index.resolve(rawUri);
+      if (node) {
+        occupiedRanges.push({ start, end });
+        const range = new vscode.Range(lineIdx, start, lineIdx, end);
+        const link = new vscode.DocumentLink(range, vscode.Uri.file(node.absPath));
+        link.tooltip = `Open PKB note: ${node.label} (${node.id})`;
+        links.push(link);
+      }
+    }
+
+    // 4. Bare PKB node IDs in text
+    wordRe.lastIndex = 0;
+    while ((match = wordRe.exec(line)) !== null) {
+      let word = match[0];
+      const start = match.index;
+      let end = match.index + word.length;
+      while (
+        word.endsWith('.') ||
+        word.endsWith(',') ||
+        word.endsWith(';') ||
+        word.endsWith(':')
+      ) {
+        word = word.slice(0, -1);
+        end -= 1;
+      }
+      if (!word || isOccupied(start, end)) {
+        continue;
+      }
+      const node = index.resolveBareId(word);
+      if (node) {
+        occupiedRanges.push({ start, end });
+        const range = new vscode.Range(lineIdx, start, lineIdx, end);
+        const link = new vscode.DocumentLink(range, vscode.Uri.file(node.absPath));
+        link.tooltip = `Open PKB note: ${node.label} (${node.id})`;
+        links.push(link);
+      }
+    }
+  }
+
+  return links;
+}
+
+export class PkbDocumentLinkProvider implements vscode.DocumentLinkProvider {
+  private customIndex?: PkbPreviewIndex;
+
+  constructor(index?: PkbPreviewIndex) {
+    this.customIndex = index;
+  }
+
+  public provideDocumentLinks(
+    document: vscode.TextDocument,
+    _token?: vscode.CancellationToken
+  ): vscode.DocumentLink[] {
+    const idx = this.customIndex || getPreviewIndex();
+    return computeDocumentLinks(document.getText(), idx);
+  }
+}
+
 
 function escapeHtml(text: string): string {
   return text
@@ -1541,6 +1697,18 @@ export function transformPreviewHtml(html: string, index: PkbPreviewIndex): stri
     return savePlaceholder(renderUnresolvedRefAnchor(target, display, index.pkbRoot));
   });
 
+  // 3b. Transform raw obsidian:// URIs in plain text
+  working = working.replace(/obsidian:\/\/[^\s<>"'\)]+/g, (rawUri) => {
+    if (rawUri.includes('\u0000MEMPKB_')) {
+      return rawUri;
+    }
+    const node = index.resolve(rawUri);
+    if (node) {
+      return savePlaceholder(renderResolvedRefAnchor(node, escapeHtml(rawUri), index));
+    }
+    return rawUri;
+  });
+
   // 4. Transform bare PKB IDs in plain text
   working = working.replace(/[a-zA-Z0-9_\-\.]+/g, (token) => {
     if (token.includes('\u0000MEMPKB_')) {
@@ -1790,7 +1958,21 @@ export function extractReferenceAtPosition(
     }
   }
 
-  // 3. Bare PKB IDs (e.g. task_5b905e12, mem_1e3f8515, task-123)
+  // 3. Obsidian URIs (e.g. obsidian://open?vault=brain&file=task-123)
+  const obsidianRegex = /obsidian:\/\/[^\s\)\>\]]+/g;
+  while ((match = obsidianRegex.exec(lineText)) !== null) {
+    const start = match.index;
+    const end = match.index + match[0].length;
+    if (charIndex >= start && charIndex <= end) {
+      return {
+        target: match[0],
+        start,
+        end,
+      };
+    }
+  }
+
+  // 4. Bare PKB IDs (e.g. task_5b905e12, mem_1e3f8515, task-123)
   const wordRegex = /[a-zA-Z0-9_\-\.]+/g;
   while ((match = wordRegex.exec(lineText)) !== null) {
     let word = match[0];
@@ -2423,6 +2605,16 @@ export function activate(context: vscode.ExtensionContext): { extendMarkdownIt: 
         }
       })
     );
+  }
+
+  // Register document link provider for markdown files to translate PKB links into editor links
+  const linkProvider = new PkbDocumentLinkProvider();
+  if (typeof vscode.languages?.registerDocumentLinkProvider === 'function') {
+    const docLinkDisposable = vscode.languages.registerDocumentLinkProvider(
+      { language: 'markdown' },
+      linkProvider
+    );
+    context.subscriptions.push(docLinkDisposable);
   }
 
   context.subscriptions.push(

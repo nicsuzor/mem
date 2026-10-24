@@ -120,7 +120,8 @@ fn test_setting_archived_on_task_and_non_task_notes_succeeds() {
                 "title": "Task to archive",
                 "parent": "proj-root",
                 "project": "aops",
-                "status": "ready"
+                "status": "ready",
+                "slug": "task_to_archive"
             }),
         )
         .expect("create_task should succeed");

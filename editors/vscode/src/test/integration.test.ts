@@ -4,8 +4,10 @@ import * as fs from 'fs';
 import * as os from 'os';
 import { spawn } from 'child_process';
 import {
+  computeDocumentLinks,
   createMarkdownItPlugin,
   openReferencedFile,
+  PkbDocumentLinkProvider,
   PkbPreviewIndex,
 } from '../extension';
 
@@ -356,6 +358,58 @@ It must be shown in hover preview and opened in a new tab.
     const fullContent = fs.readFileSync(expectedTaskPath, 'utf8');
     const editor = await openReferencedFile(
       expectedUri,
+      { preview: false },
+      {
+        openTextDocument: async (uri: any) => ({ uri, getText: () => fullContent }),
+      } as any,
+      {
+        showTextDocument: async (doc: any, options: any) => {
+          mockShowOptions.push(options);
+          return { document: doc };
+        },
+      } as any
+    );
+
+    assert.strictEqual(editor.document.getText(), fullContent);
+    assert.strictEqual(mockShowOptions[0].preview, false);
+  });
+
+  it('Translates markdown PKB links in editor and clicking opens the linked node in a new tab', async () => {
+    const index = new PkbPreviewIndex(tmpDir);
+    const docPath = path.join(tmpDir, 'notes', 'link-translation.md');
+    const docText = [
+      '# PKB Link Translation Test',
+      '1. Wikilink: [[task-integration]]',
+      '2. Aliased: [[task-integration|Integration Task Alias]]',
+      '3. Markdown link: [Integration](task-integration)',
+      '4. Obsidian URI link: [Obsidian](obsidian://open?vault=brain&file=task-integration)',
+      '5. Raw Obsidian URI: obsidian://open?vault=brain&file=task-integration',
+      '6. Bare ID: task-integration',
+    ].join('\n');
+    fs.mkdirSync(path.dirname(docPath), { recursive: true });
+    fs.writeFileSync(docPath, docText);
+
+    const docLinks = computeDocumentLinks(docText, index);
+    assert.strictEqual(docLinks.length, 6, 'Must translate all 6 PKB link forms into DocumentLinks');
+
+    const expectedTaskPath = path.join(tmpDir, 'tasks', 'task-integration.md');
+    const expectedUriStr = `file://${expectedTaskPath}`;
+
+    for (let i = 0; i < docLinks.length; i++) {
+      const link = docLinks[i];
+      assert.ok(link.target, `Link ${i} must have target`);
+      assert.strictEqual(
+        link.target.toString(),
+        expectedUriStr,
+        `Link ${i} must resolve to ${expectedUriStr}`
+      );
+    }
+
+    // Simulate clicking any translated link: opens the whole referenced file with preview: false
+    const mockShowOptions: any[] = [];
+    const fullContent = fs.readFileSync(expectedTaskPath, 'utf8');
+    const editor = await openReferencedFile(
+      docLinks[0].target!.toString(),
       { preview: false },
       {
         openTextDocument: async (uri: any) => ({ uri, getText: () => fullContent }),

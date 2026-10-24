@@ -229,14 +229,11 @@ impl PkbSearchServer {
         let elapsed_parse = t.elapsed();
         tracing::debug!(target: "perf::claim_task", phase = "parse", elapsed_ms = elapsed_parse.as_secs_f64() * 1000.0);
 
-        let instance_id = parsed
-            .as_ref()
-            .map(|d| d.id())
-            .unwrap_or_else(|| {
-                crate::pkb::parse_file(&instance_path)
-                    .map(|d| d.id())
-                    .unwrap_or_else(|| crate::pkb::fallback_id(&instance_path))
-            });
+        let instance_id = parsed.as_ref().map(|d| d.id()).unwrap_or_else(|| {
+            crate::pkb::parse_file(&instance_path)
+                .map(|d| d.id())
+                .unwrap_or_else(|| crate::pkb::fallback_id(&instance_path))
+        });
 
         // Register instance in the graph.
         if let Some(ref doc) = parsed {
@@ -839,7 +836,6 @@ impl PkbSearchServer {
                 .unwrap_or_else(|| crate::pkb::fallback_id(&path))
         };
 
-
         Ok(id)
     }
 
@@ -857,7 +853,14 @@ impl PkbSearchServer {
             })?;
 
         // Validate status enum with helpful suggestions
-        let valid_statuses = ["done", "review", "blocked", "cancelled", "partial", "failed"];
+        let valid_statuses = [
+            "done",
+            "review",
+            "blocked",
+            "cancelled",
+            "partial",
+            "failed",
+        ];
         if !valid_statuses.contains(&status) {
             let suggestion = match status {
                 "complete" | "completed" | "merge_ready" | "merge-ready" => {
@@ -1469,7 +1472,6 @@ impl PkbSearchServer {
         let mut created: Vec<(String, String, PathBuf)> = Vec::new();
         let mut severity_warning = false;
 
-
         // Pre-resolve dependencies and check for hard dependency cycles across all subtasks
         let mut resolved_deps_per_subtask: Vec<Vec<String>> = Vec::with_capacity(subtasks.len());
         let mut proposed_edges: Vec<(String, String)> = Vec::new();
@@ -1530,6 +1532,7 @@ impl PkbSearchServer {
             let fields = crate::document_crud::TaskFields {
                 title: title.to_string(),
                 id: Some(subtask_ids[i].clone()),
+                slug: None,
                 parent: Some(parent_id.to_string()),
                 intent: subtask
                     .get("intent")
@@ -1635,14 +1638,11 @@ impl PkbSearchServer {
             })?;
 
             let doc = crate::pkb::parse_file_relative(&path, &self.pkb_root);
-            let id_str = doc
-                .as_ref()
-                .map(|d| d.id())
-                .unwrap_or_else(|| {
-                    crate::pkb::parse_file(&path)
-                        .map(|d| d.id())
-                        .unwrap_or_else(|| crate::pkb::fallback_id(&path))
-                });
+            let id_str = doc.as_ref().map(|d| d.id()).unwrap_or_else(|| {
+                crate::pkb::parse_file(&path)
+                    .map(|d| d.id())
+                    .unwrap_or_else(|| crate::pkb::fallback_id(&path))
+            });
             let filename = path
                 .file_stem()
                 .map(|s| s.to_string_lossy().into_owned())

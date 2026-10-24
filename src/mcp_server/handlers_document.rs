@@ -47,7 +47,9 @@ impl PkbSearchServer {
                     Ok(res) => {
                         if let Some(val) = res.structured_content {
                             items.push(val);
-                        } else if let Some(first) = res.content.first().and_then(|c| c.raw.as_text()) {
+                        } else if let Some(first) =
+                            res.content.first().and_then(|c| c.raw.as_text())
+                        {
                             if let Ok(v) = serde_json::from_str::<serde_json::Value>(&first.text) {
                                 items.push(v);
                             }
@@ -72,7 +74,10 @@ impl PkbSearchServer {
         self.handle_get_document_single(args)
     }
 
-    pub(crate) fn handle_get_document_single(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+    pub(crate) fn handle_get_document_single(
+        &self,
+        args: &JsonValue,
+    ) -> Result<CallToolResult, McpError> {
         let query = args
             .get("id")
             .and_then(|v| v.as_str())
@@ -183,7 +188,12 @@ impl PkbSearchServer {
         }
 
         if metadata_only {
-            let fm_yaml = serde_yaml::to_string(&structured.get("frontmatter").unwrap_or(&serde_json::json!({}))).unwrap_or_default();
+            let fm_yaml = serde_yaml::to_string(
+                &structured
+                    .get("frontmatter")
+                    .unwrap_or(&serde_json::json!({})),
+            )
+            .unwrap_or_default();
             return Ok(Self::structured_result(
                 format!(
                     "## {} (metadata only)\n\n```yaml\n{}\n```",
@@ -384,10 +394,14 @@ impl PkbSearchServer {
         if args.get("path").is_some() {
             return Err(McpError {
                 code: ErrorCode::INVALID_PARAMS,
-                message: Cow::from("The 'path' parameter is no longer supported. Please use 'dir' instead."),
+                message: Cow::from(
+                    "The 'path' parameter is no longer supported. Please use 'dir' instead.",
+                ),
                 data: None,
             });
         }
+
+        let slug = super::parse_and_validate_slug(args)?;
 
         let filename = args
             .get("filename")
@@ -414,6 +428,7 @@ impl PkbSearchServer {
             title: title.to_string(),
             id: args.get("id").and_then(|v| v.as_str()).map(String::from),
             filename,
+            slug: Some(slug),
             tags: args
                 .get("tags")
                 .and_then(|v| v.as_array())
@@ -447,20 +462,19 @@ impl PkbSearchServer {
         let t_total = std::time::Instant::now();
 
         let t = std::time::Instant::now();
-        let path =
-            crate::document_crud::create_memory(&self.pkb_root, fields).map_err(|e| {
-                let msg = e.to_string();
-                let code = if msg.contains("is too long") {
-                    ErrorCode::INVALID_PARAMS
-                } else {
-                    ErrorCode::INTERNAL_ERROR
-                };
-                McpError {
-                    code,
-                    message: Cow::from(format!("Failed to create memory: {msg}")),
-                    data: None,
-                }
-            })?;
+        let path = crate::document_crud::create_memory(&self.pkb_root, fields).map_err(|e| {
+            let msg = e.to_string();
+            let code = if msg.contains("is too long") {
+                ErrorCode::INVALID_PARAMS
+            } else {
+                ErrorCode::INTERNAL_ERROR
+            };
+            McpError {
+                code,
+                message: Cow::from(format!("Failed to create memory: {msg}")),
+                data: None,
+            }
+        })?;
         let elapsed_write = t.elapsed();
         tracing::debug!(target: "perf::create_memory", phase = "write_file", elapsed_ms = elapsed_write.as_secs_f64() * 1000.0);
 
@@ -518,6 +532,8 @@ impl PkbSearchServer {
                 data: None,
             });
         }
+
+        let slug = super::parse_and_validate_slug(args)?;
 
         let filename = args
             .get("filename")
@@ -577,6 +593,7 @@ impl PkbSearchServer {
             doc_type: doc_type.to_string(),
             id: args.get("id").and_then(|v| v.as_str()).map(String::from),
             filename,
+            slug: Some(slug),
             tags: args
                 .get("tags")
                 .and_then(|v| v.as_array())
