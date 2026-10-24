@@ -908,6 +908,8 @@ pub struct GraphNode {
     pub node_type: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub raw_node_type: Option<String>,
+    #[serde(default = "default_tier")]
+    pub tier: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub status: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1153,6 +1155,9 @@ fn is_false(v: &bool) -> bool {
 fn is_zero_i32(v: &i32) -> bool {
     *v == 0
 }
+pub fn default_tier() -> String {
+    "knowledge".to_string()
+}
 
 // ===========================================================================
 // Parsing helpers
@@ -1190,7 +1195,7 @@ pub fn resolve_status_alias(status: &str) -> &str {
     match status {
         // Passthrough — canonical values
         "inbox" | "ready" | "queued" | "in_progress" | "review" | "done" | "paused" | "someday"
-        | "cancelled" | "partial" | "failed" => status,
+        | "cancelled" | "partial" | "failed" | "archived" => status,
 
         // Legacy "active" = in-flight / claimed work (per Nic 2026-06-27). The old
         // taxonomy collapsed ready/queued/in_progress into one "active" label, but
@@ -2012,6 +2017,16 @@ impl GraphNode {
                 .and_then(|v| v.as_str())
                 .map(|s| resolve_status_alias(s).to_string())
         });
+        let tier = if status.as_deref() == Some("archived") {
+            "archive".to_string()
+        } else if matches!(
+            raw_node_type.as_deref().or(node_type.as_deref()),
+            Some("session-log") | Some("transcript") | Some("verbatim-log")
+        ) && raw_node_type.as_deref() != Some("template") {
+            "log".to_string()
+        } else {
+            "knowledge".to_string()
+        };
         let intent = fm.as_ref().and_then(|f| {
             f.get("intent")
                 .or_else(|| f.get("priority"))
@@ -3104,6 +3119,7 @@ impl GraphNode {
             tags: doc.tags.clone(),
             node_type,
             raw_node_type,
+            tier,
             status,
             consolidated: doc.consolidated,
             consolidated_at: doc.consolidated_at.clone(),

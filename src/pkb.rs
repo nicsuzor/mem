@@ -6,7 +6,6 @@
 use gray_matter::engine::YAML;
 use gray_matter::Matter;
 use ignore::WalkBuilder;
-use regex::Regex;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
@@ -17,7 +16,7 @@ pub struct PkbDocument {
     pub path: PathBuf,
     /// Document title (from frontmatter or filename)
     pub title: String,
-    /// Tags extracted from frontmatter and inline hashtags
+    /// Tags extracted from frontmatter
     pub tags: Vec<String>,
     /// Document type (from frontmatter "type" field)
     pub doc_type: Option<String>,
@@ -94,8 +93,8 @@ fn compute_content_hash(content: &[u8]) -> String {
     blake3::hash(content).to_hex().to_string()
 }
 
-/// Extract tags from frontmatter and inline hashtags in content
-fn extract_tags(frontmatter: &Option<serde_json::Value>, content: &str) -> Vec<String> {
+/// Extract tags from frontmatter
+fn extract_tags(frontmatter: &Option<serde_json::Value>) -> Vec<String> {
     let mut tags = HashSet::new();
 
     // Frontmatter tags
@@ -104,22 +103,28 @@ fn extract_tags(frontmatter: &Option<serde_json::Value>, content: &str) -> Vec<S
             if let Some(arr) = tag_val.as_array() {
                 for t in arr {
                     if let Some(s) = t.as_str() {
-                        tags.insert(s.to_string());
+                        let trimmed = s.trim();
+                        if !trimmed.is_empty() {
+                            tags.insert(trimmed.to_string());
+                        }
+                    } else if let Some(n) = t.as_i64() {
+                        tags.insert(n.to_string());
+                    } else if let Some(n) = t.as_u64() {
+                        tags.insert(n.to_string());
                     }
                 }
             } else if let Some(s) = tag_val.as_str() {
                 for part in s.split(',') {
-                    tags.insert(part.trim().to_string());
+                    let trimmed = part.trim();
+                    if !trimmed.is_empty() {
+                        tags.insert(trimmed.to_string());
+                    }
                 }
+            } else if let Some(n) = tag_val.as_i64() {
+                tags.insert(n.to_string());
+            } else if let Some(n) = tag_val.as_u64() {
+                tags.insert(n.to_string());
             }
-        }
-    }
-
-    // Inline hashtags
-    let re = Regex::new(r"(?:^|\s)#([a-zA-Z0-9_\-]+)").unwrap();
-    for cap in re.captures_iter(content) {
-        if let Some(m) = cap.get(1) {
-            tags.insert(m.as_str().to_string());
         }
     }
 
@@ -154,7 +159,7 @@ pub fn parse_file(path: &Path) -> Option<PkbDocument> {
         }
     }
 
-    let tags = extract_tags(&fm_data, &result.content);
+    let tags = extract_tags(&fm_data);
 
     let doc_type = fm_data
         .as_ref()
