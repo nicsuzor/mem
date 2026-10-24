@@ -229,6 +229,7 @@ mod tests {
                 status: Some("active".to_string()),
                 tags: vec![],
                 confidence: None,
+                chunk_id: None,
             },
             SearchResult {
                 path: PathBuf::from("tasks/task-target.md"),
@@ -242,6 +243,7 @@ mod tests {
                 status: Some("active".to_string()),
                 tags: vec![],
                 confidence: None,
+                chunk_id: None,
             },
         ];
 

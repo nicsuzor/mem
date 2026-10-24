@@ -402,7 +402,7 @@ impl PkbSearchServer {
                     Ok(query_embedding) => {
                         let candidates = {
                             let store = self.store.read();
-                            store.search(&query_embedding, 50, &self.pkb_root, None, None, None)
+                            store.search(&query_embedding, 50, &self.pkb_root, None, None, None, None)
                         };
                         let mut suggestions: Vec<serde_json::Value> = Vec::new();
                         for r in candidates {

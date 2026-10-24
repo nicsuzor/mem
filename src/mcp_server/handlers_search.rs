@@ -74,6 +74,7 @@ impl PkbSearchServer {
             before,
             None,
             Some(&self.reranker),
+            None,
         );
 
         let graph = self.graph.read();
@@ -403,6 +404,7 @@ impl PkbSearchServer {
             before,
             doc_type,
             Some(&self.reranker),
+            None,
         );
 
         // Build proximity boost map if boost_id provided
@@ -1085,6 +1087,7 @@ mod title_match_ranking_tests {
             status: None,
             tags: vec![],
             confidence: None,
+            chunk_id: None,
         }
     }
 

@@ -249,7 +249,7 @@ fn probe_h1() {
         // Stage 2: Vector search across 1000 items
         let t_s2_start = Instant::now();
         let store = env.store.read();
-        let results = store.search(&query_embedding, 20, &env.pkb_root, None, None, None);
+        let results = store.search(&query_embedding, 20, &env.pkb_root, None, None, None, None);
         drop(store);
         let s2_dur = t_s2_start.elapsed();
         t_vector.record(s2_dur);
