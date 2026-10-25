@@ -85,6 +85,22 @@ pub fn status_codicon(status: &str) -> &'static str {
     }
 }
 
+/// Helper to check whether a node is a task or actionable work item.
+pub fn is_task_node(node: &GraphNode) -> bool {
+    if let Some(ref t) = node.node_type {
+        let t_lower = t.to_lowercase();
+        if crate::graph::TASK_TYPES.contains(&t_lower.as_str())
+            || t_lower == "subtask"
+            || t_lower == "epic"
+            || t_lower == "project"
+        {
+            return true;
+        }
+    }
+    node.id.starts_with("task-")
+        || (node.status.is_some() && node.node_type.as_deref() != Some("note"))
+}
+
 pub struct LspServer {
     pub pkb_root: PathBuf,
     pub graph: Arc<RwLock<GraphStore>>,
@@ -462,7 +478,22 @@ impl LspServer {
             "[$(type-hierarchy-sub) Subtree](command:mem.showSubtree?{})",
             encoded_arg
         );
-        lines.push(format!("{}  ·  {}", open_link, subtree_link));
+        let mut actions = vec![open_link, subtree_link];
+        if is_task_node(node) {
+            actions.push(format!(
+                "[$(check) Complete](command:mem.completeTask?{})",
+                encoded_arg
+            ));
+            actions.push(format!(
+                "[$(close) Cancel](command:mem.cancelTask?{})",
+                encoded_arg
+            ));
+            actions.push(format!(
+                "[$(inbox) Queue](command:mem.queueTask?{})",
+                encoded_arg
+            ));
+        }
+        lines.push(actions.join("  ·  "));
 
         lines.join("\n")
     }
@@ -1466,5 +1497,70 @@ impl LspServer {
         self.run_connection(connection)?;
         io_threads.join()?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    fn make_test_node(id: &str, label: &str, node_type: Option<&str>, status: Option<&str>) -> GraphNode {
+        GraphNode {
+            id: id.to_string(),
+            label: label.to_string(),
+            node_type: node_type.map(|s| s.to_string()),
+            status: status.map(|s| s.to_string()),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn test_is_task_node() {
+        let task_node = make_test_node("task-123", "Task 123", Some("task"), Some("ready"));
+        assert!(is_task_node(&task_node));
+
+        let subtask_node = make_test_node("sub-123", "Subtask 123", Some("subtask"), None);
+        assert!(is_task_node(&subtask_node));
+
+        let prefixed_node = make_test_node("task-xyz", "Prefixed", None, None);
+        assert!(is_task_node(&prefixed_node));
+
+        let note_node = make_test_node("concept-abc", "Concept", Some("note"), None);
+        assert!(!is_task_node(&note_node));
+    }
+
+    #[test]
+    fn test_format_hover_preview_task_actions() {
+        let dir = tempdir().unwrap();
+        let pkb_root = dir.path().to_path_buf();
+        let server = LspServer::new(pkb_root.clone());
+
+        let task_node = make_test_node("task-foo", "Foo Task", Some("task"), Some("ready"));
+        let fake_path = pkb_root.join("tasks").join("task-foo.md");
+        let preview = server.format_hover_preview(&task_node, &fake_path);
+
+        assert!(preview.contains("command:mem.openReference?%5B%22task-foo%22%5D"));
+        assert!(preview.contains("command:mem.showSubtree?%5B%22task-foo%22%5D"));
+        assert!(preview.contains("[$(check) Complete](command:mem.completeTask?%5B%22task-foo%22%5D)"));
+        assert!(preview.contains("[$(close) Cancel](command:mem.cancelTask?%5B%22task-foo%22%5D)"));
+        assert!(preview.contains("[$(inbox) Queue](command:mem.queueTask?%5B%22task-foo%22%5D)"));
+    }
+
+    #[test]
+    fn test_format_hover_preview_non_task_omits_task_actions() {
+        let dir = tempdir().unwrap();
+        let pkb_root = dir.path().to_path_buf();
+        let server = LspServer::new(pkb_root.clone());
+
+        let note_node = make_test_node("concept-bar", "Bar Concept", Some("note"), None);
+        let fake_path = pkb_root.join("notes").join("concept-bar.md");
+        let preview = server.format_hover_preview(&note_node, &fake_path);
+
+        assert!(preview.contains("command:mem.openReference?%5B%22concept-bar%22%5D"));
+        assert!(preview.contains("command:mem.showSubtree?%5B%22concept-bar%22%5D"));
+        assert!(!preview.contains("command:mem.completeTask?"));
+        assert!(!preview.contains("command:mem.cancelTask?"));
+        assert!(!preview.contains("command:mem.queueTask?"));
     }
 }

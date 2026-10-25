@@ -23,7 +23,10 @@
     "onCommand:mem.restartServer",
     "onCommand:mem.openReference",
     "onCommand:mem.openReferenceAtCursor",
-    "onCommand:mem.showSubtree"
+    "onCommand:mem.showSubtree",
+    "onCommand:mem.completeTask",
+    "onCommand:mem.cancelTask",
+    "onCommand:mem.queueTask"
   ],
   "main": "./out/extension.js",
   "contributes": {
@@ -62,6 +65,18 @@
       {
         "command": "mem.dispatch",
         "title": "Mem: Dispatch PKB Task"
+      },
+      {
+        "command": "mem.completeTask",
+        "title": "Mem: Complete PKB Task"
+      },
+      {
+        "command": "mem.cancelTask",
+        "title": "Mem: Cancel PKB Task"
+      },
+      {
+        "command": "mem.queueTask",
+        "title": "Mem: Queue PKB Task"
       }
     ],
     "semanticTokenTypes": [
