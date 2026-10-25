@@ -80,6 +80,10 @@ export class MockInlayHint {
   constructor(public position: any = null, public label: any = '', public kind?: any) {}
 }
 
+export class MockRelativePattern {
+  constructor(public base: any, public pattern: string) {}
+}
+
 export class MockDisposable {
   static from(..._disposables: { dispose(): any }[]) {
     return new MockDisposable();
@@ -217,6 +221,7 @@ const baseMock: Record<string, any> = {
   TypeHierarchyItem: MockTypeHierarchyItem,
   SymbolInformation: MockSymbolInformation,
   InlayHint: MockInlayHint,
+  RelativePattern: MockRelativePattern,
   Disposable: MockDisposable,
   EventEmitter: MockEventEmitter,
   version: '1.91.0',

@@ -16,6 +16,7 @@ import {
   getOutputChannel,
   getTraceOutputChannel,
   handleActiveEditorChanged,
+  isPathIgnored,
   logDebug,
   logError,
   logInfo,
@@ -993,6 +994,96 @@ Body text.
       };
       const provided = provider.provideDocumentLinks(fakeDoc);
       assert.strictEqual(provided.length, 6, 'PkbDocumentLinkProvider must return all 6 translated links');
+    } finally {
+      fs.rmSync(tmpPkb, { recursive: true, force: true });
+    }
+  });
+
+  it('correctly detects ignored directory paths via isPathIgnored', () => {
+    assert.strictEqual(isPathIgnored('/home/user/brain/.git/COMMIT_EDITMSG'), true);
+    assert.strictEqual(isPathIgnored('/home/user/brain/node_modules/pkg/README.md'), true);
+    assert.strictEqual(isPathIgnored('/home/user/brain/.obsidian/workspace.json'), true);
+    assert.strictEqual(isPathIgnored('/home/user/brain/.claude/tasks/task-1.md'), true);
+    assert.strictEqual(isPathIgnored('/home/user/brain/.aops/data.md'), true);
+    assert.strictEqual(isPathIgnored('/home/user/brain/tasks/task-123.md'), false);
+    assert.strictEqual(isPathIgnored('/home/user/brain/notes/architecture.md'), false);
+    assert.strictEqual(isPathIgnored(''), false);
+  });
+
+  it('supports incremental updates and file removals without full directory re-scans', () => {
+    const tmpPkb = fs.mkdtempSync(path.join(os.tmpdir(), 'pkb-incr-test-'));
+    try {
+      const taskFile = path.join(tmpPkb, 'task-1.md');
+      fs.writeFileSync(
+        taskFile,
+        `---
+id: task-1
+title: Task One Initial
+type: task
+status: ready
+---
+Initial content referencing [[task-2]].
+`
+      );
+
+      const task2File = path.join(tmpPkb, 'task-2.md');
+      fs.writeFileSync(
+        task2File,
+        `---
+id: task-2
+title: Task Two
+type: task
+status: done
+---
+Second task.
+`
+      );
+
+      const index = new PkbPreviewIndex(tmpPkb);
+      assert.strictEqual(index.size, 2);
+      assert.strictEqual(index.isUnderRoot(taskFile), true);
+      assert.strictEqual(index.isUnderRoot('/some/other/path/file.md'), false);
+
+      const node1 = index.resolve('task-1');
+      assert.ok(node1);
+      assert.strictEqual(node1.label, 'Task One Initial');
+
+      const node2 = index.resolve('task-2');
+      assert.ok(node2);
+      assert.strictEqual(node2.backlinkCount, 1);
+
+      // Incrementally update task-1
+      fs.writeFileSync(
+        taskFile,
+        `---
+id: task-1
+title: Task One Updated
+type: task
+status: in_progress
+---
+Updated content without backlink.
+`
+      );
+      const updateResult = index.updateFile(taskFile);
+      assert.strictEqual(updateResult, true);
+      index.computeGraphRelationships();
+
+      const updatedNode1 = index.resolve('task-1');
+      assert.ok(updatedNode1);
+      assert.strictEqual(updatedNode1.label, 'Task One Updated');
+      assert.strictEqual(updatedNode1.status, 'in_progress');
+
+      // Backlink on task-2 should now be 0
+      const node2After = index.resolve('task-2');
+      assert.ok(node2After);
+      assert.strictEqual(node2After.backlinkCount, 0);
+
+      // Incrementally remove task-2
+      fs.unlinkSync(task2File);
+      const removeResult = index.removeFile(task2File);
+      assert.strictEqual(removeResult, true);
+      assert.strictEqual(index.size, 1);
+      assert.strictEqual(index.resolve('task-2'), undefined);
     } finally {
       fs.rmSync(tmpPkb, { recursive: true, force: true });
     }

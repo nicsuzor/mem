@@ -35,6 +35,14 @@ const IGNORED_DIRS = new Set([
   '.aops',
 ]);
 
+export function isPathIgnored(filePath: string): boolean {
+  if (!filePath) {
+    return false;
+  }
+  const parts = path.resolve(filePath).split(path.sep);
+  return parts.some((p) => IGNORED_DIRS.has(p));
+}
+
 function formatLogLine(level: 'INFO' | 'WARN' | 'ERROR' | 'DEBUG', message: string): string {
   return `[${new Date().toISOString()}] [${level}] ${message}`;
 }
@@ -671,6 +679,89 @@ export class PkbPreviewIndex {
     }
     const rootResolved = path.resolve(this.pkbRoot);
     return resolved.startsWith(rootResolved + path.sep);
+  }
+
+  public isUnderRoot(filePath: string): boolean {
+    if (!this.pkbRoot || !filePath) {
+      return false;
+    }
+    const resolvedRoot = path.resolve(this.pkbRoot);
+    const resolvedPath = path.resolve(filePath);
+    if (resolvedPath === resolvedRoot) {
+      return false;
+    }
+    const rel = path.relative(resolvedRoot, resolvedPath);
+    return !rel.startsWith('..') && !path.isAbsolute(rel);
+  }
+
+  public removeFile(filePath: string): boolean {
+    const abs = path.resolve(filePath);
+    const existing = this.byAbsPath.get(abs);
+    if (!existing) {
+      return false;
+    }
+    this.byAbsPath.delete(abs);
+    const idx = this.nodes.indexOf(existing);
+    if (idx !== -1) {
+      this.nodes.splice(idx, 1);
+    }
+    for (const [k, v] of this.byId.entries()) {
+      if (v === existing) {
+        this.byId.delete(k);
+      }
+    }
+    for (const [k, v] of this.byLowerKey.entries()) {
+      if (v === existing) {
+        this.byLowerKey.delete(k);
+      }
+    }
+    this.bareIds.delete(existing.id);
+    for (const alias of existing.aliases) {
+      this.bareIds.delete(alias);
+    }
+    const stem = path.basename(existing.absPath, '.md');
+    this.bareIds.delete(stem);
+
+    // Re-register remaining nodes sharing id, alias, or stem
+    for (const node of this.nodes) {
+      if (node.id === existing.id) {
+        this.byId.set(node.id, node);
+        this.byLowerKey.set(node.id.toLowerCase(), node);
+        this.bareIds.add(node.id);
+      }
+      const nodeStem = path.basename(node.absPath, '.md');
+      if (nodeStem === stem) {
+        if (!this.byId.has(stem)) this.byId.set(stem, node);
+        if (!this.byLowerKey.has(stem.toLowerCase())) this.byLowerKey.set(stem.toLowerCase(), node);
+        if (stem.includes('-') || stem.includes('_')) this.bareIds.add(stem);
+      }
+      for (const alias of node.aliases) {
+        if (existing.aliases.includes(alias)) {
+          if (!this.byId.has(alias)) this.byId.set(alias, node);
+          if (!this.byLowerKey.has(alias.toLowerCase())) this.byLowerKey.set(alias.toLowerCase(), node);
+          this.bareIds.add(alias);
+        }
+      }
+    }
+
+    return true;
+  }
+
+  public updateFile(filePath: string): boolean {
+    const abs = path.resolve(filePath);
+    if (!fs.existsSync(abs)) {
+      return this.removeFile(abs);
+    }
+    this.removeFile(abs);
+    try {
+      const text = fs.readFileSync(abs, 'utf8');
+      const node = parseMarkdownNode(text, abs, this.pkbRoot);
+      this.indexNode(node);
+      return true;
+    } catch (err) {
+      logWarn(`Failed indexing markdown file ${abs}: ${err instanceof Error ? err.message : String(err)}`);
+      return false;
+    }
   }
 
   public getAllNodes(): readonly PkbPreviewNode[] {
@@ -2079,32 +2170,98 @@ export function activate(context: vscode.ExtensionContext): { extendMarkdownIt: 
     context.subscriptions.push(statusBarItem);
   }
 
-  const watcher = vscode.workspace.createFileSystemWatcher('**/*.md');
+  // File watcher for PKB markdown files with debounced incremental updates
+  let indexDebounceTimer: NodeJS.Timeout | undefined;
+  const pendingIndexChanges = new Map<string, 'change' | 'create' | 'delete'>();
+
+  const scheduleIndexRefresh = (uri: any, action: 'change' | 'create' | 'delete') => {
+    const fsPath = uri?.fsPath;
+    if (!fsPath || !fsPath.endsWith('.md')) {
+      return;
+    }
+    if (isPathIgnored(fsPath)) {
+      return;
+    }
+    if (previewIndex && !previewIndex.hasPath(fsPath) && !previewIndex.isUnderRoot(fsPath)) {
+      return;
+    }
+
+    pendingIndexChanges.set(fsPath, action);
+
+    if (indexDebounceTimer) {
+      clearTimeout(indexDebounceTimer);
+    }
+
+    indexDebounceTimer = setTimeout(() => {
+      indexDebounceTimer = undefined;
+      const changes = Array.from(pendingIndexChanges.entries());
+      pendingIndexChanges.clear();
+
+      if (!previewIndex) {
+        reloadIndex(currentPkbRoot);
+        return;
+      }
+
+      if (changes.length > 50) {
+        logInfo(`Batch Markdown change threshold reached (${changes.length} files); reloading full PKB preview index`);
+        reloadIndex(currentPkbRoot);
+        return;
+      }
+
+      let updatedCount = 0;
+      for (const [filePath, act] of changes) {
+        if (act === 'delete') {
+          if (previewIndex.removeFile(filePath)) {
+            updatedCount++;
+          }
+        } else {
+          if (previewIndex.updateFile(filePath)) {
+            updatedCount++;
+          }
+        }
+      }
+
+      if (updatedCount > 0) {
+        previewIndex.computeGraphRelationships();
+        logDebug(`PKB preview index incrementally updated ${updatedCount} node(s)`);
+      }
+    }, 300);
+  };
+
+  const watcherPattern =
+    currentPkbRoot && path.isAbsolute(currentPkbRoot) && typeof (vscode as any).RelativePattern === 'function'
+      ? new (vscode as any).RelativePattern(currentPkbRoot, '**/*.md')
+      : '**/*.md';
+  const watcher = vscode.workspace.createFileSystemWatcher(watcherPattern);
   if (typeof watcher.onDidChange === 'function') {
     context.subscriptions.push(
       watcher.onDidChange((uri: any) => {
-        logDebug(`Markdown file changed: ${uri?.fsPath || ''}; refreshing preview index`);
-        reloadIndex(currentPkbRoot);
+        scheduleIndexRefresh(uri, 'change');
       })
     );
   }
   if (typeof watcher.onDidCreate === 'function') {
     context.subscriptions.push(
       watcher.onDidCreate((uri: any) => {
-        logDebug(`Markdown file created: ${uri?.fsPath || ''}; refreshing preview index`);
-        reloadIndex(currentPkbRoot);
+        scheduleIndexRefresh(uri, 'create');
       })
     );
   }
   if (typeof watcher.onDidDelete === 'function') {
     context.subscriptions.push(
       watcher.onDidDelete((uri: any) => {
-        logDebug(`Markdown file deleted: ${uri?.fsPath || ''}; refreshing preview index`);
-        reloadIndex(currentPkbRoot);
+        scheduleIndexRefresh(uri, 'delete');
       })
     );
   }
   context.subscriptions.push(watcher);
+  context.subscriptions.push({
+    dispose: () => {
+      if (indexDebounceTimer) {
+        clearTimeout(indexDebounceTimer);
+      }
+    },
+  });
 
   // Server options: launch `pkb lsp --root <pkbRoot>` over stdio
   const serverOptions: ServerOptions = {
