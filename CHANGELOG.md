@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.1](https://github.com/nicsuzor/mem/compare/mem-v0.5.0...mem-v0.5.1) (2026-10-25)
+
+
+### Features
+
+* **chunker:** implement ~350-token line-boundary chunking with contextual headers (6A / P2-M6) ([#779](https://github.com/nicsuzor/mem/issues/779)) ([95b0314](https://github.com/nicsuzor/mem/commit/95b03149a057c5a5c6edafbf3b71aaba4d943bb7))
+* **lsp,vscode:** implement task status actions (complete, cancel, queue) on hover ([#786](https://github.com/nicsuzor/mem/issues/786)) ([2aa5dce](https://github.com/nicsuzor/mem/commit/2aa5dce52f7991ac3941c53e70ab295cabf2af2e))
+* **search:** implement document recency decay and recent-read access boost ([#780](https://github.com/nicsuzor/mem/issues/780)) ([af042b5](https://github.com/nicsuzor/mem/commit/af042b5b6d9bb2bdaa3dcca9186e772cde76b880))
+* **search:** implement TM2C2 normalised convex-combination fusion and ranking core ([#778](https://github.com/nicsuzor/mem/issues/778)) ([d069ef7](https://github.com/nicsuzor/mem/commit/d069ef7ad58b0423c77d35ba5b1c62b73d6a79bf))
+
+
+### CI/CD
+
+* rebuild VS Code extension on changes without full PKB binary builds ([4f6d925](https://github.com/nicsuzor/mem/commit/4f6d9258e26c61ed1d9cf92267bd94b748ebe703))
+
+
+### Miscellaneous
+
+* **vscode:** bump extension version to 0.1.9 ([b0efec6](https://github.com/nicsuzor/mem/commit/b0efec61d34c7ac5edf2605ffaca4a03c6e2c150))
+
 ## [0.5.0](https://github.com/nicsuzor/mem/compare/mem-v0.4.4...mem-v0.5.0) (2026-10-24)
 
 
