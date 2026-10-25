@@ -89,11 +89,11 @@ impl PkbSearchServer {
             })?;
 
         // Try ID/flexible resolution first (covers IDs, filename stems, titles, permalinks)
-        let (path, label) = {
+        let (path, label, node_id) = {
             let graph = self.graph.read();
             if let Some(node) = graph.resolve(query) {
                 let abs_path = self.abs_path_for_node(node, Some(&graph))?;
-                (abs_path, node.label.clone())
+                (abs_path, node.label.clone(), node.id.clone())
             } else {
                 return Err(McpError {
                     code: ErrorCode::INVALID_PARAMS,
@@ -167,12 +167,18 @@ impl PkbSearchServer {
             Self::truncate_body_with_info(body, max_bytes)
         };
 
+        let salience_score = self
+            .salience_store
+            .write()
+            .record_access(&node_id, crate::salience::AccessType::McpRetrieval);
+
         let mut structured = serde_json::json!({
             "id": query,
             "title": label,
             "frontmatter": frontmatter,
             "truncated": truncated,
             "body_bytes": total_bytes,
+            "salience": salience_score,
         });
 
         if !metadata_only {

@@ -898,10 +898,10 @@ impl VectorStore {
 
 fn upsert_entry_to_bm25(bm25: &mut crate::bm25::Bm25Index, entry: &DocumentEntry) {
     bm25.remove(&entry.id);
-    let chunks: &[String] = if !entry.body_chunks.is_empty() {
-        &entry.body_chunks
-    } else if !entry.chunk_texts.is_empty() {
+    let chunks: &[String] = if !entry.chunk_texts.is_empty() {
         &entry.chunk_texts
+    } else if !entry.body_chunks.is_empty() {
+        &entry.body_chunks
     } else {
         &[]
     };
@@ -934,6 +934,11 @@ fn upsert_entry_to_bm25(bm25: &mut crate::bm25::Bm25Index, entry: &DocumentEntry
             } else {
                 None
             };
+            let snippet = entry
+                .body_chunks
+                .get(chunk_id)
+                .cloned()
+                .unwrap_or_else(|| chunk_text.clone());
             bm25.upsert_chunk(
                 &entry.id,
                 chunk_id,
@@ -945,7 +950,7 @@ fn upsert_entry_to_bm25(bm25: &mut crate::bm25::Bm25Index, entry: &DocumentEntry
                 entry.modified.clone(),
                 entry.date.clone(),
                 entry.confidence,
-                chunk_text.clone(),
+                snippet,
                 chunk_text.clone(),
                 heading,
                 &[],

@@ -460,24 +460,45 @@ impl PkbSearchServer {
 
         // Score and sort results
         let graph = self.graph.read();
+        let now = self.salience_store.read().clock().now();
+        let salience_store = self.salience_store.read();
+        let salience_config = salience_store.config().clone();
+        let floor = args
+            .get("floor")
+            .and_then(|v| v.as_f64())
+            .or_else(|| args.get("min_score").and_then(|v| v.as_f64()))
+            .unwrap_or(0.0);
 
         let mut scored: Vec<_> = results
             .iter()
             .map(|r| {
-                let node = graph.get_node(&r.id);
-                let node_id = node.as_ref().map(|n| n.id.clone());
+                let node = graph.get_node(&r.id).or_else(|| graph.resolve(&r.id));
+                let node_id = node.as_ref().map(|n| n.id.clone()).unwrap_or_else(|| r.id.clone());
 
-                let boost = *node_id
-                    .as_ref()
-                    .and_then(|nid| boost_map.get(nid))
-                    .unwrap_or(&0.0);
+                let boost = boost_map.get(&node_id).copied().unwrap_or(0.0);
+                let base_score = Self::ranked_score(query, r, boost);
 
-                (r, Self::ranked_score(query, r, boost))
+                let doc_type = r.doc_type.as_deref().or_else(|| node.as_ref().and_then(|n| n.node_type.as_deref()));
+                let date = r.date.as_deref();
+                let modified = node.as_ref().and_then(|n| n.modified.as_deref());
+
+                let recency_decay = crate::salience::document_recency_decay(doc_type, date, modified, now);
+                let salience_score = salience_store.get_salience(&node_id);
+                let read_boost = crate::salience::recent_read_boost(salience_score, &salience_config);
+
+                let final_score = crate::salience::apply_priors_with_floor(
+                    base_score as f64,
+                    floor,
+                    recency_decay,
+                    read_boost,
+                ) as f32;
+
+                (r, final_score, recency_decay, read_boost, salience_score)
             })
             .collect();
 
         if actionable_only {
-            scored.retain(|(r, _)| {
+            scored.retain(|(r, _, _, _, _)| {
                 let node = graph.get_node(&r.id);
                 let node_type = r
                     .doc_type
@@ -501,7 +522,7 @@ impl PkbSearchServer {
 
         // task_424948a7: Withhold any orphaned/unresolvable index entry so a search result
         // never serves title or tags for an id that get_task/get_document cannot resolve.
-        scored.retain(|(r, _)| r.path.is_file() && graph.resolve(&r.id).is_some());
+        scored.retain(|(r, _, _, _, _)| r.path.is_file() && graph.resolve(&r.id).is_some());
 
         scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
 
@@ -526,7 +547,7 @@ impl PkbSearchServer {
         if ids_only {
             let id_list: Vec<String> = scored
                 .iter()
-                .map(|(r, _)| {
+                .map(|(r, _, _, _, _)| {
                     let node = graph.get_node(&r.id);
                     node.map(|n| n.task_id.as_deref().unwrap_or(&n.id))
                         .unwrap_or(&r.id)
@@ -569,7 +590,7 @@ impl PkbSearchServer {
         if format.eq_ignore_ascii_case("json") {
             let json_results: Vec<serde_json::Value> = scored
                 .iter()
-                .map(|(r, score)| {
+                .map(|(r, score, recency_decay, read_boost, salience_score)| {
                     let node = graph.get_node(&r.id);
                     let display_id = node
                         .map(|n| n.task_id.as_deref().unwrap_or(&n.id))
@@ -587,6 +608,9 @@ impl PkbSearchServer {
                         "type": node_type,
                         "score": score,
                         "tags": r.tags,
+                        "recency_decay": recency_decay,
+                        "recent_read_boost": read_boost,
+                        "salience": salience_score,
                     });
                     if let Some(s) = status {
                         obj["status"] = serde_json::json!(s);
@@ -630,7 +654,7 @@ impl PkbSearchServer {
             }
         );
 
-        for (i, (r, score)) in scored.iter().enumerate() {
+        for (i, (r, score, recency_decay, read_boost, salience_score)) in scored.iter().enumerate() {
             let node = graph.get_node(&r.id);
             let display_id = node
                 .map(|n| n.task_id.as_deref().unwrap_or(&n.id))
@@ -648,6 +672,12 @@ impl PkbSearchServer {
                 r.title,
                 score
             ));
+            if (*recency_decay - 1.0).abs() > 1e-4 || (*read_boost - 1.0).abs() > 1e-4 || *salience_score > 0.0 {
+                output.push_str(&format!(
+                    "**Priors:** recency={:.3}, recent_read={:.3}, salience={:.1}\n",
+                    recency_decay, read_boost, salience_score
+                ));
+            }
             output.push_str(&format!("**ID:** `{display_id}`\n"));
             output.push_str(&format!("**Type:** {node_type}\n"));
             // Only actionable task nodes carry actionable task status (AC3 / aops_9d3be3b3)
@@ -711,12 +741,15 @@ impl PkbSearchServer {
             "count": scored.len(),
             "ranking": ranking_label,
             "reranker_loaded": reranker_loaded,
-            "items": scored.iter().map(|(r, score)| {
+            "items": scored.iter().map(|(r, score, recency_decay, read_boost, salience)| {
                 serde_json::json!({
                     "id": r.id,
                     "title": r.title,
                     "score": score,
                     "tags": r.tags,
+                    "recency_decay": recency_decay,
+                    "recent_read_boost": read_boost,
+                    "salience": salience,
                 })
             }).collect::<Vec<_>>(),
         });

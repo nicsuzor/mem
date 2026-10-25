@@ -1007,6 +1007,7 @@ impl PkbSearchServer {
             "display": display,
             "truncated": truncated,
             "body_bytes": total_bytes,
+            "salience": self.salience_store.write().record_access(&node.id, crate::salience::AccessType::McpRetrieval),
         });
 
         if include_routes {

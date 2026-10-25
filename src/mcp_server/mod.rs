@@ -134,6 +134,7 @@ pub struct PkbSearchServer {
     pub(crate) db_path: PathBuf,
     pub(crate) graph: InstrumentedGraphStore,
     pub(crate) session_registry: Arc<crate::otel::session_registry::SessionRegistry>,
+    pub(crate) salience_store: Arc<RwLock<crate::salience::SalienceStore>>,
     pub(crate) stale_count: usize,
     /// True when a background vector-store save is already scheduled. Used
     /// to coalesce burst writes: a subsequent `save_store` call while a save
@@ -291,6 +292,9 @@ impl PkbSearchServer {
             db_path,
             graph: InstrumentedGraphStore::new(graph),
             session_registry: crate::otel::session_registry::SessionRegistry::new(),
+            salience_store: Arc::new(RwLock::new(crate::salience::SalienceStore::new(
+                crate::salience::SalienceConfig::default(),
+            ))),
             stale_count: 0,
             save_pending: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             save_in_flight: Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -320,6 +324,11 @@ impl PkbSearchServer {
             rebuild_mutex: Arc::new(Mutex::new(())),
             rebuild_count: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         }
+    }
+
+    /// Set the clock for time-dependent salience decay and recency calculations.
+    pub fn set_clock(&self, clock: Arc<dyn crate::salience::Clock>) {
+        self.salience_store.write().set_clock(clock);
     }
 
     /// Set a custom reranker on the server (useful for tests or custom configurations).

@@ -183,6 +183,57 @@ The primary job. "What do I know about X?"
 | Get document | —                | `get_document`   | Full file contents                       |
 | List/filter  | `list`           | `list_documents` | Browse by tag, type, status, project     |
 
+#### Search Tool Schema (`search`)
+
+End-to-end retrieval specification lives in [`specs/search.md`](search.md).
+
+**Parameters**:
+- `query` (string, required): Natural language search query.
+- `limit` (integer, optional, default 10, max 50): Maximum number of results to return.
+- `type` (string, optional): Filter by document type or comma-separated types.
+- `actionable_only` (boolean, optional): Restrict results to actionable tasks.
+- `include_done` (boolean, optional): Include completed/cancelled tasks (default false).
+- `since` / `before` (string, optional): ISO date range filters.
+- `boost_id` (string, optional): Target node ID for graph-proximity boosting.
+- `floor` / `min_score` (number, optional, default 0.0): Strict relevance floor in `[0.0, 1.0]`. Items below floor are never promoted above floor by recency or read priors.
+- `detail` (string, optional, enum: `["chunk", "snippet", "full", "metadata", "ids"]`, default `"chunk"`): Level of text detail in results.
+- `ids_only` (boolean, optional): Return only matching document IDs.
+- `max_bytes` (integer, optional): Maximum byte cap for returned extracts.
+- `format` (string, optional, enum: `["markdown", "json"]`): Output formatting mode.
+
+**Structured Output (`items` / `results`)**:
+Each returned result item contains:
+- `id` (string): Canonical document identifier.
+- `title` (string): Document title.
+- `type` (string): Node document type (e.g., `task`, `note`, `daily`).
+- `score` (number): Final composite score after RRF fusion, cross-encoder reranking, graph proximity, recency decay, and access boost under floor invariance.
+- `tags` (array of strings): Tags defined in document frontmatter.
+- `status` (string, optional): Task status if applicable.
+- `project` (string, optional): Canonical project routing slug if applicable.
+- `extract` (string, optional): Best-matching contextual chunk text or snippet.
+- `recency_decay` (number): Document recency factor in `[0.85, 1.0]`. Daily notes decay via `0.85 + 0.15 * exp(-age / 14)`; tasks, epics, projects, and targets are immune (`1.0`).
+- `recent_read_boost` (number): Multiplicative access boost factor in `[1.0, 1.20]` derived from salience.
+- `salience` (number): Decayed salience score (`[0.0, 100.0]`) tracking historical document access frequency and recency.
+
+#### Document Retrieval Schema (`get_document`)
+
+**Parameters**:
+- `id` (string, optional): Document ID, title, or filename stem.
+- `ids` (array of strings, optional): Batch read of document IDs.
+- `detail` (string, optional, enum: `["metadata", "summary", "full"]`): Content detail level.
+- `metadata_only` (boolean, optional): Return only parsed frontmatter.
+- `max_bytes` (integer, optional, default 4000): Maximum body length before truncation.
+- `format` (string, optional, enum: `["markdown", "json"]`): Return format.
+
+**Structured Output**:
+- `id` (string): Resolved canonical ID.
+- `title` (string): Document title.
+- `frontmatter` (object): Parsed YAML frontmatter.
+- `body` / `content` (string): Document body text.
+- `truncated` (boolean): Whether content was truncated by `max_bytes`.
+- `body_bytes` (integer): Total un-truncated body byte size.
+- `salience` (number): Document salience score, updated exponentially upon MCP retrieval access.
+
 **Success criteria**:
 
 - 80%+ of queries return relevant results in top 5
