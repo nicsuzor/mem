@@ -1709,7 +1709,6 @@ impl PkbSearchServer {
             "repair_index_orphans" => self.handle_repair_index_orphans(args),
             "get_consolidation_cluster" => self.handle_get_consolidation_cluster(args),
             "apply_consolidation_batch" => self.handle_apply_consolidation_batch(args),
-            "get_salience" => self.handle_get_salience(args),
             _ => Err(McpError {
                 code: ErrorCode::METHOD_NOT_FOUND,
                 message: Cow::from(format!("Unknown tool: {name}")),

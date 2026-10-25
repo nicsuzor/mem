@@ -1148,17 +1148,6 @@ impl PkbSearchServer {
                     "tree": { "type": "string" }
                 }
             }),
-            "get_salience" => serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "id": { "type": "string" },
-                    "salience": { "type": "number" },
-                    "last_accessed": { "type": "string" },
-                    "access_count": { "type": "integer" },
-                    "last_access_type": { "type": "string" }
-                },
-                "required": ["id", "salience"]
-            }),
             "get_task" => serde_json::json!({
                 "type": "object",
                 "properties": {

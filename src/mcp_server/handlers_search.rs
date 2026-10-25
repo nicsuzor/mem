@@ -480,7 +480,7 @@ impl PkbSearchServer {
 
                 let doc_type = r.doc_type.as_deref().or_else(|| node.as_ref().and_then(|n| n.node_type.as_deref()));
                 let date = r.date.as_deref();
-                let modified = None;
+                let modified = node.as_ref().and_then(|n| n.modified.as_deref());
 
                 let recency_decay = crate::salience::document_recency_decay(doc_type, date, modified, now);
                 let salience_score = salience_store.get_salience(&node_id);
@@ -1129,42 +1129,6 @@ impl PkbSearchServer {
 
         let json = serde_json::to_string_pretty(&report).unwrap_or_default();
         Ok(CallToolResult::success(vec![Content::text(json)]))
-    }
-    pub(crate) fn handle_get_salience(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
-        self.ensure_graph_fresh();
-        let id = args
-            .get("id")
-            .and_then(|v| v.as_str())
-            .filter(|s| !s.trim().is_empty())
-            .ok_or_else(|| McpError {
-                code: ErrorCode::INVALID_PARAMS,
-                message: Cow::from("Missing required parameter: id"),
-                data: None,
-            })?;
-
-        let canonical_id = {
-            let graph = self.graph.read();
-            graph.resolve(id).map(|n| n.id.clone()).unwrap_or_else(|| id.to_string())
-        };
-
-        let store = self.salience_store.read();
-        let score = store.get_salience(&canonical_id);
-        let entry = store.get_entry(&canonical_id);
-
-        let mut structured = serde_json::json!({
-            "id": canonical_id,
-            "salience": score,
-        });
-        if let Some(e) = entry {
-            structured["last_accessed"] = serde_json::json!(e.last_accessed.to_rfc3339());
-            structured["access_count"] = serde_json::json!(e.access_count);
-            if let Some(t) = e.last_access_type {
-                structured["last_access_type"] = serde_json::json!(t.as_str());
-            }
-        }
-
-        let json_str = serde_json::to_string_pretty(&structured).unwrap_or_default();
-        Ok(Self::structured_result(json_str, structured))
     }
 }
 

@@ -4,11 +4,9 @@
 //! link, MCP retrieval) up to a configurable ceiling. Without access, salience decays
 //! linearly per day toward a floor (0.0).
 
-use anyhow::Result;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 /// Clock trait for testing time-dependent decay with controlled clocks.
@@ -144,18 +142,11 @@ impl SalienceEntry {
     }
 }
 
-/// Persistent store tracking salience scores across documents.
+/// In-memory store tracking salience scores across documents.
 pub struct SalienceStore {
     entries: HashMap<String, SalienceEntry>,
     config: SalienceConfig,
     clock: Arc<dyn Clock>,
-    persist_path: Option<PathBuf>,
-}
-
-#[derive(Serialize, Deserialize)]
-struct SerializedStore {
-    config: SalienceConfig,
-    entries: HashMap<String, SalienceEntry>,
 }
 
 impl SalienceStore {
@@ -164,7 +155,6 @@ impl SalienceStore {
             entries: HashMap::new(),
             config,
             clock: Arc::new(SystemClock),
-            persist_path: None,
         }
     }
 
@@ -173,16 +163,11 @@ impl SalienceStore {
             entries: HashMap::new(),
             config,
             clock,
-            persist_path: None,
         }
     }
 
     pub fn set_clock(&mut self, clock: Arc<dyn Clock>) {
         self.clock = clock;
-    }
-
-    pub fn set_persist_path(&mut self, path: PathBuf) {
-        self.persist_path = Some(path);
     }
 
     pub fn config(&self) -> &SalienceConfig {
@@ -197,45 +182,6 @@ impl SalienceStore {
     pub fn get_recent_read_boost(&self, id: &str) -> f64 {
         let salience = self.get_salience(id);
         recent_read_boost(salience, &self.config)
-    }
-
-    /// Load store from disk JSON file, or initialize a new store if absent.
-    pub fn load_or_create(path: &Path, config: SalienceConfig, clock: Arc<dyn Clock>) -> Result<Self> {
-        if path.exists() {
-            let data = std::fs::read_to_string(path)?;
-            if let Ok(deserialized) = serde_json::from_str::<SerializedStore>(&data) {
-                return Ok(Self {
-                    entries: deserialized.entries,
-                    config,
-                    clock,
-                    persist_path: Some(path.to_path_buf()),
-                });
-            }
-        }
-        Ok(Self {
-            entries: HashMap::new(),
-            config,
-            clock,
-            persist_path: Some(path.to_path_buf()),
-        })
-    }
-
-    /// Atomically persist current state to disk if a persistence path is set.
-    pub fn save(&self) -> Result<()> {
-        if let Some(ref path) = self.persist_path {
-            if let Some(parent) = path.parent() {
-                std::fs::create_dir_all(parent)?;
-            }
-            let serialized = SerializedStore {
-                config: self.config.clone(),
-                entries: self.entries.clone(),
-            };
-            let json = serde_json::to_string_pretty(&serialized)?;
-            let tmp_path = path.with_extension("tmp");
-            std::fs::write(&tmp_path, json.as_bytes())?;
-            std::fs::rename(&tmp_path, path)?;
-        }
-        Ok(())
     }
 
     /// Read the current decayed salience score for a document.
@@ -345,7 +291,7 @@ impl SalienceStore {
 pub fn daily_recency_decay(date_str: &str, now: DateTime<Utc>) -> Option<f64> {
     let clean = date_str.trim().replace('_', "-");
     let candidate = if clean.len() >= 10 {
-        &clean[..10]
+        &clean[..clean.floor_char_boundary(10)]
     } else {
         &clean
     };
@@ -377,6 +323,11 @@ pub fn document_recency_decay(
     modified: Option<&str>,
     now: DateTime<Utc>,
 ) -> f64 {
+    if let Some(t) = doc_type {
+        if matches!(t.to_ascii_lowercase().as_str(), "task" | "epic" | "target" | "project") {
+            return 1.0;
+        }
+    }
     let is_daily = doc_type.map(|t| t.eq_ignore_ascii_case("daily")).unwrap_or(false);
     if let Some(d) = date {
         if is_daily || doc_type.is_none() || d.len() >= 10 {
@@ -385,16 +336,11 @@ pub fn document_recency_decay(
             }
         }
     }
-    if let Some(t) = doc_type {
-        if matches!(t.to_ascii_lowercase().as_str(), "task" | "epic" | "target" | "project") {
-            return 1.0;
-        }
-    }
     if let Some(m) = modified {
         if let Ok(mod_dt) = DateTime::parse_from_rfc3339(m) {
             let age_days = (now - mod_dt.with_timezone(&Utc)).num_seconds().max(0) as f64 / 86400.0;
             return 0.85 + 0.15 * (-age_days / 30.0).exp();
-        } else if let Ok(mod_date) = chrono::NaiveDate::parse_from_str(&m[..m.len().min(10)], "%Y-%m-%d") {
+        } else if let Ok(mod_date) = chrono::NaiveDate::parse_from_str(&m[..m.floor_char_boundary(10)], "%Y-%m-%d") {
             let age_days = (now.date_naive() - mod_date).num_days().max(0) as f64;
             return 0.85 + 0.15 * (-age_days / 30.0).exp();
         }
@@ -413,6 +359,7 @@ pub fn apply_priors_with_floor(
     recency_factor: f64,
     recent_read_boost: f64,
 ) -> f64 {
+    let floor = floor.clamp(0.0, 1.0);
     if score < floor {
         // Below floor: never move across the relevance floor
         let attenuated = score * recency_factor;

@@ -227,3 +227,64 @@ fn test_no_prior_moves_below_floor_item_above_floor() {
     assert_eq!(boosted_high, 1.0);
 }
 
+#[test]
+fn test_utf8_char_boundary_slicing_does_not_panic() {
+    let t0 = Utc.with_ymd_and_hms(2026, 10, 18, 0, 0, 0).unwrap();
+
+    // Multi-byte UTF-8 string whose 10th byte falls inside a multi-byte codepoint
+    let non_ascii_date = "2026年10月18日";
+    let res = mem::salience::daily_recency_decay(non_ascii_date, t0);
+    // Should safely fail to parse as %Y-%m-%d without panicking on char boundary slice
+    assert_eq!(res, None);
+
+    // Document recency decay with non-ascii modified timestamp
+    let res_mod = mem::salience::document_recency_decay(Some("note"), None, Some("2026年10月"), t0);
+    assert_eq!(res_mod, 1.0);
+}
+
+#[test]
+fn test_doc_type_immunity_with_date_and_modified() {
+    let t0 = Utc.with_ymd_and_hms(2026, 10, 18, 0, 0, 0).unwrap();
+    let old_date = "2020-01-01";
+    let old_mod = "2020-01-01T00:00:00Z";
+
+    // All actionable/strategic types are immune even when carrying date and modified fields
+    for immune_type in &["task", "epic", "target", "project", "TASK", "EPIC", "Target", "Project"] {
+        let decay = mem::salience::document_recency_decay(
+            Some(immune_type),
+            Some(old_date),
+            Some(old_mod),
+            t0,
+        );
+        assert_eq!(
+            decay, 1.0,
+            "Document type {immune_type} should be immune to recency decay, got {decay}"
+        );
+    }
+
+    // Conversely, non-immune documents (e.g. note or None) decay with modified timestamp
+    let note_decay = mem::salience::document_recency_decay(
+        Some("note"),
+        None,
+        Some("2026-09-18T00:00:00Z"), // 30 days old -> exp(-1)
+        t0,
+    );
+    let expected_30 = 0.85 + 0.15 * (-1.0_f64).exp();
+    assert!((note_decay - expected_30).abs() < 1e-4, "got {note_decay}, expected {expected_30}");
+}
+
+#[test]
+fn test_floor_clamp_guard() {
+    let recency_1 = 1.0;
+    let boost_1 = 1.0;
+
+    // Negative floor should clamp to 0.0
+    let s1 = mem::salience::apply_priors_with_floor(0.2, -0.5, recency_1, boost_1);
+    assert!(s1 >= 0.0);
+
+    // Floor above 1.0 should clamp to 1.0
+    let s2 = mem::salience::apply_priors_with_floor(0.5, 1.5, recency_1, boost_1);
+    assert_eq!(s2, 0.5); // score < clamped floor (1.0) -> attenuated
+}
+
+

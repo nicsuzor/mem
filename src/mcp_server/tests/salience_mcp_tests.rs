@@ -63,18 +63,12 @@ fn test_mcp_api_reads_salience_exponential_growth_and_linear_decay() {
     // Advance controlled clock by 1 day: score decays linearly by 1.0 -> 7.0
     clock.advance_days(1.0);
 
-    // Score read through MCP (with metadata_only or read):
-    // Note: get_salience reads without inflating access count
-    let sal_res = server.handle_get_salience(&json!({"id": "doc-salience"})).unwrap();
-    let sal_val = sal_res.structured_content.unwrap();
-    let decayed_score = sal_val.get("salience").and_then(|v| v.as_f64()).expect("salience in get_salience");
+    let decayed_score = server.salience_store.read().get_salience("doc-salience");
     assert_eq!(decayed_score, 7.0);
 
     // Advance clock by another day: score decays linearly to 6.0
     clock.advance_days(1.0);
-    let sal_res2 = server.handle_get_salience(&json!({"id": "doc-salience"})).unwrap();
-    let sal_val2 = sal_res2.structured_content.unwrap();
-    let decayed_score2 = sal_val2.get("salience").and_then(|v| v.as_f64()).unwrap();
+    let decayed_score2 = server.salience_store.read().get_salience("doc-salience");
     assert_eq!(decayed_score2, 6.0);
 }
 
