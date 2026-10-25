@@ -1136,7 +1136,8 @@ fn upsert_entry_to_bm25(bm25: &mut crate::bm25::Bm25Index, entry: &DocumentEntry
             .search(query, limit, pkb_root, since, before, type_filter, predicate)
     }
 
-    /// Hybrid search: Combines vector similarity and BM25 lexical retrieval via Reciprocal Rank Fusion (RRF).
+    /// Hybrid search: Combines vector similarity and BM25 lexical retrieval via TM2C2
+    /// normalised convex combination, raw-score silence floor, and structural priors.
     /// If a reranker is provided, scores and re-orders the fused candidates, propagating any `RerankerError`.
     pub fn try_search_hybrid(
         &self,
@@ -1150,16 +1151,49 @@ fn upsert_entry_to_bm25(bm25: &mut crate::bm25::Bm25Index, entry: &DocumentEntry
         reranker: Option<&crate::rerank::CrossEncoderReranker>,
         predicate: Option<&dyn Fn(&GateCandidate) -> bool>,
     ) -> std::result::Result<Vec<SearchResult>, crate::rerank::RerankerError> {
+        self.try_search_hybrid_with_context(
+            query,
+            query_embedding,
+            limit,
+            pkb_root,
+            since,
+            before,
+            type_filter,
+            reranker,
+            predicate,
+            &(),
+            None,
+        )
+    }
+
+    /// Hybrid search with explicit graph structural lookup and temporal/access hook,
+    /// propagating any `RerankerError`.
+    pub fn try_search_hybrid_with_context<G: crate::ranking::GraphStructuralLookup>(
+        &self,
+        query: &str,
+        query_embedding: &[f32],
+        limit: usize,
+        pkb_root: &Path,
+        since: Option<&str>,
+        before: Option<&str>,
+        type_filter: Option<&str>,
+        reranker: Option<&crate::rerank::CrossEncoderReranker>,
+        predicate: Option<&dyn Fn(&GateCandidate) -> bool>,
+        graph_lookup: &G,
+        temporal_hook: Option<&crate::ranking::TemporalAccessHook>,
+    ) -> std::result::Result<Vec<SearchResult>, crate::rerank::RerankerError> {
         let tracer = opentelemetry::global::tracer("mem");
         use opentelemetry::trace::Tracer;
         let span = tracer.start("search_hybrid");
         let _guard = opentelemetry::trace::mark_span_as_active(span);
         let start = std::time::Instant::now();
 
-        let fetch_limit = (limit * 3).max(20);
+        let fetch_limit_dense = crate::ranking::POOL_SIZE_DENSE.max(limit);
+        let fetch_limit_lex = crate::ranking::POOL_SIZE_LEX.max(limit);
+
         let vector_results = self.search(
             query_embedding,
-            fetch_limit,
+            fetch_limit_dense,
             pkb_root,
             since,
             before,
@@ -1167,33 +1201,26 @@ fn upsert_entry_to_bm25(bm25: &mut crate::bm25::Bm25Index, entry: &DocumentEntry
             predicate,
         );
         let bm25_results =
-            self.search_bm25(query, fetch_limit, pkb_root, since, before, type_filter, predicate);
+            self.search_bm25(query, fetch_limit_lex, pkb_root, since, before, type_filter, predicate);
 
-        let config = crate::rrf::RrfConfig {
-            k: crate::rrf::DEFAULT_RRF_K,
-            vector_weight: crate::rrf::DEFAULT_VECTOR_WEIGHT,
-            bm25_weight: crate::rrf::DEFAULT_BM25_WEIGHT,
-        };
+        let config = crate::ranking::RankingConfig::default();
+        let fused = crate::ranking::try_fuse_tm2c2(
+            vector_results,
+            bm25_results,
+            query,
+            &config,
+            reranker,
+            graph_lookup,
+            temporal_hook,
+            limit,
+        )?;
 
-        let mut fused = crate::rrf::fuse_rrf(vector_results, bm25_results, &config, fetch_limit);
-
-        fused.sort_by(|a, b| {
-            ordered_float::OrderedFloat(b.score)
-                .cmp(&ordered_float::OrderedFloat(a.score))
-                .then_with(|| a.id.cmp(&b.id))
-                .then_with(|| a.chunk_id.cmp(&b.chunk_id))
-        });
-
-        if let Some(r) = reranker {
-            r.rerank(query, &mut fused, limit)?;
-        }
-
-        fused.truncate(limit);
         crate::otel::call_metrics::CallMetrics::record_hybrid_search_duration(start.elapsed());
         Ok(fused)
     }
 
-    /// Hybrid search: Combines vector similarity and BM25 lexical retrieval via Reciprocal Rank Fusion (RRF).
+    /// Hybrid search: Combines vector similarity and BM25 lexical retrieval via TM2C2
+    /// normalised convex combination, raw-score silence floor, and structural priors.
     /// If a reranker is provided, scores and re-orders the fused candidates.
     pub fn search_hybrid(
         &self,
@@ -1219,6 +1246,37 @@ fn upsert_entry_to_bm25(bm25: &mut crate::bm25::Bm25Index, entry: &DocumentEntry
             predicate,
         )
         .expect("reranker failed in search_hybrid; use try_search_hybrid to handle RerankerError")
+    }
+
+    /// Hybrid search with explicit graph structural lookup and temporal/access hook.
+    pub fn search_hybrid_with_context<G: crate::ranking::GraphStructuralLookup>(
+        &self,
+        query: &str,
+        query_embedding: &[f32],
+        limit: usize,
+        pkb_root: &Path,
+        since: Option<&str>,
+        before: Option<&str>,
+        type_filter: Option<&str>,
+        reranker: Option<&crate::rerank::CrossEncoderReranker>,
+        predicate: Option<&dyn Fn(&GateCandidate) -> bool>,
+        graph_lookup: &G,
+        temporal_hook: Option<&crate::ranking::TemporalAccessHook>,
+    ) -> Vec<SearchResult> {
+        self.try_search_hybrid_with_context(
+            query,
+            query_embedding,
+            limit,
+            pkb_root,
+            since,
+            before,
+            type_filter,
+            reranker,
+            predicate,
+            graph_lookup,
+            temporal_hook,
+        )
+        .expect("reranker failed in search_hybrid_with_context; use try_search_hybrid_with_context to handle RerankerError")
     }
 
     /// Semantic search: find the top-k most similar documents to a query.
