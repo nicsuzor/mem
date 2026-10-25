@@ -1344,6 +1344,7 @@ export function statusCodicon(status?: string): string {
     case 'paused':
       return '$(debug-pause)';
     case 'inbox':
+    case 'queued':
       return '$(inbox)';
     case 'cancelled':
     case 'failed':
@@ -1461,6 +1462,131 @@ export function renderSubtreeText(
   return lines.join('\n');
 }
 
+/**
+ * Determine if a node represents an actionable task item.
+ */
+export function isTaskNode(node: PkbPreviewNode): boolean {
+  const t = node.type?.toLowerCase();
+  if (t === 'task' || t === 'subtask' || t === 'learn' || t === 'pr' || t === 'epic' || t === 'project') {
+    return true;
+  }
+  if (node.id.startsWith('task-')) {
+    return true;
+  }
+  if (node.status && t !== 'note' && t !== 'knowledge' && t !== 'doc') {
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Update or insert the status field in Markdown frontmatter cleanly without corrupting
+ * document body or other frontmatter keys.
+ */
+export function updateFrontmatterStatusInContent(content: string, newStatus: string): string {
+  const isCrlf = content.includes('\r\n');
+  const normalized = content.replace(/\r\n/g, '\n');
+  let result: string;
+
+  if (normalized.startsWith('---\n')) {
+    const endIdx = normalized.indexOf('\n---', 4);
+    if (endIdx !== -1) {
+      const frontmatter = normalized.slice(4, endIdx);
+      const remainder = normalized.slice(endIdx);
+      const lines = frontmatter.split('\n');
+      let statusFound = false;
+      const updatedLines = lines.map((line) => {
+        if (/^\s*status\s*:\s*.*$/.test(line)) {
+          statusFound = true;
+          const match = /^(\s*status\s*:\s*)/.exec(line);
+          const prefix = match ? match[1] : 'status: ';
+          return `${prefix}${newStatus}`;
+        }
+        return line;
+      });
+      if (!statusFound) {
+        updatedLines.push(`status: ${newStatus}`);
+      }
+      result = `---\n${updatedLines.join('\n')}${remainder}`;
+    } else {
+      result = `---\nstatus: ${newStatus}\n---\n\n${normalized}`;
+    }
+  } else {
+    result = `---\nstatus: ${newStatus}\n---\n\n${normalized}`;
+  }
+
+  return isCrlf ? result.replace(/\n/g, '\r\n') : result;
+}
+
+/**
+ * Mutate a task node's status field on disk with atomic write and preview index reload.
+ */
+export async function updateTaskStatus(
+  taskIdOrPath: string,
+  newStatus: string
+): Promise<{ success: boolean; filePath?: string; previousStatus?: string; error?: string }> {
+  try {
+    let resolvedPath: string | undefined;
+    let previousStatus: string | undefined;
+
+    // 1. Try resolving via previewIndex
+    const index = getPreviewIndex();
+    const node = index.resolve(taskIdOrPath) || index.resolveBareId(taskIdOrPath);
+    if (node) {
+      resolvedPath = node.absPath;
+      previousStatus = node.status;
+    } else if (fs.existsSync(taskIdOrPath)) {
+      resolvedPath = path.resolve(taskIdOrPath);
+    } else if (currentPkbRoot) {
+      const cand = path.resolve(currentPkbRoot, taskIdOrPath);
+      if (fs.existsSync(cand)) {
+        resolvedPath = cand;
+      }
+    }
+
+    if (!resolvedPath || !fs.existsSync(resolvedPath)) {
+      const err = `Could not resolve task file for: ${taskIdOrPath}`;
+      logWarn(err);
+      return { success: false, error: err };
+    }
+
+    // Read current content from disk
+    const rawContent = await fs.promises.readFile(resolvedPath, 'utf8');
+    const updatedContent = updateFrontmatterStatusInContent(rawContent, newStatus);
+
+    // Atomic write to disk: write to temp file then rename
+    const tmpPath = `${resolvedPath}.${Date.now()}.${Math.random().toString(36).slice(2)}.tmp`;
+    await fs.promises.writeFile(tmpPath, updatedContent, 'utf8');
+    await fs.promises.rename(tmpPath, resolvedPath);
+
+    // If file is open in a VS Code text document/editor, update in-memory model
+    if (vscode.workspace && Array.isArray(vscode.workspace.textDocuments)) {
+      const openDoc = vscode.workspace.textDocuments.find(
+        (doc: any) => doc?.uri?.fsPath === resolvedPath || doc?.fileName === resolvedPath
+      );
+      if (openDoc && typeof vscode.workspace.applyEdit === 'function' && typeof vscode.WorkspaceEdit === 'function') {
+        const fullRange = new vscode.Range(0, 0, openDoc.lineCount || 100000, 0);
+        const edit = new vscode.WorkspaceEdit();
+        edit.replace(openDoc.uri, fullRange, updatedContent);
+        await vscode.workspace.applyEdit(edit);
+        if (typeof openDoc.save === 'function') {
+          await openDoc.save();
+        }
+      }
+    }
+
+    // Refresh preview index immediately
+    reloadIndex(currentPkbRoot);
+
+    logInfo(`Updated task ${taskIdOrPath} status to "${newStatus}" in ${resolvedPath}`);
+    return { success: true, filePath: resolvedPath, previousStatus };
+  } catch (err: any) {
+    const errorMsg = `Failed to update task status for ${taskIdOrPath}: ${err?.message || String(err)}`;
+    logError(errorMsg, err);
+    return { success: false, error: errorMsg };
+  }
+}
+
 export function formatPlainTooltip(node: PkbPreviewNode, index?: PkbPreviewIndex): string {
   const lines: string[] = [`${node.label} (${node.id})`];
   const meta: string[] = [];
@@ -1481,7 +1607,11 @@ export function formatPlainTooltip(node: PkbPreviewNode, index?: PkbPreviewIndex
     lines.push(node.bodyExcerpt);
   }
   lines.push('');
-  lines.push('Open: mem.openReference · Subtree: mem.showSubtree');
+  if (isTaskNode(node)) {
+    lines.push('Open: mem.openReference · Subtree: mem.showSubtree · Complete: mem.completeTask · Cancel: mem.cancelTask · Queue: mem.queueTask');
+  } else {
+    lines.push('Open: mem.openReference · Subtree: mem.showSubtree');
+  }
   return lines.join('\n');
 }
 
@@ -1545,11 +1675,23 @@ export function renderHoverCardHtml(
   }
 
   const encId = encodeURIComponent(JSON.stringify([node.id]));
+  const actions: string[] = [
+    `<a href="command:mem.openReference?${encId}" class="mem-pkb-cmd-link">$(go-to-file) Open</a>`,
+    `<a href="command:mem.showSubtree?${encId}" class="mem-pkb-cmd-link">$(type-hierarchy-sub) Subtree</a>`,
+  ];
+  if (isTaskNode(node)) {
+    actions.push(
+      `<a href="command:mem.completeTask?${encId}" class="mem-pkb-cmd-link">$(check) Complete</a>`
+    );
+    actions.push(
+      `<a href="command:mem.cancelTask?${encId}" class="mem-pkb-cmd-link">$(close) Cancel</a>`
+    );
+    actions.push(
+      `<a href="command:mem.queueTask?${encId}" class="mem-pkb-cmd-link">$(inbox) Queue</a>`
+    );
+  }
   parts.push(
-    `<span class="mem-pkb-hover-footer">` +
-      `<a href="command:mem.openReference?${encId}" class="mem-pkb-cmd-link">$(go-to-file) Open</a>  ·  ` +
-      `<a href="command:mem.showSubtree?${encId}" class="mem-pkb-cmd-link">$(type-hierarchy-sub) Subtree</a>` +
-      `</span>`
+    `<span class="mem-pkb-hover-footer">${actions.join('  ·  ')}</span>`
   );
 
   return `<span class="mem-pkb-hover-card">${parts.join('')}</span>`;
@@ -2521,6 +2663,76 @@ export function activate(context: vscode.ExtensionContext): { extendMarkdownIt: 
     }
   );
 
+  // Helper to extract task ID from command arguments or active cursor/selection
+  const resolveTaskIdFromArgOrCursor = (target?: any): string | undefined => {
+    let unwrapped = target;
+    if (Array.isArray(target) && target.length > 0) {
+      unwrapped = target[0];
+    }
+    if (typeof unwrapped === 'string' && unwrapped.trim()) {
+      return unwrapped.trim();
+    }
+    if (unwrapped && typeof unwrapped === 'object' && 'fsPath' in unwrapped) {
+      const found = getPreviewIndex().resolveByPath(unwrapped.fsPath);
+      if (found) return found.id;
+    }
+    const editor = vscode.window.activeTextEditor;
+    if (editor && typeof editor.document?.lineAt === 'function') {
+      const pos = editor.selection?.active;
+      if (pos) {
+        const lineText = editor.document.lineAt(pos.line)?.text || '';
+        const extracted = extractReferenceAtPosition(lineText, pos.character);
+        if (extracted) {
+          const resolved = getPreviewIndex().resolve(extracted.target);
+          if (resolved) return resolved.id;
+          return extracted.target;
+        }
+      }
+      if (editor.document?.fileName) {
+        const activeNode = getPreviewIndex().resolveByPath(editor.document.fileName);
+        if (activeNode) return activeNode.id;
+      }
+    }
+    return undefined;
+  };
+
+  const registerTaskMutationCommand = (
+    commandName: string,
+    targetStatus: string,
+    actionVerb: string
+  ) => {
+    return vscode.commands.registerCommand(commandName, async (target?: any) => {
+      let taskId = resolveTaskIdFromArgOrCursor(target);
+      if (!taskId) {
+        if (typeof vscode.window.showInputBox === 'function') {
+          taskId = await vscode.window.showInputBox({
+            prompt: `Enter task ID to ${actionVerb.toLowerCase()}`,
+            placeHolder: 'e.g. task-123 or mem_12345678',
+          });
+        }
+      }
+      if (!taskId) {
+        const msg = `Cannot ${actionVerb.toLowerCase()} task: no task ID provided or found at cursor.`;
+        logWarn(msg);
+        return undefined;
+      }
+
+      const res = await updateTaskStatus(taskId, targetStatus);
+      if (res.success) {
+        vscode.window.showInformationMessage(`Task ${taskId} marked as ${targetStatus}.`);
+        return res;
+      } else {
+        const msg = res.error || `Failed to ${actionVerb.toLowerCase()} task ${taskId}.`;
+        await promptErrorWithLogs(msg);
+        return undefined;
+      }
+    });
+  };
+
+  const completeTaskCmd = registerTaskMutationCommand('mem.completeTask', 'done', 'Complete');
+  const cancelTaskCmd = registerTaskMutationCommand('mem.cancelTask', 'cancelled', 'Cancel');
+  const queueTaskCmd = registerTaskMutationCommand('mem.queueTask', 'queued', 'Queue');
+
   // Setup gutter badge decorations
   const badgesDir = path.join(context.extensionPath || __dirname, '..', 'media', 'badges');
   const getBadgeUri = (name: string) => {
@@ -2624,7 +2836,10 @@ export function activate(context: vscode.ExtensionContext): { extendMarkdownIt: 
     subtreeCmd,
     restartCmd,
     showVersionCmd,
-    dispatchCmd
+    dispatchCmd,
+    completeTaskCmd,
+    cancelTaskCmd,
+    queueTaskCmd
   );
 
   const mdPlugin = createMarkdownItPlugin(previewIndex);

@@ -242,7 +242,7 @@ It must be shown in hover preview and opened in a new tab.
       `Hover preview must render bold inline micro-header, got: ${hoverMarkdown}`
     );
 
-    // Criterion 4: Action footer of command links (mem.openReference and mem.showSubtree)
+    // Criterion 4: Action footer of command links (mem.openReference, mem.showSubtree, and task actions)
     assert.ok(
       hoverMarkdown.includes('command:mem.openReference?%5B%22task-integration%22%5D'),
       `Hover preview action footer must have openReference command link, got: ${hoverMarkdown}`
@@ -250,6 +250,18 @@ It must be shown in hover preview and opened in a new tab.
     assert.ok(
       hoverMarkdown.includes('command:mem.showSubtree?%5B%22task-integration%22%5D'),
       `Hover preview action footer must have showSubtree command link, got: ${hoverMarkdown}`
+    );
+    assert.ok(
+      hoverMarkdown.includes('command:mem.completeTask?%5B%22task-integration%22%5D'),
+      `Hover preview action footer must have completeTask command link, got: ${hoverMarkdown}`
+    );
+    assert.ok(
+      hoverMarkdown.includes('command:mem.cancelTask?%5B%22task-integration%22%5D'),
+      `Hover preview action footer must have cancelTask command link, got: ${hoverMarkdown}`
+    );
+    assert.ok(
+      hoverMarkdown.includes('command:mem.queueTask?%5B%22task-integration%22%5D'),
+      `Hover preview action footer must have queueTask command link, got: ${hoverMarkdown}`
     );
   });
 

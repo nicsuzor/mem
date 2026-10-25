@@ -1257,7 +1257,7 @@ Footer test content.
         other => panic!("Expected MarkupContent, got {:?}", other),
     };
 
-    // Assert action footer has command links for open and subtree view
+    // Assert action footer has command links for open and subtree view, plus task actions
     assert!(
         hover_text.contains("command:mem.openReference?"),
         "Hover footer must contain command:mem.openReference link, got:\n{hover_text}"
@@ -1267,9 +1267,82 @@ Footer test content.
         "Hover footer must contain command:mem.showSubtree link, got:\n{hover_text}"
     );
     assert!(
+        hover_text.contains("command:mem.completeTask?"),
+        "Hover footer must contain command:mem.completeTask link for task, got:\n{hover_text}"
+    );
+    assert!(
+        hover_text.contains("command:mem.cancelTask?"),
+        "Hover footer must contain command:mem.cancelTask link for task, got:\n{hover_text}"
+    );
+    assert!(
+        hover_text.contains("command:mem.queueTask?"),
+        "Hover footer must contain command:mem.queueTask link for task, got:\n{hover_text}"
+    );
+    assert!(
         hover_text.contains("task-footer"),
         "Command links must target the hovered node id 'task-footer', got:\n{hover_text}"
     );
+}
+
+#[test]
+fn test_hover_card_action_footer_omits_task_actions_for_non_task() {
+    let dir = tempdir().unwrap();
+    let pkb_root = dir.path().to_path_buf();
+
+    let notes_dir = pkb_root.join("notes");
+    fs::create_dir_all(&notes_dir).unwrap();
+    let note_path = notes_dir.join("note-footer.md");
+    fs::write(
+        &note_path,
+        r#"---
+id: note-footer
+title: Plain Knowledge Note
+type: note
+---
+Plain note body.
+"#,
+    )
+    .unwrap();
+
+    let mut server = LspServer::new(pkb_root.clone());
+    let doc_path = notes_dir.join("ref.md");
+    let doc_uri: Uri = format!("file://{}", doc_path.to_string_lossy())
+        .parse()
+        .unwrap();
+    let doc_text = "See [[note-footer]].\n";
+    server.handle_did_open(DidOpenTextDocumentParams {
+        text_document: TextDocumentItem {
+            uri: doc_uri.clone(),
+            language_id: "markdown".to_string(),
+            version: 1,
+            text: doc_text.to_string(),
+        },
+    });
+
+    let hover_params = HoverParams {
+        text_document_position_params: TextDocumentPositionParams {
+            text_document: TextDocumentIdentifier { uri: doc_uri },
+            position: Position {
+                line: 0,
+                character: 8,
+            },
+        },
+        work_done_progress_params: Default::default(),
+    };
+
+    let hover = server
+        .handle_hover(&hover_params)
+        .expect("Hover must resolve");
+    let hover_text = match hover.contents {
+        HoverContents::Markup(MarkupContent { value, .. }) => value,
+        other => panic!("Expected MarkupContent, got {:?}", other),
+    };
+
+    assert!(hover_text.contains("command:mem.openReference?"));
+    assert!(hover_text.contains("command:mem.showSubtree?"));
+    assert!(!hover_text.contains("command:mem.completeTask?"));
+    assert!(!hover_text.contains("command:mem.cancelTask?"));
+    assert!(!hover_text.contains("command:mem.queueTask?"));
 }
 
 

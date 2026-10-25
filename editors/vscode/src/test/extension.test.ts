@@ -13,9 +13,11 @@ import {
   createMarkdownItPlugin,
   extractReferenceAtPosition,
   formatBodyMicroHeadersHtml,
+  formatPlainTooltip,
   getOutputChannel,
   getTraceOutputChannel,
   handleActiveEditorChanged,
+  isTaskNode,
   logDebug,
   logError,
   logInfo,
@@ -31,6 +33,8 @@ import {
   resolvePkbRoot,
   statusCodicon,
   typeCodicon,
+  updateFrontmatterStatusInContent,
+  updateTaskStatus,
 } from '../extension';
 import { createdOutputChannels, mockVscode, MockUri } from './mock-vscode';
 
@@ -572,8 +576,42 @@ Detailed architecture notes for PKB preview.
       cardHtml.includes(`href="command:mem.showSubtree?${encId}"`),
       'Action footer must contain command:mem.showSubtree link'
     );
+    assert.ok(
+      cardHtml.includes(`href="command:mem.completeTask?${encId}"`),
+      'Action footer must contain command:mem.completeTask link for task node'
+    );
+    assert.ok(
+      cardHtml.includes(`href="command:mem.cancelTask?${encId}"`),
+      'Action footer must contain command:mem.cancelTask link for task node'
+    );
+    assert.ok(
+      cardHtml.includes(`href="command:mem.queueTask?${encId}"`),
+      'Action footer must contain command:mem.queueTask link for task node'
+    );
     assert.ok(cardHtml.includes('$(go-to-file) Open'), 'Open command link must use $(go-to-file) icon');
     assert.ok(cardHtml.includes('$(type-hierarchy-sub) Subtree'), 'Subtree command link must use $(type-hierarchy-sub) icon');
+    assert.ok(cardHtml.includes('$(check) Complete'), 'Complete command link must use $(check) icon');
+    assert.ok(cardHtml.includes('$(close) Cancel'), 'Cancel command link must use $(close) icon');
+    assert.ok(cardHtml.includes('$(inbox) Queue'), 'Queue command link must use $(inbox) icon');
+
+    // Non-task note should omit complete/cancel/queue links
+    const nonTaskNode: PkbPreviewNode = {
+      id: 'note-reference',
+      label: 'Reference Note',
+      type: 'note',
+      tags: [],
+      aliases: [],
+      bodyExcerpt: 'Note body text',
+      hasMoreBody: false,
+      absPath: '/tmp/note-reference.md',
+      relPath: 'notes/note-reference.md',
+    };
+    const nonTaskHtml = renderHoverCardHtml(nonTaskNode);
+    assert.ok(nonTaskHtml.includes('command:mem.openReference?'));
+    assert.ok(nonTaskHtml.includes('command:mem.showSubtree?'));
+    assert.ok(!nonTaskHtml.includes('command:mem.completeTask?'));
+    assert.ok(!nonTaskHtml.includes('command:mem.cancelTask?'));
+    assert.ok(!nonTaskHtml.includes('command:mem.queueTask?'));
   });
 
   it('collectDescendants and renderSubtreeText build child hierarchy and tree structure', () => {
@@ -702,6 +740,27 @@ Child body.
       const openResult: any = await mockVscode.commands.executeCommand('mem.openReference', ['cmd-child']);
       assert.ok(openResult, 'mem.openReference must open target file');
       assert.strictEqual(openResult.options?.preview, false, 'Must open with preview: false in new tab');
+
+      // Execute mem.completeTask with array nodeId
+      const completeRes: any = await mockVscode.commands.executeCommand('mem.completeTask', ['cmd-child']);
+      assert.ok(completeRes?.success, 'mem.completeTask must succeed');
+      const childAfterComplete = fs.readFileSync(childTaskPath, 'utf8');
+      assert.ok(childAfterComplete.includes('status: done'), 'Frontmatter must have status: done after completeTask');
+      assert.ok(childAfterComplete.includes('Child body.'), 'Body content must be preserved without corruption');
+
+      // Execute mem.cancelTask with string nodeId
+      const cancelRes: any = await mockVscode.commands.executeCommand('mem.cancelTask', 'cmd-child');
+      assert.ok(cancelRes?.success, 'mem.cancelTask must succeed');
+      const childAfterCancel = fs.readFileSync(childTaskPath, 'utf8');
+      assert.ok(childAfterCancel.includes('status: cancelled'), 'Frontmatter must have status: cancelled after cancelTask');
+      assert.ok(childAfterCancel.includes('Child body.'), 'Body content must be preserved without corruption');
+
+      // Execute mem.queueTask with array nodeId
+      const queueRes: any = await mockVscode.commands.executeCommand('mem.queueTask', ['cmd-child']);
+      assert.ok(queueRes?.success, 'mem.queueTask must succeed');
+      const childAfterQueue = fs.readFileSync(childTaskPath, 'utf8');
+      assert.ok(childAfterQueue.includes('status: queued'), 'Frontmatter must have status: queued after queueTask');
+      assert.ok(childAfterQueue.includes('Child body.'), 'Body content must be preserved without corruption');
     } finally {
       delete process.env.ACA_DATA;
       delete process.env.MEM_TEST_NO_LSP_CLIENT;
@@ -995,6 +1054,139 @@ Body text.
       assert.strictEqual(provided.length, 6, 'PkbDocumentLinkProvider must return all 6 translated links');
     } finally {
       fs.rmSync(tmpPkb, { recursive: true, force: true });
+    }
+  });
+
+  it('isTaskNode identifies task types, task prefixes, and active status while excluding notes', () => {
+    const mkNode = (partial: Partial<PkbPreviewNode>): PkbPreviewNode => ({
+      id: 'default-id',
+      label: 'Default',
+      tags: [],
+      aliases: [],
+      bodyExcerpt: '',
+      hasMoreBody: false,
+      absPath: '',
+      relPath: '',
+      ...partial,
+    });
+
+    assert.strictEqual(isTaskNode(mkNode({ id: 'task-1', label: 'T1', type: 'task' })), true);
+    assert.strictEqual(isTaskNode(mkNode({ id: 'sub-1', label: 'S1', type: 'subtask' })), true);
+    assert.strictEqual(isTaskNode(mkNode({ id: 'learn-1', label: 'L1', type: 'learn' })), true);
+    assert.strictEqual(isTaskNode(mkNode({ id: 'pr-1', label: 'P1', type: 'pr' })), true);
+    assert.strictEqual(isTaskNode(mkNode({ id: 'task-prefix', label: 'P' })), true);
+    assert.strictEqual(isTaskNode(mkNode({ id: 'item-1', label: 'I1', status: 'ready' })), true);
+    assert.strictEqual(isTaskNode(mkNode({ id: 'note-1', label: 'N1', type: 'note' })), false);
+    assert.strictEqual(isTaskNode(mkNode({ id: 'doc-1', label: 'D1', type: 'knowledge' })), false);
+  });
+
+  it('updateFrontmatterStatusInContent modifies status cleanly without corrupting body or other frontmatter', () => {
+    // 1. Existing status in frontmatter
+    const input1 = `---
+id: task-1
+title: Task 1
+status: ready
+type: task
+---
+Body text here.
+Line 2 of body.
+`;
+    const output1 = updateFrontmatterStatusInContent(input1, 'done');
+    assert.ok(output1.includes('status: done'), 'Must update status to done');
+    assert.ok(!output1.includes('status: ready'), 'Must remove previous status: ready');
+    assert.ok(output1.includes('id: task-1'), 'Must preserve other frontmatter keys');
+    assert.ok(output1.includes('Body text here.\nLine 2 of body.'), 'Must preserve body text verbatim');
+
+    // 2. Missing status in existing frontmatter
+    const input2 = `---
+id: task-2
+title: Task 2
+---
+Only body.`;
+    const output2 = updateFrontmatterStatusInContent(input2, 'cancelled');
+    assert.ok(output2.includes('status: cancelled'), 'Must insert status: cancelled');
+    assert.ok(output2.includes('id: task-2'), 'Must preserve existing frontmatter');
+    assert.ok(output2.includes('Only body.'), 'Must preserve body text verbatim');
+
+    // 3. No frontmatter at all
+    const input3 = 'Raw markdown without frontmatter.';
+    const output3 = updateFrontmatterStatusInContent(input3, 'queued');
+    assert.ok(output3.startsWith('---\nstatus: queued\n---\n\n'), 'Must prepend frontmatter');
+    assert.ok(output3.includes('Raw markdown without frontmatter.'), 'Must preserve original text');
+
+    // 4. CRLF line endings
+    const inputCrlf = '---\r\nid: task-crlf\r\nstatus: ready\r\n---\r\nBody text\r\n';
+    const outputCrlf = updateFrontmatterStatusInContent(inputCrlf, 'done');
+    assert.ok(outputCrlf.includes('\r\n'), 'Must preserve CRLF line endings');
+    assert.ok(outputCrlf.includes('status: done\r\n'), 'Must update status to done with CRLF');
+  });
+
+  it('formatPlainTooltip includes task action hints for tasks and excludes for non-tasks', () => {
+    const mkNode = (partial: Partial<PkbPreviewNode>): PkbPreviewNode => ({
+      id: 'default-id',
+      label: 'Default',
+      tags: [],
+      aliases: [],
+      bodyExcerpt: '',
+      hasMoreBody: false,
+      absPath: '',
+      relPath: '',
+      ...partial,
+    });
+
+    const taskNode = mkNode({
+      id: 'task-tooltip',
+      label: 'Tooltip Task',
+      type: 'task',
+      status: 'ready',
+    });
+    const taskTip = formatPlainTooltip(taskNode);
+    assert.ok(taskTip.includes('Complete: mem.completeTask'));
+    assert.ok(taskTip.includes('Cancel: mem.cancelTask'));
+    assert.ok(taskTip.includes('Queue: mem.queueTask'));
+
+    const noteNode = mkNode({
+      id: 'note-tooltip',
+      label: 'Tooltip Note',
+      type: 'note',
+    });
+    const noteTip = formatPlainTooltip(noteNode);
+    assert.ok(noteTip.includes('Open: mem.openReference'));
+    assert.ok(!noteTip.includes('Complete: mem.completeTask'));
+    assert.ok(!noteTip.includes('Cancel: mem.cancelTask'));
+    assert.ok(!noteTip.includes('Queue: mem.queueTask'));
+  });
+
+  it('updateTaskStatus updates status on disk and reloads preview index', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pkb-update-status-'));
+    try {
+      const taskFile = path.join(tmpDir, 'task-disk.md');
+      fs.writeFileSync(
+        taskFile,
+        `---
+id: task-disk
+title: Disk Task
+type: task
+status: ready
+---
+Task description on disk.
+`
+      );
+
+      // Initialize index pointing to tmpDir
+      const index = new PkbPreviewIndex(tmpDir);
+      assert.strictEqual(index.resolve('task-disk')?.status, 'ready');
+
+      // Update task status
+      const res = await updateTaskStatus(taskFile, 'done');
+      assert.strictEqual(res.success, true);
+      assert.strictEqual(res.previousStatus, undefined); // resolved directly from path
+
+      const updatedOnDisk = fs.readFileSync(taskFile, 'utf8');
+      assert.ok(updatedOnDisk.includes('status: done'));
+      assert.ok(updatedOnDisk.includes('Task description on disk.'));
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
     }
   });
 
