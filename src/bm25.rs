@@ -23,6 +23,9 @@ pub const WEIGHT_HEADING: f32 = 2.0;
 pub const WEIGHT_BODY: f32 = 1.0;
 pub const WEIGHT_ID_TOKENS: f32 = 1.0;
 
+/// Dominant anchor boost added to BM25 score when a query term exactly matches the document ID.
+pub const EXACT_ID_BM25_BOOST: f32 = 1000.0;
+
 /// Standard English stopword list for lexical retrieval.
 static ENGLISH_STOPWORDS: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
     let words = [
@@ -77,6 +80,43 @@ pub fn stem_word(word: &str) -> String {
     stemmer.stem(word).to_string()
 }
 
+static WIKILINK_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
+    regex::Regex::new(r"\[\[([^\]\|#]+)(?:#([^\]\|]+))?(?:\|([^\]]+))?\]\]").unwrap()
+});
+
+/// Strip wikilink brackets `[[target]]`, `[[target#heading]]`, or `[[target|alias]]` from text.
+/// `[[id]]` resolves to `id`.
+/// `[[id|alias]]` resolves to `id alias`.
+/// `[[id#heading]]` resolves to `id heading`.
+/// `[[id#heading|alias]]` resolves to `id alias`.
+pub fn strip_wikilink_brackets(text: &str) -> String {
+    if !text.contains("[[") {
+        return text.to_string();
+    }
+    WIKILINK_RE
+        .replace_all(text, |caps: &regex::Captures| {
+            let target = caps.get(1).map_or("", |m| m.as_str().trim());
+            if let Some(alias) = caps.get(3) {
+                let alias_str = alias.as_str().trim();
+                if alias_str.is_empty() {
+                    target.to_string()
+                } else {
+                    format!("{target} {alias_str}")
+                }
+            } else if let Some(heading) = caps.get(2) {
+                let heading_str = heading.as_str().trim();
+                if heading_str.is_empty() {
+                    target.to_string()
+                } else {
+                    format!("{target} {heading_str}")
+                }
+            } else {
+                target.to_string()
+            }
+        })
+        .to_string()
+}
+
 fn rank_v1_from_env() -> bool {
     std::env::var("MEM_RANK_V1")
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
@@ -97,8 +137,9 @@ pub fn tokenize(text: &str) -> Vec<String> {
 
 /// Legacy v1 tokenizer that preserves exact identifiers, compound tokens, and code symbols.
 pub fn tokenize_v1(text: &str) -> Vec<String> {
+    let unbracketed = strip_wikilink_brackets(text);
     let mut tokens = Vec::new();
-    let text_lower = text.to_lowercase();
+    let text_lower = unbracketed.to_lowercase();
 
     // Standard word splitter (splits on whitespace, quotes, parens, brackets, etc.)
     for raw in text_lower.split(|c: char| {
@@ -160,7 +201,8 @@ pub fn tokenize_v1(text: &str) -> Vec<String> {
 /// BM25 v2 tokenizer with NFKD folding, Unicode lowercasing, apostrophe preservation,
 /// English stopword filtering, and Porter stemming.
 pub fn tokenize_v2(text: &str) -> Vec<String> {
-    let folded = nfkd_fold(text);
+    let unbracketed = strip_wikilink_brackets(text);
+    let folded = nfkd_fold(&unbracketed);
     let lower = folded.to_lowercase();
     let stemmer = rust_stemmers::Stemmer::create(rust_stemmers::Algorithm::English);
     let mut tokens = Vec::new();
@@ -562,11 +604,12 @@ impl Bm25Index {
             return Vec::new();
         }
 
+        let clean_query = strip_wikilink_brackets(query);
         let avg_dl = (self.total_length as f32) / (n_chunks as f32);
         let query_tokens = if self.rank_v1 {
-            tokenize_v1(query)
+            tokenize_v1(&clean_query)
         } else {
-            tokenize_v2(query)
+            tokenize_v2(&clean_query)
         };
         if query_tokens.is_empty() {
             return Vec::new();
@@ -612,7 +655,16 @@ impl Bm25Index {
                     if let Some(chunk) = self.chunks.get(&(doc_id.clone(), *chunk_id)) {
                         let dl = chunk.length as f32;
                         let denom = tf + BM25_K1 * (1.0 - BM25_B + BM25_B * (dl / avg_dl));
-                        let term_score = idf * ((tf * (BM25_K1 + 1.0)) / denom) * q_multiplier;
+                        let mut term_score = idf * ((tf * (BM25_K1 + 1.0)) / denom) * q_multiplier;
+                        let is_exact_id = doc_id.eq_ignore_ascii_case(&term)
+                            || chunk
+                                .path
+                                .file_stem()
+                                .and_then(|s| s.to_str())
+                                .is_some_and(|s| s.eq_ignore_ascii_case(&term));
+                        if is_exact_id {
+                            term_score += EXACT_ID_BM25_BOOST;
+                        }
                         *scores.entry((doc_id.clone(), *chunk_id)).or_insert(0.0) += term_score;
                     }
                 }
@@ -812,5 +864,116 @@ mod tests {
         let notes = idx.search("optimization", 5, Path::new("/pkb"), None, None, Some("!task"), None);
         assert_eq!(notes.len(), 1);
         assert_eq!(notes[0].id, "doc2");
+    }
+
+    #[test]
+    fn test_strip_wikilink_brackets() {
+        assert_eq!(strip_wikilink_brackets("[[kb_295732fd]]"), "kb_295732fd");
+        assert_eq!(strip_wikilink_brackets("[[kb_295732fd|My Title]]"), "kb_295732fd My Title");
+        assert_eq!(strip_wikilink_brackets("[[kb_295732fd#section]]"), "kb_295732fd section");
+        assert_eq!(strip_wikilink_brackets("[[kb_295732fd#section|My Title]]"), "kb_295732fd My Title");
+        assert_eq!(
+            strip_wikilink_brackets("See [[kb_295732fd]] and [[aops_8a2448c0]] for details"),
+            "See kb_295732fd and aops_8a2448c0 for details"
+        );
+        assert_eq!(strip_wikilink_brackets("plain text without brackets"), "plain text without brackets");
+    }
+
+    #[test]
+    fn test_tokenizer_strips_wikilink_brackets() {
+        let tokens_v2 = tokenize_v2("[[kb_295732fd]]");
+        assert_eq!(tokens_v2[0], "kb_295732fd");
+        assert!(tokens_v2.contains(&"kb".to_string()));
+        assert!(tokens_v2.contains(&"295732fd".to_string()));
+        assert!(!tokens_v2.iter().any(|t| t.contains('[') || t.contains(']')));
+
+        let tokens_v1 = tokenize_v1("[[kb_295732fd]]");
+        assert_eq!(tokens_v1[0], "kb_295732fd");
+        assert!(!tokens_v1.iter().any(|t| t.contains('[') || t.contains(']')));
+    }
+
+    #[test]
+    fn test_bm25_wikilink_bracketed_query_ranks_target_first() {
+        let mut idx = Bm25Index::new();
+        // Target document kb_295732fd
+        idx.upsert(
+            "kb_295732fd",
+            PathBuf::from("docs/kb_295732fd.md"),
+            "System Architecture Guide",
+            Some("doc".to_string()),
+            Some("active".to_string()),
+            vec!["architecture".to_string()],
+            None,
+            None,
+            None,
+            "Architecture principles".to_string(),
+            "Architecture principles".to_string(),
+            "Core principles and standards for system design.",
+        );
+
+        // Competitor document mentioning academicops and tools multiple times
+        idx.upsert(
+            "academicops_guide",
+            PathBuf::from("docs/academicops_guide.md"),
+            "academicops operations overview",
+            Some("doc".to_string()),
+            Some("active".to_string()),
+            vec!["academicops".to_string()],
+            None,
+            None,
+            None,
+            "academicops operations".to_string(),
+            "academicops operations".to_string(),
+            "academicops academicops academicops tools and workflows for research teams.",
+        );
+
+        let results = idx.search("[[kb_295732fd]]", 5, Path::new("/pkb"), None, None, None, None);
+        assert!(!results.is_empty());
+        assert_eq!(results[0].id, "kb_295732fd", "Bracketed ID query [[kb_295732fd]] must rank target document #1");
+        assert!(results[0].score >= EXACT_ID_BM25_BOOST, "Exact ID match must receive dominant anchor boost");
+    }
+
+    #[test]
+    fn test_bm25_exact_id_dominant_anchor_scoring() {
+        let mut idx = Bm25Index::new();
+        // Task whose title does NOT repeat the ID slug
+        idx.upsert(
+            "aops_8a2448c0",
+            PathBuf::from("tasks/aops_8a2448c0.md"),
+            "Framework basics: Ida follow-ups, follow-through and the three fixes",
+            Some("task".to_string()),
+            Some("ready".to_string()),
+            vec!["framework".to_string()],
+            None,
+            None,
+            None,
+            "Task snippet".to_string(),
+            "Task chunk text".to_string(),
+            "Detailed instructions on Ida follow-ups and three core fixes.",
+        );
+
+        // Competitor document that mentions aops_8a2448c0 repeatedly in its body
+        idx.upsert(
+            "backlog_index",
+            PathBuf::from("indexes/backlog.md"),
+            "Backlog task tracking",
+            Some("index".to_string()),
+            Some("active".to_string()),
+            vec!["index".to_string()],
+            None,
+            None,
+            None,
+            "Task list".to_string(),
+            "Task list".to_string(),
+            "Referenced tasks: aops_8a2448c0, aops_8a2448c0, aops_8a2448c0 in sprint review.",
+        );
+
+        let results = idx.search("aops_8a2448c0", 5, Path::new("/pkb"), None, None, None, None);
+        assert!(!results.is_empty());
+        assert_eq!(results[0].id, "aops_8a2448c0", "Exact ID query must rank matching document #1 regardless of title slug repetition");
+        assert!(results[0].score >= EXACT_ID_BM25_BOOST);
+        if results.len() > 1 {
+            assert!(results[0].score > results[1].score + 900.0, "Exact ID match must dominate competitor mentions");
+        }
     }
 }

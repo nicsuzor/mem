@@ -281,6 +281,13 @@ async fn test_mcp_span_per_call_attributes() {
         attrs.contains_key("hybrid_search_time_ms") || attrs.contains_key("hybrid_search.time_ms"),
         "mcp span must contain hybrid-search timing attribute; attrs: {attrs:?}"
     );
+
+    // Verify openinference project name
+    assert_eq!(
+        attrs.get("openinference.project.name").map(String::as_str),
+        Some("academicOps"),
+        "mcp span must contain openinference.project.name attribute; attrs: {attrs:?}"
+    );
 }
 
 #[tokio::test]
