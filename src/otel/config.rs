@@ -42,6 +42,31 @@ pub fn parse_headers(raw: &str) -> std::collections::HashMap<String, String> {
 }
 
 impl OtelConfig {
+    /// Resolve the Phoenix project name from environment variables,
+    /// checking `PHOENIX_PROJECT`, `OPENINFERENCE_PROJECT_NAME`, `PHOENIX_PROJECT_NAME`,
+    /// `PHOENIX_MCP_PROJECT`, `GENAI_ENGINE_PROJECT_NAME`, and non-pkb `OTEL_SERVICE_NAME`,
+    /// defaulting to "academicOps".
+    pub fn resolve_project_name() -> String {
+        env::var("PHOENIX_PROJECT")
+            .or_else(|_| env::var("OPENINFERENCE_PROJECT_NAME"))
+            .or_else(|_| env::var("PHOENIX_PROJECT_NAME"))
+            .or_else(|_| env::var("PHOENIX_MCP_PROJECT"))
+            .or_else(|_| env::var("GENAI_ENGINE_PROJECT_NAME"))
+            .or_else(|_| {
+                env::var("OTEL_SERVICE_NAME").and_then(|val| {
+                    if val.trim().eq_ignore_ascii_case("pkb") {
+                        Err(env::VarError::NotPresent)
+                    } else {
+                        Ok(val)
+                    }
+                })
+            })
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| "academicOps".to_string())
+    }
+
     pub fn from_env() -> Option<Self> {
         let endpoint = if let Ok(ep) = env::var("GENAI_ENGINE_TRACE_ENDPOINT") {
             if ep.is_empty() { return None; }
@@ -70,11 +95,7 @@ impl OtelConfig {
             .ok()
             .filter(|s| !s.is_empty());
 
-        let project_name = env::var("OTEL_SERVICE_NAME")
-            .or_else(|_| env::var("PHOENIX_PROJECT_NAME"))
-            .or_else(|_| env::var("GENAI_ENGINE_PROJECT_NAME"))
-            .ok()
-            .filter(|s| !s.is_empty());
+        let project_name = Some(Self::resolve_project_name());
 
         let headers = env::var("GENAI_ENGINE_API_KEY")
             .map(|raw| parse_headers(&raw))
@@ -133,5 +154,94 @@ mod tests {
     fn test_parse_headers_skips_malformed_pairs() {
         assert!(parse_headers("").is_empty());
         assert!(parse_headers("noequals,=novalue").is_empty());
+    }
+
+    static ENV_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn clear_project_env() {
+        env::remove_var("PHOENIX_PROJECT");
+        env::remove_var("OPENINFERENCE_PROJECT_NAME");
+        env::remove_var("PHOENIX_PROJECT_NAME");
+        env::remove_var("PHOENIX_MCP_PROJECT");
+        env::remove_var("GENAI_ENGINE_PROJECT_NAME");
+        env::remove_var("OTEL_SERVICE_NAME");
+    }
+
+    #[test]
+    fn test_project_name_defaults_to_academicops() {
+        let _guard = ENV_MUTEX.lock().unwrap();
+        clear_project_env();
+        assert_eq!(OtelConfig::resolve_project_name(), "academicOps");
+    }
+
+    #[test]
+    fn test_project_name_from_phoenix_project() {
+        let _guard = ENV_MUTEX.lock().unwrap();
+        clear_project_env();
+        env::set_var("PHOENIX_PROJECT", "custom_phoenix");
+        assert_eq!(OtelConfig::resolve_project_name(), "custom_phoenix");
+        clear_project_env();
+    }
+
+    #[test]
+    fn test_project_name_from_openinference_project_name() {
+        let _guard = ENV_MUTEX.lock().unwrap();
+        clear_project_env();
+        env::set_var("OPENINFERENCE_PROJECT_NAME", "custom_oi");
+        assert_eq!(OtelConfig::resolve_project_name(), "custom_oi");
+        clear_project_env();
+    }
+
+    #[test]
+    fn test_project_name_phoenix_project_takes_precedence() {
+        let _guard = ENV_MUTEX.lock().unwrap();
+        clear_project_env();
+        env::set_var("PHOENIX_PROJECT", "priority_phoenix");
+        env::set_var("OPENINFERENCE_PROJECT_NAME", "secondary_oi");
+        assert_eq!(OtelConfig::resolve_project_name(), "priority_phoenix");
+        clear_project_env();
+    }
+
+    #[test]
+    fn test_project_name_ignores_pkb_service_name() {
+        let _guard = ENV_MUTEX.lock().unwrap();
+        clear_project_env();
+        env::set_var("OTEL_SERVICE_NAME", "pkb");
+        assert_eq!(OtelConfig::resolve_project_name(), "academicOps");
+        clear_project_env();
+    }
+
+    #[test]
+    fn test_project_name_accepts_other_service_name_fallback() {
+        let _guard = ENV_MUTEX.lock().unwrap();
+        clear_project_env();
+        env::set_var("OTEL_SERVICE_NAME", "custom_service");
+        assert_eq!(OtelConfig::resolve_project_name(), "custom_service");
+        clear_project_env();
+    }
+
+    #[test]
+    fn test_project_name_empty_env_var_falls_back() {
+        let _guard = ENV_MUTEX.lock().unwrap();
+        clear_project_env();
+        env::set_var("PHOENIX_PROJECT", "   ");
+        env::set_var("OPENINFERENCE_PROJECT_NAME", "");
+        assert_eq!(OtelConfig::resolve_project_name(), "academicOps");
+        clear_project_env();
+    }
+
+    #[test]
+    fn test_otel_config_from_env_resolves_project() {
+        let _guard = ENV_MUTEX.lock().unwrap();
+        clear_project_env();
+        env::set_var("GENAI_ENGINE_TRACE_ENDPOINT", "http://host:4318/v1/traces");
+        let config = OtelConfig::from_env().unwrap();
+        assert_eq!(config.project_name, Some("academicOps".to_string()));
+
+        env::set_var("PHOENIX_PROJECT", "test_proj");
+        let config = OtelConfig::from_env().unwrap();
+        assert_eq!(config.project_name, Some("test_proj".to_string()));
+        clear_project_env();
+        env::remove_var("GENAI_ENGINE_TRACE_ENDPOINT");
     }
 }

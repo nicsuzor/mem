@@ -1802,8 +1802,11 @@ impl PkbSearchServer {
                 .span_builder(format!("mcp.{}", canonical_name_task))
                 .with_kind(opentelemetry::trace::SpanKind::Server);
 
+            let project_name = crate::otel::config::OtelConfig::resolve_project_name();
             let mut attrs = vec![
                 opentelemetry::KeyValue::new("openinference.span.kind", "TOOL"),
+                opentelemetry::KeyValue::new("openinference.project.name", project_name.clone()),
+                opentelemetry::KeyValue::new("project.name", project_name),
                 opentelemetry::KeyValue::new("tool.name", canonical_name_task.clone()),
                 opentelemetry::KeyValue::new(
                     "aops.session.source",
