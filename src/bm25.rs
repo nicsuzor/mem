@@ -661,7 +661,7 @@ impl Bm25Index {
                                 .path
                                 .file_stem()
                                 .and_then(|s| s.to_str())
-                                .map_or(false, |s| s.eq_ignore_ascii_case(&term));
+                                .is_some_and(|s| s.eq_ignore_ascii_case(&term));
                         if is_exact_id {
                             term_score += EXACT_ID_BM25_BOOST;
                         }
