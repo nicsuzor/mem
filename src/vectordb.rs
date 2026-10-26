@@ -1131,9 +1131,10 @@ fn upsert_entry_to_bm25(bm25: &mut crate::bm25::Bm25Index, entry: &DocumentEntry
         type_filter: Option<&str>,
         predicate: Option<&dyn Fn(&GateCandidate) -> bool>,
     ) -> Vec<SearchResult> {
+        let clean_query = crate::bm25::strip_wikilink_brackets(query);
         self.bm25
             .read()
-            .search(query, limit, pkb_root, since, before, type_filter, predicate)
+            .search(&clean_query, limit, pkb_root, since, before, type_filter, predicate)
     }
 
     /// Hybrid search: Combines vector similarity and BM25 lexical retrieval via TM2C2
@@ -1188,6 +1189,8 @@ fn upsert_entry_to_bm25(bm25: &mut crate::bm25::Bm25Index, entry: &DocumentEntry
         let _guard = opentelemetry::trace::mark_span_as_active(span);
         let start = std::time::Instant::now();
 
+        let clean_query = crate::bm25::strip_wikilink_brackets(query);
+
         let fetch_limit_dense = crate::ranking::POOL_SIZE_DENSE.max(limit);
         let fetch_limit_lex = crate::ranking::POOL_SIZE_LEX.max(limit);
 
@@ -1201,13 +1204,13 @@ fn upsert_entry_to_bm25(bm25: &mut crate::bm25::Bm25Index, entry: &DocumentEntry
             predicate,
         );
         let bm25_results =
-            self.search_bm25(query, fetch_limit_lex, pkb_root, since, before, type_filter, predicate);
+            self.search_bm25(&clean_query, fetch_limit_lex, pkb_root, since, before, type_filter, predicate);
 
         let config = crate::ranking::RankingConfig::default();
         let fused = crate::ranking::try_fuse_tm2c2(
             vector_results,
             bm25_results,
-            query,
+            &clean_query,
             &config,
             reranker,
             graph_lookup,
@@ -2815,5 +2818,89 @@ mod tests {
             corrupt_store.is_empty(),
             "Corrupted binary must discard and create fresh empty store"
         );
+    }
+
+    #[test]
+    fn test_vectordb_search_bm25_strips_wikilink_brackets() {
+        let store = VectorStore::new(3);
+        store.bm25.write().upsert(
+            "kb_295732fd",
+            PathBuf::from("docs/kb_295732fd.md"),
+            "System Architecture Guide",
+            Some("doc".to_string()),
+            Some("active".to_string()),
+            vec![],
+            None,
+            None,
+            None,
+            "".to_string(),
+            "".to_string(),
+            "System architecture content",
+        );
+
+        let res = store.search_bm25("[[kb_295732fd]]", 5, Path::new("/pkb"), None, None, None, None);
+        assert_eq!(res.len(), 1);
+        assert_eq!(res[0].id, "kb_295732fd");
+        assert!(res[0].score >= crate::bm25::EXACT_ID_BM25_BOOST);
+    }
+
+    #[test]
+    fn test_vectordb_hybrid_search_exact_id_dominant_anchor() {
+        let mut store = VectorStore::new(3);
+        // Exact task: title does not repeat the slug
+        store.documents.insert(
+            "aops_8a2448c0".to_string(),
+            make_entry(
+                "tasks/aops_8a2448c0.md",
+                "Framework basics: Ida follow-ups, follow-through and the three fixes",
+                Some("task"),
+                Some("ready"),
+                &[],
+                Some("aops_8a2448c0"),
+                None,
+                vec![0.1, 0.0, 0.0],
+            ),
+        );
+        // Distractor document with strong vector alignment
+        store.documents.insert(
+            "other_task".to_string(),
+            make_entry(
+                "tasks/other.md",
+                "Distractor task with high vector similarity",
+                Some("task"),
+                Some("active"),
+                &[],
+                Some("other_task"),
+                None,
+                vec![1.0, 0.0, 0.0],
+            ),
+        );
+        store.bm25.write().upsert(
+            "aops_8a2448c0",
+            PathBuf::from("tasks/aops_8a2448c0.md"),
+            "Framework basics: Ida follow-ups, follow-through and the three fixes",
+            Some("task".to_string()),
+            Some("ready".to_string()),
+            vec![],
+            None,
+            None,
+            None,
+            "".to_string(),
+            "".to_string(),
+            "Task instructions and details without slug in title",
+        );
+
+        let query_emb = vec![1.0, 0.0, 0.0];
+        // Query exact ID without brackets
+        let res = store.search_hybrid("aops_8a2448c0", &query_emb, 5, Path::new("/pkb"), None, None, None, None, None);
+        assert!(!res.is_empty());
+        assert_eq!(res[0].id, "aops_8a2448c0", "Exact ID query must rank matching document #1 in hybrid search");
+        assert!(res[0].score >= crate::ranking::EXACT_ID_HYBRID_BOOST);
+
+        // Query with wikilink brackets
+        let res_bracketed = store.search_hybrid("[[aops_8a2448c0]]", &query_emb, 5, Path::new("/pkb"), None, None, None, None, None);
+        assert!(!res_bracketed.is_empty());
+        assert_eq!(res_bracketed[0].id, "aops_8a2448c0", "Bracketed ID query must rank matching document #1 in hybrid search");
+        assert!(res_bracketed[0].score >= crate::ranking::EXACT_ID_HYBRID_BOOST);
     }
 }
