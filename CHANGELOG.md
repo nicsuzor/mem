@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.2](https://github.com/nicsuzor/mem/compare/mem-v0.5.1...mem-v0.5.2) (2026-10-26)
+
+
+### Features
+
+* **bm25:** strip wikilink brackets and grant dominant exact-ID anchor boost in lexical retrieval ([a407d5e](https://github.com/nicsuzor/mem/commit/a407d5ee8bd078976f134f4dcbb6a0c0bb8f8869))
+* **ranking,vectordb:** add exact-ID dominant anchor boost and wikilink bracket stripping to hybrid retrieval ([e135479](https://github.com/nicsuzor/mem/commit/e135479e6c0255558dbaa89e65e45a346a8486a1))
+
+
+### Bug Fixes
+
+* **bm25:** use is_some_and instead of map_or(false, ...) to satisfy clippy ([9b780a4](https://github.com/nicsuzor/mem/commit/9b780a4d288500e182141f0e3b9d2ea90ae993ba))
+* **otel:** resolve Phoenix project name with academicOps fallback ([aa25af3](https://github.com/nicsuzor/mem/commit/aa25af36b8a09736cc851fe72a7e08171f8130f9))
+* **otel:** resolve Phoenix project name with academicOps fallback ([88e3507](https://github.com/nicsuzor/mem/commit/88e3507460a5a02f319ff606118434d29558d35b))
+* **search:** strip wikilink brackets and grant dominant exact-ID anchor boost in BM25 and hybrid retrieval ([ce4a7d3](https://github.com/nicsuzor/mem/commit/ce4a7d3621b4b229a4573a291830d7010cc9bc0b))
+
+
+### Miscellaneous
+
+* **release:** sync release/v1.0-rc0 to main for v0.5.2 ([6565275](https://github.com/nicsuzor/mem/commit/6565275ab4eb41692cd83157b71d0ab864169a37))
+
 ## [0.5.1](https://github.com/nicsuzor/mem/compare/mem-v0.5.0...mem-v0.5.1) (2026-10-25)
 
 
