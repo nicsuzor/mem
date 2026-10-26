@@ -44,6 +44,9 @@ pub const EPSILON: f32 = 1e-9;
 /// Multiplier for exact ID, filename, or alias matches (m_id = 2.0).
 pub const M_ID_EXACT_MATCH: f32 = 2.0;
 
+/// Dominant anchor boost added in hybrid retrieval for exact ID matches.
+pub const EXACT_ID_HYBRID_BOOST: f32 = 10.0;
+
 /// Default ID multiplier when no exact match (m_id = 1.0).
 pub const M_ID_DEFAULT: f32 = 1.0;
 
@@ -119,7 +122,8 @@ impl Default for RankingConfig {
 /// - any token contains `_` or `-` or a digit run (0-9)
 /// - OR `tokens.len() <= 3` and `q` contains uppercase or path characters (`/` or `\`).
 pub fn is_identifier_query(query: &str) -> bool {
-    let tokens: Vec<&str> = query.split_whitespace().collect();
+    let clean = crate::bm25::strip_wikilink_brackets(query);
+    let tokens: Vec<&str> = clean.split_whitespace().collect();
     if tokens.is_empty() {
         return false;
     }
@@ -130,7 +134,7 @@ pub fn is_identifier_query(query: &str) -> bool {
         }
     }
 
-    if tokens.len() <= 3 && query.chars().any(|c| c.is_ascii_uppercase() || c == '/' || c == '\\') {
+    if tokens.len() <= 3 && clean.chars().any(|c| c.is_ascii_uppercase() || c == '/' || c == '\\') {
         return true;
     }
 
@@ -149,7 +153,8 @@ pub fn compute_alpha(query: &str, config: &RankingConfig) -> f32 {
 
 /// Compute m_id(q, d): 2.0 on exact ID, filename, or alias match; otherwise 1.0.
 pub fn compute_m_id(query: &str, doc_id: &str, path: &Path, aliases: &[String]) -> f32 {
-    let q = query.trim();
+    let clean = crate::bm25::strip_wikilink_brackets(query);
+    let q = clean.trim();
     if q.is_empty() {
         return M_ID_DEFAULT;
     }
@@ -176,7 +181,44 @@ pub fn compute_m_id(query: &str, doc_id: &str, path: &Path, aliases: &[String]) 
         }
     }
 
+    // Also check individual tokens if the query contains multiple terms
+    for token in q.split(|c: char| {
+        c.is_whitespace()
+            || c == '['
+            || c == ']'
+            || c == '('
+            || c == ')'
+            || c == '{'
+            || c == '}'
+            || c == '<'
+            || c == '>'
+    }) {
+        let trimmed_tok = token.trim_matches(|c: char| {
+            c == '.' || c == ':' || c == ',' || c == ';' || c == '`' || c == '"' || c == '\''
+        });
+        if !trimmed_tok.is_empty() {
+            if trimmed_tok.eq_ignore_ascii_case(doc_id) {
+                return M_ID_EXACT_MATCH;
+            }
+            if let Some(file_stem) = path.file_stem().and_then(|s| s.to_str()) {
+                if trimmed_tok.eq_ignore_ascii_case(file_stem) {
+                    return M_ID_EXACT_MATCH;
+                }
+            }
+            for alias in aliases {
+                if trimmed_tok.eq_ignore_ascii_case(alias.trim()) {
+                    return M_ID_EXACT_MATCH;
+                }
+            }
+        }
+    }
+
     M_ID_DEFAULT
+}
+
+/// Returns true if query contains an exact match for the document ID, file stem, or aliases.
+pub fn is_exact_id_match(query: &str, doc_id: &str, path: &Path, aliases: &[String]) -> bool {
+    compute_m_id(query, doc_id, path, aliases) > 1.0
 }
 
 /// Compute m_status(d) in {1.05, 1.00, 0.85, 0.60, 0.30}.
@@ -303,7 +345,8 @@ pub fn try_fuse_tm2c2<G: GraphStructuralLookup>(
     let p_len = candidates.len();
 
     // 3. Query-local min-max normalisation & single-candidate rule
-    let alpha = compute_alpha(query, config);
+    let clean_query = crate::bm25::strip_wikilink_brackets(query);
+    let alpha = compute_alpha(&clean_query, config);
 
     if p_len == 1 {
         let c = &mut candidates[0];
@@ -383,15 +426,15 @@ pub fn try_fuse_tm2c2<G: GraphStructuralLookup>(
     });
 
     if let Some(r) = reranker {
-        r.rerank(query, &mut intermediate, config.rerank_top_n)?;
+        r.rerank(&clean_query, &mut intermediate, config.rerank_top_n)?;
     }
 
-    // 5. Apply multiplicative structural priors M_struct(q, d) and modular temporal hook
+    // 5. Apply multiplicative structural priors M_struct(q, d), dominant anchor boost, and modular temporal hook
     for r in &mut intermediate {
         let outdegree = graph_lookup.outdegree(&r.id);
         let aliases = graph_lookup.aliases(&r.id);
         let m_struct = compute_m_struct(
-            query,
+            &clean_query,
             &r.id,
             &r.path,
             &aliases,
@@ -402,7 +445,9 @@ pub fn try_fuse_tm2c2<G: GraphStructuralLookup>(
             Some(hook) => hook(r),
             None => 1.0,
         };
-        r.score = r.score * m_struct * m_temporal;
+        let is_exact = is_exact_id_match(&clean_query, &r.id, &r.path, &aliases);
+        let anchor_boost = if is_exact { EXACT_ID_HYBRID_BOOST } else { 0.0 };
+        r.score = r.score * m_struct * m_temporal + anchor_boost;
     }
 
     // 6. Final sort descending by score, breaking ties by document ID then chunk ID
@@ -733,5 +778,65 @@ mod tests {
         assert_eq!(fused.len(), 2);
         assert_eq!(fused[0].id, "doc_a", "Equal score must break ties alphabetically by ID");
         assert_eq!(fused[1].id, "doc_z");
+    }
+
+    #[test]
+    fn test_exact_id_dominant_anchor_in_hybrid_fusion() {
+        let config = RankingConfig::default();
+        // Target document whose title does not repeat the slug
+        let target = make_result(
+            "aops_8a2448c0",
+            "Framework basics: Ida follow-ups, follow-through and the three fixes",
+            0.15,
+            Some("ready"),
+        );
+        // Competitor document with high vector similarity
+        let competitor = make_result(
+            "doc_semantic",
+            "Highly related vector match for generic topic",
+            0.95,
+            Some("active"),
+        );
+
+        let vec_res = vec![competitor.clone(), target.clone()];
+        let bm25_res = vec![
+            make_result("aops_8a2448c0", target.title.as_str(), 1005.0, Some("ready")),
+            make_result("doc_semantic", competitor.title.as_str(), 5.0, Some("active")),
+        ];
+
+        let fused = fuse_tm2c2(vec_res, bm25_res, "aops_8a2448c0", &config, None, &(), None, 10);
+        assert!(!fused.is_empty());
+        assert_eq!(fused[0].id, "aops_8a2448c0", "Exact ID match must be ranked #1 in hybrid retrieval");
+        assert!(fused[0].score >= EXACT_ID_HYBRID_BOOST, "Exact ID match must receive dominant anchor boost");
+        if fused.len() > 1 {
+            assert!(fused[0].score > fused[1].score + 5.0);
+        }
+    }
+
+    #[test]
+    fn test_wikilink_bracketed_exact_id_in_hybrid_fusion() {
+        let config = RankingConfig::default();
+        let target = make_result("kb_295732fd", "System Architecture", 0.10, Some("active"));
+        let competitor = make_result("academicops_guide", "academicops overview", 0.90, Some("active"));
+
+        let vec_res = vec![competitor.clone(), target.clone()];
+        let bm25_res = vec![
+            make_result("kb_295732fd", target.title.as_str(), 1005.0, Some("active")),
+            make_result("academicops_guide", competitor.title.as_str(), 10.0, Some("active")),
+        ];
+
+        let fused = fuse_tm2c2(vec_res, bm25_res, "[[kb_295732fd]]", &config, None, &(), None, 10);
+        assert!(!fused.is_empty());
+        assert_eq!(fused[0].id, "kb_295732fd", "Bracketed ID query must rank target #1 in hybrid retrieval");
+        assert!(fused[0].score >= EXACT_ID_HYBRID_BOOST);
+    }
+
+    #[test]
+    fn test_token_exact_id_match_in_multiword_query() {
+        let path = PathBuf::from("tasks/aops_8a2448c0.md");
+        let aliases: Vec<String> = vec![];
+        assert_eq!(compute_m_id("check task aops_8a2448c0 please", "aops_8a2448c0", &path, &aliases), 2.0);
+        assert!(is_exact_id_match("check task aops_8a2448c0 please", "aops_8a2448c0", &path, &aliases));
+        assert!(is_exact_id_match("see [[kb_295732fd]] here", "kb_295732fd", &path, &aliases));
     }
 }
