@@ -170,7 +170,7 @@ impl PkbSearchServer {
                         "title": { "type": "string" },
                         "type": {
                             "type": "string",
-                            "enum": ["task", "learn", "pr", "template", "target", "note", "knowledge", "memory", "insight", "observation", "contact", "document", "reference", "review", "case", "spec", "prototype", "index", "daily"]
+                            "enum": ["task", "learn", "pr", "template", "target", "note", "knowledge", "memory", "insight", "observation", "contact", "document", "reference", "review", "case", "spec", "prototype", "index", "daily", "epic"]
                         },
                         "slug": { "type": "string", "maxLength": 30, "description": "Short filename slug (required, <= 30 characters). Used to construct the node filename." },
                         "id": { "type": "string" },
@@ -235,7 +235,7 @@ impl PkbSearchServer {
                         "due": { "type": "string" },
                         "project": { "type": "string" },
                         "filename": { "type": "string" },
-                        "type": { "type": "string", "enum": ["task", "learn", "pr", "target"] },
+                        "type": { "type": "string", "enum": ["task", "learn", "pr", "target", "epic"] },
                         "status": { "type": "string", "enum": ["inbox", "ready", "failed"] },
                         "allow_missing_parent": { "type": "boolean" },
                         "force": { "type": "boolean" },

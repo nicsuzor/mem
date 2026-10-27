@@ -488,14 +488,21 @@ mod tier_rebuild_tests {
             let mut g = server.graph.write();
             g.upsert_node_in_place(node, &server.pkb_root);
             g.reclassify();
-            server.patched_during_rebuild.lock().insert("task-x".to_string());
+            server
+                .patched_during_rebuild
+                .lock()
+                .insert("task-x".to_string());
         }
 
         // 3. Swap phase (identical to rebuild_graph implementation) merges patched nodes:
         {
             let mut g = server.graph.write();
-            let patched_ids: Vec<String> =
-                server.patched_during_rebuild.lock().iter().cloned().collect();
+            let patched_ids: Vec<String> = server
+                .patched_during_rebuild
+                .lock()
+                .iter()
+                .cloned()
+                .collect();
             for id in &patched_ids {
                 if let Some(live_node) = g.nodes_map().get(id).cloned() {
                     new_graph.replace_node(live_node);
@@ -596,7 +603,10 @@ mod tier_rebuild_tests {
         {
             let g = server.graph.read();
             let node = g.get_node("task-race").expect("node must still exist");
-            assert_eq!(node.label, "V2", "Tier-1's own swap must be visible immediately");
+            assert_eq!(
+                node.label, "V2",
+                "Tier-1's own swap must be visible immediately"
+            );
         }
 
         // Wait for Tier-2 (and any coalesced follow-up it queues after
@@ -670,19 +680,35 @@ mod tier_rebuild_tests {
         // In export_graph, task-a is display_rank 1 and task-b is display_rank 2.
         {
             let res = server.handle_get_task(&json!({"id": "task-a"})).unwrap();
-            let text: String = res.content.iter().filter_map(|c| c.raw.as_text().map(|t| t.text.as_str())).collect();
+            let text: String = res
+                .content
+                .iter()
+                .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+                .collect();
             let val: serde_json::Value = serde_json::from_str(&text).unwrap();
             let flow = val.get("flow").expect("initial get_task must have flow");
             assert_eq!(flow.get("gain").and_then(|v| v.as_f64()), Some(1.0));
             assert_eq!(flow.get("loss_averted").and_then(|v| v.as_f64()), Some(0.0));
-            assert_eq!(flow.get("decision_value").and_then(|v| v.as_f64()), Some(0.0));
+            assert_eq!(
+                flow.get("decision_value").and_then(|v| v.as_f64()),
+                Some(0.0)
+            );
 
-            let exp_res = server.handle_export_graph(&json!({"format": "json"})).unwrap();
-            let exp_text: String = exp_res.content.iter().filter_map(|c| c.raw.as_text().map(|t| t.text.as_str())).collect();
+            let exp_res = server
+                .handle_export_graph(&json!({"format": "json"}))
+                .unwrap();
+            let exp_text: String = exp_res
+                .content
+                .iter()
+                .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+                .collect();
             let exp_val: serde_json::Value = serde_json::from_str(&exp_text).unwrap();
             let nodes = exp_val.get("nodes").and_then(|n| n.as_array()).unwrap();
 
-            let node_a = nodes.iter().find(|n| n.get("id").and_then(|id| id.as_str()) == Some("task-a")).unwrap();
+            let node_a = nodes
+                .iter()
+                .find(|n| n.get("id").and_then(|id| id.as_str()) == Some("task-a"))
+                .unwrap();
             assert_eq!(node_a.get("display_rank").and_then(|r| r.as_u64()), Some(2));
         }
 
@@ -714,9 +740,16 @@ mod tier_rebuild_tests {
         // 1. get_task: task-a keeps previous flow (gain 1.0, loss_averted 0.0, decision_value 0.0); task-c shows 0/0/0 ok
         {
             let res = server.handle_get_task(&json!({"id": "task-a"})).unwrap();
-            let text: String = res.content.iter().filter_map(|c| c.raw.as_text().map(|t| t.text.as_str())).collect();
+            let text: String = res
+                .content
+                .iter()
+                .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+                .collect();
             let val: serde_json::Value = serde_json::from_str(&text).unwrap();
-            let flow = val.get("flow").filter(|v| !v.is_null()).expect("patched get_task must have flow");
+            let flow = val
+                .get("flow")
+                .filter(|v| !v.is_null())
+                .expect("patched get_task must have flow");
             assert_eq!(
                 flow.get("gain").and_then(|v| v.as_f64()),
                 Some(1.0),
@@ -735,22 +768,47 @@ mod tier_rebuild_tests {
 
             // New node task-c has 0 / 0 / 0 with ok
             let res_c = server.handle_get_task(&json!({"id": "task-c"})).unwrap();
-            let text_c: String = res_c.content.iter().filter_map(|c| c.raw.as_text().map(|t| t.text.as_str())).collect();
+            let text_c: String = res_c
+                .content
+                .iter()
+                .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+                .collect();
             let val_c: serde_json::Value = serde_json::from_str(&text_c).unwrap();
-            let flow_c = val_c.get("flow").filter(|v| !v.is_null()).expect("new node task-c must have flow");
+            let flow_c = val_c
+                .get("flow")
+                .filter(|v| !v.is_null())
+                .expect("new node task-c must have flow");
             assert_eq!(flow_c.get("gain").and_then(|v| v.as_f64()), Some(0.0));
-            assert_eq!(flow_c.get("loss_averted").and_then(|v| v.as_f64()), Some(0.0));
-            assert_eq!(flow_c.get("decision_value").and_then(|v| v.as_f64()), Some(0.0));
-            assert_eq!(flow_c.get("flow_status").and_then(|v| v.as_str()), Some("ok"));
+            assert_eq!(
+                flow_c.get("loss_averted").and_then(|v| v.as_f64()),
+                Some(0.0)
+            );
+            assert_eq!(
+                flow_c.get("decision_value").and_then(|v| v.as_f64()),
+                Some(0.0)
+            );
+            assert_eq!(
+                flow_c.get("flow_status").and_then(|v| v.as_str()),
+                Some("ok")
+            );
         }
 
         // 2. list_tasks: task-a keeps previous figures (gain 1.0, loss_averted 0.0, decision_value 0.0)
         {
-            let res = server.handle_list_tasks(&json!({"format": "json"})).unwrap();
-            let text: String = res.content.iter().filter_map(|c| c.raw.as_text().map(|t| t.text.as_str())).collect();
+            let res = server
+                .handle_list_tasks(&json!({"format": "json"}))
+                .unwrap();
+            let text: String = res
+                .content
+                .iter()
+                .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+                .collect();
             let val: serde_json::Value = serde_json::from_str(&text).unwrap();
             let tasks = val.get("tasks").and_then(|t| t.as_array()).unwrap();
-            let task_a = tasks.iter().find(|t| t.get("id").and_then(|id| id.as_str()) == Some("task-a")).unwrap();
+            let task_a = tasks
+                .iter()
+                .find(|t| t.get("id").and_then(|id| id.as_str()) == Some("task-a"))
+                .unwrap();
             assert_eq!(
                 task_a.get("gain").and_then(|v| v.as_f64()),
                 Some(1.0),
@@ -770,14 +828,29 @@ mod tier_rebuild_tests {
 
         // 3. export_graph: task-a keeps previous figures and display_rank 2 (above task-b's 0.5 at rank 3)
         {
-            let exp_res = server.handle_export_graph(&json!({"format": "json"})).unwrap();
-            let exp_text: String = exp_res.content.iter().filter_map(|c| c.raw.as_text().map(|t| t.text.as_str())).collect();
+            let exp_res = server
+                .handle_export_graph(&json!({"format": "json"}))
+                .unwrap();
+            let exp_text: String = exp_res
+                .content
+                .iter()
+                .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+                .collect();
             let exp_val: serde_json::Value = serde_json::from_str(&exp_text).unwrap();
             let nodes = exp_val.get("nodes").and_then(|n| n.as_array()).unwrap();
-            let node_a = nodes.iter().find(|n| n.get("id").and_then(|id| id.as_str()) == Some("task-a")).unwrap();
-            let flow_a = node_a.get("flow").filter(|v| !v.is_null()).expect("export_graph task-a must have flow");
+            let node_a = nodes
+                .iter()
+                .find(|n| n.get("id").and_then(|id| id.as_str()) == Some("task-a"))
+                .unwrap();
+            let flow_a = node_a
+                .get("flow")
+                .filter(|v| !v.is_null())
+                .expect("export_graph task-a must have flow");
             assert_eq!(flow_a.get("gain").and_then(|v| v.as_f64()), Some(1.0));
-            assert_eq!(flow_a.get("decision_value").and_then(|v| v.as_f64()), Some(0.0));
+            assert_eq!(
+                flow_a.get("decision_value").and_then(|v| v.as_f64()),
+                Some(0.0)
+            );
             assert_eq!(
                 node_a.get("display_rank").and_then(|r| r.as_u64()),
                 Some(2),
@@ -798,34 +871,69 @@ mod tier_rebuild_tests {
         // 1. get_task
         {
             let res = server.handle_get_task(&json!({"id": "task-a"})).unwrap();
-            let text: String = res.content.iter().filter_map(|c| c.raw.as_text().map(|t| t.text.as_str())).collect();
+            let text: String = res
+                .content
+                .iter()
+                .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+                .collect();
             let val: serde_json::Value = serde_json::from_str(&text).unwrap();
-            let flow = val.get("flow").expect("after rebuild get_task must have flow");
+            let flow = val
+                .get("flow")
+                .expect("after rebuild get_task must have flow");
             assert_eq!(flow.get("gain").and_then(|v| v.as_f64()), Some(0.2));
-            assert_eq!(flow.get("decision_value").and_then(|v| v.as_f64()), Some(0.0));
+            assert_eq!(
+                flow.get("decision_value").and_then(|v| v.as_f64()),
+                Some(0.0)
+            );
         }
 
         // 2. list_tasks
         {
-            let res = server.handle_list_tasks(&json!({"format": "json"})).unwrap();
-            let text: String = res.content.iter().filter_map(|c| c.raw.as_text().map(|t| t.text.as_str())).collect();
+            let res = server
+                .handle_list_tasks(&json!({"format": "json"}))
+                .unwrap();
+            let text: String = res
+                .content
+                .iter()
+                .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+                .collect();
             let val: serde_json::Value = serde_json::from_str(&text).unwrap();
             let tasks = val.get("tasks").and_then(|t| t.as_array()).unwrap();
-            let task_a = tasks.iter().find(|t| t.get("id").and_then(|id| id.as_str()) == Some("task-a")).unwrap();
+            let task_a = tasks
+                .iter()
+                .find(|t| t.get("id").and_then(|id| id.as_str()) == Some("task-a"))
+                .unwrap();
             assert_eq!(task_a.get("gain").and_then(|v| v.as_f64()), Some(0.2));
-            assert_eq!(task_a.get("decision_value").and_then(|v| v.as_f64()), Some(0.0));
+            assert_eq!(
+                task_a.get("decision_value").and_then(|v| v.as_f64()),
+                Some(0.0)
+            );
         }
 
         // 3. export_graph
         {
-            let exp_res = server.handle_export_graph(&json!({"format": "json"})).unwrap();
-            let exp_text: String = exp_res.content.iter().filter_map(|c| c.raw.as_text().map(|t| t.text.as_str())).collect();
+            let exp_res = server
+                .handle_export_graph(&json!({"format": "json"}))
+                .unwrap();
+            let exp_text: String = exp_res
+                .content
+                .iter()
+                .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+                .collect();
             let exp_val: serde_json::Value = serde_json::from_str(&exp_text).unwrap();
             let nodes = exp_val.get("nodes").and_then(|n| n.as_array()).unwrap();
-            let node_a = nodes.iter().find(|n| n.get("id").and_then(|id| id.as_str()) == Some("task-a")).unwrap();
-            let flow_a = node_a.get("flow").expect("export_graph task-a must have flow");
+            let node_a = nodes
+                .iter()
+                .find(|n| n.get("id").and_then(|id| id.as_str()) == Some("task-a"))
+                .unwrap();
+            let flow_a = node_a
+                .get("flow")
+                .expect("export_graph task-a must have flow");
             assert_eq!(flow_a.get("gain").and_then(|v| v.as_f64()), Some(0.2));
-            assert_eq!(flow_a.get("decision_value").and_then(|v| v.as_f64()), Some(0.0));
+            assert_eq!(
+                flow_a.get("decision_value").and_then(|v| v.as_f64()),
+                Some(0.0)
+            );
             assert_eq!(
                 node_a.get("display_rank").and_then(|r| r.as_u64()),
                 Some(3),
@@ -833,6 +941,85 @@ mod tier_rebuild_tests {
             );
         }
     }
+
+    #[test]
+    fn tier1_inplace_mutation_updates_generation_incrementally() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::create_dir_all(root.join("tasks")).unwrap();
+        std::fs::write(
+            root.join("tasks/task-x.md"),
+            "---\nid: task-x\ntype: task\n---\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("tasks/task-y.md"),
+            "---\nid: task-y\ntype: task\n---\n",
+        )
+        .unwrap();
+
+        let docs = vec![
+            make_task_doc("task-x", "ready", 1, &[]),
+            make_task_doc("task-y", "ready", 2, &[]),
+        ];
+        let graph = GraphStore::build(&docs, root);
+        let store = VectorStore::new(3);
+        let embedder = Embedder::new_dummy();
+        let server = PkbSearchServer::new(
+            Arc::new(RwLock::new(store)),
+            Arc::new(embedder),
+            root.to_path_buf(),
+            root.join("db.bin"),
+            Arc::new(RwLock::new(graph)),
+        );
+        let gen_initial = server.graph.read().generation();
+        assert_eq!(gen_initial.file_count, 2);
+
+        // 1. In-place update of an existing task -> file_count unchanged, mtime preserved/bumped
+        let updated_doc = make_task_doc("task-x", "done", 1, &[]);
+        let node_x = crate::graph::GraphNode::from_pkb_document(&updated_doc);
+        server
+            .graph
+            .write()
+            .upsert_node_in_place(node_x, &server.pkb_root);
+
+        let gen_updated = server.graph.read().generation();
+        assert_eq!(
+            gen_updated.file_count, 2,
+            "file_count must not change on update of existing node"
+        );
+        assert!(gen_updated.max_mtime >= gen_initial.max_mtime);
+
+        // 2. In-place addition of a new task -> file_count increments by 1
+        std::fs::write(
+            root.join("tasks/task-z.md"),
+            "---\nid: task-z\ntype: task\n---\n",
+        )
+        .unwrap();
+        let new_doc = make_task_doc("task-z", "ready", 3, &[]);
+        let node_z = crate::graph::GraphNode::from_pkb_document(&new_doc);
+        server
+            .graph
+            .write()
+            .upsert_node_in_place(node_z, &server.pkb_root);
+
+        let gen_new = server.graph.read().generation();
+        assert_eq!(
+            gen_new.file_count, 3,
+            "file_count must increment by 1 when new node added"
+        );
+        assert!(gen_new.max_mtime >= gen_updated.max_mtime);
+
+        // 3. In-place removal -> file_count decrements by 1
+        server
+            .graph
+            .write()
+            .remove_node_in_place("task-z", &server.pkb_root);
+        let gen_removed = server.graph.read().generation();
+        assert_eq!(
+            gen_removed.file_count, 2,
+            "file_count must decrement by 1 on removal"
+        );
+        assert!(gen_removed.max_mtime >= gen_new.max_mtime);
+    }
 }
-
-

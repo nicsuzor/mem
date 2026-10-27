@@ -402,7 +402,15 @@ impl PkbSearchServer {
                     Ok(query_embedding) => {
                         let candidates = {
                             let store = self.store.read();
-                            store.search(&query_embedding, 50, &self.pkb_root, None, None, None, None)
+                            store.search(
+                                &query_embedding,
+                                50,
+                                &self.pkb_root,
+                                None,
+                                None,
+                                None,
+                                None,
+                            )
                         };
                         let mut suggestions: Vec<serde_json::Value> = Vec::new();
                         for r in candidates {
@@ -2122,6 +2130,15 @@ impl PkbSearchServer {
                 message: Cow::from(e),
                 data: None,
             })?;
+        }
+
+        if let Some(t) = updates.get("type").and_then(|v| v.as_str()) {
+            if t == "epic" {
+                updates.insert(
+                    "type".to_string(),
+                    serde_json::Value::String("task".to_string()),
+                );
+            }
         }
 
         if updates.is_empty() {

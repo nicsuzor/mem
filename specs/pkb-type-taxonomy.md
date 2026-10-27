@@ -94,7 +94,7 @@ These appear in task operations (`list_tasks`, `task_search`, ready/blocked queu
 | `learn` | Observational tracking | Optional or child of task (excluded from `ready_tasks()`)   |
 | `pr`    | PR tracking deliverable| Optional or child of task                                   |
 
-**`epic` is collapsed into `task`.** All containers and groupings are represented as `task` nodes. A task without a `parent` acts as a root-level container or standalone task; a task with children acts as a container; a task with no children acts as an executable leaf.
+**`epic` is collapsed into `task`.** All containers and groupings are represented as `task` nodes. A task without a `parent` acts as a root-level container or standalone task; a task with children acts as a container; a task with no children acts as an executable leaf. To maintain compatibility with agents and legacy workflows, the write API (`create`, `create_task`, `update_task`) transparently coerces `type: "epic"` to `type: "task"` upon ingestion.
 
 **`target` is out of the work tree.** Target nodes (type: `target`) represent strategic destinations and milestones. They have no children and never serve as a parent in the work tree. Work links to targets via `contributes_to` metadata.
 
