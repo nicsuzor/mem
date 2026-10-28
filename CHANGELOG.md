@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.3](https://github.com/nicsuzor/mem/compare/mem-v0.5.2...mem-v0.5.3) (2026-10-28)
+
+
+### Performance Improvements
+
+* eliminate write-lock disk scan on in-place graph upsert ([#791](https://github.com/nicsuzor/mem/issues/791)) ([0b2bd36](https://github.com/nicsuzor/mem/commit/0b2bd365afa1b2c4fc345493e0d2e2859c310205))
+
+
+### Documentation
+
+* **policy:** document default branch and green PR merge policy ([f42129e](https://github.com/nicsuzor/mem/commit/f42129e8d044636f52bbf88a72587edbf27de27e))
+* **policy:** document default branch and green PR merge policy ([82492c5](https://github.com/nicsuzor/mem/commit/82492c594ad3e211c0e402c7be53775680cd8ecd))
+
 ## [0.5.2](https://github.com/nicsuzor/mem/compare/mem-v0.5.1...mem-v0.5.2) (2026-10-26)
 
 
