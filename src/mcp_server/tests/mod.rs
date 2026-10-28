@@ -30,6 +30,7 @@ mod field_format_validation_tests;
 mod salience_mcp_tests;
 mod caller_session_tests;
 mod title_and_filename_rules_tests;
+mod read_body_truncation_tests;
 
 
 pub(crate) fn make_doc(

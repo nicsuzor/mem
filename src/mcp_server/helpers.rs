@@ -135,20 +135,13 @@ impl PkbSearchServer {
     }
 
     /// Optionally truncate a document/task body to at most `max_bytes` bytes,
-    /// on a UTF-8-safe boundary, appending a marker noting the true size.
+    /// on a UTF-8-safe boundary, appending a marker noting the true size and
+    /// how to read the rest.
     /// `max_bytes: None` (the default in every caller) is a no-op — full-body
     /// reads are unchanged unless a caller opts in.
     pub(crate) fn truncate_body(body: String, max_bytes: Option<usize>) -> String {
-        match max_bytes {
-            Some(max) if body.len() > max => {
-                let boundary = body.floor_char_boundary(max);
-                let total = body.len();
-                let mut truncated = body[..boundary].to_string();
-                truncated.push_str(&format!("\n…[truncated, {total} bytes total]"));
-                truncated
-            }
-            _ => body,
-        }
+        let (truncated, _, _) = Self::truncate_body_with_info(body, max_bytes);
+        truncated
     }
 
     pub(crate) fn truncate_body_with_info(
@@ -159,7 +152,10 @@ impl PkbSearchServer {
         match max_bytes {
             Some(max) if total > max => {
                 let boundary = body.floor_char_boundary(max);
-                let truncated = body[..boundary].to_string();
+                let mut truncated = body[..boundary].to_string();
+                truncated.push_str(&format!(
+                    "\n\n…[truncated: showing {boundary} of {total} bytes — pass a higher max_bytes or omit max_bytes to read the full body]"
+                ));
                 (truncated, true, total)
             }
             _ => (body, false, total),
@@ -191,7 +187,6 @@ impl PkbSearchServer {
             exc
         }
     }
-
 
     pub(crate) fn prune_null_and_empty(val: &mut JsonValue) -> bool {
         match val {

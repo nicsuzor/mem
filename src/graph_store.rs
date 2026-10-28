@@ -678,7 +678,11 @@ impl GraphStore {
     pub fn routes_for_node(
         &self,
         id: &str,
-    ) -> Option<(std::collections::BTreeMap<String, crate::flow::TargetRoutes>, bool, String)> {
+    ) -> Option<(
+        std::collections::BTreeMap<String, crate::flow::TargetRoutes>,
+        bool,
+        String,
+    )> {
         let node = self.get_node(id)?;
         let flow = node.flow.as_ref()?;
         let flow_input = self.flow_input.as_ref()?;
@@ -932,8 +936,27 @@ impl GraphStore {
         }
         claim_weak(&mut self.resolution_map, new_node.label.to_lowercase());
 
+        let is_new = !self.nodes.contains_key(&new_node.id);
+        let has_path = !new_node.path.as_os_str().is_empty();
+        let file_mtime = if has_path {
+            let full_path = if new_node.path.is_absolute() {
+                new_node.path.clone()
+            } else {
+                pkb_root.join(&new_node.path)
+            };
+            std::fs::metadata(&full_path)
+                .and_then(|m| m.modified())
+                .unwrap_or_else(|_| std::time::SystemTime::now())
+        } else {
+            std::time::SystemTime::now()
+        };
+
         self.nodes.insert(new_node.id.clone(), new_node);
-        self.generation = crate::pkb::scan_generation(pkb_root);
+
+        if is_new && has_path {
+            self.generation.file_count += 1;
+        }
+        self.generation.max_mtime = self.generation.max_mtime.max(file_mtime);
     }
 
     /// Cheap in-place removal. Drops the node from `nodes`; stale edges and
@@ -1030,11 +1053,7 @@ impl GraphStore {
     }
 
     /// Sort a slice of node refs in place by canonical flow display order (display_cmp).
-    pub fn sort_by_display(
-        nodes: &mut [&GraphNode],
-        today: chrono::NaiveDate,
-        buffer_days: i64,
-    ) {
+    pub fn sort_by_display(nodes: &mut [&GraphNode], today: chrono::NaiveDate, buffer_days: i64) {
         Self::sort_by_display_with_sort(
             nodes,
             crate::display_rank::TaskSort::Default,
@@ -1089,7 +1108,10 @@ impl GraphStore {
         let mut regular_picks = Vec::new();
 
         for node in candidates {
-            let due_date = node.due.as_deref().and_then(crate::display_rank::parse_due_date);
+            let due_date = node
+                .due
+                .as_deref()
+                .and_then(crate::display_rank::parse_due_date);
             let eff = crate::display_rank::resolve_effort_days(node.effort.as_deref());
             let resolved_class = crate::display_rank::DeadlineClass::resolve(
                 node.deadline_class.map(|dc| match dc {
@@ -1992,13 +2014,22 @@ impl GraphStore {
         let cliff_list: Vec<String> = nodes
             .iter()
             .filter(|n| {
-                let due_date = n.due.as_deref().and_then(crate::display_rank::parse_due_date);
+                let due_date = n
+                    .due
+                    .as_deref()
+                    .and_then(crate::display_rank::parse_due_date);
                 let eff = crate::display_rank::resolve_effort_days(n.effort.as_deref());
                 let resolved_class = crate::display_rank::DeadlineClass::resolve(
                     n.deadline_class.map(|dc| match dc {
-                        crate::graph::DeadlineClass::Fake => crate::display_rank::DeadlineClass::Fake,
-                        crate::graph::DeadlineClass::Soft => crate::display_rank::DeadlineClass::Soft,
-                        crate::graph::DeadlineClass::Hard => crate::display_rank::DeadlineClass::Hard,
+                        crate::graph::DeadlineClass::Fake => {
+                            crate::display_rank::DeadlineClass::Fake
+                        }
+                        crate::graph::DeadlineClass::Soft => {
+                            crate::display_rank::DeadlineClass::Soft
+                        }
+                        crate::graph::DeadlineClass::Hard => {
+                            crate::display_rank::DeadlineClass::Hard
+                        }
                     }),
                     due_date.is_some(),
                 );
@@ -2028,7 +2059,10 @@ impl GraphStore {
                     crate::graph::DeadlineClass::Soft => crate::display_rank::DeadlineClass::Soft,
                     crate::graph::DeadlineClass::Hard => crate::display_rank::DeadlineClass::Hard,
                 });
-                let due_date = node.due.as_deref().and_then(crate::display_rank::parse_due_date);
+                let due_date = node
+                    .due
+                    .as_deref()
+                    .and_then(crate::display_rank::parse_due_date);
                 let display = Some(crate::display_rank::TaskDisplay::new(
                     is_ready,
                     is_blocked,
