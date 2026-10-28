@@ -321,18 +321,15 @@ fn test_get_task_and_get_document_detail_and_max_bytes() {
     let doc = crate::pkb::parse_file_relative(&doc_path, root).unwrap();
     server.rebuild_graph_for_pkb_document(&doc);
 
-    // Default max_bytes bounds body to 4000 and returns truncated & body_bytes
+    // Default max_bytes returns full body (truncated=false)
     let get_res = server
         .handle_get_task(&json!({"id": "doc-long"}))
         .expect("get_task should succeed");
     let val = get_res.structured_content.unwrap();
-    assert_eq!(val.get("truncated").and_then(|v| v.as_bool()), Some(true));
+    assert_eq!(val.get("truncated").and_then(|v| v.as_bool()), Some(false));
     assert_eq!(val.get("body_bytes").and_then(|v| v.as_u64()), Some(5000));
     let body = val.get("body").and_then(|v| v.as_str()).unwrap();
-    assert!(
-        body.len() <= 4100,
-        "body should be bounded by default max_bytes"
-    );
+    assert_eq!(body.len(), 5000, "body should be full length by default");
 
     // detail: "metadata" omits body
     let get_meta = server
