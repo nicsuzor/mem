@@ -961,14 +961,10 @@ impl GraphStore {
 
     /// Cheap in-place removal. Drops the node from `nodes`; stale edges and
     /// resolution-map entries are left for the background rebuild to fix.
-    pub fn remove_node_in_place(&mut self, id: &str, _pkb_root: &Path) {
-        if let Some(removed) = self.nodes.remove(id) {
-            if !removed.path.as_os_str().is_empty() {
-                self.generation.file_count = self.generation.file_count.saturating_sub(1);
-            }
-        }
+    pub fn remove_node_in_place(&mut self, id: &str, pkb_root: &Path) {
+        self.nodes.remove(id);
         self.resolution_map.retain(|_, target| target != id);
-        self.generation.max_mtime = self.generation.max_mtime.max(std::time::SystemTime::now());
+        self.generation = crate::pkb::scan_generation(pkb_root);
     }
 
     /// Re-run classification (ready / blocked / roots) from the current nodes

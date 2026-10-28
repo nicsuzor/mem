@@ -42,7 +42,7 @@ impl PkbSearchServer {
             .with_annotations(ToolAnnotations::new().read_only(true)),
             Tool::new(
                 "get_document",
-                "Read contents or metadata of a PKB document by ID, filename stem, or title. Supports batch reads via ids.",
+                "Read contents or metadata of a PKB document by ID, filename stem, or title. Supports batch reads via ids. Returns full body by default when max_bytes is omitted; when truncated, a notice in the body text explains how to read the rest.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -50,7 +50,7 @@ impl PkbSearchServer {
                         "ids": { "type": "array", "items": { "type": "string" } },
                         "detail": { "type": "string", "enum": ["metadata", "summary", "full"] },
                         "budget_ms": { "type": "integer" },
-                        "max_bytes": { "type": "integer" },
+                        "max_bytes": { "type": "integer", "description": "Maximum body bytes to return. Defaults to returning the full body (no limit)." },
                         "metadata_only": { "type": "boolean" },
                         "format": { "type": "string", "enum": ["markdown", "json"] }
                     }
@@ -61,7 +61,7 @@ impl PkbSearchServer {
             .with_annotations(ToolAnnotations::new().read_only(true)),
             Tool::new(
                 "get_task",
-                "Retrieve full task details, metadata, body, and graph context. Ranking figures come from the flow engine: `flow` carries gain, loss_averted, decision_value, flow_status and per-target stake; `display` carries ready, blocked, on_cliff, cliff_enters_on, deadline_class and days_until_due. With include_routes (default true), `routes` lists the paths to each served target, with `routes_truncated` and a one-sentence `explanation`.",
+                "Retrieve full task details, metadata, body, and graph context. Returns full body by default when max_bytes is omitted; when truncated, a notice in the body text explains how to read the rest. Ranking figures come from the flow engine: `flow` carries gain, loss_averted, decision_value, flow_status and per-target stake; `display` carries ready, blocked, on_cliff, cliff_enters_on, deadline_class and days_until_due. With include_routes (default true), `routes` lists the paths to each served target, with `routes_truncated` and a one-sentence `explanation`.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -69,7 +69,7 @@ impl PkbSearchServer {
                         "ids": { "type": "array", "items": { "type": "string" } },
                         "detail": { "type": "string", "enum": ["metadata", "summary", "full"] },
                         "budget_ms": { "type": "integer" },
-                        "max_bytes": { "type": "integer" },
+                        "max_bytes": { "type": "integer", "description": "Maximum body bytes to return. Defaults to returning the full body (no limit)." },
                         "metadata_only": { "type": "boolean" },
                         "include_routes": { "type": "boolean" },
                         "fields": {
@@ -170,7 +170,7 @@ impl PkbSearchServer {
                         "title": { "type": "string" },
                         "type": {
                             "type": "string",
-                            "enum": ["task", "learn", "pr", "template", "target", "note", "knowledge", "memory", "insight", "observation", "contact", "document", "reference", "review", "case", "spec", "prototype", "index", "daily", "epic"]
+                            "enum": ["task", "learn", "pr", "template", "target", "note", "knowledge", "memory", "insight", "observation", "contact", "document", "reference", "review", "case", "spec", "prototype", "index", "daily"]
                         },
                         "slug": { "type": "string", "maxLength": 30, "description": "Short filename slug (required, <= 30 characters). Used to construct the node filename." },
                         "id": { "type": "string" },
@@ -235,7 +235,7 @@ impl PkbSearchServer {
                         "due": { "type": "string" },
                         "project": { "type": "string" },
                         "filename": { "type": "string" },
-                        "type": { "type": "string", "enum": ["task", "learn", "pr", "target", "epic"] },
+                        "type": { "type": "string", "enum": ["task", "learn", "pr", "target"] },
                         "status": { "type": "string", "enum": ["inbox", "ready", "failed"] },
                         "allow_missing_parent": { "type": "boolean" },
                         "force": { "type": "boolean" },

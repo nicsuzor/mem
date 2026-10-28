@@ -203,10 +203,6 @@ fn type_prefix(doc_type: &str) -> &str {
 }
 
 pub fn create_document(root: &Path, fields: DocumentFields) -> Result<PathBuf> {
-    let mut fields = fields;
-    if fields.doc_type == "epic" {
-        fields.doc_type = "task".to_string();
-    }
     if let Some(ref dir) = fields.dir {
         if !is_safe_relative_path(dir) {
             anyhow::bail!("Invalid dir path: must be relative and cannot contain '..'");
@@ -645,10 +641,6 @@ pub fn ensure_adhoc_sessions_root(root: &Path) -> Result<()> {
 }
 
 pub fn create_task(root: &Path, fields: TaskFields) -> Result<PathBuf> {
-    let mut fields = fields;
-    if fields.task_type.as_deref() == Some("epic") {
-        fields.task_type = Some("task".to_string());
-    }
     if let Some(ref dir) = fields.dir {
         if !is_safe_relative_path(dir) {
             anyhow::bail!("Invalid dir path: must be relative and cannot contain '..'");
@@ -7678,17 +7670,13 @@ pub fn validate_update_field(key: &str, value: &serde_json::Value) -> Result<(),
         }
         "type" => {
             if let Some(t) = value.as_str() {
-                if t == "epic" {
-                    // Coerce legacy/container "epic" type to "task" per specs/pkb-type-taxonomy.md §3
-                    Ok(())
-                } else if !crate::graph::is_valid_node_type(t) {
-                    Err(format!(
+                if !crate::graph::is_valid_node_type(t) {
+                    return Err(format!(
                         "Invalid document type \"{t}\". Must be one of: {}.",
                         crate::graph::VALID_NODE_TYPES.join(", ")
-                    ))
-                } else {
-                    Ok(())
+                    ));
                 }
+                Ok(())
             } else {
                 Err(format!(
                     "type must be a string (one of: {}); got {value}",

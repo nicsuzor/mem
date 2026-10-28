@@ -1010,7 +1010,8 @@ mod tier_rebuild_tests {
         );
         assert!(gen_new.max_mtime >= gen_updated.max_mtime);
 
-        // 3. In-place removal -> file_count decrements by 1
+        // 3. In-place removal -> file_count decrements by 1 and generation matches disk
+        std::fs::remove_file(root.join("tasks/task-z.md")).unwrap();
         server
             .graph
             .write()
@@ -1020,6 +1021,10 @@ mod tier_rebuild_tests {
             gen_removed.file_count, 2,
             "file_count must decrement by 1 on removal"
         );
-        assert!(gen_removed.max_mtime >= gen_new.max_mtime);
+        assert_eq!(
+            gen_removed,
+            crate::pkb::scan_generation(&server.pkb_root),
+            "generation stamp after removal must match scan_generation on disk"
+        );
     }
 }
