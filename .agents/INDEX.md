@@ -1,8 +1,9 @@
 # Available Documentation
 
 - **`README.md`**: Project overview — local semantic search + knowledge graph MCP server for a markdown PKB; features, install, usage
+- **`CONTRIBUTING.md`**: Contributor guidelines and branch & merge policy
 - **`CLAUDE.md`**: Repo entry point — imports `.agent/CORE.md`
-- **`.agent/CORE.md`**: Developer & agent reference — specs-first rule, path discovery, fail-fast/HALT rules, architecture, MCP tool catalogue, key patterns, build & install
+- **`.agent/CORE.md`**: Developer & agent reference — specs-first rule, path discovery, fail-fast/HALT rules, architecture, MCP tool catalogue, key patterns, build & install, branch & merge policy
 - **`CHANGELOG.md`**: Release history (release-please managed)
 - **`INVENTORY.md`**: Inventory of repo components
 - **`references/TAXONOMY.md`**: Canonical definitions for PKB/work-management concepts
