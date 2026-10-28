@@ -157,3 +157,9 @@ make release    # bump patch, build both, install, tag, push
 **Local install**: Always use `cargo install --path .` — never manually copy binaries to /usr/local/bin.
 
 Requires: Rust >= 1.91, zig 0.13 for cross-compile.
+
+## Branch and Merge Policy
+
+- **Default Branch**: `main`. The repository has no `dev` branch.
+- **Merge Rule**: For now, pull requests merge straight into the default branch (`main`) as soon as their checks are green, with no approval wait.
+

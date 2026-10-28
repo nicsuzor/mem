@@ -417,6 +417,11 @@ The SIMD-optimized vector distance functions in `src/distance.rs` are adapted fr
 originally licensed under Apache-2.0. The embedding and vector search architecture
 also drew inspiration from shodh-memory's design.
 
+## Contributing
+
+- **Default branch**: `main`. This repository does not use a `dev` branch.
+- **Pull requests**: Pull requests merge straight into the default branch (`main`) as soon as their checks are green, with no approval wait. See [CONTRIBUTING.md](CONTRIBUTING.md) for details.
+
 ## License
 
 Copyright (C) 2025-2026 Nicolas Suzor
