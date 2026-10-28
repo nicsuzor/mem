@@ -222,14 +222,14 @@ Each returned result item contains:
 - `ids` (array of strings, optional): Batch read of document IDs.
 - `detail` (string, optional, enum: `["metadata", "summary", "full"]`): Content detail level.
 - `metadata_only` (boolean, optional): Return only parsed frontmatter.
-- `max_bytes` (integer, optional, default 4000): Maximum body length before truncation.
+- `max_bytes` (integer, optional, default none / full body): Maximum body length before truncation. When omitted, the full body is returned. When truncated, the returned body carries an in-text notice at the cut naming the cut and explaining how to read the rest.
 - `format` (string, optional, enum: `["markdown", "json"]`): Return format.
 
 **Structured Output**:
 - `id` (string): Resolved canonical ID.
 - `title` (string): Document title.
 - `frontmatter` (object): Parsed YAML frontmatter.
-- `body` / `content` (string): Document body text.
+- `body` / `content` (string): Document body text (full by default; carries cut notice if truncated by `max_bytes`).
 - `truncated` (boolean): Whether content was truncated by `max_bytes`.
 - `body_bytes` (integer): Total un-truncated body byte size.
 - `salience` (number): Document salience score, updated exponentially upon MCP retrieval access.
@@ -253,6 +253,17 @@ Track work across sessions. "What needs doing? What's blocked?"
 | Complete task | `done <id>`                   | `complete_task`       | Mark done                                                     |
 | Dependencies  | `deps <id>`                   | (via `get_task`)      | Dependency tree                                               |
 | Metrics       | `metrics [id]`                | `get_network_metrics` | PageRank, betweenness, degree                                 |
+
+#### Task Retrieval Schema (`get_task`)
+
+**Parameters**:
+- `id` (string, optional): Task ID, title, or filename stem.
+- `ids` (array of strings, optional): Batch read of task IDs.
+- `detail` (string, optional, enum: `["metadata", "summary", "full"]`): Content detail level.
+- `metadata_only` (boolean, optional): Return only parsed frontmatter.
+- `max_bytes` (integer, optional, default none / full body): Maximum body length before truncation. When omitted, the full body is returned. When truncated, the returned body carries an in-text notice at the cut naming the cut and explaining how to read the rest.
+- `fields` (string or array of strings, optional): Specific fields to retain in output.
+- `include_routes` (boolean, optional, default true): Whether to compute flow routes.
 
 **Task lifecycle**:
 

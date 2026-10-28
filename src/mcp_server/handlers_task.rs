@@ -660,9 +660,6 @@ impl PkbSearchServer {
                 if let Some(obj) = single_args.as_object_mut() {
                     obj.remove("ids");
                     obj.insert("id".to_string(), serde_json::json!(id_str));
-                    if !obj.contains_key("detail") {
-                        obj.insert("detail".to_string(), serde_json::json!("summary"));
-                    }
                 }
                 match self.handle_get_task_single(&single_args) {
                     Ok(res) => {
@@ -897,8 +894,7 @@ impl PkbSearchServer {
         let max_bytes = args
             .get("max_bytes")
             .and_then(|v| v.as_u64())
-            .map(|v| v as usize)
-            .or(Some(4000));
+            .map(|v| v as usize);
         let (body, truncated, total_bytes) = if detail == Some("summary") {
             let limit = max_bytes.unwrap_or(300).min(300);
             let (exc, was_cut) = Self::excerpt_body(&body, limit);
