@@ -168,7 +168,7 @@ links:
     probability: probable      # 0.0..=1.0, or a word from flow-rule §5.5; omitted → 1.00
     effect: helps              # helps | harms; omitted → helps
     justification: "Second chapter of the monograph"   # free text, optional
-    set_by: nic                # nic | agent-proposed | migrated; omitted → nic (R26, E17)
+    set_by: nic                # nic | agent-proposed | migrated; omitted → nic; provenance only (R26, E17)
 ```
 
 - **`to` is the natural form for work.** "This task serves that target" is written on the task.
@@ -269,10 +269,9 @@ The flow engine is the only ranking engine; there is no configuration setting th
 
 Changing a constant is a pull request (S11: simple beats complicated). Moving them to runtime configuration is E7. The display functions take `CLIFF_BUFFER_DAYS` and `DEFAULT_EFFORT_DAYS` as parameters whose defaults are the constants, so a test can vary them without rebuilding.
 
-**R26. Unapproved proposals (S7, U20).** An entry with `set_by: agent-proposed` reads at quantum 0.0 whatever its label (even for `needs` or `serves`), so an unapproved agent proposal never moves worth or blocks any work. Entries marked `nic` or `migrated` are read at their stated quantum (or label default).
+**R26. Agent-proposed links count in flow (ruling 2026-10-22).** Links marked `set_by: agent-proposed` count in the flow engine at their stated quantum and probability, exactly like `nic` and `migrated` links; `set_by` remains provenance only. Values agents set in the graph are Nic's with no approval gate, and he adjusts any that look off.
 
-- **An omitted `set_by` is read as `nic`.** The densify routine always writes `agent-proposed` explicitly, and a link written by hand is Nic's. Omitted `set_by` reads at its stated quantum or label default.
-- **This departs from the foundation spec.** `flow-rule.md` §5.1 gives `agent-proposed` as the default. Under that default, every link written without `set_by` would carry no worth unless approved. This is E17 (adopted).
+- **An omitted `set_by` is read as `nic`.** An omitted `set_by` defaults to `nic` (E17 adopted).
 
 ---
 
@@ -556,7 +555,7 @@ Each criterion is something an observer can check against the built server. Ever
 | A23 | No tool or CLI output contains a sum of `gain`, `loss_averted` or `decision_value` over two or more nodes | R21 | T-nosum |
 | A24 | `pkb tasks`, `pkb focus` and `list_tasks` agree on order and figures under `display_cmp` | R19, R24 | T-cli-parity |
 | A25 | A link declared at both ends is read once; on disagreement the `from` entry wins with a warning; `parent:`, mapped old keys (including map entries `{to, quantum, set_by}` inside all four old keys), status→state table (`cancelled`→`gone`, `retired`→`done`, missing status→`done`, active/`paused`/`blocked`/`partial`/`review`→`open`), `standing_weight` and `worth` words are read as R1, R4, R6, R7 and R9 say; an unclassed `due` is `fake` | R1, R4, R6, R7, R9, R10 | T-schema |
-| A26 | An entry with `set_by: agent-proposed` reads at 0.0 whatever the label; the same entry marked `nic` moves its stated quantum; an omitted `set_by` is read as `nic`; a `needs` entry with no quantum carries 1.0 | R11, R26 | T-schema |
+| A26 | An entry with `set_by: agent-proposed` reads at its stated quantum and probability, exactly like `nic` and `migrated`; an omitted `set_by` is read as `nic`; a `needs` entry with no quantum carries 1.0 | R11, R26 | T-schema |
 | A27 | Immediately after a write, `get_task` shows the node's previous `flow`, or 0 / 0 / 0 with `ok` for a new node; after the background rebuild it shows the recomputed `flow` | R16 | T-carryover |
 | A28 | `get_task` returns at most `ROUTE_CAP` routes per target, strongest first, with `routes_truncated` set when more exist, and an explanation sentence naming each target and the strongest path | R18, U18 | T-routes |
 | A29 | A blocked node is never in the ready list but keeps its figures; the ready list is in `display_cmp` order | R20, S4 | T-ready |
@@ -596,7 +595,7 @@ There is one test per invariant, T-I1 to T-I17, and fourteen engine tests. Each 
 | T-determinism `flow_rebuild_determinism` | A22 | build through every entry point listed in `ranking.md` §1.1 | byte-identical `flow` |
 | T-nosum `no_output_sums_worth` | A23 | two nodes with gain 0.37 and 0.58 under one parent; every group view | no numeric field within 1e-9 of 0.95 (their sum) or 0.475 (their mean) in any group-level output |
 | T-cli-parity `cli_and_mcp_display_order_parity` | A24 | replaces `cli_focus_agrees_with_canonical_focus_order` (`tests/cli_default_ordering.rs`) | identical id order and figures |
-| T-schema `links_schema_mapping` | A25, A26 | one node per case: both-ends duplicate (agreeing, then disagreeing); `parent:` at quantum 0; map entries `{to, quantum, set_by}` inside `depends_on`, `soft_depends_on`, `contributes_to`, and `parent`; status→state cases (`cancelled`, `retired`, missing `status`, `paused`, `blocked`, `partial`, `review`); `worth` as a float, an anchor word, 1.5, and alongside `standing_weight`; a `due` with no class; a `needs` entry with no quantum; one entry as `agent-proposed` (on `needs` and `serves`) and as `nic`; omitted `set_by` | one edge for the agreeing duplicate; the `from` entry and a warning for the disagreeing one; map entries parsed without dropping; status mapping verified; R1, R6, R7 and R9 readings exactly; `fake`; `needs` 1.0; `agent-proposed` at 0.0 whatever the label, `nic` and omitted `set_by` at stated quantum |
+| T-schema `links_schema_mapping` | A25, A26 | one node per case: both-ends duplicate (agreeing, then disagreeing); `parent:` at quantum 0; map entries `{to, quantum, set_by}` inside `depends_on`, `soft_depends_on`, `contributes_to`, and `parent`; status→state cases (`cancelled`, `retired`, missing `status`, `paused`, `blocked`, `partial`, `review`); `worth` as a float, an anchor word, 1.5, and alongside `standing_weight`; a `due` with no class; a `needs` entry with no quantum; one entry as `agent-proposed` (on `needs` and `serves`) and as `nic`; omitted `set_by` | one edge for the agreeing duplicate; the `from` entry and a warning for the disagreeing one; map entries parsed without dropping; status mapping verified; R1, R6, R7 and R9 readings exactly; `fake`; `needs` 1.0; `agent-proposed`, `nic` and omitted `set_by` at stated quantum |
 | T-carryover `flow_carried_over_until_rebuild` | A27 | write to a node, read before and after the background rebuild; create a new node | previous `flow`, then the new one; new node 0 / 0 / 0 `ok` until rebuild |
 | T-routes `routes_cap_and_explanation` | A28 | a node with seven routes to one target | 5 routes, strongest first, `routes_truncated: true`; the sentence names the target and the strongest path |
 | T-ready `ready_predicate_reads_needs` | A29 | a blocked node and its open blocker | blocker ready, blocked node not ready, both with figures; ready list in `display_cmp` order |
@@ -642,7 +641,7 @@ Each comes with the proposal this spec builds against if it is not answered. Set
 | E14 | How big should an Excalidraw card be drawn? | by the larger of `gain` and `\|loss_averted\|`, never their sum | Adopted |
 | E15 | The legacy ranking removed a task with `affordable_loss: false`. Should the server keep that filter, or leave it to agents? | leave it to agents (`flow-rule.md` §9); the field stays stored in frontmatter | Adopted (removed with the legacy ranking) |
 | E16 | `status: blocked` counts as blocked in the mcp-index (`src/task_index.rs:260`) but not in `classify_tasks`. Should it count as blocked in R20? | no, to match `classify_tasks`; this replaces both | Proposed |
-| E17 | Does an omitted `set_by` mean `nic`, as R26 proposes, or `agent-proposed`, as `flow-rule.md` §5.1 says? With `agent-proposed`, a hand-written `serves` link with no `set_by` carries no worth until it is approved. | `nic` | Adopted |
+| E17 | Does an omitted `set_by` mean `nic`, as R26 proposes, or `agent-proposed`, as `flow-rule.md` §5.1 previously said? Omitted `set_by` defaults to `nic`. With R26 dropped (2026-10-22 ruling), agent-proposed links count in flow at stated quantum/probability as well; `set_by` is provenance only. | `nic` | Adopted |
 | E18 | `edge_template.weight` on prototype nodes uses the old seven-word scale. Replace it with template `quantum` and `probability`? | yes | Proposed |
 
 ### 10.2. Settled decisions from `flow-rule.md` §15 that govern this build

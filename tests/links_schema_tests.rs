@@ -1003,3 +1003,88 @@ fn test_contributes_to_odds_words_resolve_to_probabilities() {
     }
 }
 
+/// AC2 (Drop R26): The R26 isolation in build_flow_input removed;
+/// a test shows an agent-proposed link with quantum 0.3 and probability 0.85
+/// moves stake by 0.255 of the target's worth.
+#[test]
+fn test_agent_proposed_link_moves_stake_by_product_of_target_worth() {
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+
+    let target_worth = 0.80;
+    let target = make_doc(
+        "targ_ap_stake",
+        json!({
+            "id": "targ_ap_stake",
+            "title": "Target for Agent Proposed Link",
+            "type": "target",
+            "status": "open",
+            "worth": target_worth,
+        }),
+    );
+
+    let task = make_doc(
+        "task_ap_stake",
+        json!({
+            "id": "task_ap_stake",
+            "title": "Task with Agent-Proposed Link",
+            "type": "task",
+            "status": "ready",
+            "links": [
+                {
+                    "to": "targ_ap_stake",
+                    "label": "serves",
+                    "quantum": 0.3,
+                    "probability": 0.85,
+                    "set_by": "agent-proposed",
+                    "justification": "Proposed by agent"
+                }
+            ]
+        }),
+    );
+
+    let target_node = GraphNode::from_pkb_document(&target);
+    let task_node = GraphNode::from_pkb_document(&task);
+
+    // Verify build_flow_input preserves quantum on agent-proposed links
+    let flow_input = mem::graph_store::build_flow_input(&[target_node, task_node]);
+    let edge = flow_input
+        .edges
+        .iter()
+        .find(|e| e.src == "task_ap_stake" && e.dst == "targ_ap_stake")
+        .expect("flow input must contain edge between task and target");
+    assert!(
+        (edge.quantum - 0.3).abs() < 1e-9,
+        "build_flow_input must retain quantum 0.3 on agent-proposed link, got {}",
+        edge.quantum
+    );
+    assert!(
+        (edge.probability - 0.85).abs() < 1e-9,
+        "build_flow_input must retain probability 0.85, got {}",
+        edge.probability
+    );
+
+    // Verify GraphStore flow computation gives stake = 0.255 and gain = 0.255 * target_worth
+    let store = GraphStore::build(&[target, task], root);
+    let node = store.get_node("task_ap_stake").unwrap();
+    let flow = node.flow.as_ref().expect("task must have flow output");
+
+    let stake = flow
+        .stake
+        .get("targ_ap_stake")
+        .copied()
+        .expect("stake for targ_ap_stake must be present");
+    assert!(
+        (stake - 0.255).abs() < 1e-9,
+        "Agent-proposed link with quantum 0.3 and probability 0.85 must move stake by 0.255, got {stake}"
+    );
+
+    let gain = flow.gain.expect("gain must be present");
+    let expected_gain = 0.255 * target_worth;
+    assert!(
+        (gain - expected_gain).abs() < 1e-9,
+        "Agent-proposed link must move gain by 0.255 * target_worth ({expected_gain}), got {gain}"
+    );
+}
+
+
