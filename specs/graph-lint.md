@@ -144,7 +144,7 @@ markdown files ──► pass 1: field checks (per file) ───────�
 | Value | Meaning | Basis |
 |---|---|---|
 | **yes** | `pkb lint --fix`, or any agent, may apply the fix. The fix keeps the meaning and needs no judgement | `fixable: true` today |
-| **propose** | Not unasked. An agent may put a value in a proposal batch, marked `set_by: agent-proposed` with a justification. Aligned to engine R26, it is read at quantum 0.0 whatever its label, and changes no number until Nic approves it | §8 densify contract; `pkb-flow-engine.md` R26; `pkb-rules.md` §6.5, "the working agent never values its own work" |
+| **propose** | Not unasked. An agent may put a value in a proposal batch, marked `set_by: agent-proposed` with a justification. Under the 2026-10-22 ruling dropping R26, agent-proposed links count in flow straight away, and Nic adjusts any that look off | §8 densify contract; `pkb-flow-engine.md` R26 |
 | **no** | An agent may not change it unasked. It reports the problem to Nic or the task owner | the fix needs a judgement about the world |
 
 ---

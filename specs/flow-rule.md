@@ -401,7 +401,7 @@ Every simplification in the flow redesign is stated as a concrete strength it bu
 | `probability` | float `0.0..=1.0`, or a §5.5 word | `1.00` | maths |
 | `effect` | `helps` \| `harms` | `helps` | maths |
 | `justification` | text | none | agents, Nic |
-| `set_by` | `nic` \| `agent-proposed` \| `migrated` | `nic` | densify routine, linter (engine E17) |
+| `set_by` | `nic` \| `agent-proposed` \| `migrated` | `nic` | provenance only; densify routine, linter (engine E17; ruling 2026-10-22) |
 
 **Strength.** Strength is `quantum × probability` (S2; `kb_edge_weight_quantum_vs_confidence`).
 
@@ -569,7 +569,7 @@ These counts include edges from done nodes, which the flow reads as realised.
 
 That is 153 inputs before deadline classes: about three batches of fifty, the target prices first.
 
-**Densify routine.** Agents propose values and Nic approves them in batches of fifty, ordered by how much worth the batch would move. The skills spec (`epic_80ce44ae`) owns this routine. This spec fixes only the contract: densify always writes `set_by: agent-proposed` explicitly and a `justification`; an agent-proposed link reads at 0.0 whatever its label (so an unapproved proposal moves no number; display still reads the label for blocking; C5, E17).
+**Densify routine.** Agents propose values and Nic adjusts any that look off. The skills spec (`epic_80ce44ae`) owns this routine. This spec fixes only the contract: densify writes `set_by: agent-proposed` explicitly and a `justification`; per the 2026-10-22 ruling dropping R26, agent-proposed links count in flow straight away at stated quantum and probability, with `set_by` preserved for provenance.
 
 ---
 
