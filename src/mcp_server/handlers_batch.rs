@@ -871,7 +871,8 @@ impl PkbSearchServer {
         let embed_worker_running = self.embed_worker_running.load(Ordering::Relaxed);
         let graph_rebuild_pending = self.graph_rebuild_pending.load(Ordering::Relaxed)
             || self.graph_rebuild_dirty.load(Ordering::Relaxed);
-        let stale_docs = crate::check_index_staleness(&self.pkb_root, &self.store);
+        let stale_report = crate::check_index_staleness_with_stats(&self.pkb_root, &self.store);
+        let stale_docs = stale_report.stale_count;
         let is_fresh = stale_docs == 0;
 
         let info = serde_json::json!({
@@ -887,6 +888,7 @@ impl PkbSearchServer {
                 "last_reindex": {
                     "timestamp": last_reindex.timestamp,
                     "outcome": last_reindex.outcome,
+                    "stale_documents": stale_report.stale_documents,
                 }
             },
             "queue": {
@@ -904,6 +906,7 @@ impl PkbSearchServer {
             "freshness": {
                 "is_fresh": is_fresh,
                 "stale_documents": stale_docs,
+                "stale_document_paths": stale_report.stale_documents,
             }
         });
         let json = serde_json::to_string_pretty(&info).unwrap_or_default();

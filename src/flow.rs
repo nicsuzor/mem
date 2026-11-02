@@ -169,6 +169,8 @@ pub enum FlowStatus {
     Ok,
     SaturatedLoop,
     NoConvergence,
+    Stale,
+    DisagreeingInputs,
 }
 
 /// Computed flow output for an open node.

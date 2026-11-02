@@ -547,7 +547,34 @@ impl GraphStore {
         let mut flow_outputs = crate::flow::compute_flow(&flow_input);
         crate::flow::compute_decision_value(&flow_input, &mut flow_outputs);
         for node in &mut nodes {
-            node.flow = flow_outputs.get(&node.id).cloned();
+            let mut flow = flow_outputs.get(&node.id).cloned();
+            if let Some(ref mut f) = flow {
+                if f.flow_status == crate::flow::FlowStatus::Ok {
+                    let has_disagreeing_warning =
+                        node.parse_warnings.iter().any(|w| w.field == "links");
+                    let has_unpropagated_serves = node.links.iter().any(|link| {
+                        if link.label == crate::graph::LinkLabel::Serves && link.strength() > 0.0 {
+                            if let Some(target_id) = &link.to {
+                                if !f.stake.contains_key(target_id)
+                                    && !f.deltas.contains_key(target_id)
+                                    && flow_input
+                                        .worth
+                                        .get(target_id)
+                                        .map(|w| *w > 0.0)
+                                        .unwrap_or(false)
+                                {
+                                    return true;
+                                }
+                            }
+                        }
+                        false
+                    });
+                    if has_disagreeing_warning || has_unpropagated_serves {
+                        f.flow_status = crate::flow::FlowStatus::DisagreeingInputs;
+                    }
+                }
+            }
+            node.flow = flow;
         }
         tracing::debug!(target: "perf::graph_rebuild", phase = "flow_computation", elapsed_ms = _t_flow.elapsed().as_secs_f64() * 1000.0);
 
@@ -2646,7 +2673,7 @@ where
 pub fn build_flow_input(nodes: &[GraphNode]) -> crate::flow::FlowInput {
     let mut flow_input = crate::flow::FlowInput::new();
     for node in nodes {
-        let state = crate::flow::status_to_flow_state(node.status.as_deref());
+        let state = node.flow_state().into();
         flow_input.add_node(node.id.clone(), state, node.worth);
     }
     let (resolved_edges, _) = resolve_flow_edges_from_nodes(nodes);

@@ -60,11 +60,12 @@ pub fn document_needs_reindex(store: &vectordb::VectorStore, doc: &pkb::PkbDocum
     store.needs_update(&doc.id(), &doc.file_hash)
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StalenessReport {
     pub stale_count: usize,
     pub files_scanned: usize,
     pub files_read: usize,
+    pub stale_documents: Vec<String>,
 }
 
 /// Check whether the vector store index is stale, reporting detailed scan counts.
@@ -98,6 +99,7 @@ pub fn check_index_staleness_with_stats(
     let files = pkb::scan_directory(pkb_root);
     let mut stale_count = 0;
     let mut files_read = 0;
+    let mut stale_documents = Vec::new();
     let mut new_stamps = std::collections::HashMap::new();
 
     for file_path in &files {
@@ -133,6 +135,7 @@ pub fn check_index_staleness_with_stats(
 
         if needs_reindex {
             stale_count += 1;
+            stale_documents.push(rel_path.to_string_lossy().to_string());
         } else {
             // Document is fresh (content hash matched store): record current stamp
             new_stamps.insert(rel_path_buf, current_stamp);
@@ -149,6 +152,7 @@ pub fn check_index_staleness_with_stats(
         stale_count,
         files_scanned: files.len(),
         files_read,
+        stale_documents,
     }
 }
 
@@ -231,11 +235,8 @@ pub fn index_pkb(
             continue;
         }
 
-        let doc_chunks = crate::chunker::chunk_document(
-            &doc.title,
-            doc.doc_type.as_deref(),
-            &doc.body,
-        );
+        let doc_chunks =
+            crate::chunker::chunk_document(&doc.title, doc.doc_type.as_deref(), &doc.body);
         let chunks: Vec<String> = doc_chunks.into_iter().map(|c| c.text).collect();
         let chunk_start = all_chunks.len();
         let chunk_count = chunks.len();

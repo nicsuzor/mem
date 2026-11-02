@@ -402,7 +402,15 @@ impl PkbSearchServer {
                     Ok(query_embedding) => {
                         let candidates = {
                             let store = self.store.read();
-                            store.search(&query_embedding, 50, &self.pkb_root, None, None, None, None)
+                            store.search(
+                                &query_embedding,
+                                50,
+                                &self.pkb_root,
+                                None,
+                                None,
+                                None,
+                                None,
+                            )
                         };
                         let mut suggestions: Vec<serde_json::Value> = Vec::new();
                         for r in candidates {
@@ -978,6 +986,73 @@ impl PkbSearchServer {
             buffer_days,
         );
 
+        let mut node_flow = node.flow.clone();
+        if let Some(ref mut flow) = node_flow {
+            if flow.flow_status == crate::flow::FlowStatus::Ok {
+                let node_or_dep_stale = {
+                    let mut check_ids = Vec::new();
+                    for link in graph.links_out(&node.id) {
+                        if let Some(to) = &link.to {
+                            check_ids.push(to.clone());
+                        }
+                    }
+                    let stale_report =
+                        crate::check_index_staleness_with_stats(&self.pkb_root, &self.store);
+                    stale_report.stale_documents.iter().any(|stale_path| {
+                        check_ids.iter().any(|cid| {
+                            let cid_clean = cid.trim();
+                            if cid_clean.is_empty() {
+                                return false;
+                            }
+                            if let Some(n) = graph.resolve(cid_clean) {
+                                let n_path_str = n.path.to_string_lossy();
+                                if !n_path_str.is_empty()
+                                    && (stale_path == &n_path_str
+                                        || stale_path.ends_with(&*n_path_str))
+                                {
+                                    return true;
+                                }
+                            }
+                            stale_path.contains(cid_clean)
+                        })
+                    })
+                };
+                if node_or_dep_stale {
+                    flow.flow_status = crate::flow::FlowStatus::Stale;
+                } else {
+                    let links_out = graph.links_out(&node.id);
+                    let has_disagreeing_warning =
+                        node.parse_warnings.iter().any(|w| w.field == "links");
+                    let has_unpropagated_serves = links_out.iter().any(|link| {
+                        if link.label == crate::graph::LinkLabel::Serves && link.strength > 0.0 {
+                            if let Some(target_id) = &link.to {
+                                if let Some(target_node) = graph.resolve(target_id) {
+                                    let target_is_priced =
+                                        target_node.worth.map(|w| w > 0.0).unwrap_or(false);
+                                    let target_has_gain = target_node
+                                        .flow
+                                        .as_ref()
+                                        .and_then(|f| f.gain)
+                                        .map(|g| g > 0.0)
+                                        .unwrap_or(false);
+                                    if (target_is_priced || target_has_gain)
+                                        && !flow.stake.contains_key(target_id)
+                                        && !flow.deltas.contains_key(target_id)
+                                    {
+                                        return true;
+                                    }
+                                }
+                            }
+                        }
+                        false
+                    });
+                    if has_disagreeing_warning || has_unpropagated_serves {
+                        flow.flow_status = crate::flow::FlowStatus::DisagreeingInputs;
+                    }
+                }
+            }
+        }
+
         let mut result = serde_json::json!({
             "id": node.task_id.as_deref().unwrap_or(&node.id),
             "title": node.label,
@@ -999,7 +1074,7 @@ impl PkbSearchServer {
             "days_until_due": days_until_due,
             "links_out": graph.links_out(&node.id),
             "links_in": graph.links_in(&node.id),
-            "flow": node.flow,
+            "flow": node_flow,
             "display": display,
             "truncated": truncated,
             "body_bytes": total_bytes,
@@ -1013,7 +1088,28 @@ impl PkbSearchServer {
                 result["routes"] =
                     serde_json::to_value(&routes_map).unwrap_or(serde_json::json!({}));
                 result["routes_truncated"] = serde_json::json!(truncated);
-                result["explanation"] = serde_json::json!(explanation);
+                let final_explanation = if let Some(ref flow) = node_flow {
+                    if flow.flow_status == crate::flow::FlowStatus::DisagreeingInputs
+                        && explanation.contains("serves no priced targets")
+                    {
+                        format!(
+                            "{} inputs disagree with reported edges: serves edge present but not propagated",
+                            node.id
+                        )
+                    } else if flow.flow_status == crate::flow::FlowStatus::Stale
+                        && explanation.contains("serves no priced targets")
+                    {
+                        format!(
+                            "{} flow inputs are stale: index has unindexed modifications",
+                            node.id
+                        )
+                    } else {
+                        explanation
+                    }
+                } else {
+                    explanation
+                };
+                result["explanation"] = serde_json::json!(final_explanation);
             } else {
                 result["routes"] = serde_json::json!({});
                 result["routes_truncated"] = serde_json::json!(false);
@@ -2293,7 +2389,10 @@ impl PkbSearchServer {
                         message: Cow::from(format!(
                             "Cannot set '{}' to '{}': {} open child task(s) still exist: {}. \
                              Complete or cancel them first, or pass recursive=true to close all descendants.",
-                            id, ns, open_descs.len(), ids.join(", ")
+                            id,
+                            ns,
+                            open_descs.len(),
+                            ids.join(", ")
                         )),
                         data: None,
                     });
