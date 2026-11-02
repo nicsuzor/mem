@@ -402,7 +402,15 @@ impl PkbSearchServer {
                     Ok(query_embedding) => {
                         let candidates = {
                             let store = self.store.read();
-                            store.search(&query_embedding, 50, &self.pkb_root, None, None, None, None)
+                            store.search(
+                                &query_embedding,
+                                50,
+                                &self.pkb_root,
+                                None,
+                                None,
+                                None,
+                                None,
+                            )
                         };
                         let mut suggestions: Vec<serde_json::Value> = Vec::new();
                         for r in candidates {
@@ -978,6 +986,67 @@ impl PkbSearchServer {
             buffer_days,
         );
 
+        let mut node_flow = node.flow.clone();
+        if let Some(ref mut flow) = node_flow {
+            if flow.flow_status == crate::flow::FlowStatus::Ok {
+                let is_stale = {
+                    let store = self.store.read();
+                    if store.is_empty() {
+                        false
+                    } else {
+                        let mut nodes_to_check = vec![node];
+                        for link in graph.links_out(&node.id) {
+                            if let Some(to) = &link.to {
+                                if let Some(target_node) = graph.resolve(to) {
+                                    nodes_to_check.push(target_node);
+                                }
+                            }
+                        }
+                        nodes_to_check.iter().any(|chk| {
+                            if chk.path.as_os_str().is_empty() {
+                                return false;
+                            }
+                            let abs_path = if chk.path.is_absolute() {
+                                chk.path.clone()
+                            } else {
+                                self.pkb_root.join(&chk.path)
+                            };
+                            let Ok(meta) = abs_path.metadata() else {
+                                return false;
+                            };
+                            let Some(disk_stamp) =
+                                crate::vectordb::FileStamp::from_metadata(&meta)
+                            else {
+                                return false;
+                            };
+                            let rel_path = if chk.path.is_relative() {
+                                chk.path.as_path()
+                            } else if let Ok(stripped) = chk.path.strip_prefix(&self.pkb_root) {
+                                stripped
+                            } else {
+                                chk.path.as_path()
+                            };
+                            if let Some(stored_stamp) = store.get_stamp(rel_path) {
+                                disk_stamp != stored_stamp
+                            } else if let Some(doc) =
+                                crate::pkb::parse_file_relative(&abs_path, &self.pkb_root)
+                            {
+                                store.needs_update(&doc.id(), &doc.file_hash)
+                            } else {
+                                false
+                            }
+                        })
+                    }
+                };
+
+                if is_stale {
+                    flow.flow_status = crate::flow::FlowStatus::Stale;
+                } else if graph.has_disagreeing_inputs(node) {
+                    flow.flow_status = crate::flow::FlowStatus::DisagreeingInputs;
+                }
+            }
+        }
+
         let mut result = serde_json::json!({
             "id": node.task_id.as_deref().unwrap_or(&node.id),
             "title": node.label,
@@ -999,7 +1068,7 @@ impl PkbSearchServer {
             "days_until_due": days_until_due,
             "links_out": graph.links_out(&node.id),
             "links_in": graph.links_in(&node.id),
-            "flow": node.flow,
+            "flow": node_flow,
             "display": display,
             "truncated": truncated,
             "body_bytes": total_bytes,
@@ -1013,7 +1082,28 @@ impl PkbSearchServer {
                 result["routes"] =
                     serde_json::to_value(&routes_map).unwrap_or(serde_json::json!({}));
                 result["routes_truncated"] = serde_json::json!(truncated);
-                result["explanation"] = serde_json::json!(explanation);
+                let final_explanation = if let Some(ref flow) = node_flow {
+                    if flow.flow_status == crate::flow::FlowStatus::DisagreeingInputs
+                        && explanation.contains("serves no priced targets")
+                    {
+                        format!(
+                            "{} inputs disagree with reported edges: serves edge present but not propagated",
+                            node.id
+                        )
+                    } else if flow.flow_status == crate::flow::FlowStatus::Stale
+                        && explanation.contains("serves no priced targets")
+                    {
+                        format!(
+                            "{} flow inputs are stale: index has unindexed modifications",
+                            node.id
+                        )
+                    } else {
+                        explanation
+                    }
+                } else {
+                    explanation
+                };
+                result["explanation"] = serde_json::json!(final_explanation);
             } else {
                 result["routes"] = serde_json::json!({});
                 result["routes_truncated"] = serde_json::json!(false);
@@ -2293,7 +2383,10 @@ impl PkbSearchServer {
                         message: Cow::from(format!(
                             "Cannot set '{}' to '{}': {} open child task(s) still exist: {}. \
                              Complete or cancel them first, or pass recursive=true to close all descendants.",
-                            id, ns, open_descs.len(), ids.join(", ")
+                            id,
+                            ns,
+                            open_descs.len(),
+                            ids.join(", ")
                         )),
                         data: None,
                     });

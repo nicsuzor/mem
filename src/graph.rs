@@ -299,6 +299,16 @@ pub fn status_to_flow_state(status: Option<&str>) -> FlowState {
     }
 }
 
+impl From<FlowState> for crate::flow::FlowState {
+    fn from(s: FlowState) -> Self {
+        match s {
+            FlowState::Open => crate::flow::FlowState::Open,
+            FlowState::Done => crate::flow::FlowState::Done,
+            FlowState::Gone => crate::flow::FlowState::Gone,
+        }
+    }
+}
+
 /// A stored flow link on a node (pkb-flow-engine §3.1, R4).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Link {
@@ -551,7 +561,9 @@ pub fn validate_links_value(val: &serde_json::Value) -> Result<(), String> {
                 .as_str()
                 .ok_or_else(|| format!("links[{i}].label must be a string"))?;
             if LinkLabel::from_str(s).is_none() {
-                return Err(format!("links[{i}].label \"{s}\" not in {{serves, needs, part_of, supports, alternative, settles}}"));
+                return Err(format!(
+                    "links[{i}].label \"{s}\" not in {{serves, needs, part_of, supports, alternative, settles}}"
+                ));
             }
         }
         if let Some(q_val) = obj.get("quantum") {

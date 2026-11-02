@@ -547,7 +547,31 @@ impl GraphStore {
         let mut flow_outputs = crate::flow::compute_flow(&flow_input);
         crate::flow::compute_decision_value(&flow_input, &mut flow_outputs);
         for node in &mut nodes {
-            node.flow = flow_outputs.get(&node.id).cloned();
+            let mut flow = flow_outputs.get(&node.id).cloned();
+            if let Some(ref mut f) = flow {
+                if f.flow_status == crate::flow::FlowStatus::Ok {
+                    let has_disagreeing_warning =
+                        node.parse_warnings.iter().any(|w| w.field == "links");
+                    let has_unpropagated_serves =
+                        has_unpropagated_serves_edge(&node.links, f, |target_id| {
+                            let target_is_priced = flow_input
+                                .worth
+                                .get(target_id)
+                                .map(|w| *w > 0.0)
+                                .unwrap_or(false);
+                            let target_has_gain = flow_outputs
+                                .get(target_id)
+                                .and_then(|tf| tf.gain)
+                                .map(|g| g > 0.0)
+                                .unwrap_or(false);
+                            target_is_priced || target_has_gain
+                        });
+                    if has_disagreeing_warning || has_unpropagated_serves {
+                        f.flow_status = crate::flow::FlowStatus::DisagreeingInputs;
+                    }
+                }
+            }
+            node.flow = flow;
         }
         tracing::debug!(target: "perf::graph_rebuild", phase = "flow_computation", elapsed_ms = _t_flow.elapsed().as_secs_f64() * 1000.0);
 
@@ -615,6 +639,31 @@ impl GraphStore {
     /// Resolve all flow edges across the store.
     pub fn resolve_flow_edges(&self) -> Vec<FlowEdge> {
         self.resolve_flow_edges_with_warnings().0
+    }
+
+    /// Check whether a node has unpropagated serves links or conflicting edges (pkb-flow-engine §3.1, #804).
+    pub fn has_disagreeing_inputs(&self, node: &GraphNode) -> bool {
+        let has_disagreeing_warning = node.parse_warnings.iter().any(|w| w.field == "links");
+        if has_disagreeing_warning {
+            return true;
+        }
+        let Some(flow) = &node.flow else {
+            return false;
+        };
+        has_unpropagated_serves_edge(&node.links, flow, |target_id| {
+            if let Some(target_node) = self.resolve(target_id) {
+                let target_is_priced = target_node.worth.map(|w| w > 0.0).unwrap_or(false);
+                let target_has_gain = target_node
+                    .flow
+                    .as_ref()
+                    .and_then(|f| f.gain)
+                    .map(|g| g > 0.0)
+                    .unwrap_or(false);
+                target_is_priced || target_has_gain
+            } else {
+                false
+            }
+        })
     }
 
     /// Outgoing flow links from a given node (pkb-flow-engine §7.2).
@@ -2640,6 +2689,26 @@ where
         .sort_by(|a, b| (&a.0, &a.1.field, &a.1.message).cmp(&(&b.0, &b.1.field, &b.1.message)));
 
     (edges, warnings)
+}
+
+/// Helper to determine if a node's outgoing `serves` links to priced/gaining targets failed to propagate into flow output.
+pub fn has_unpropagated_serves_edge(
+    links: &[crate::graph::Link],
+    flow: &crate::flow::FlowOutput,
+    target_has_value: impl Fn(&str) -> bool,
+) -> bool {
+    links.iter().any(|link| {
+        if link.label == crate::graph::LinkLabel::Serves && link.strength() > 0.0 {
+            if let Some(target_id) = &link.to {
+                let stake = flow.stake.get(target_id).copied().unwrap_or(0.0);
+                let delta = flow.deltas.get(target_id).copied().unwrap_or(0.0);
+                if stake <= 0.0 && delta <= 0.0 && target_has_value(target_id) {
+                    return true;
+                }
+            }
+        }
+        false
+    })
 }
 
 /// Build a `FlowInput` from parsed `GraphNode`s and resolved flow edges (pkb-flow-engine §3.1, R1).
