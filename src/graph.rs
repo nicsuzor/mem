@@ -3176,16 +3176,8 @@ impl GraphNode {
     }
 
     /// Flow state of this node (open | done | gone) mapped from status (§2, C8).
-    /// Target and goal nodes (or any nodes with intrinsic worth) default to Open
-    /// when status is not explicitly set, allowing counterfactual flow propagation.
     pub fn flow_state(&self) -> FlowState {
-        let is_target_or_goal = matches!(self.node_type.as_deref(), Some("target") | Some("goal"))
-            || self.worth.is_some();
-        if is_target_or_goal && self.status.is_none() {
-            FlowState::Open
-        } else {
-            status_to_flow_state(self.status.as_deref())
-        }
+        status_to_flow_state(self.status.as_deref())
     }
 }
 

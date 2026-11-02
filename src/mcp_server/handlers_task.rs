@@ -989,66 +989,60 @@ impl PkbSearchServer {
         let mut node_flow = node.flow.clone();
         if let Some(ref mut flow) = node_flow {
             if flow.flow_status == crate::flow::FlowStatus::Ok {
-                let node_or_dep_stale = {
-                    let mut check_ids = Vec::new();
-                    for link in graph.links_out(&node.id) {
-                        if let Some(to) = &link.to {
-                            check_ids.push(to.clone());
+                let is_stale = {
+                    let store = self.store.read();
+                    if store.is_empty() {
+                        false
+                    } else {
+                        let mut nodes_to_check = vec![node];
+                        for link in graph.links_out(&node.id) {
+                            if let Some(to) = &link.to {
+                                if let Some(target_node) = graph.resolve(to) {
+                                    nodes_to_check.push(target_node);
+                                }
+                            }
                         }
-                    }
-                    let stale_report =
-                        crate::check_index_staleness_with_stats(&self.pkb_root, &self.store);
-                    stale_report.stale_documents.iter().any(|stale_path| {
-                        check_ids.iter().any(|cid| {
-                            let cid_clean = cid.trim();
-                            if cid_clean.is_empty() {
+                        nodes_to_check.iter().any(|chk| {
+                            if chk.path.as_os_str().is_empty() {
                                 return false;
                             }
-                            if let Some(n) = graph.resolve(cid_clean) {
-                                let n_path_str = n.path.to_string_lossy();
-                                if !n_path_str.is_empty()
-                                    && (stale_path == &n_path_str
-                                        || stale_path.ends_with(&*n_path_str))
-                                {
-                                    return true;
-                                }
+                            let abs_path = if chk.path.is_absolute() {
+                                chk.path.clone()
+                            } else {
+                                self.pkb_root.join(&chk.path)
+                            };
+                            let Ok(meta) = abs_path.metadata() else {
+                                return false;
+                            };
+                            let Some(disk_stamp) =
+                                crate::vectordb::FileStamp::from_metadata(&meta)
+                            else {
+                                return false;
+                            };
+                            let rel_path = if chk.path.is_relative() {
+                                chk.path.as_path()
+                            } else if let Ok(stripped) = chk.path.strip_prefix(&self.pkb_root) {
+                                stripped
+                            } else {
+                                chk.path.as_path()
+                            };
+                            if let Some(stored_stamp) = store.get_stamp(rel_path) {
+                                disk_stamp != stored_stamp
+                            } else if let Some(doc) =
+                                crate::pkb::parse_file_relative(&abs_path, &self.pkb_root)
+                            {
+                                store.needs_update(&doc.id(), &doc.file_hash)
+                            } else {
+                                false
                             }
-                            stale_path.contains(cid_clean)
                         })
-                    })
-                };
-                if node_or_dep_stale {
-                    flow.flow_status = crate::flow::FlowStatus::Stale;
-                } else {
-                    let links_out = graph.links_out(&node.id);
-                    let has_disagreeing_warning =
-                        node.parse_warnings.iter().any(|w| w.field == "links");
-                    let has_unpropagated_serves = links_out.iter().any(|link| {
-                        if link.label == crate::graph::LinkLabel::Serves && link.strength > 0.0 {
-                            if let Some(target_id) = &link.to {
-                                if let Some(target_node) = graph.resolve(target_id) {
-                                    let target_is_priced =
-                                        target_node.worth.map(|w| w > 0.0).unwrap_or(false);
-                                    let target_has_gain = target_node
-                                        .flow
-                                        .as_ref()
-                                        .and_then(|f| f.gain)
-                                        .map(|g| g > 0.0)
-                                        .unwrap_or(false);
-                                    if (target_is_priced || target_has_gain)
-                                        && !flow.stake.contains_key(target_id)
-                                        && !flow.deltas.contains_key(target_id)
-                                    {
-                                        return true;
-                                    }
-                                }
-                            }
-                        }
-                        false
-                    });
-                    if has_disagreeing_warning || has_unpropagated_serves {
-                        flow.flow_status = crate::flow::FlowStatus::DisagreeingInputs;
                     }
+                };
+
+                if is_stale {
+                    flow.flow_status = crate::flow::FlowStatus::Stale;
+                } else if graph.has_disagreeing_inputs(node) {
+                    flow.flow_status = crate::flow::FlowStatus::DisagreeingInputs;
                 }
             }
         }

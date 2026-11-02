@@ -552,23 +552,20 @@ impl GraphStore {
                 if f.flow_status == crate::flow::FlowStatus::Ok {
                     let has_disagreeing_warning =
                         node.parse_warnings.iter().any(|w| w.field == "links");
-                    let has_unpropagated_serves = node.links.iter().any(|link| {
-                        if link.label == crate::graph::LinkLabel::Serves && link.strength() > 0.0 {
-                            if let Some(target_id) = &link.to {
-                                if !f.stake.contains_key(target_id)
-                                    && !f.deltas.contains_key(target_id)
-                                    && flow_input
-                                        .worth
-                                        .get(target_id)
-                                        .map(|w| *w > 0.0)
-                                        .unwrap_or(false)
-                                {
-                                    return true;
-                                }
-                            }
-                        }
-                        false
-                    });
+                    let has_unpropagated_serves =
+                        has_unpropagated_serves_edge(&node.links, f, |target_id| {
+                            let target_is_priced = flow_input
+                                .worth
+                                .get(target_id)
+                                .map(|w| *w > 0.0)
+                                .unwrap_or(false);
+                            let target_has_gain = flow_outputs
+                                .get(target_id)
+                                .and_then(|tf| tf.gain)
+                                .map(|g| g > 0.0)
+                                .unwrap_or(false);
+                            target_is_priced || target_has_gain
+                        });
                     if has_disagreeing_warning || has_unpropagated_serves {
                         f.flow_status = crate::flow::FlowStatus::DisagreeingInputs;
                     }
@@ -642,6 +639,31 @@ impl GraphStore {
     /// Resolve all flow edges across the store.
     pub fn resolve_flow_edges(&self) -> Vec<FlowEdge> {
         self.resolve_flow_edges_with_warnings().0
+    }
+
+    /// Check whether a node has unpropagated serves links or conflicting edges (pkb-flow-engine §3.1, #804).
+    pub fn has_disagreeing_inputs(&self, node: &GraphNode) -> bool {
+        let has_disagreeing_warning = node.parse_warnings.iter().any(|w| w.field == "links");
+        if has_disagreeing_warning {
+            return true;
+        }
+        let Some(flow) = &node.flow else {
+            return false;
+        };
+        has_unpropagated_serves_edge(&node.links, flow, |target_id| {
+            if let Some(target_node) = self.resolve(target_id) {
+                let target_is_priced = target_node.worth.map(|w| w > 0.0).unwrap_or(false);
+                let target_has_gain = target_node
+                    .flow
+                    .as_ref()
+                    .and_then(|f| f.gain)
+                    .map(|g| g > 0.0)
+                    .unwrap_or(false);
+                target_is_priced || target_has_gain
+            } else {
+                false
+            }
+        })
     }
 
     /// Outgoing flow links from a given node (pkb-flow-engine §7.2).
@@ -2669,11 +2691,31 @@ where
     (edges, warnings)
 }
 
+/// Helper to determine if a node's outgoing `serves` links to priced/gaining targets failed to propagate into flow output.
+pub fn has_unpropagated_serves_edge(
+    links: &[crate::graph::Link],
+    flow: &crate::flow::FlowOutput,
+    target_has_value: impl Fn(&str) -> bool,
+) -> bool {
+    links.iter().any(|link| {
+        if link.label == crate::graph::LinkLabel::Serves && link.strength() > 0.0 {
+            if let Some(target_id) = &link.to {
+                let stake = flow.stake.get(target_id).copied().unwrap_or(0.0);
+                let delta = flow.deltas.get(target_id).copied().unwrap_or(0.0);
+                if stake <= 0.0 && delta <= 0.0 && target_has_value(target_id) {
+                    return true;
+                }
+            }
+        }
+        false
+    })
+}
+
 /// Build a `FlowInput` from parsed `GraphNode`s and resolved flow edges (pkb-flow-engine §3.1, R1).
 pub fn build_flow_input(nodes: &[GraphNode]) -> crate::flow::FlowInput {
     let mut flow_input = crate::flow::FlowInput::new();
     for node in nodes {
-        let state = node.flow_state().into();
+        let state = crate::flow::status_to_flow_state(node.status.as_deref());
         flow_input.add_node(node.id.clone(), state, node.worth);
     }
     let (resolved_edges, _) = resolve_flow_edges_from_nodes(nodes);
