@@ -168,13 +168,30 @@ links:
     probability: probable      # 0.0..=1.0, or a word from flow-rule §5.5; omitted → 1.00
     effect: helps              # helps | harms; omitted → helps
     justification: "Second chapter of the monograph"   # free text, optional
-    set_by: nic                # nic | agent-proposed | migrated; omitted → nic; provenance only (R26, E17)
+    set_by: nic                # nic | agent-proposed | migrated | unattributed; omitted → unattributed; provenance only (R26, R27, E17)
 ```
 
 - **`to` is the natural form for work.** "This task serves that target" is written on the task.
 - **`from` is the natural form for blocked work.** "This task needs that one done first" is written on the blocked task as `{from: X, label: needs}`. In the maths, the edge always runs from the work to what it serves (X → this node), as in `flow-rule.md` §5.1.
 - **Words are stored as written.** The parser maps them to numbers, so Nic's words stay visible in the file (E2).
 - **Duplicates.** One logical edge declared at both ends (A lists `to: B` and B lists `from: A` with the same label) is read once. If the two declarations disagree on any field, the parser emits a `ParseWarning` and reads the entry on the `from` node (E4).
+
+### 3.1.1. Link attribution and provenance by route (R27; Nic ruling 2026-11-02)
+
+**The core attribution invariant (Telegram msg 834, 837).** A link may be attributed to Nic (`set_by: nic`) **if and only if** he set it himself on the dashboard or committed it himself in git. Nothing else is attributed to him, including links with no author.
+
+**R27. Route attribution and evidentiary standard.** Every route that writes, mutates, or reads a link is governed by an explicit attribution rule and its settling evidence:
+
+| Route | Writing mechanism | Settling evidence | Stored / Read `set_by` | Server enforcement & error behavior |
+|---|---|---|---|---|
+| **Route 1: Dashboard** | Nic creates/edits an edge in `overwhelm-dashboard` web UI | MCP `initialize` reports dashboard client identity (`client_info.name = "overwhelm-dashboard"`) or arrives over user-authenticated web transport session | `nic` | Dashboard UI explicitly populates `set_by: nic`. Server permits `set_by: nic` only on requests authenticated as originating from the dashboard or direct human interactive sessions |
+| **Route 2: MCP Tools** (`create_task`, `update_task`, `create`, `decompose_task`, `batch_update`) | Autonomous agent creates or edits tasks/links via MCP tool calls | Caller session context (`specs/caller-session.md`, `src/otel/client_context.rs`): `x-session-id`, `x-agent-id`, `_meta.session_id`, `_session` argument, or direct connection session registry binding indicating an agent session | `agent-proposed` | Omitted `set_by` in agent tool calls automatically populates as `agent-proposed`. If an agent explicitly passes `set_by: nic`, the server **rejects** the call with an error (`"Agents cannot attribute links to nic; use set_by: 'agent-proposed' with justification"`), preventing agent impersonation |
+| **Route 3: Direct Git Commits by Nic** | Nic edits markdown frontmatter files directly in local editor and commits via `git commit` | Git commit metadata: committer/author name matches `Nic Suzor`, author email is Nic's personal email (e.g. `<nic-personal-email>`, not a bot/noreply address), valid cryptographic commit signature (GPG/SSH) where enabled, and execution environment lacks agent container variables | `nic` | Nic may explicitly commit `set_by: nic`. Ingestion and pre-commit checks verify that commit author matches Nic's personal identity |
+| **Route 4: Direct Git Commits by Agents** | Container workers (Polecat), migration scripts (`pkb migrate flow`), or automated bots commit markdown files directly to git | Git commit metadata: author/committer is a known bot identity (`botnicbot`, `*@users.noreply.github.com`, `[bot]`), commit message carries agent trailers (`Task:`, `Session:`, `Workflow:`, `Agent:`), or runtime environment carries `ANTIGRAVITY_AGENT`, `POLECAT_TARGET_TASK`, or `AOPS_TASK_ID` | `agent-proposed` (or `migrated` for migration scripts) | Agent git commits are strictly prohibited from writing `set_by: nic`. Pre-commit hooks and CI git hygiene reject agent commits containing `set_by: nic` |
+| **Route 5: Stored Links with No Author** | Legacy links in markdown frontmatter or unannotated links lacking a `set_by` key (e.g. `admin-f630bdb4 → targ-5b675f05`) | Absence of `set_by` in frontmatter map (`None`) | `unattributed` | An omitted `set_by` reads as `unattributed` (`LinkSetBy::Unattributed`). It **never** defaults to `nic`. The previous E17 default (`omitted → nic`) is repealed. Tool outputs (`links_out`, `links_in`, `export_graph`, `get_task`) serialize the field as `"unattributed"` (or null/omitted). `flow-edge-unattributed` lint style note prompts review without blocking flow |
+
+- **Flow engine parity:** In accordance with R26 and the 2026-10-22 ruling, `set_by` is provenance only. The flow engine calculates `gain` and `loss_averted` identically regardless of whether `set_by` is `nic`, `agent-proposed`, `migrated`, or `unattributed`.
+- **Read-view truthfulness:** When a tool returns a resolved link (`links_out`, `links_in`), the author reads as `nic` only when backed by Route 1 (dashboard) or Route 3 (Nic git commit). Links lacking author metadata read as `unattributed`, guaranteeing that the graph never attributes to Nic something he didn't set.
 
 **R5. Parsing (S2, S7, U20).** Each link entry is parsed on its own.
 
@@ -269,9 +286,10 @@ The flow engine is the only ranking engine; there is no configuration setting th
 
 Changing a constant is a pull request (S11: simple beats complicated). Moving them to runtime configuration is E7. The display functions take `CLIFF_BUFFER_DAYS` and `DEFAULT_EFFORT_DAYS` as parameters whose defaults are the constants, so a test can vary them without rebuilding.
 
-**R26. Agent-proposed links count in flow (ruling 2026-10-22).** Links marked `set_by: agent-proposed` count in the flow engine at their stated quantum and probability, exactly like `nic` and `migrated` links; `set_by` remains provenance only. Values agents set in the graph are Nic's with no approval gate, and he adjusts any that look off.
+**R26. Agent-proposed links count in flow (ruling 2026-10-22).** Links marked `set_by: agent-proposed` count in the flow engine at their stated quantum and probability, exactly like `nic`, `migrated`, and `unattributed` links; `set_by` remains provenance only. Values agents set in the graph are Nic's with no approval gate, and he adjusts any that look off.
 
-- **An omitted `set_by` is read as `nic`.** An omitted `set_by` defaults to `nic` (E17 adopted).
+- **Attribution to Nic strictly guarded (Telegram msg 834, 837).** A link may be attributed to Nic (`set_by: nic`) only if he set it himself on the dashboard or committed it himself in git. Nothing else is attributed to him (R27).
+- **An omitted `set_by` is read as `unattributed`.** An omitted `set_by` defaults to `unattributed` (superseding the earlier E17 `omitted → nic` default). The engine, parser, and tools never attribute an unauthored link to Nic.
 
 ---
 
@@ -555,7 +573,7 @@ Each criterion is something an observer can check against the built server. Ever
 | A23 | No tool or CLI output contains a sum of `gain`, `loss_averted` or `decision_value` over two or more nodes | R21 | T-nosum |
 | A24 | `pkb tasks`, `pkb focus` and `list_tasks` agree on order and figures under `display_cmp` | R19, R24 | T-cli-parity |
 | A25 | A link declared at both ends is read once; on disagreement the `from` entry wins with a warning; `parent:`, mapped old keys (including map entries `{to, quantum, set_by}` inside all four old keys), status→state table (`cancelled`→`gone`, `retired`→`done`, missing status→`done`, active/`paused`/`blocked`/`partial`/`review`→`open`), `standing_weight` and `worth` words are read as R1, R4, R6, R7 and R9 say; an unclassed `due` is `fake` | R1, R4, R6, R7, R9, R10 | T-schema |
-| A26 | An entry with `set_by: agent-proposed` reads at its stated quantum and probability, exactly like `nic` and `migrated`; an omitted `set_by` is read as `nic`; a `needs` entry with no quantum carries 1.0 | R11, R26 | T-schema |
+| A26 | An entry with `set_by: agent-proposed` reads at its stated quantum and probability, exactly like `nic`, `migrated`, and `unattributed`; an omitted `set_by` is read as `unattributed` (never `nic`); a `needs` entry with no quantum carries 1.0; a link is attributed to `nic` only when set on the dashboard or committed by Nic in git | R11, R26, R27 | T-schema |
 | A27 | Immediately after a write, `get_task` shows the node's previous `flow`, or 0 / 0 / 0 with `ok` for a new node; after the background rebuild it shows the recomputed `flow` | R16 | T-carryover |
 | A28 | `get_task` returns at most `ROUTE_CAP` routes per target, strongest first, with `routes_truncated` set when more exist, and an explanation sentence naming each target and the strongest path | R18, U18 | T-routes |
 | A29 | A blocked node is never in the ready list but keeps its figures; the ready list is in `display_cmp` order | R20, S4 | T-ready |
@@ -595,7 +613,7 @@ There is one test per invariant, T-I1 to T-I17, and fourteen engine tests. Each 
 | T-determinism `flow_rebuild_determinism` | A22 | build through every entry point listed in `ranking.md` §1.1 | byte-identical `flow` |
 | T-nosum `no_output_sums_worth` | A23 | two nodes with gain 0.37 and 0.58 under one parent; every group view | no numeric field within 1e-9 of 0.95 (their sum) or 0.475 (their mean) in any group-level output |
 | T-cli-parity `cli_and_mcp_display_order_parity` | A24 | replaces `cli_focus_agrees_with_canonical_focus_order` (`tests/cli_default_ordering.rs`) | identical id order and figures |
-| T-schema `links_schema_mapping` | A25, A26 | one node per case: both-ends duplicate (agreeing, then disagreeing); `parent:` at quantum 0; map entries `{to, quantum, set_by}` inside `depends_on`, `soft_depends_on`, `contributes_to`, and `parent`; status→state cases (`cancelled`, `retired`, missing `status`, `paused`, `blocked`, `partial`, `review`); `worth` as a float, an anchor word, 1.5, and alongside `standing_weight`; a `due` with no class; a `needs` entry with no quantum; one entry as `agent-proposed` (on `needs` and `serves`) and as `nic`; omitted `set_by` | one edge for the agreeing duplicate; the `from` entry and a warning for the disagreeing one; map entries parsed without dropping; status mapping verified; R1, R6, R7 and R9 readings exactly; `fake`; `needs` 1.0; `agent-proposed`, `nic` and omitted `set_by` at stated quantum |
+| T-schema `links_schema_mapping` | A25, A26 | one node per case: both-ends duplicate (agreeing, then disagreeing); `parent:` at quantum 0; map entries `{to, quantum, set_by}` inside `depends_on`, `soft_depends_on`, `contributes_to`, and `parent`; status→state cases (`cancelled`, `retired`, missing `status`, `paused`, `blocked`, `partial`, `review`); `worth` as a float, an anchor word, 1.5, and alongside `standing_weight`; a `due` with no class; a `needs` entry with no quantum; one entry as `agent-proposed` (on `needs` and `serves`), as `nic`, and as `migrated`; omitted `set_by` | one edge for the agreeing duplicate; the `from` entry and a warning for the disagreeing one; map entries parsed without dropping; status mapping verified; R1, R6, R7, R9, R26, R27 readings exactly; `fake`; `needs` 1.0; `agent-proposed`, `nic`, `migrated` and omitted `set_by` (`unattributed`) at stated quantum |
 | T-carryover `flow_carried_over_until_rebuild` | A27 | write to a node, read before and after the background rebuild; create a new node | previous `flow`, then the new one; new node 0 / 0 / 0 `ok` until rebuild |
 | T-routes `routes_cap_and_explanation` | A28 | a node with seven routes to one target | 5 routes, strongest first, `routes_truncated: true`; the sentence names the target and the strongest path |
 | T-ready `ready_predicate_reads_needs` | A29 | a blocked node and its open blocker | blocker ready, blocked node not ready, both with figures; ready list in `display_cmp` order |
@@ -641,7 +659,7 @@ Each comes with the proposal this spec builds against if it is not answered. Set
 | E14 | How big should an Excalidraw card be drawn? | by the larger of `gain` and `\|loss_averted\|`, never their sum | Adopted |
 | E15 | The legacy ranking removed a task with `affordable_loss: false`. Should the server keep that filter, or leave it to agents? | leave it to agents (`flow-rule.md` §9); the field stays stored in frontmatter | Adopted (removed with the legacy ranking) |
 | E16 | `status: blocked` counts as blocked in the mcp-index (`src/task_index.rs:260`) but not in `classify_tasks`. Should it count as blocked in R20? | no, to match `classify_tasks`; this replaces both | Proposed |
-| E17 | Does an omitted `set_by` mean `nic`, as R26 proposes, or `agent-proposed`, as `flow-rule.md` §5.1 previously said? Omitted `set_by` defaults to `nic`. With R26 dropped (2026-10-22 ruling), agent-proposed links count in flow at stated quantum/probability as well; `set_by` is provenance only. | `nic` | Adopted |
+| E17 | Does an omitted `set_by` mean `nic`, `agent-proposed`, or `unattributed`? Omitted `set_by` reads as `unattributed`. Under Nic's 2026-11-02 ruling (Telegram msg 834, 837), a link may be attributed to Nic only if he set it himself on the dashboard or committed it himself in git. Nothing else is attributed to him, including links with no author. | `unattributed` | Settled (Nic ruling 2026-11-02) |
 | E18 | `edge_template.weight` on prototype nodes uses the old seven-word scale. Replace it with template `quantum` and `probability`? | yes | Proposed |
 
 ### 10.2. Settled decisions from `flow-rule.md` §15 that govern this build
