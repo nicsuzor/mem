@@ -214,7 +214,7 @@ contributes_to:
 - `quantum`: Contribution quantum `0.0..=1.0` or a verbal anchor from `specs/flow-rule.md` §5.4 (`all`, `most`, `a good part`, `some`, `a little`, `none`). Omitted quantum defaults to the label's default (`serves`: `0.0`).
 - `probability`: Epistemic probability `0.0..=1.0` or a verbal anchor from `specs/flow-rule.md` §5.5 (`certain`, `probable`, `expected`, `fifty-fifty`, `uncertain`, `improbable`, `impossible`). Omitted probability defaults to `1.00`.
 - `justification` / `why`: Rationale sentence.
-- `set_by`: Provenance marker (`nic` | `agent-proposed` | `migrated`; defaults to `nic`). Provenance only; agent-proposed links count in flow at stated quantum and probability (ruling 2026-10-22).
+- `set_by`: Provenance marker (`nic` | `agent-proposed` | `migrated` | `unattributed`; defaults to `unattributed`). A link reads as `nic` only if set by Nic on the dashboard or committed by Nic in git (ruling 2026-11-02, Telegram msg 834, 837; `specs/pkb-flow-engine.md` R27). Omitted `set_by` reads as `unattributed`. Provenance only; links count in flow at stated quantum and probability regardless of provenance.
 
 **Edge strength:**
 Strength is the product of contribution quantum and probability:
