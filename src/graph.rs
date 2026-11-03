@@ -3024,6 +3024,28 @@ impl GraphNode {
             if let Some(fid) = f.get("id").and_then(|v| v.as_str()) {
                 permalinks.push(fid.trim().to_lowercase());
             }
+            if let Some(alias_val) = f.get("alias") {
+                if let Some(arr) = alias_val.as_array() {
+                    for a in arr {
+                        if let Some(s) = a.as_str() {
+                            permalinks.push(s.trim().to_lowercase());
+                        }
+                    }
+                } else if let Some(s) = alias_val.as_str() {
+                    permalinks.push(s.trim().to_lowercase());
+                }
+            }
+            if let Some(aliases_val) = f.get("aliases") {
+                if let Some(arr) = aliases_val.as_array() {
+                    for a in arr {
+                        if let Some(s) = a.as_str() {
+                            permalinks.push(s.trim().to_lowercase());
+                        }
+                    }
+                } else if let Some(s) = aliases_val.as_str() {
+                    permalinks.push(s.trim().to_lowercase());
+                }
+            }
         }
         if let Some(stem) = doc.path.file_stem() {
             let stem_str = stem.to_string_lossy();

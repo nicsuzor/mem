@@ -99,6 +99,9 @@ impl PkbSearchServer {
                         },
                         "type": { "type": "string" },
                         "status": { "type": "string" },
+                        "title_contains": { "type": "string", "description": "Case-insensitive substring filter on document title" },
+                        "since": { "type": "string", "description": "Filter documents modified on or after this ISO date/datetime" },
+                        "before": { "type": "string", "description": "Filter documents modified on or before this ISO date/datetime" },
                         "limit": { "type": "integer" },
                         "offset": { "type": "integer" },
                         "budget_ms": { "type": "integer" },
@@ -379,14 +382,18 @@ impl PkbSearchServer {
             .with_annotations(ToolAnnotations::new().read_only(false)),
             Tool::new(
                 "delete",
-                "Permanently delete a document by ID and remove from search index.",
+                "Permanently delete a document by ID (or multiple documents by IDs) and remove from search index.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
-                        "id": { "type": "string" },
+                        "id": { "type": "string", "description": "Single document ID to delete" },
+                        "ids": {
+                            "type": "array",
+                            "items": { "type": "string" },
+                            "description": "List of document IDs to delete in batch"
+                        },
                         "type": { "type": "string" }
-                    },
-                    "required": ["id"]
+                    }
                 }))
                 .unwrap(),
             )
@@ -394,16 +401,18 @@ impl PkbSearchServer {
             .with_annotations(ToolAnnotations::new().destructive(true)),
             Tool::new(
                 "convert_document",
-                "Retype doc (keeps ID), move to `<dir>/<id>_<slug>.md` (template: `[<project>/]workflows/<snake_id>.md`), reindex.",
+                "Retype doc (keeps ID), rename title/slug, move to `<dir>/<id>_<slug>.md` (template: `[<project>/]workflows/<snake_id>.md`), reindex.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
                         "id": { "type": "string", "description": "Document ID, stem, or title" },
-                        "type": { "type": "string", "description": "Target type (e.g. 'task')" },
+                        "type": { "type": "string", "description": "Target type (e.g. 'task'). If omitted, preserves existing type." },
+                        "title": { "type": "string", "description": "New title for the document" },
+                        "slug": { "type": "string", "description": "Explicit filename slug (defaults to title)" },
                         "dir": { "type": "string", "description": "Target subdir (default by type)" },
                         "status": { "type": "string", "description": "Status to set (default 'inbox' for tasks)" }
                     },
-                    "required": ["id", "type"]
+                    "required": ["id"]
                 }))
                 .unwrap(),
             )
@@ -1084,7 +1093,21 @@ impl PkbSearchServer {
                 "properties": {
                     "id": { "type": "string" },
                     "deleted": { "type": "boolean" },
-                    "message": { "type": "string" }
+                    "message": { "type": "string" },
+                    "deleted_count": { "type": "integer" },
+                    "failed_count": { "type": "integer" },
+                    "results": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "id": { "type": "string" },
+                                "deleted": { "type": "boolean" },
+                                "error": { "type": "string" }
+                            },
+                            "required": ["id", "deleted"]
+                        }
+                    }
                 }
             }),
             "convert_document" => serde_json::json!({
