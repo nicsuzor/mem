@@ -31,6 +31,7 @@ mod salience_mcp_tests;
 mod caller_session_tests;
 mod title_and_filename_rules_tests;
 mod read_body_truncation_tests;
+mod alias_and_links_in_tests;
 mod document_tools_enhancements_tests;
 
 

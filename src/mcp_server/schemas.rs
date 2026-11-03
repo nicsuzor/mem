@@ -1017,6 +1017,7 @@ impl PkbSearchServer {
                     "id": { "type": "string" },
                     "title": { "type": "string" },
                     "frontmatter": { "type": "object" },
+                    "links_in": { "type": "array", "items": { "type": "object" } },
                     "body": { "type": "string" },
                     "truncated": { "type": "boolean" },
                     "body_bytes": { "type": "integer" },

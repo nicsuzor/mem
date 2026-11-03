@@ -229,9 +229,10 @@ Each returned result item contains:
 
 **Structured Output**:
 Single reads return the document payload once using `body` (the redundant `content` key is removed). Batch reads (`ids`) return `items`. Null and empty frontmatter keys are stripped.
-- `id` (string): Resolved canonical ID.
+- `id` (string): Resolved canonical ID (always the canonical node ID, even when requested by alias).
 - `title` (string): Document title.
 - `frontmatter` (object): Parsed YAML frontmatter (with null and empty values stripped).
+- `links_in` (array of objects, optional): Inbound links and edges pointing to this node (wikilinks, dependencies, hierarchy, and flow links), listing each source ID in `from`.
 - `body` (string): Document body text (full by default; carries cut notice if truncated by `max_bytes`).
 - `truncated` (boolean): Whether content was truncated by `max_bytes`.
 - `body_bytes` (integer): Total un-truncated body byte size.
@@ -271,6 +272,15 @@ Responses carry matching tasks under a single `tasks` array (never duplicating u
 - 80%+ of queries return relevant results in top 5
 - Response time < 2 seconds
 - User thinks "what do I know about X?" not "where did I save X?"
+- **AC1: Alias Resolution on Node Read**: A read by alias returns the node under its canonical ID in both single and batch reads for `get_document` and `get_task`.
+  - Mapped tests:
+    - `test_ac1_get_document_single_by_alias_returns_canonical_id`
+    - `test_ac1_get_document_batch_by_alias_returns_canonical_id`
+    - `test_ac1_get_task_single_and_batch_by_alias_returns_canonical_id`
+- **AC2: Inbound Links on Node Read**: A read of a note with inbound wikilinks or edges lists each source ID in `links_in`.
+  - Mapped tests:
+    - `test_ac2_get_document_note_with_inbound_wikilinks_lists_source_in_links_in`
+    - `test_ac2_get_document_note_with_inbound_edges_lists_source_in_links_in`
 
 ### 2. Task Management
 
