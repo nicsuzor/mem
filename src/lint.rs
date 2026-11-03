@@ -2444,80 +2444,167 @@ pub fn cycle_product(
     best
 }
 
-/// Build known ID and entity set for reference and wikilink checking across a PKB.
-/// Includes node id, task_id, aliases, permalinks, titles, and filenames (both stem and .md).
-pub fn build_known_ids(pkb_root: &Path) -> HashSet<String> {
-    let files = pkb::scan_directory(pkb_root);
-    let ids: HashSet<String> = files
-        .par_iter()
-        .filter_map(|p| {
-            let mut ids = Vec::new();
-            // 5. Filename & stem & relative paths
-            if let Some(stem) = p.file_stem().and_then(|s| s.to_str()) {
-                ids.push(stem.to_string());
-                ids.push(stem.to_lowercase());
-            }
-            if let Some(fname) = p.file_name().and_then(|s| s.to_str()) {
-                ids.push(fname.to_string());
-                ids.push(fname.to_lowercase());
-            }
-            if let Ok(rel) = p.strip_prefix(pkb_root) {
-                let rel_str = rel.to_string_lossy().to_string();
-                ids.push(rel_str.clone());
-                ids.push(rel_str.to_lowercase());
-                if let Some(rel_no_ext) = rel_str.strip_suffix(".md") {
-                    ids.push(rel_no_ext.to_string());
-                    ids.push(rel_no_ext.to_lowercase());
+#[derive(serde::Serialize, serde::Deserialize, Default, Clone)]
+struct KnownIdsCacheData {
+    /// Relative path -> (mtime, file_size, extracted_ids)
+    files: HashMap<PathBuf, (std::time::SystemTime, u64, Vec<String>)>,
+}
+
+/// Extract all known IDs, titles, aliases, permalinks, and filenames from a single file.
+pub fn extract_known_ids_from_file(p: &Path, pkb_root: &Path) -> Vec<String> {
+    let mut ids = Vec::new();
+    // 5. Filename & stem & relative paths
+    if let Some(stem) = p.file_stem().and_then(|s| s.to_str()) {
+        ids.push(stem.to_string());
+        ids.push(stem.to_lowercase());
+    }
+    if let Some(fname) = p.file_name().and_then(|s| s.to_str()) {
+        ids.push(fname.to_string());
+        ids.push(fname.to_lowercase());
+    }
+    if let Ok(rel) = p.strip_prefix(pkb_root) {
+        let rel_str = rel.to_string_lossy().to_string();
+        ids.push(rel_str.clone());
+        ids.push(rel_str.to_lowercase());
+        if let Some(rel_no_ext) = rel_str.strip_suffix(".md") {
+            ids.push(rel_no_ext.to_string());
+            ids.push(rel_no_ext.to_lowercase());
+        }
+    }
+
+    // 1-4. Frontmatter: id, task_id, permalink, alias/aliases, title
+    if let Ok(content) = std::fs::read_to_string(p) {
+        let matter = Matter::<YAML>::new();
+        let parsed = matter.parse(&content);
+        if let Some(fm) = parsed
+            .data
+            .as_ref()
+            .and_then(|d| d.deserialize::<serde_json::Value>().ok())
+        {
+            // id & task_id
+            for id_key in &["id", "task_id"] {
+                if let Some(id) = fm.get(*id_key).and_then(|v| v.as_str()) {
+                    ids.push(id.to_string());
+                    ids.push(id.to_lowercase());
                 }
             }
-
-            // 1-4. Frontmatter: id, task_id, permalink, alias/aliases, title
-            if let Ok(content) = std::fs::read_to_string(p) {
-                let matter = Matter::<YAML>::new();
-                let parsed = matter.parse(&content);
-                if let Some(fm) = parsed
-                    .data
-                    .as_ref()
-                    .and_then(|d| d.deserialize::<serde_json::Value>().ok())
-                {
-                    // id & task_id
-                    for id_key in &["id", "task_id"] {
-                        if let Some(id) = fm.get(*id_key).and_then(|v| v.as_str()) {
-                            ids.push(id.to_string());
-                            ids.push(id.to_lowercase());
-                        }
-                    }
-                    // permalink
-                    if let Some(pl) = fm.get("permalink").and_then(|v| v.as_str()) {
-                        ids.push(pl.to_string());
-                        ids.push(pl.to_lowercase());
-                    }
-                    // title
-                    if let Some(title) = fm.get("title").and_then(|v| v.as_str()) {
-                        ids.push(title.to_string());
-                        ids.push(title.to_lowercase());
-                    }
-                    // alias & aliases
-                    for key in &["alias", "aliases"] {
-                        if let Some(arr) = fm.get(*key).and_then(|v| v.as_array()) {
-                            for item in arr {
-                                if let Some(s) = item.as_str() {
-                                    ids.push(s.to_string());
-                                    ids.push(s.to_lowercase());
-                                }
-                            }
-                        } else if let Some(s) = fm.get(*key).and_then(|v| v.as_str()) {
+            // permalink
+            if let Some(pl) = fm.get("permalink").and_then(|v| v.as_str()) {
+                ids.push(pl.to_string());
+                ids.push(pl.to_lowercase());
+            }
+            // title
+            if let Some(title) = fm.get("title").and_then(|v| v.as_str()) {
+                ids.push(title.to_string());
+                ids.push(title.to_lowercase());
+            }
+            // alias & aliases
+            for key in &["alias", "aliases"] {
+                if let Some(arr) = fm.get(*key).and_then(|v| v.as_array()) {
+                    for item in arr {
+                        if let Some(s) = item.as_str() {
                             ids.push(s.to_string());
                             ids.push(s.to_lowercase());
                         }
                     }
+                } else if let Some(s) = fm.get(*key).and_then(|v| v.as_str()) {
+                    ids.push(s.to_string());
+                    ids.push(s.to_lowercase());
                 }
             }
-            Some(ids)
-        })
-        .flatten()
-        .collect();
+        }
+    }
     ids
+}
+
+/// Build known ID and entity set for reference and wikilink checking across a PKB,
+/// returning the ID set along with (files_scanned, files_read) execution statistics.
+/// Uses persistent cache to avoid un-cached full scans.
+pub fn build_known_ids_with_stats(pkb_root: &Path) -> (HashSet<String>, usize, usize) {
+    let cache_path = known_ids_cache_path(pkb_root);
+    let mut cache: KnownIdsCacheData = if let Ok(bytes) = std::fs::read(&cache_path) {
+        bincode::deserialize(&bytes).unwrap_or_default()
+    } else {
+        KnownIdsCacheData::default()
+    };
+
+    let files = pkb::scan_directory(pkb_root);
+    let files_scanned = files.len();
+
+    let current_rel_paths: HashSet<PathBuf> = files
+        .iter()
+        .filter_map(|p| p.strip_prefix(pkb_root).ok().map(|r| r.to_path_buf()))
+        .collect();
+
+    let mut cache_modified = false;
+    let initial_cache_len = cache.files.len();
+    cache.files.retain(|k, _| current_rel_paths.contains(k));
+    if cache.files.len() != initial_cache_len {
+        cache_modified = true;
+    }
+
+    let (_hits, misses): (Vec<_>, Vec<_>) = files.into_par_iter().partition_map(|p| {
+        let rel = match p.strip_prefix(pkb_root) {
+            Ok(r) => r.to_path_buf(),
+            Err(_) => return rayon::iter::Either::Right((p, None)),
+        };
+        if let Ok(meta) = std::fs::metadata(&p) {
+            if let Ok(mtime) = meta.modified() {
+                let size = meta.len();
+                if let Some(entry) = cache.files.get(&rel) {
+                    if entry.0 == mtime && entry.1 == size {
+                        return rayon::iter::Either::Left((rel, entry.2.clone()));
+                    }
+                }
+                return rayon::iter::Either::Right((p, Some((rel, mtime, size))));
+            }
+        }
+        rayon::iter::Either::Right((p, None))
+    });
+
+    let files_read = misses.len();
+    if files_read > 0 {
+        cache_modified = true;
+    }
+
+    let newly_extracted: Vec<(Option<(PathBuf, std::time::SystemTime, u64)>, Vec<String>)> = misses
+        .into_par_iter()
+        .map(|(p, stamp_info)| {
+            let ids = extract_known_ids_from_file(&p, pkb_root);
+            (stamp_info, ids)
+        })
+        .collect();
+
+    for (stamp_info, ids) in newly_extracted {
+        if let Some((rel, mtime, size)) = stamp_info {
+            cache.files.insert(rel, (mtime, size, ids));
+        }
+    }
+
+    if cache_modified || !cache_path.exists() {
+        if let Ok(data) = bincode::serialize(&cache) {
+            let tmp_path = cache_path.with_extension("bin.tmp");
+            if std::fs::write(&tmp_path, &data).is_ok() {
+                let _ = std::fs::rename(&tmp_path, &cache_path);
+            }
+        }
+    }
+
+    let mut all_ids = HashSet::new();
+    for (_, _, ids) in cache.files.values() {
+        for id in ids {
+            all_ids.insert(id.clone());
+        }
+    }
+
+    (all_ids, files_scanned, files_read)
+}
+
+/// Build known ID and entity set for reference and wikilink checking across a PKB.
+/// Includes node id, task_id, aliases, permalinks, titles, and filenames (both stem and .md).
+/// Uses persistent cache to avoid un-cached full scans.
+pub fn build_known_ids(pkb_root: &Path) -> HashSet<String> {
+    build_known_ids_with_stats(pkb_root).0
 }
 
 fn is_target_known(target: &str, known_ids: &HashSet<String>) -> bool {
@@ -2551,8 +2638,66 @@ fn is_target_known(target: &str, known_ids: &HashSet<String>) -> bool {
     false
 }
 
+/// Strip inline markdown code spans (enclosed in single or multiple backticks) from a line,
+/// replacing their content with spaces to preserve character offsets while ignoring wikilinks inside.
+fn strip_inline_code_spans(line: &str) -> String {
+    let bytes = line.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'`' {
+            let start = i;
+            while i < bytes.len() && bytes[i] == b'`' {
+                i += 1;
+            }
+            let fence_len = i - start;
+            // Search for matching closing backtick run of exact length fence_len
+            let mut close_pos = None;
+            let mut j = i;
+            while j < bytes.len() {
+                if bytes[j] == b'`' {
+                    let c_start = j;
+                    while j < bytes.len() && bytes[j] == b'`' {
+                        j += 1;
+                    }
+                    if j - c_start == fence_len {
+                        close_pos = Some((c_start, j));
+                        break;
+                    }
+                } else {
+                    j += 1;
+                }
+            }
+            if let Some((_, end)) = close_pos {
+                out.resize(out.len() + (end - start), b' ');
+                i = end;
+            } else {
+                for b in &bytes[start..i] {
+                    out.push(*b);
+                }
+            }
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// Returns the path to the binary cache of known IDs for a PKB root.
+/// Prefers `.git/pkb_known_ids.bin` if `.git` is a directory, otherwise `.pkb_known_ids.bin`.
+pub fn known_ids_cache_path(pkb_root: &Path) -> PathBuf {
+    let git_dir = pkb_root.join(".git");
+    if git_dir.is_dir() {
+        git_dir.join("pkb_known_ids.bin")
+    } else {
+        pkb_root.join(".pkb_known_ids.bin")
+    }
+}
+
 /// Check all wikilinks in `content` against `known_ids`.
 /// Reports any link whose target does not resolve to an id, alias, permalink, title, or filename.
+/// Ignores wikilink syntax inside code fences (``` and ~~~) and inline backticks.
 pub fn check_wikilinks(
     content: &str,
     known_ids: &HashSet<String>,
@@ -2561,12 +2706,53 @@ pub fn check_wikilinks(
     static WIKILINK_RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
     let re = WIKILINK_RE.get_or_init(|| regex::Regex::new(r"\[\[(.*?)\]\]").unwrap());
 
+    struct FenceState {
+        fence_char: u8,
+        fence_len: usize,
+    }
+    let mut in_fence: Option<FenceState> = None;
+
     for (i, line) in content.lines().enumerate() {
         let line_num = i + 1;
-        if !line.contains("[[") {
+
+        let trimmed_start = line.trim_start();
+        let indent = line.len() - trimmed_start.len();
+
+        if let Some(ref state) = in_fence {
+            if indent <= 3 {
+                let fence_bytes = trimmed_start.as_bytes();
+                let count = fence_bytes.iter().take_while(|&&b| b == state.fence_char).count();
+                if count >= state.fence_len {
+                    let rest = trimmed_start[count..].trim();
+                    if rest.is_empty() {
+                        in_fence = None;
+                        continue;
+                    }
+                }
+            }
             continue;
         }
-        for cap in re.captures_iter(line) {
+
+        if indent <= 3 {
+            let fence_bytes = trimmed_start.as_bytes();
+            let fence_char = fence_bytes.first().copied().unwrap_or(0);
+            if fence_char == b'`' || fence_char == b'~' {
+                let count = fence_bytes.iter().take_while(|&&b| b == fence_char).count();
+                if count >= 3 {
+                    let rest = &trimmed_start[count..];
+                    if fence_char != b'`' || !rest.contains('`') {
+                        in_fence = Some(FenceState { fence_char, fence_len: count });
+                        continue;
+                    }
+                }
+            }
+        }
+
+        let line_to_check = strip_inline_code_spans(line);
+        if !line_to_check.contains("[[") {
+            continue;
+        }
+        for cap in re.captures_iter(&line_to_check) {
             let inner = &cap[1];
             let trimmed = inner.trim();
             if trimmed.starts_with('#') {
@@ -4770,5 +4956,171 @@ Broken links:
         let d4 = broken_wikilink_diags.iter().find(|d| d.line == Some(20)).expect("broken on line 20");
         assert_eq!(d4.severity, Severity::Warning);
         assert!(d4.message.contains("[[]]"), "message should name link: {}", d4.message);
+    }
+
+    #[test]
+    fn test_check_wikilinks_ignores_code_fences_and_inline_backticks() {
+        let content = r#"---
+id: source_test
+title: Test Note
+type: note
+---
+
+Valid link:
+- [[valid_target]]
+
+Code fence with triple backticks:
+```rust
+let link = "[[broken_fence_backtick]]";
+```
+
+Code fence with triple tildes:
+~~~python
+link = "[[broken_fence_tilde]]"
+~~~
+
+Inline code with backticks:
+- Single backtick: `[[broken_inline_single]]`
+- Double backtick: ``[[broken_inline_double]]``
+- Mixed in prose: Some text with `code [[broken_inline_mixed]] inside` here.
+
+Real broken link that must be reported:
+- [[real_broken_link]]
+"#;
+        let mut known = HashSet::new();
+        known.insert("valid_target".to_string());
+
+        let mut diags = Vec::new();
+        check_wikilinks(content, &known, &mut diags);
+
+        let broken_msgs: Vec<String> = diags.iter().map(|d| d.message.clone()).collect();
+        assert_eq!(
+            diags.len(),
+            1,
+            "Expected exactly 1 diagnostic for real_broken_link, but got {}: {:?}",
+            diags.len(),
+            broken_msgs
+        );
+        assert!(
+            diags[0].message.contains("[[real_broken_link]]"),
+            "Expected diagnostic to be real_broken_link, got: {}",
+            diags[0].message
+        );
+    }
+
+    #[test]
+    fn test_build_known_ids_cache_persistence_and_staleness() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+
+        // 1. Create 5 sample notes
+        for i in 1..=5 {
+            std::fs::write(
+                root.join(format!("note_{i}.md")),
+                format!("---\nid: note_{i}\ntitle: Note {i}\ntype: note\n---\n\nBody {i}\n"),
+            ).unwrap();
+        }
+
+        // 2. Initial build: cold start reads all 5 files and creates cache
+        let (ids1, scanned1, read1) = build_known_ids_with_stats(root);
+        assert_eq!(scanned1, 5);
+        assert_eq!(read1, 5);
+        assert!(ids1.contains("note_1"));
+        assert!(ids1.contains("note_5"));
+
+        let cache_file = known_ids_cache_path(root);
+        assert!(
+            cache_file.exists(),
+            "known_ids cache file {:?} must exist after build_known_ids",
+            cache_file
+        );
+
+        // 3. Second run with unchanged files: 0 files read (full cache hit)
+        let (ids2, scanned2, read2) = build_known_ids_with_stats(root);
+        assert_eq!(scanned2, 5);
+        assert_eq!(read2, 0, "Second run with no changes must read 0 files (full cache hit)");
+        assert_eq!(ids1, ids2);
+
+        // 4. Modify 1 file: only that 1 file is read, other 4 are cache hits
+        std::thread::sleep(std::time::Duration::from_millis(15));
+        std::fs::write(
+            root.join("note_1.md"),
+            "---\nid: note_1\ntitle: Updated Title One\ntype: note\naliases:\n  - New Alias\n---\n\nUpdated body\n",
+        ).unwrap();
+
+        let (ids3, scanned3, read3) = build_known_ids_with_stats(root);
+        assert_eq!(scanned3, 5);
+        assert_eq!(read3, 1, "Only the 1 modified file should be read; 4 remain cache hits");
+        assert!(ids3.contains("new alias"));
+        assert!(ids3.contains("updated title one"));
+
+        // 5. Delete 1 file: removed from cache, 0 files read
+        std::fs::remove_file(root.join("note_5.md")).unwrap();
+        let (ids4, scanned4, read4) = build_known_ids_with_stats(root);
+        assert_eq!(scanned4, 4);
+        assert_eq!(read4, 0, "No files modified, only removed: 0 files read");
+        assert!(!ids4.contains("note_5"));
+    }
+
+    #[test]
+    fn test_single_file_wikilink_lint_sub_second_benchmark() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+
+        // Generate 300 notes across multiple subdirectories
+        for sub in &["tasks", "notes", "knowledge"] {
+            std::fs::create_dir_all(root.join(sub)).unwrap();
+        }
+
+        for i in 0..300 {
+            let sub = if i < 100 { "tasks" } else if i < 200 { "notes" } else { "knowledge" };
+            let file_path = root.join(sub).join(format!("doc_{i:04}.md"));
+            let content = format!(
+                "---\nid: doc_{i:04}\ntitle: Document {i:04}\ntype: note\naliases:\n  - Alias {i:04}\n---\n\n## Content for document {i:04}\n\nReferences [[doc_0001]] and [[doc_0002]].\n"
+            );
+            std::fs::write(&file_path, content).unwrap();
+        }
+
+        // Create staged file to lint
+        let staged_file = root.join("tasks").join("staged_task.md");
+        std::fs::write(
+            &staged_file,
+            "---\nid: staged_task\ntitle: Staged Task\ntype: task\nstatus: ready\n---\n\nLink to [[doc_0042]] and broken [[no_such_target]].\n",
+        ).unwrap();
+
+        // Warm up / build cache
+        let (initial_ids, _, read_count) = build_known_ids_with_stats(root);
+        assert!(read_count >= 300);
+        assert!(initial_ids.contains("doc_0042"));
+
+        // Benchmark single-file broken wikilink check on warm cache
+        let start = std::time::Instant::now();
+        let (known_ids, scanned, read) = build_known_ids_with_stats(root);
+        let file_res = lint_file(&staged_file, false, Some(&known_ids), None, None);
+        let elapsed = start.elapsed();
+
+        assert_eq!(read, 0, "Warm cache must read 0 files from corpus");
+        assert_eq!(scanned, 301);
+
+        let broken_diags: Vec<_> = file_res
+            .diagnostics
+            .iter()
+            .filter(|d| d.rule == "ref-broken-wikilink")
+            .collect();
+        assert_eq!(broken_diags.len(), 1);
+        assert!(broken_diags[0].message.contains("[[no_such_target]]"));
+
+        eprintln!(
+            "Single-file wikilink check latency across 301 files: {:.2?} ({:.3} ms)",
+            elapsed,
+            elapsed.as_secs_f64() * 1000.0
+        );
+
+        // Sub-second requirement: must complete in under 500ms
+        assert!(
+            elapsed < std::time::Duration::from_millis(500),
+            "Single file check took {:?} — expected sub-second (<500ms)",
+            elapsed
+        );
     }
 }
