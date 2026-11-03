@@ -17,7 +17,7 @@ impl PkbSearchServer {
         let mut tools = vec![
             Tool::new(
                 "search",
-                "Hybrid semantic + graph search across the PKB using ONNX embeddings. Proximity boosting supported. Detail levels: 'chunk' (matching chunk text), 'snippet' (short ~300-char extract), 'full' (complete document body), 'metadata' (lean metadata: id, title, type, status, score), 'ids' (matching IDs only).",
+                "Hybrid semantic + graph search across the PKB using ONNX embeddings. If search times out, back off and retry. Detail levels: 'chunk' (matching chunk text), 'snippet' (short ~300-char extract), 'full' (complete document body), 'metadata' (lean metadata: id, title, type, status, score), 'ids' (matching IDs only).",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
