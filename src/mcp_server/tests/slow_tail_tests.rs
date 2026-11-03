@@ -76,6 +76,100 @@ fn test_concurrent_searches_do_not_serialise() {
 }
 
 #[test]
+fn test_concurrent_five_searches_do_not_serialise() {
+    let mut embedder = Embedder::new_dummy();
+    // Configure simulated session inference delay to test concurrency (50ms per query)
+    embedder.set_dummy_delay(std::time::Duration::from_millis(50));
+    let embedder = Arc::new(embedder);
+
+    let barrier = Arc::new(std::sync::Barrier::new(5));
+    let mut handles = Vec::new();
+
+    for i in 0..5 {
+        let b = Arc::clone(&barrier);
+        let e = Arc::clone(&embedder);
+        handles.push(std::thread::spawn(move || {
+            b.wait();
+            e.encode_query(&format!("query fanout item {i}")).unwrap()
+        }));
+    }
+
+    let start = Instant::now();
+    for h in handles {
+        let _ = h.join().unwrap();
+    }
+    let elapsed = start.elapsed();
+
+    // AC2: Five parallel searches complete in under twice the latency of one (< 100ms for 50ms inference + scheduling margin)
+    assert!(
+        elapsed < std::time::Duration::from_millis(120),
+        "Concurrent 5-search fanout serialised! Elapsed: {elapsed:?}, expected < 120ms (under 2x single 50ms latency + jitter)"
+    );
+}
+
+#[test]
+fn test_server_concurrent_five_pkb_searches_do_not_serialise() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+
+    std::fs::create_dir_all(root.join("tasks")).unwrap();
+    write_test_polecat_yaml(root);
+    let graph = GraphStore::build(&[], root);
+    let store = VectorStore::new(3);
+    let mut embedder = Embedder::new_dummy();
+    embedder.set_dummy_delay(std::time::Duration::from_millis(50));
+    let db_path = root.join("db");
+    let server = Arc::new(PkbSearchServer::new(
+        Arc::new(RwLock::new(store)),
+        Arc::new(embedder),
+        root.to_path_buf(),
+        db_path,
+        Arc::new(RwLock::new(graph)),
+    ));
+
+    // Populate a task
+    server
+        .handle_create_task(&json!({
+            "id": "task-sample",
+            "title": "Sample task for concurrency test",
+            "slug": "sample-task",
+            "type": "task",
+            "project": "proj-test",
+            "parent": "proj-test",
+            "allow_missing_parent": true,
+        }))
+        .unwrap();
+
+    let barrier = Arc::new(std::sync::Barrier::new(5));
+    let mut handles = Vec::new();
+
+    for i in 0..5 {
+        let b = Arc::clone(&barrier);
+        let s = Arc::clone(&server);
+        handles.push(std::thread::spawn(move || {
+            b.wait();
+            s.handle_pkb_search(&json!({
+                "query": format!("query fanout item {i}"),
+                "format": "json"
+            }))
+            .expect("search should succeed")
+        }));
+    }
+
+    let start = Instant::now();
+    for h in handles {
+        let _ = h.join().unwrap();
+    }
+    let elapsed = start.elapsed();
+
+    // AC2: 5 parallel searches across server complete in under twice single query inference latency + scheduling margin
+    assert!(
+        elapsed < std::time::Duration::from_millis(120),
+        "Server concurrent 5-search fanout serialised! Elapsed: {elapsed:?}, expected < 120ms (under 2x single 50ms latency + jitter)"
+    );
+}
+
+#[test]
 fn test_pkb_search_ids_only_mode() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path();
