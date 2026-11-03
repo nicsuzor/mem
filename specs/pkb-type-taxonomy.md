@@ -120,7 +120,7 @@ These never appear in task operations. They are knowledge artifacts, not work to
 | ----------- | -------------------------------------------------------------------------------- |
 | `target`    | Strategic destination / outcome milestone (linked via `contributes_to` on tasks) |
 | `note`      | General knowledge, observations, insights                                        |
-| `memory`    | Agent/system memories                                                            |
+| `memory`    | Agent/system memories (episodic or persistent agent observations; never behavioural rules or standing decisions, which live in specs or axioms) |
 | `contact`   | People                                                                           |
 | `document`  | Generic documents                                                                |
 | `reference` | External reference material                                                      |
@@ -171,6 +171,7 @@ Per task `mem_5c476567`, every node type in `VALID_NODE_TYPES` has been audited 
    - *Justification*: `pr` nodes represent external GitHub pull requests with dedicated lifecycle sync semantics (branch tracking, merge reconciliation, external review gates).
 5. **Reference Types (`note`, `memory`, `contact`, `document`, `reference`, `review`, `case`, `spec`, `knowledge`) — Kept Distinct (Explicit Justification)**:
    - *Justification*: These types do not differ merely by empty optional fields. They represent distinct domain ontologies, semantic indexing schemas, and external entity bindings across the PKB.
+   - *Scope of `memory`*: Holds agent/system memories and episodic observations. `memory` does **not** admit decisions or constraints that are rules: behavioural rules, operational constraints, and standing doctrine about agent or PKB behaviour live in specs, agent definitions, or axioms (`specs/pkb-rules.md` §1.4), never in `memory` or `note` documents.
 6. **Structural Types (`index`, `daily`, `session-log`, `audit-report`) — Kept Distinct (Explicit Justification)**:
    - *Justification*: These represent infrastructure files with dedicated maintenance lifecycles and automated rollups (e.g. daily note loggers, audit tooling).
 
