@@ -2201,10 +2201,13 @@ impl PkbSearchServer {
             )
         };
 
-        // Accept two forms for convenience:
-        //   1. Nested: {"id": "...", "updates": {"status": "done"}}
-        //   2. Flat:   {"id": "...", "status": "done"}
-        // If `updates` is present, it wins. Otherwise collect top-level fields.
+        // Accept three forms for convenience:
+        //   1. Flat:   {"id": "...", "status": "done"}
+        //   2. Nested: {"id": "...", "updates": {"status": "done"}}
+        //   3. Mixed:  {"id": "...", "status": "done", "updates": {"branch": null}}
+        // In mixed calls, top-level and nested fields are merged. If a field is
+        // specified at both levels with conflicting values, reject the call naming
+        // the conflicting fields (mem_33da554c).
         const ROUTING_KEYS: &[&str] = &[
             "id",
             "updates",
@@ -2213,19 +2216,60 @@ impl PkbSearchServer {
             "force",
             "allow_missing_parent",
         ];
-        let mut updates: serde_json::Map<String, serde_json::Value> =
-            if let Some(nested) = args.get("updates").and_then(|v| v.as_object()) {
-                nested.clone()
-            } else {
-                args.as_object()
-                    .map(|obj| {
-                        obj.iter()
-                            .filter(|(k, _)| !ROUTING_KEYS.contains(&k.as_str()))
-                            .map(|(k, v)| (k.clone(), v.clone()))
-                            .collect()
-                    })
-                    .unwrap_or_default()
-            };
+        let top_level_fields: serde_json::Map<String, serde_json::Value> = args
+            .as_object()
+            .map(|obj| {
+                obj.iter()
+                    .filter(|(k, _)| !ROUTING_KEYS.contains(&k.as_str()))
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        let nested_updates = match args.get("updates") {
+            Some(serde_json::Value::Object(map)) => Some(map),
+            Some(serde_json::Value::Null) | None => None,
+            Some(_) => {
+                return Err(McpError {
+                    code: ErrorCode::INVALID_PARAMS,
+                    message: Cow::from("Invalid parameter: 'updates' must be an object."),
+                    data: None,
+                });
+            }
+        };
+
+        let mut updates = if let Some(nested) = nested_updates {
+            let mut conflicts: Vec<String> = Vec::new();
+            for (k, top_val) in &top_level_fields {
+                if let Some(nested_val) = nested.get(k) {
+                    if top_val != nested_val {
+                        conflicts.push(k.clone());
+                    }
+                }
+            }
+            if !conflicts.is_empty() {
+                conflicts.sort();
+                let fields_str = conflicts
+                    .iter()
+                    .map(|f| format!("'{f}'"))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                return Err(McpError {
+                    code: ErrorCode::INVALID_PARAMS,
+                    message: Cow::from(format!(
+                        "Conflicting values for field(s) {fields_str} provided at both top level and in `updates` map. Specify each field in only one location or ensure values match."
+                    )),
+                    data: None,
+                });
+            }
+            let mut merged = top_level_fields;
+            for (k, v) in nested {
+                merged.insert(k.clone(), v.clone());
+            }
+            merged
+        } else {
+            top_level_fields
+        };
 
         // Bug 2 (task-d802855c): `unparent` is a routing directive, never a
         // frontmatter field. Accept it from EITHER the top-level args or the
