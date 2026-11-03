@@ -100,7 +100,7 @@ The server computes deterministic metrics (counts, depths, degrees). It does NOT
 ### Performance & Availability
 
 - **Immediate Feedback**: CLI commands (search, tasks, status) respond in <500ms for typical PKBs (<5,000 nodes).
-- **Search Latency**: MCP hybrid search returns results within 2 seconds.
+- **Search Latency**: MCP hybrid search returns results within 2 seconds. A fan-out of 5 parallel searches completes in under twice the latency of a single query without serialising, supported by a pre-warmed multi-session embedding pool.
 - **Self-invalidating graph index (validate-on-read)**: the in-memory graph index validates on-disk freshness against a fast stat-only generation stamp (`file_count` + `max_mtime`, ~32–45ms for 8,000 files). If an external write occurs (a write from another `pkb mcp` process, git-sync sidecar, CLI mutation, or direct text edit), read operations (`list_tasks`, `get_task`, `task_search`, `task_summary`, etc.) automatically invalidate and rebuild the graph before responding. `refresh_graph` remains available as an explicit escape hatch but is no longer a precondition for freshness. Internal in-place graph mutations (e.g. `upsert_node_in_place`) maintain this generation stamp incrementally in O(1) time without rescanning the filesystem while holding the exclusive graph write lock.
 
 ### Data Integrity & Portability
@@ -196,44 +196,76 @@ End-to-end retrieval specification lives in [`specs/search.md`](search.md).
 - `since` / `before` (string, optional): ISO date range filters.
 - `boost_id` (string, optional): Target node ID for graph-proximity boosting.
 - `floor` / `min_score` (number, optional, default 0.0): Strict relevance floor in `[0.0, 1.0]`. Items below floor are never promoted above floor by recency or read priors.
-- `detail` (string, optional, enum: `["chunk", "snippet", "full", "metadata", "ids"]`, default `"chunk"`): Level of text detail in results.
+- `detail` (string, optional, enum: `["chunk", "snippet", "full", "metadata", "ids"]`, default `"chunk"`): Level of text detail in results. 'chunk' returns matching chunk text; 'snippet' returns short ~300-char extract; 'full' returns complete document body (subject to max_bytes); 'metadata' returns lean metadata only (id, title, type, status, score; omitting ranking internals and tag lists); 'ids' returns matching IDs only. Unknown values return `INVALID_PARAMS`.
 - `ids_only` (boolean, optional): Return only matching document IDs.
 - `max_bytes` (integer, optional): Maximum byte cap for returned extracts.
 - `format` (string, optional, enum: `["markdown", "json"]`): Output formatting mode.
 
-**Structured Output (`items` / `results`)**:
+**Structured Output (`results`)**:
+Search responses return a single `results` array (never duplicating entries under `items`).
 Each returned result item contains:
 - `id` (string): Canonical document identifier.
 - `title` (string): Document title.
 - `type` (string): Node document type (e.g., `task`, `note`, `daily`).
 - `score` (number): Final composite score after RRF fusion, cross-encoder reranking, graph proximity, recency decay, and access boost under floor invariance.
-- `tags` (array of strings): Tags defined in document frontmatter.
+- `tags` (array of strings, omitted when `detail: "metadata"`): Tags defined in document frontmatter.
 - `status` (string, optional): Task status if applicable.
-- `project` (string, optional): Canonical project routing slug if applicable.
-- `extract` (string, optional): Best-matching contextual chunk text or snippet.
-- `recency_decay` (number): Document recency factor in `[0.85, 1.0]`. Daily notes decay via `0.85 + 0.15 * exp(-age / 14)`; tasks, epics, projects, and targets are immune (`1.0`).
-- `recent_read_boost` (number): Multiplicative access boost factor in `[1.0, 1.20]` derived from salience.
-- `salience` (number): Decayed salience score (`[0.0, 100.0]`) tracking historical document access frequency and recency.
+- `project` (string, optional, omitted when `detail: "metadata"`): Canonical project routing slug if applicable.
+- `extract` (string, optional, omitted when `detail: "metadata"`): Best-matching contextual chunk text or snippet.
+- `recency_decay` (number, omitted when `detail: "metadata"`): Document recency factor in `[0.85, 1.0]`. Daily notes decay via `0.85 + 0.15 * exp(-age / 14)`; tasks, epics, projects, and targets are immune (`1.0`).
+- `recent_read_boost` (number, omitted when `detail: "metadata"`): Multiplicative access boost factor in `[1.0, 1.20]` derived from salience.
+- `salience` (number, omitted when `detail: "metadata"`): Decayed salience score (`[0.0, 100.0]`) tracking historical document access frequency and recency.
 
 #### Document Retrieval Schema (`get_document`)
 
 **Parameters**:
 - `id` (string, optional): Document ID, title, or filename stem.
 - `ids` (array of strings, optional): Batch read of document IDs.
-- `detail` (string, optional, enum: `["metadata", "summary", "full"]`): Content detail level.
+- `detail` (string, optional, enum: `["metadata", "summary", "full"]`, default `"full"`): Content detail level. 'full' returns complete document body and metadata; 'summary' returns excerpted body up to 300 chars; 'metadata' returns frontmatter and document metadata without body. Unknown values return `INVALID_PARAMS`.
+- `fields` (string or array of strings, optional): Field projection in JSON mode. When specified, only named keys are retained in output.
 - `metadata_only` (boolean, optional): Return only parsed frontmatter.
-- `max_bytes` (integer, optional, default none / full body): Maximum body length before truncation. When omitted, the full body is returned. When truncated, the returned body carries an in-text notice at the cut naming the cut and explaining how to read the rest.
+- `max_bytes` (integer, optional, default none / full body): Maximum body length before truncation. When omitted, single reads return the full body. When truncated, the returned body carries an in-text notice at the cut naming the cut and explaining how to read the rest.
 - `format` (string, optional, enum: `["markdown", "json"]`): Return format.
 
 **Structured Output**:
+Single reads return the document payload once using `body` (the redundant `content` key is removed). Batch reads (`ids`) return `items`. Null and empty frontmatter keys are stripped.
 - `id` (string): Resolved canonical ID (always the canonical node ID, even when requested by alias).
 - `title` (string): Document title.
-- `frontmatter` (object): Parsed YAML frontmatter.
+- `frontmatter` (object): Parsed YAML frontmatter (with null and empty values stripped).
 - `links_in` (array of objects, optional): Inbound links and edges pointing to this node (wikilinks, dependencies, hierarchy, and flow links), listing each source ID in `from`.
-- `body` / `content` (string): Document body text (full by default; carries cut notice if truncated by `max_bytes`).
+- `body` (string): Document body text (full by default; carries cut notice if truncated by `max_bytes`).
 - `truncated` (boolean): Whether content was truncated by `max_bytes`.
 - `body_bytes` (integer): Total un-truncated body byte size.
 - `salience` (number): Document salience score, updated exponentially upon MCP retrieval access.
+
+#### Document Listing Schema (`list_documents`)
+
+**Parameters**:
+- `tag` (string, optional): Filter by tag.
+- `tags` (string or array of strings, optional): Filter requiring all specified tags.
+- `type` (string, optional): Filter by document type.
+- `status` (string, optional): Filter by task status.
+- `title_contains` (string, optional): Case-insensitive substring filter on document title.
+- `since` / `before` (string, optional): ISO date / RFC3339 range filters on document `modified` time.
+- `fields` (string or array of strings, optional): Field projection in JSON mode.
+- `limit` (integer, optional): Maximum results to return (capped at `MAX_RESULTS`).
+- `offset` (integer, optional, default 0): Result pagination offset.
+- `budget_ms` (integer, optional): Soft deadline in milliseconds for partial results.
+- `format` (string, optional, enum: `["markdown", "json"]`, default `"markdown"`): Output formatting mode.
+
+**Structured Output (`documents`)**:
+Responses carry matching documents under a single `documents` array (never duplicating under `items`). Empty matches return `"documents": []`.
+- `id` (string): Canonical document identifier.
+- `title` (string): Document title.
+- `type` (string, optional): Node document type.
+- `tags` (array of strings): Tags defined on document.
+- `status` (string, optional): Document status if present.
+- `modified` (string): Last modified timestamp in RFC 3339 format, resolved from frontmatter `modified` or falling back to the file's disk modification time. Never `null` when the file has a modified time.
+
+#### Task Listing Schema (`list_tasks`)
+
+**Structured Output (`tasks`)**:
+Responses carry matching tasks under a single `tasks` array (never duplicating under `items`). Empty matches return `"tasks": []`. Batch task reads (`get_task` with `ids`) return `items` and honour `fields` projection. Detail level on `get_task` supports `"full"`, `"summary"`, `"metadata"`, and rejects unknown values with `INVALID_PARAMS`. Null and empty frontmatter keys are stripped.
 
 **Success criteria**:
 
@@ -310,7 +342,9 @@ Create and maintain knowledge artifacts. Notes, memories, insights.
 
 **Routing**: Documents auto-route to subdirectories by type (tasks/ projects/ goals/ notes/).
 
-**Convert in place** (`convert_document`): given an existing document ID and a new `type`, the server replaces the frontmatter `type`, then moves and renames the *same* file to `<dir>/<id>_<title-slug>.md` and reindexes it (graph patch, vector entry re-keyed to the new path). The ID never changes: it is written into frontmatter before the rename, so a document whose ID was only its filename stem (e.g. a mobile capture) keeps it. `dir` defaults to the type's routing directory (task/learn → `tasks/`, target → `targets/`, memory → `memories/`, otherwise `notes/`). Converting to a task type always leaves a valid task status: the `status` argument, else the existing status, else `inbox`. An existing status that is not a valid task status is rejected unless `status` replaces it. Every check runs before any write. The retype and the move are separate git commits, so git records the move as a rename. Re-running with the same arguments is a no-op, and finishes a conversion whose move step failed. Parent, project and other fields are set afterwards with `update_task`.
+**Batch Deletion** (`delete`): Accepts either a single `id` or a list of `ids`. When passed a list of `ids`, one call attempts to delete all specified documents, updating the graph and vector index for each. Missing or invalid IDs are reported with individual failure outcomes without aborting the deletion of valid IDs in the list.
+
+**Convert and Rename in place** (`convert_document`): given an existing document ID, optionally a new `type`, new `title`, and/or filename `slug`, the server updates frontmatter `title` and/or `type`, moves and renames the *same* file to `<dir>/<id>_<title_or_slug>.md` (`<dir>/<snake_case id>.md` for workflows), and reindexes it (graph patch, vector entry re-keyed to the new path). The canonical `id` is retained in frontmatter, and any differing previous filename stem or alias is recorded under `alias` so the note remains continuously reachable by its old ID and historical identifiers. When `type` is omitted, the document preserves its existing type. `dir` defaults to the routing directory for the document type (task/learn → `tasks/`, target → `targets/`, memory → `memories/`, otherwise `notes/`). Converting to a task type always leaves a valid task status: the `status` argument, else the existing status, else `inbox`. An existing status that is not a valid task status is rejected unless `status` replaces it. Every check runs before any write. The retype and the move are separate git commits, so git records the move as a rename. Re-running with the same arguments is a no-op, and finishes a conversion whose move step failed. Parent, project and other fields are set afterwards with `update_task`.
 
 **Success criteria**:
 

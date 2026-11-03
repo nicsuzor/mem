@@ -3454,6 +3454,7 @@ pub fn template_filename(id: &str) -> Result<String> {
 #[derive(Debug, Clone)]
 pub struct ConvertResult {
     pub id: String,
+    pub title: String,
     pub old_type: Option<String>,
     pub new_type: String,
     pub status: Option<String>,
@@ -3464,8 +3465,8 @@ pub struct ConvertResult {
 }
 
 /// Convert an existing document in place: replace its frontmatter `type`,
-/// then move and rename the same file to `<dir>/<id>_<title-slug>.md`
-/// (`<dir>/<snake_case id>.md` for `type: template`).
+/// optionally update `title`, then move and rename the same file to
+/// `<dir>/<id>_<title_or_slug>.md` (`<dir>/<snake_case id>.md` for `type: template`).
 /// The ID is kept — it is written into frontmatter before the rename, so a
 /// document whose ID was only its filename stem keeps that ID afterwards.
 ///
@@ -3484,31 +3485,14 @@ pub fn convert_document(
     abs_path: &Path,
     id: &str,
     title: &str,
-    new_type: &str,
+    new_type: Option<&str>,
+    new_title: Option<&str>,
+    slug: Option<&str>,
     dir: Option<&str>,
     status: Option<&str>,
 ) -> Result<ConvertResult> {
     use gray_matter::engine::YAML;
     use gray_matter::Matter;
-
-    if !crate::graph::is_valid_node_type(new_type) {
-        let valid_types = crate::graph::VALID_NODE_TYPES.join(", ");
-        anyhow::bail!(
-            "Invalid node type: {}. Must be one of: {}",
-            new_type,
-            valid_types
-        );
-    }
-    if let Some(d) = dir {
-        if d.trim().is_empty() || !is_safe_relative_path(d) {
-            anyhow::bail!("Invalid dir path: must be relative and cannot contain '..'");
-        }
-    }
-    if let Some(s) = status {
-        if !crate::graph::is_valid_status(s) {
-            anyhow::bail!("Invalid status: {}", s);
-        }
-    }
 
     let content = std::fs::read_to_string(abs_path)
         .with_context(|| format!("Failed to read: {}", abs_path.display()))?;
@@ -3521,8 +3505,37 @@ pub fn convert_document(
     let fm_str = |k: &str| fm.get(k).and_then(|v| v.as_str()).map(String::from);
     let old_type = fm_str("type");
     let old_status = fm_str("status");
+    let old_title = fm_str("title").unwrap_or_else(|| title.to_string());
 
-    let new_status = if crate::graph::TASK_TYPES.contains(&new_type) {
+    let effective_type = match new_type {
+        Some(t) => {
+            if !crate::graph::is_valid_node_type(t) {
+                let valid_types = crate::graph::VALID_NODE_TYPES.join(", ");
+                anyhow::bail!(
+                    "Invalid node type: {}. Must be one of: {}",
+                    t,
+                    valid_types
+                );
+            }
+            t.to_string()
+        }
+        None => old_type.as_deref().unwrap_or("note").to_string(),
+    };
+
+    let effective_title = new_title.unwrap_or(&old_title).to_string();
+
+    if let Some(d) = dir {
+        if d.trim().is_empty() || !is_safe_relative_path(d) {
+            anyhow::bail!("Invalid dir path: must be relative and cannot contain '..'");
+        }
+    }
+    if let Some(s) = status {
+        if !crate::graph::is_valid_status(s) {
+            anyhow::bail!("Invalid status: {}", s);
+        }
+    }
+
+    let new_status = if crate::graph::TASK_TYPES.contains(&effective_type.as_str()) {
         match (status, old_status.as_deref()) {
             (Some(s), _) => Some(s.to_string()),
             (None, Some(s)) if crate::graph::is_valid_status(s) => Some(s.to_string()),
@@ -3536,17 +3549,18 @@ pub fn convert_document(
         status.map(String::from).or(old_status.clone())
     };
 
-    let is_template = new_type == TEMPLATE_TYPE;
+    let is_template = effective_type == TEMPLATE_TYPE;
     let subdir = match dir {
         Some(d) => d.to_string(),
         None if is_template => template_subdir(fm_str("project").as_deref())?,
-        None => default_subdir_for_type(new_type).to_string(),
+        None => default_subdir_for_type(&effective_type).to_string(),
     };
     let target_dir = root.join(&subdir);
     let filename = if is_template {
         template_filename(&sanitize_explicit_id(id))?
     } else {
-        generate_filename(&sanitize_explicit_id(id), title)?
+        let slug_source = slug.unwrap_or(&effective_title);
+        generate_filename(&sanitize_explicit_id(id), slug_source)?
     };
     let new_path = target_dir.join(filename);
     let moved = new_path != abs_path;
@@ -3555,19 +3569,45 @@ pub fn convert_document(
     }
 
     let mut updates = HashMap::new();
-    if old_type.as_deref() != Some(new_type) {
-        updates.insert("type".to_string(), serde_json::json!(new_type));
+    if old_type.as_deref() != Some(&effective_type) {
+        updates.insert("type".to_string(), serde_json::json!(effective_type));
     }
     if fm_str("id").as_deref() != Some(id) {
         updates.insert("id".to_string(), serde_json::json!(id));
     }
+    if fm_str("title").as_deref() != Some(&effective_title) {
+        updates.insert("title".to_string(), serde_json::json!(effective_title));
+    }
     if new_status != old_status {
         updates.insert("status".to_string(), serde_json::json!(new_status));
     }
+    if moved {
+        if let Some(old_stem) = abs_path.file_stem().and_then(|s| s.to_str()) {
+            let mut aliases = Vec::new();
+            if let Some(arr) = fm.get("alias").and_then(|v| v.as_array()) {
+                for item in arr {
+                    if let Some(s) = item.as_str() {
+                        aliases.push(s.to_string());
+                    }
+                }
+            } else if let Some(s) = fm.get("alias").and_then(|v| v.as_str()) {
+                aliases.push(s.to_string());
+            }
+            if !aliases.iter().any(|a| a == old_stem) {
+                aliases.push(old_stem.to_string());
+            }
+            if !aliases.iter().any(|a| a == id) {
+                aliases.push(id.to_string());
+            }
+            updates.insert("alias".to_string(), serde_json::json!(aliases));
+        }
+    }
     let retyped = updates.contains_key("type");
 
-    // Step 1: retype in place (update_document commits the file).
-    update_document(abs_path, updates)?;
+    // Step 1: update frontmatter in place (update_document commits the file).
+    if !updates.is_empty() {
+        update_document(abs_path, updates)?;
+    }
 
     // Step 2: move + rename, committed together so git records a rename.
     if moved {
@@ -3593,8 +3633,9 @@ pub fn convert_document(
 
     Ok(ConvertResult {
         id: id.to_string(),
+        title: effective_title,
         old_type,
-        new_type: new_type.to_string(),
+        new_type: effective_type,
         status: new_status,
         old_path: abs_path.to_path_buf(),
         new_path,
@@ -4494,7 +4535,9 @@ mod tests {
             &old_path,
             &overlong_id,
             "Short note",
-            "task",
+            Some("task"),
+            None,
+            None,
             None,
             Some("inbox"),
         )
@@ -4543,7 +4586,9 @@ mod tests {
             &old_path,
             "note-001",
             long_title,
-            "task",
+            Some("task"),
+            None,
+            None,
             None,
             Some("inbox"),
         )

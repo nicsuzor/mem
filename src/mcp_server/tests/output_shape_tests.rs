@@ -120,10 +120,14 @@ fn test_zero_matches_return_json_envelope() {
     assert_eq!(structured.get("showing").and_then(|v| v.as_u64()), Some(0));
     assert_eq!(
         structured
-            .get("items")
+            .get("tasks")
             .and_then(|v| v.as_array())
             .map(|a| a.len()),
         Some(0)
+    );
+    assert!(
+        structured.get("items").is_none(),
+        "items key must not be present on list_tasks (single payload contract)"
     );
 
     // list_documents on empty graph
@@ -139,10 +143,14 @@ fn test_zero_matches_return_json_envelope() {
     assert_eq!(structured.get("showing").and_then(|v| v.as_u64()), Some(0));
     assert_eq!(
         structured
-            .get("items")
+            .get("documents")
             .and_then(|v| v.as_array())
             .map(|a| a.len()),
         Some(0)
+    );
+    assert!(
+        structured.get("items").is_none(),
+        "items key must not be present on list_documents (single payload contract)"
     );
 
     // search on empty graph
@@ -158,10 +166,14 @@ fn test_zero_matches_return_json_envelope() {
     assert_eq!(structured.get("showing").and_then(|v| v.as_u64()), Some(0));
     assert_eq!(
         structured
-            .get("items")
+            .get("results")
             .and_then(|v| v.as_array())
             .map(|a| a.len()),
         Some(0)
+    );
+    assert!(
+        structured.get("items").is_none(),
+        "items key must not be present on search (single payload contract)"
     );
 }
 
@@ -672,4 +684,361 @@ fn test_complete_task_returns_structured_summary_with_modified() {
         val.get("modified").is_some(),
         "complete_task must return new modified timestamp in structured content"
     );
+}
+
+#[test]
+fn test_ac1_payload_carried_once_per_named_tool() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    let server = make_test_server(root);
+
+    // Write a test task and document
+    let task_path = root.join("tasks/task-ac1.md");
+    std::fs::write(
+        &task_path,
+        "---\nid: task-ac1\ntitle: Task AC1\ntype: task\nstatus: ready\n---\n\nAC1 task body content.\n",
+    )
+    .unwrap();
+    let doc = crate::pkb::parse_file_relative(&task_path, root).unwrap();
+    server.rebuild_graph_for_pkb_document(&doc);
+
+    // 1. search: has 'results', NOT 'items'
+    let search_res = server
+        .handle_pkb_search(&json!({"query": "AC1", "format": "json"}))
+        .expect("search should succeed");
+    let search_val = search_res.structured_content.expect("search structured content");
+    assert!(
+        search_val.get("results").is_some(),
+        "search response must carry 'results'"
+    );
+    assert!(
+        search_val.get("items").is_none(),
+        "search response must NOT carry duplicate 'items'"
+    );
+
+    // 2. get_document: has 'body', NOT 'content'
+    let doc_res = server
+        .handle_get_document(&json!({"id": "task-ac1"}))
+        .expect("get_document should succeed");
+    let doc_val = doc_res.structured_content.expect("get_document structured content");
+    assert!(
+        doc_val.get("body").is_some(),
+        "get_document response must carry 'body'"
+    );
+    assert!(
+        doc_val.get("content").is_none(),
+        "get_document response must NOT carry duplicate 'content'"
+    );
+
+    // 3. list_documents: has 'documents', NOT 'items'
+    let list_docs_res = server
+        .handle_list_documents(&json!({"format": "json"}))
+        .expect("list_documents should succeed");
+    let list_docs_val = list_docs_res.structured_content.expect("list_documents structured content");
+    assert!(
+        list_docs_val.get("documents").is_some(),
+        "list_documents response must carry 'documents'"
+    );
+    assert!(
+        list_docs_val.get("items").is_none(),
+        "list_documents response must NOT carry duplicate 'items'"
+    );
+
+    // 4. list_tasks: has 'tasks', NOT 'items'
+    let list_tasks_res = server
+        .handle_list_tasks(&json!({"format": "json"}))
+        .expect("list_tasks should succeed");
+    let list_tasks_val = list_tasks_res.structured_content.expect("list_tasks structured content");
+    assert!(
+        list_tasks_val.get("tasks").is_some(),
+        "list_tasks response must carry 'tasks'"
+    );
+    assert!(
+        list_tasks_val.get("items").is_none(),
+        "list_tasks response must NOT carry duplicate 'items'"
+    );
+}
+
+#[test]
+fn test_ac2_detail_bogus_rejected_with_valid_values() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    let server = make_test_server(root);
+
+    let task_path = root.join("tasks/task-ac2.md");
+    std::fs::write(
+        &task_path,
+        "---\nid: task-ac2\ntitle: Task AC2\ntype: task\nstatus: ready\n---\n\nAC2 task body content.\n",
+    )
+    .unwrap();
+    let doc = crate::pkb::parse_file_relative(&task_path, root).unwrap();
+    server.rebuild_graph_for_pkb_document(&doc);
+
+    // 1. search with bogus detail
+    let err_search = server
+        .handle_pkb_search(&json!({"query": "AC2", "detail": "bogus"}))
+        .unwrap_err();
+    assert_eq!(err_search.code, ErrorCode::INVALID_PARAMS);
+    let msg = err_search.message.as_ref();
+    assert!(
+        msg.contains("chunk")
+            && msg.contains("snippet")
+            && msg.contains("full")
+            && msg.contains("metadata")
+            && msg.contains("ids"),
+        "search error message must list valid values, got: {msg}"
+    );
+
+    // 2. get_document with bogus detail (single read)
+    let err_doc = server
+        .handle_get_document(&json!({"id": "task-ac2", "detail": "bogus"}))
+        .unwrap_err();
+    assert_eq!(err_doc.code, ErrorCode::INVALID_PARAMS);
+    let msg_doc = err_doc.message.as_ref();
+    assert!(
+        msg_doc.contains("metadata") && msg_doc.contains("summary") && msg_doc.contains("full"),
+        "get_document error message must list valid values, got: {msg_doc}"
+    );
+
+    // 3. get_document with bogus detail (batch read)
+    let err_doc_batch = server
+        .handle_get_document(&json!({"ids": ["task-ac2"], "detail": "bogus"}))
+        .unwrap_err();
+    assert_eq!(err_doc_batch.code, ErrorCode::INVALID_PARAMS);
+
+    // 4. get_task with bogus detail (single read)
+    let err_task = server
+        .handle_get_task(&json!({"id": "task-ac2", "detail": "bogus"}))
+        .unwrap_err();
+    assert_eq!(err_task.code, ErrorCode::INVALID_PARAMS);
+    let msg_task = err_task.message.as_ref();
+    assert!(
+        msg_task.contains("metadata") && msg_task.contains("summary") && msg_task.contains("full"),
+        "get_task error message must list valid values, got: {msg_task}"
+    );
+
+    // 5. get_task with bogus detail (batch read)
+    let err_task_batch = server
+        .handle_get_task(&json!({"ids": ["task-ac2"], "detail": "bogus"}))
+        .unwrap_err();
+    assert_eq!(err_task_batch.code, ErrorCode::INVALID_PARAMS);
+}
+
+#[test]
+fn test_ac3_search_metadata_detail_lean_and_under_2k_tokens() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    let server = make_test_server(root);
+
+    // Write 10 documents with long bodies, tags, etc.
+    for i in 1..=10 {
+        let path = root.join(format!("tasks/doc-{i}.md"));
+        let body = format!("Document body text {} with long description. ", i).repeat(20);
+        let content = format!(
+            "---\nid: doc-{i}\ntitle: Document Number {i}\ntype: task\nstatus: ready\ntags: [tag1, tag2, tag3, tag4]\n---\n\n{body}\n"
+        );
+        std::fs::write(&path, &content).unwrap();
+        let doc = crate::pkb::parse_file_relative(&path, root).unwrap();
+        server.rebuild_graph_for_pkb_document(&doc);
+        server.try_upsert_document(&doc);
+    }
+
+    let search_res = server
+        .handle_pkb_search(&json!({
+            "query": "Document Number",
+            "limit": 10,
+            "detail": "metadata",
+            "format": "json"
+        }))
+        .expect("search should succeed");
+
+    let val = search_res.structured_content.expect("structured content");
+    let results = val.get("results").and_then(|v| v.as_array()).expect("results array");
+    assert_eq!(results.len(), 10, "should return 10 results");
+
+    for hit in results {
+        assert!(hit.get("id").is_some(), "hit must have id");
+        assert!(hit.get("title").is_some(), "hit must have title");
+        assert!(hit.get("type").is_some(), "hit must have type");
+        assert!(hit.get("status").is_some(), "hit must have status");
+        assert!(hit.get("score").is_some(), "hit must have score");
+
+        // Must omit ranking internals and tag lists
+        assert!(hit.get("recency_decay").is_none(), "metadata detail must omit recency_decay");
+        assert!(hit.get("recent_read_boost").is_none(), "metadata detail must omit recent_read_boost");
+        assert!(hit.get("salience").is_none(), "metadata detail must omit salience");
+        assert!(hit.get("tags").is_none(), "metadata detail must omit tags");
+        assert!(hit.get("extract").is_none(), "metadata detail must omit extract");
+    }
+
+    // Token estimate check: 10 hits must stay well under 2k tokens (~4 chars per token)
+    let json_text = serde_json::to_string_pretty(&val).unwrap();
+    let estimated_tokens = json_text.len() / 4;
+    assert!(
+        estimated_tokens < 2000,
+        "10-hit metadata response must stay under 2k tokens (was ~{} tokens)",
+        estimated_tokens
+    );
+}
+
+#[test]
+fn test_ac4_batch_reads_honour_fields_projection_and_single_reads_keep_full_body() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    let server = make_test_server(root);
+
+    let doc1_path = root.join("tasks/batch-doc-1.md");
+    let doc2_path = root.join("tasks/batch-doc-2.md");
+    let prune_path = root.join("tasks/doc-prune.md");
+
+    let long_body = "Important body line.\n".repeat(50); // ~1050 chars
+
+    std::fs::write(
+        &doc1_path,
+        format!("---\nid: batch-doc-1\ntitle: Batch Doc 1\ntype: task\nstatus: ready\n---\n\n{long_body}"),
+    )
+    .unwrap();
+    std::fs::write(
+        &doc2_path,
+        format!("---\nid: batch-doc-2\ntitle: Batch Doc 2\ntype: task\nstatus: in_progress\n---\n\n{long_body}"),
+    )
+    .unwrap();
+    std::fs::write(
+        &prune_path,
+        "---\nid: doc-prune\ntitle: Prune Doc\ntype: task\nstatus: ready\nempty_str: \"\"\nempty_arr: []\nempty_obj: {}\nvalid_key: keep_me\n---\n\nPrune body.\n",
+    )
+    .unwrap();
+
+    for p in [&doc1_path, &doc2_path, &prune_path] {
+        let doc = crate::pkb::parse_file_relative(p, root).unwrap();
+        server.rebuild_graph_for_pkb_document(&doc);
+    }
+
+    // 1. Batch read on get_document honours fields projection
+    let batch_doc_res = server
+        .handle_get_document(&json!({
+            "ids": ["batch-doc-1", "batch-doc-2"],
+            "fields": ["id", "title"]
+        }))
+        .expect("batch get_document should succeed");
+    let batch_doc_val = batch_doc_res.structured_content.unwrap();
+    let items = batch_doc_val.get("items").and_then(|v| v.as_array()).unwrap();
+    assert_eq!(items.len(), 2);
+    for item in items {
+        assert!(item.get("id").is_some());
+        assert!(item.get("title").is_some());
+        assert!(item.get("body").is_none(), "projected fields must omit body");
+        assert!(item.get("frontmatter").is_none(), "projected fields must omit frontmatter");
+    }
+
+    // 2. Batch read on get_task honours fields projection
+    let batch_task_res = server
+        .handle_get_task(&json!({
+            "ids": ["batch-doc-1", "batch-doc-2"],
+            "fields": ["id", "status"]
+        }))
+        .expect("batch get_task should succeed");
+    let batch_task_val = batch_task_res.structured_content.unwrap();
+    let task_items = batch_task_val.get("items").and_then(|v| v.as_array()).unwrap();
+    assert_eq!(task_items.len(), 2);
+    for item in task_items {
+        assert!(item.get("id").is_some());
+        assert!(item.get("status").is_some());
+        assert!(item.get("title").is_none(), "projected fields must omit title");
+        assert!(item.get("body").is_none(), "projected fields must omit body");
+    }
+
+    // 3. Single-target reads keep full body by default
+    let single_doc_res = server
+        .handle_get_document(&json!({"id": "batch-doc-1"}))
+        .expect("single get_document should succeed");
+    let single_doc_val = single_doc_res.structured_content.unwrap();
+    assert_eq!(
+        single_doc_val.get("truncated").and_then(|v| v.as_bool()),
+        Some(false)
+    );
+    assert_eq!(
+        single_doc_val.get("body").and_then(|v| v.as_str()).map(|s| s.len()),
+        Some(long_body.trim().len())
+    );
+
+    let single_task_res = server
+        .handle_get_task(&json!({"id": "batch-doc-1"}))
+        .expect("single get_task should succeed");
+    let single_task_val = single_task_res.structured_content.unwrap();
+    assert_eq!(
+        single_task_val.get("truncated").and_then(|v| v.as_bool()),
+        Some(false)
+    );
+    assert_eq!(
+        single_task_val.get("body").and_then(|v| v.as_str()).map(|s| s.len()),
+        Some(long_body.trim().len())
+    );
+
+    // 4. Strip null and empty frontmatter keys
+    let prune_res = server
+        .handle_get_document(&json!({"id": "doc-prune"}))
+        .expect("get_document on doc-prune should succeed");
+    let prune_val = prune_res.structured_content.unwrap();
+    let fm = prune_val.get("frontmatter").and_then(|v| v.as_object()).expect("frontmatter object");
+    assert!(fm.get("empty_str").is_none(), "empty string frontmatter key must be stripped");
+    assert!(fm.get("empty_arr").is_none(), "empty array frontmatter key must be stripped");
+    assert!(fm.get("empty_obj").is_none(), "empty object frontmatter key must be stripped");
+    assert_eq!(
+        fm.get("valid_key").and_then(|v| v.as_str()),
+        Some("keep_me")
+    );
+}
+
+#[test]
+fn test_ac5_schema_descriptions_document_detail_levels() {
+    let tools = PkbSearchServer::get_published_tools();
+
+    // 1. search schema description
+    let search_tool = tools.iter().find(|t| t.name == "search").expect("search tool");
+    let search_desc = search_tool.description.as_deref().unwrap_or_default();
+    let search_schema = serde_json::to_value(search_tool.input_schema.as_ref()).unwrap();
+    let search_detail_desc = search_schema
+        .pointer("/properties/detail/description")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default();
+    let search_combined = format!("{search_desc} {search_detail_desc}");
+    for level in ["chunk", "snippet", "full", "metadata", "ids"] {
+        assert!(
+            search_combined.contains(level),
+            "search schema must document detail level '{level}'"
+        );
+    }
+
+    // 2. get_document schema description
+    let doc_tool = tools.iter().find(|t| t.name == "get_document").expect("get_document tool");
+    let doc_desc = doc_tool.description.as_deref().unwrap_or_default();
+    let doc_schema = serde_json::to_value(doc_tool.input_schema.as_ref()).unwrap();
+    let doc_detail_desc = doc_schema
+        .pointer("/properties/detail/description")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default();
+    let doc_combined = format!("{doc_desc} {doc_detail_desc}");
+    for level in ["metadata", "summary", "full"] {
+        assert!(
+            doc_combined.contains(level),
+            "get_document schema must document detail level '{level}'"
+        );
+    }
+
+    // 3. get_task schema description
+    let task_tool = tools.iter().find(|t| t.name == "get_task").expect("get_task tool");
+    let task_desc = task_tool.description.as_deref().unwrap_or_default();
+    let task_schema = serde_json::to_value(task_tool.input_schema.as_ref()).unwrap();
+    let task_detail_desc = task_schema
+        .pointer("/properties/detail/description")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default();
+    let task_combined = format!("{task_desc} {task_detail_desc}");
+    for level in ["metadata", "summary", "full"] {
+        assert!(
+            task_combined.contains(level),
+            "get_task schema must document detail level '{level}'"
+        );
+    }
 }
