@@ -17,7 +17,7 @@ impl PkbSearchServer {
         let mut tools = vec![
             Tool::new(
                 "search",
-                "Hybrid semantic + graph search across the PKB using ONNX embeddings (~100-300ms). If search times out under load, back off and retry. Supports proximity boosting.",
+                "Hybrid semantic + graph search across the PKB using ONNX embeddings (~100-300ms). Supports proximity boosting. Detail levels: 'chunk' returns matching chunk text; 'snippet' returns short ~300-char extract; 'full' returns complete document body; 'metadata' returns lean metadata (id, title, type, status, score); 'ids' returns matching IDs only.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -29,7 +29,12 @@ impl PkbSearchServer {
                         "since": { "type": "string" },
                         "before": { "type": "string" },
                         "boost_id": { "type": "string" },
-                        "detail": { "type": "string", "enum": ["chunk", "snippet", "full", "metadata", "ids"], "default": "chunk" },
+                        "detail": {
+                            "type": "string",
+                            "enum": ["chunk", "snippet", "full", "metadata", "ids"],
+                            "default": "chunk",
+                            "description": "Level of detail: 'chunk' (matching text chunk), 'snippet' (short extract), 'full' (complete document body), 'metadata' (lean metadata: id, title, type, status, score), or 'ids' (document IDs only)."
+                        },
                         "ids_only": { "type": "boolean" },
                         "max_bytes": { "type": "integer" },
                         "format": { "type": "string", "enum": ["markdown", "json"] }
@@ -42,13 +47,25 @@ impl PkbSearchServer {
             .with_annotations(ToolAnnotations::new().read_only(true)),
             Tool::new(
                 "get_document",
-                "Read contents or metadata of a PKB document by ID, filename stem, or title. Supports batch reads via ids. Returns full body by default when max_bytes is omitted; when truncated, a notice in the body text explains how to read the rest.",
+                "Read contents or metadata of a PKB document by ID, filename stem, or title. Supports batch reads via ids and field projection via fields. Returns full body by default when max_bytes is omitted; when truncated, a notice in the body text explains how to read the rest. Detail levels: 'full' returns complete document body and metadata; 'summary' returns excerpted body up to 300 chars; 'metadata' returns frontmatter and document metadata without body.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
                         "id": { "type": "string" },
                         "ids": { "type": "array", "items": { "type": "string" } },
-                        "detail": { "type": "string", "enum": ["metadata", "summary", "full"] },
+                        "detail": {
+                            "type": "string",
+                            "enum": ["metadata", "summary", "full"],
+                            "default": "full",
+                            "description": "Level of detail: 'full' (complete document body and metadata), 'summary' (short excerpted body up to 300 chars), or 'metadata' (metadata and frontmatter only, omitting body)."
+                        },
+                        "fields": {
+                            "description": "Optional: return only specific fields per document in JSON mode. Comma-separated string or array of field names (e.g. ['id', 'title', 'body']).",
+                            "anyOf": [
+                                { "type": "string" },
+                                { "type": "array", "items": { "type": "string" } }
+                            ]
+                        },
                         "budget_ms": { "type": "integer" },
                         "max_bytes": { "type": "integer", "description": "Maximum body bytes to return. Defaults to returning the full body (no limit)." },
                         "metadata_only": { "type": "boolean" },
@@ -61,13 +78,18 @@ impl PkbSearchServer {
             .with_annotations(ToolAnnotations::new().read_only(true)),
             Tool::new(
                 "get_task",
-                "Retrieve full task details, metadata, body, and graph context. Returns full body by default when max_bytes is omitted; when truncated, a notice in the body text explains how to read the rest. Ranking figures come from the flow engine: `flow` carries gain, loss_averted, decision_value, flow_status and per-target stake; `display` carries ready, blocked, on_cliff, cliff_enters_on, deadline_class and days_until_due. With include_routes (default true), `routes` lists the paths to each served target, with `routes_truncated` and a one-sentence `explanation`.",
+                "Retrieve full task details, metadata, body, and graph context. Returns full body by default when max_bytes is omitted; when truncated, a notice in the body text explains how to read the rest. Detail levels: 'full' returns complete body, frontmatter, and graph relations; 'summary' returns short excerpted body; 'metadata' returns metadata and frontmatter without body. Ranking figures come from the flow engine: `flow` carries gain, loss_averted, decision_value, flow_status and per-target stake; `display` carries ready, blocked, on_cliff, cliff_enters_on, deadline_class and days_until_due. With include_routes (default true), `routes` lists the paths to each served target, with `routes_truncated` and a one-sentence `explanation`.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
                         "id": { "type": "string" },
                         "ids": { "type": "array", "items": { "type": "string" } },
-                        "detail": { "type": "string", "enum": ["metadata", "summary", "full"] },
+                        "detail": {
+                            "type": "string",
+                            "enum": ["metadata", "summary", "full"],
+                            "default": "full",
+                            "description": "Level of detail: 'full' (complete body and graph relations), 'summary' (short excerpted body), or 'metadata' (task metadata and frontmatter only, omitting body)."
+                        },
                         "budget_ms": { "type": "integer" },
                         "max_bytes": { "type": "integer", "description": "Maximum body bytes to return. Defaults to returning the full body (no limit)." },
                         "metadata_only": { "type": "boolean" },
@@ -86,7 +108,7 @@ impl PkbSearchServer {
             .with_annotations(ToolAnnotations::new().read_only(true)),
             Tool::new(
                 "list_documents",
-                "List indexed documents with optional filters and pagination.",
+                "List indexed documents with optional filters and pagination. Returns documents under a single documents array.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -99,6 +121,13 @@ impl PkbSearchServer {
                         },
                         "type": { "type": "string" },
                         "status": { "type": "string" },
+                        "fields": {
+                            "description": "Optional: return only specific fields per document in JSON mode. Comma-separated string or array of field names (e.g. ['id', 'title']).",
+                            "anyOf": [
+                                { "type": "string" },
+                                { "type": "array", "items": { "type": "string" } }
+                            ]
+                        },
                         "limit": { "type": "integer" },
                         "offset": { "type": "integer" },
                         "budget_ms": { "type": "integer" },
@@ -968,7 +997,6 @@ impl PkbSearchServer {
                 "properties": {
                     "total": { "type": "integer" },
                     "showing": { "type": "integer" },
-                    "items": { "type": "array", "items": { "type": "object" } },
                     "count": { "type": "integer" },
                     "results": { "type": "array", "items": { "type": "object" } },
                     "ids": { "type": "array", "items": { "type": "string" } }
@@ -981,7 +1009,6 @@ impl PkbSearchServer {
                     "title": { "type": "string" },
                     "frontmatter": { "type": "object" },
                     "body": { "type": "string" },
-                    "content": { "type": "string" },
                     "truncated": { "type": "boolean" },
                     "body_bytes": { "type": "integer" },
                     "items": { "type": "array", "items": { "type": "object" } },
@@ -994,7 +1021,6 @@ impl PkbSearchServer {
                 "properties": {
                     "total": { "type": "integer" },
                     "showing": { "type": "integer" },
-                    "items": { "type": "array", "items": { "type": "object" } },
                     "documents": { "type": "array", "items": { "type": "object" } },
                     "timed_out": { "type": "array", "items": { "type": "string" } }
                 }
@@ -1133,7 +1159,6 @@ impl PkbSearchServer {
                     "total": { "type": "integer" },
                     "showing": { "type": "integer" },
                     "tasks": { "type": "array", "items": { "type": "object" } },
-                    "items": { "type": "array", "items": { "type": "object" } },
                     "timed_out": { "type": "array", "items": { "type": "string" } }
                 }
             }),
