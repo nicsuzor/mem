@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.6](https://github.com/nicsuzor/mem/compare/mem-v0.5.5...mem-v0.5.6) (2026-11-03)
+
+
+### Features
+
+* **search:** discriminating scores, note families, and live reranker transparency ([#816](https://github.com/nicsuzor/mem/issues/816)) ([#825](https://github.com/nicsuzor/mem/issues/825)) ([ef20c80](https://github.com/nicsuzor/mem/commit/ef20c803961c85b9734a10872c41051b995e3948))
+
 ## [0.5.5](https://github.com/nicsuzor/mem/compare/mem-v0.5.4...mem-v0.5.5) (2026-11-03)
 
 
