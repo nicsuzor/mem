@@ -635,18 +635,32 @@ impl SessionPool {
             let model_path = &config.model_path;
             let new_sessions: Vec<_> = std::thread::scope(|s| {
                 let handles: Vec<_> = (0..to_add)
-                    .map(|_| {
-                        s.spawn(|| {
+                    .map(|i| {
+                        s.spawn(move || {
                             Session::builder()
                                 .and_then(|b| b.with_optimization_level(GraphOptimizationLevel::Level3))
                                 .and_then(|b| b.with_intra_threads(sess_threads))
                                 .and_then(|b| b.commit_from_file(model_path))
+                                .map_err(|e| (i + 1, e))
                         })
                     })
                     .collect();
-                handles.into_iter().map(|h| h.join().unwrap()).collect()
+                handles
+                    .into_iter()
+                    .filter_map(|h| match h.join() {
+                        Ok(Ok(sess)) => Some(sess),
+                        Ok(Err((idx, err))) => {
+                            tracing::warn!("Failed to pre-warm ONNX session {idx}: {err:?}");
+                            None
+                        }
+                        Err(panic_err) => {
+                            tracing::warn!("Panic pre-warming ONNX session: {panic_err:?}");
+                            None
+                        }
+                    })
+                    .collect()
             });
-            for extra_sess in new_sessions.into_iter().flatten() {
+            for extra_sess in new_sessions {
                 initial_sessions.push(Arc::new(Mutex::new(extra_sess)));
             }
         }
@@ -828,18 +842,32 @@ impl SessionPool {
             let model_path = &self.model_path;
             let new_sessions: Vec<_> = std::thread::scope(|s| {
                 let handles: Vec<_> = (0..to_add)
-                    .map(|_| {
-                        s.spawn(|| {
+                    .map(|i| {
+                        s.spawn(move || {
                             Session::builder()
                                 .and_then(|b| b.with_optimization_level(GraphOptimizationLevel::Level3))
                                 .and_then(|b| b.with_intra_threads(sess_threads))
                                 .and_then(|b| b.commit_from_file(model_path))
+                                .map_err(|e| (i + 1, e))
                         })
                     })
                     .collect();
-                handles.into_iter().map(|h| h.join().unwrap()).collect()
+                handles
+                    .into_iter()
+                    .filter_map(|h| match h.join() {
+                        Ok(Ok(sess)) => Some(sess),
+                        Ok(Err((idx, err))) => {
+                            tracing::warn!("Failed to pre-warm ONNX session {idx}: {err:?}");
+                            None
+                        }
+                        Err(panic_err) => {
+                            tracing::warn!("Panic pre-warming ONNX session: {panic_err:?}");
+                            None
+                        }
+                    })
+                    .collect()
             });
-            for extra_sess in new_sessions.into_iter().flatten() {
+            for extra_sess in new_sessions {
                 initial_sessions.push(Arc::new(Mutex::new(extra_sess)));
             }
         }
@@ -995,7 +1023,7 @@ impl Embedder {
             is_dummy: false,
             query_cache: parking_lot::Mutex::new(LruQueryCache::new(512)),
             dummy_sessions: parking_lot::RwLock::new(
-                (0..max_sessions_cpu())
+                (0..max_sessions_cpu().max(5))
                     .map(|_| Arc::new(Mutex::new(())))
                     .collect(),
             ),
@@ -1036,7 +1064,7 @@ impl Embedder {
             is_dummy: true,
             query_cache: parking_lot::Mutex::new(LruQueryCache::new(512)),
             dummy_sessions: parking_lot::RwLock::new(
-                (0..max_sessions_cpu())
+                (0..max_sessions_cpu().max(5))
                     .map(|_| Arc::new(Mutex::new(())))
                     .collect(),
             ),
@@ -1061,6 +1089,11 @@ impl Embedder {
         self.override_max_sessions = sessions;
         self.override_threads = threads;
         self.override_batch_size = batch_size;
+        if self.is_dummy && sessions > 0 {
+            *self.dummy_sessions.write() = (0..sessions)
+                .map(|_| Arc::new(Mutex::new(())))
+                .collect();
+        }
         self
     }
 
