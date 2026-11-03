@@ -47,15 +47,18 @@ Query
                                                        Adaptive Convex Combination (TM2C2)
                                                        (alpha = 0.35 id / 0.65 prose)
                                                                  │
-                                                       Optional ONNX Cross-Encoder Reranker
-                                                       (Top 40 candidates)
+                                                       Cross-Encoder Reranker (by default, Top 40)
+                                                       (or degraded fallback with explicit absent reason)
                                                                  │
-                                                       Multiplicative Structural Priors
-                                                       (M_struct = m_id * m_status * m_graph)
+                                                       Unified Multiplicative Priors
+                                                       (M_struct * M_proximity * M_title)
                                                                  │
                                                        Temporal & Access Priors
                                                        (Recency Decay & Recent-Read Boost)
-                                                       under Strict Floor Invariance
+                                                                 │
+                                                       Terminal Soft-Ceiling Scaling & Identity Reservation
+                                                       (Identity match = 1.000; non-identity hits bounded
+                                                        in [floor, 0.990] via C1 rational knee)
                                                                  │
                                                        Final Ranked Results
 ```
@@ -63,9 +66,10 @@ Query
 1. **Dual-Path Candidate Retrieval**: Top 100 dense vector matches (BGE-M3 embeddings, cosine similarity) and top 100 BM25 v2 lexical matches are retrieved concurrently.
 2. **Raw-Score Silence Floor**: Candidates must pass the silence threshold ($\tau_{\cos} = 0.45$ or $s_{\text{raw}}^{\text{lex}} > 0$). If both candidate pools fail the threshold, the search returns empty immediately, preventing low-relevance noise from being inflated to 1.0.
 3. **Local Min-Max Normalisation & TM2C2 Fusion**: Surviving candidates are normalised query-locally into $[0.0, 1.0]$ and combined adaptively via TM2C2 ($\alpha = 0.35$ for identifier/code queries, $\alpha = 0.65$ for natural language prose).
-4. **Cross-Encoder Reranking**: If enabled, the top 40 candidates are re-scored using a local transformer cross-encoder running on ONNX Runtime.
-5. **Multiplicative Structural Priors**: Applied to incorporate identifier match, document lifecycle status, and graph connectivity ($M_{\text{struct}} \in [0.30, 2.268]$).
+4. **Cross-Encoder Reranking by Default**: Enabled by default; the top 40 candidates are re-scored using a local transformer cross-encoder running on ONNX Runtime. When model files are absent, search proceeds with `ranking: "fused"` and explicitly reports the absence reason in the reply.
+5. **Unified Multiplicative Priors**: Applied in a single pass incorporating identifier match, document lifecycle status, graph connectivity ($M_{\text{struct}} \in [0.30, 2.268]$), query-time graph proximity (`boost_id`), and token-overlap title match (`title_match_boost`).
 6. **Temporal & Access Priors under Floor Invariance**: Exponential recency decay and recent-read boost apply via the modular `TemporalAccessHook`, strictly respecting relevance floor invariance so sub-floor items are never promoted.
+7. **Terminal Soft-Ceiling Scaling & Identity Reservation**: Non-identity candidate scores crossing $T = 0.900$ are saturated asymptotically toward $C = 0.990$ using a $C^1$-continuous rational knee curve, strictly preserving discrimination and rank monotonicity while reserving $1.000$ exclusively for exact identity matches.
 
 ---
 
@@ -155,6 +159,8 @@ $$s_{\text{norm}}^m(d) = \frac{s_{\text{raw}}^m(d) - \min_{x \in P_m} s_{\text{r
 
 - **Single-Candidate Pool Rule**: If $|P_m| = 1$ (or $\max = \min$), the single surviving candidate receives $s_{\text{norm}}^m(d) = 1.0$ for that modality, avoiding division by zero.
 - **Missing Modality**: If candidate $d \notin P_m$, its score for that modality is set to $0.0$.
+- **Score Invariant**: Relevance scores for non-identity search hits are strictly bounded in $[0.0, 0.990]$. The score $1.000$ is reserved exclusively for exact identity-key hits (`m_id` match on ID, filename stem, or alias).
+- **Discrimination Invariant**: Distinct candidates with differing relevance or prior features produce distinct final scores ($s_i \ne s_{i+1}$), completely eliminating the 1.000 score plateau defect.
 
 ### 4.5. Adaptive Convex Combination (TM2C2)
 
@@ -302,7 +308,16 @@ pub fn apply_priors_with_floor(
    $$\text{final\_score} < floor$$
    Priors may attenuate below-floor items further, but cannot lift them.
 2. **At-or-Above-Floor Reordering**: Priors apply multiplicatively only to candidates already meeting or exceeding the relevance floor ($score \ge floor$).
-3. **Clamping**: The `floor` parameter is guarded via `floor.clamp(0.0, 1.0)`. Final scores are clamped to $[floor, 1.0]$.
+3. **Continuous Soft-Knee Saturation**: Destructive upper ceiling clamping (`.clamp(floor, 1.0)`) is replaced with a $C^1$-continuous rational soft-knee curve activating at threshold $T = 0.900$ asymptotically approaching ceiling $C = 0.990$:
+   $$S_{\text{out}} = \begin{cases}
+   S_{\text{boosted}} & \text{if } S_{\text{boosted}} \le T \\
+   T + \frac{(C - T)(S_{\text{boosted}} - T)}{(C - T) + (S_{\text{boosted}} - T)} & \text{if } S_{\text{boosted}} > T
+   \end{cases}$$
+   With $T = 0.900$ and $C = 0.990$ ($C - T = 0.090$):
+   - **Boundary Continuity ($C^0$)**: At $S_{\text{boosted}} = 0.900$, $S_{\text{out}} = 0.900$.
+   - **Smooth Transition ($C^1$)**: $\left.\frac{d S_{\text{out}}}{d S_{\text{boosted}}}\right|_{T^+} = 1.0$, matching unit slope below $T$.
+   - **Strict Monotonicity**: $\frac{d S_{\text{out}}}{d S_{\text{boosted}}} > 0$ for all finite $S_{\text{boosted}} \ge T$.
+   - **Floor Invariance**: For any $floor \le T = 0.900$, candidates meeting floor ($S \ge floor$) are never depressed below floor.
 
 ---
 
@@ -323,7 +338,28 @@ Retrieval surfaces adhere to identical scoring semantics:
 - **CLI**: `pkb search <query>`
 - **MCP**: `search` and `task_search`
 
-Structured result outputs expose `recency_decay`, `recent_read_boost`, and `salience` alongside composite `score` and contextual `extract` chunks to ensure complete transparency for inspecting agents.
+### 9.1. Detail Levels and Hit Projections
+- `metadata`: Lean projection (`id`, `title`, `type`, `status`, `score`) omitting tags, priors, extract, and snippet for minimal token footprint.
+- `summary`: Compact agent scan projection (`id`, `title`, `type`, `status`, `score`, and matching `snippet`), enabling fast relevance judgment without full reads.
+- `snippet`: Standard projection including `extract` as short snippet alongside priors and tags.
+- `chunk`: Standard projection including full matched chunk body in `extract`.
+- `full`: Complete document body up to `max_bytes`.
+- `ids`: Identity list projection.
+
+### 9.2. Reranker Execution and Absence Transparency
+The cross-encoder reranker runs by default on candidate pools. Search replies explicitly declare execution state in the envelope:
+- When reranker is loaded and executed: `ranking: "reranked"`, `reranker_loaded: true`.
+- When model files are absent or unconfigured: `ranking: "fused"`, `reranker_loaded: false`, with `reranker_reason` explicitly identifying why (e.g. `"model absent"` or `"disabled by configuration"`).
+
+### 9.3. Type Family Filtering Semantics
+Filter expressions on `type` follow universal taxonomic categories (`specs/pkb-type-taxonomy.md`):
+- **Taxonomic Families**:
+  - `note` / `notes`: Expands to Category 2 Reference types `["note", "knowledge", "memory", "observation", "insight", "exploration"]`.
+  - `task` / `actionable`: Expands to Category 1 Actionable types `["task", "epic", "learn", "pr", "bug", "feature", "action"]`.
+- **Exact Matching (`=`)**: Prefixing with `=` (e.g. `type: "=note"`) restricts matching strictly to literal `type: note`.
+- **Exact Negation (`!=`)**: Prefixing with `!=` (e.g. `type: "!=note"`) excludes only literal `type: note` while retaining other family members.
+- **Family Negation (`!`)**: Prefixing with `!` (e.g. `type: "!note"`) excludes the entire family (`!note,!knowledge,!memory,...`).
+- **Composite Lists**: Comma-separated expressions compose seamlessly (e.g. `type: "note,task"`, `type: "note,!memory"`, `type: "=note,task"`).
 
 ---
 
@@ -337,4 +373,17 @@ The automated test suite verifies all ranking and retrieval invariants:
 - **Chunking & Contextual Headers**: `test_contextual_header_formatting`, `test_line_boundary_splitting_and_overlap` in `src/chunker.rs`
 - **BM25 Lexical Index**: `test_bm25_exact_match_retrieval`, `test_tokenizer_preserves_identifiers_and_splits` in `src/bm25.rs`
 - **Recency Decay & Salience**: `test_daily_decay_monotonic`, `test_task_type_immunity`, `test_floor_invariance`
+- **Top Hits Score Discrimination (C1)**: `test_search_scores_are_discriminating_and_do_not_saturate_at_one`
+- **Identity-Key Hit Exclusivity (C2)**: `test_exact_id_scores_one_prose_hits_sub_one`
+- **Unified Ranking & Prior Parity (C3)**: `test_ranked_score_deprecation_parity`
+- **Soft-Ceiling Monotonicity & Floor Invariance (C4)**: `test_apply_priors_preserves_score_delta_above_floor`
+- **Taxonomic Type Filtering (C5-C10)**:
+  - `test_search_type_filter_note_family_expands_to_knowledge_and_memory` (C5)
+  - `test_search_type_filter_actionable_family_expansion` (C6)
+  - `test_matches_type_filter_negated_note_family` (C7)
+  - `test_matches_type_filter_exact_syntax` (C8)
+  - `test_matches_type_filter_exact_negation` (C9)
+  - `test_matches_type_filter_composite_expressions` (C10)
+- **Summary Detail & Lean Projections (AC1)**: `test_search_summary_detail_hit_carries_type_status_snippet_and_metadata_omits_snippet`
+- **Reranker Execution and Absence Reason (AC3)**: `test_search_reranker_executes_by_default_or_reports_absent_reason`
 - **Concurrent Search Fan-out (AC1 & AC2)**: `test_concurrent_five_searches_do_not_serialise` in `src/mcp_server/tests/slow_tail_tests.rs` ensuring 5 concurrent searches complete in under twice single query latency, and OpenTelemetry trace analysis verifying `encode_query` does not block on model disk loading or session mutexes.

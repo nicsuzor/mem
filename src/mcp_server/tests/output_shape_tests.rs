@@ -1024,7 +1024,7 @@ fn test_ac5_schema_descriptions_document_detail_levels() {
         .and_then(|v| v.as_str())
         .unwrap_or_default();
     let search_combined = format!("{search_desc} {search_detail_desc}");
-    for level in ["chunk", "snippet", "full", "metadata", "ids"] {
+    for level in ["chunk", "snippet", "summary", "full", "metadata", "ids"] {
         assert!(
             search_combined.contains(level),
             "search schema must document detail level '{level}'"
@@ -1062,4 +1062,48 @@ fn test_ac5_schema_descriptions_document_detail_levels() {
             "get_task schema must document detail level '{level}'"
         );
     }
+}
+
+#[test]
+fn test_search_summary_detail_hit_carries_type_status_snippet_and_metadata_omits_snippet() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    let server = make_test_server(root);
+
+    let path = root.join("tasks/task-sample.md");
+    let content = "---\nid: task-sample\ntitle: Sample Task\ntype: task\nstatus: ready\n---\n\nSample body content for snippet testing in search.\n";
+    std::fs::write(&path, content).unwrap();
+    let doc = crate::pkb::parse_file_relative(&path, root).unwrap();
+    server.rebuild_graph_for_pkb_document(&doc);
+    server.try_upsert_document(&doc);
+
+    // 1. Search with detail: "summary"
+    let res_summary = server
+        .handle_pkb_search(&json!({
+            "query": "Sample Task",
+            "detail": "summary",
+        }))
+        .expect("search summary should succeed");
+    let val_summary = res_summary.structured_content.expect("structured content");
+    let results_summary = val_summary.get("results").and_then(|v| v.as_array()).expect("results array");
+    assert!(!results_summary.is_empty(), "must return hits");
+    let hit_summary = &results_summary[0];
+    assert_eq!(hit_summary.get("type").and_then(|v| v.as_str()), Some("task"));
+    assert_eq!(hit_summary.get("status").and_then(|v| v.as_str()), Some("ready"));
+    assert!(hit_summary.get("snippet").is_some(), "summary detail hit must carry snippet");
+    assert!(!hit_summary.get("snippet").unwrap().as_str().unwrap().is_empty());
+
+    // 2. Search with detail: "metadata"
+    let res_metadata = server
+        .handle_pkb_search(&json!({
+            "query": "Sample Task",
+            "detail": "metadata",
+        }))
+        .expect("search metadata should succeed");
+    let val_metadata = res_metadata.structured_content.expect("structured content");
+    let results_metadata = val_metadata.get("results").and_then(|v| v.as_array()).expect("results array");
+    assert!(!results_metadata.is_empty());
+    let hit_metadata = &results_metadata[0];
+    assert!(hit_metadata.get("snippet").is_none(), "metadata detail must omit snippet");
+    assert!(hit_metadata.get("extract").is_none(), "metadata detail must omit extract");
 }

@@ -366,14 +366,14 @@ impl PkbSearchServer {
             .get("detail")
             .and_then(|v| v.as_str())
             .unwrap_or("chunk");
-        const VALID_SEARCH_DETAILS: &[&str] = &["chunk", "snippet", "full", "metadata", "ids"];
+        const VALID_SEARCH_DETAILS: &[&str] = &["chunk", "snippet", "summary", "full", "metadata", "ids"];
         if let Some(raw_detail) = args.get("detail") {
             if let Some(d) = raw_detail.as_str() {
                 if !VALID_SEARCH_DETAILS.contains(&d.to_ascii_lowercase().as_str()) {
                     return Err(McpError {
                         code: ErrorCode::INVALID_PARAMS,
                         message: Cow::from(format!(
-                            "Invalid detail '{d}'. Valid values: chunk, snippet, full, metadata, ids"
+                            "Invalid detail '{d}'. Valid values: chunk, snippet, summary, full, metadata, ids"
                         )),
                         data: None,
                     });
@@ -382,7 +382,7 @@ impl PkbSearchServer {
                 return Err(McpError {
                     code: ErrorCode::INVALID_PARAMS,
                     message: Cow::from(
-                        "Invalid detail. Valid values: chunk, snippet, full, metadata, ids",
+                        "Invalid detail. Valid values: chunk, snippet, summary, full, metadata, ids",
                     ),
                     data: None,
                 });
@@ -635,6 +635,18 @@ impl PkbSearchServer {
                         });
                     }
 
+                    if detail.eq_ignore_ascii_case("summary") {
+                        let hit_status = status.or_else(|| r.status.clone());
+                        return serde_json::json!({
+                            "id": display_id,
+                            "title": r.title,
+                            "type": node_type,
+                            "status": hit_status,
+                            "score": score,
+                            "snippet": r.snippet,
+                        });
+                    }
+
                     let mut obj = serde_json::json!({
                         "id": display_id,
                         "title": r.title,
@@ -726,7 +738,7 @@ impl PkbSearchServer {
             }
             let extract: std::borrow::Cow<'_, str> = match detail {
                 "metadata" => std::borrow::Cow::Borrowed(""),
-                "snippet" => std::borrow::Cow::Borrowed(&r.snippet),
+                "snippet" | "summary" => std::borrow::Cow::Borrowed(&r.snippet),
                 "full" => {
                     // Read full document from disk
                     let abs_path = node
@@ -774,17 +786,18 @@ impl PkbSearchServer {
             "ranking": ranking_label,
             "reranker_loaded": reranker_loaded,
             "results": scored.iter().map(|(r, score, recency_decay, read_boost, salience)| {
+                let node = graph.get_node(&r.id);
+                let display_id = node
+                    .map(|n| n.task_id.as_deref().unwrap_or(&n.id))
+                    .unwrap_or(&r.id);
+                let node_type = r
+                    .doc_type
+                    .as_deref()
+                    .or_else(|| node.and_then(|n| n.node_type.as_deref()))
+                    .unwrap_or("untyped");
+                let hit_status = node.and_then(|n| n.status.clone()).or_else(|| r.status.clone());
+
                 if detail.eq_ignore_ascii_case("metadata") {
-                    let node = graph.get_node(&r.id);
-                    let display_id = node
-                        .map(|n| n.task_id.as_deref().unwrap_or(&n.id))
-                        .unwrap_or(&r.id);
-                    let node_type = r
-                        .doc_type
-                        .as_deref()
-                        .or_else(|| node.and_then(|n| n.node_type.as_deref()))
-                        .unwrap_or("untyped");
-                    let hit_status = node.and_then(|n| n.status.clone()).or_else(|| r.status.clone());
                     serde_json::json!({
                         "id": display_id,
                         "title": r.title,
@@ -792,16 +805,30 @@ impl PkbSearchServer {
                         "status": hit_status,
                         "score": score,
                     })
-                } else {
+                } else if detail.eq_ignore_ascii_case("summary") {
                     serde_json::json!({
+                        "id": display_id,
+                        "title": r.title,
+                        "type": node_type,
+                        "status": hit_status,
+                        "score": score,
+                        "snippet": r.snippet,
+                    })
+                } else {
+                    let mut obj = serde_json::json!({
                         "id": r.id,
                         "title": r.title,
+                        "type": node_type,
                         "score": score,
                         "tags": r.tags,
                         "recency_decay": recency_decay,
                         "recent_read_boost": read_boost,
                         "salience": salience,
-                    })
+                    });
+                    if let Some(ref s) = hit_status {
+                        obj["status"] = serde_json::json!(s);
+                    }
+                    obj
                 }
             }).collect::<Vec<_>>(),
         });
