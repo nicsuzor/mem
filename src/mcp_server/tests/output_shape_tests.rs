@@ -716,7 +716,7 @@ fn test_ac1_payload_carried_once_per_named_tool() {
         "search response must NOT carry duplicate 'items'"
     );
 
-    // 2. get_document: has 'body', NOT 'content'
+    // 2. get_document: has 'body', NOT 'content' (single read)
     let doc_res = server
         .handle_get_document(&json!({"id": "task-ac1"}))
         .expect("get_document should succeed");
@@ -728,6 +728,27 @@ fn test_ac1_payload_carried_once_per_named_tool() {
     assert!(
         doc_val.get("content").is_none(),
         "get_document response must NOT carry duplicate 'content'"
+    );
+
+    // 2b. get_document: has 'body', NOT 'content' (batch read)
+    let batch_doc_res = server
+        .handle_get_document(&json!({"ids": ["task-ac1"]}))
+        .expect("batch get_document should succeed");
+    let batch_doc_val = batch_doc_res
+        .structured_content
+        .expect("batch get_document structured content");
+    let batch_items = batch_doc_val
+        .get("items")
+        .and_then(|v| v.as_array())
+        .expect("batch items array");
+    assert_eq!(batch_items.len(), 1);
+    assert!(
+        batch_items[0].get("body").is_some(),
+        "batch get_document item must carry 'body'"
+    );
+    assert!(
+        batch_items[0].get("content").is_none(),
+        "batch get_document item must NOT carry duplicate 'content'"
     );
 
     // 3. list_documents: has 'documents', NOT 'items'

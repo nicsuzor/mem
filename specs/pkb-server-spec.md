@@ -228,7 +228,7 @@ Each returned result item contains:
 - `format` (string, optional, enum: `["markdown", "json"]`): Return format.
 
 **Structured Output**:
-Single reads return the document payload once using `body` (the redundant `content` key is removed). Batch reads (`ids`) return `items`. Null and empty frontmatter keys are stripped.
+Single and batch reads return each document payload once using `body` (the redundant `content` key is removed; batch reads carry them under `items`). Null and empty frontmatter keys are stripped.
 - `id` (string): Resolved canonical ID (always the canonical node ID, even when requested by alias).
 - `title` (string): Document title.
 - `frontmatter` (object): Parsed YAML frontmatter (with null and empty values stripped).
@@ -272,8 +272,9 @@ Responses carry matching tasks under a single `tasks` array (never duplicating u
 - 80%+ of queries return relevant results in top 5
 - Response time < 2 seconds
 - User thinks "what do I know about X?" not "where did I save X?"
-- **AC1: Alias Resolution on Node Read**: A read by alias returns the node under its canonical ID in both single and batch reads for `get_document` and `get_task`.
+- **AC1: Single Payload Body and Alias Resolution on Node Read**: `pkb_get_document` replies, single and batch, carry the body under one `body` key without redundant `content`. A read by alias returns the node under its canonical ID in both single and batch reads for `get_document` and `get_task`.
   - Mapped tests:
+    - `test_ac1_payload_carried_once_per_named_tool`
     - `test_ac1_get_document_single_by_alias_returns_canonical_id`
     - `test_ac1_get_document_batch_by_alias_returns_canonical_id`
     - `test_ac1_get_task_single_and_batch_by_alias_returns_canonical_id`
