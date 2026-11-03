@@ -287,7 +287,7 @@ impl PkbSearchServer {
             .with_annotations(ToolAnnotations::new().read_only(false)),
             Tool::new(
                 "update_task",
-                "Patch metadata fields on an existing task (flat or nested under updates). Supports status, type, intent, and severity. Requires completion_evidence when setting status=done. For state transitions, prefer release_task.",
+                "Patch task metadata (flat, nested under updates, or mixed). Mixed calls merge both; conflicting fields reject. Supports status, type, intent, severity. Requires completion_evidence when setting status=done. Prefer release_task for transitions.",
                 serde_json::from_str::<JsonObject>(r#"{
                     "type": "object",
                     "properties": {
