@@ -182,6 +182,13 @@ When a `CrossEncoderReranker` is configured and loaded (`src/rerank.rs`):
 - **Ordering**: Reranker scores replace $s_{\text{fused}}$ for evaluated candidates; un-reranked candidates past $N_{\text{rerank}}$ preserve relative order.
 - **Fail-Fast Discipline**: If reranking is enabled but fails, errors propagate as `RerankerError` via `try_search_hybrid`.
 
+### 4.7. Concurrent Dense Query Encoding & Warm Session Pool
+
+To ensure concurrent search calls execute in parallel without serialising behind a single session lock or stalling on synchronous disk I/O:
+1. **Pre-warmed Session Pool**: In CPU mode, the ONNX `SessionPool` initializes up to `max_sessions_cpu()` sessions during construction using scoped parallel threads. Multi-core systems with $\ge 5$ cores allocate at least 5 sessions (up to 8, computed as $\max(\min(5, \text{cores}), \text{clamp}(\lfloor \text{cores} / 2 \rfloor, 2, 8))$), ensuring a fan-out of 5 searches runs on dedicated sessions simultaneously.
+2. **Non-blocking Query Path**: `acquire_session` non-blockingly probes sessions via `try_lock()`. If all sessions are busy under heavy concurrency, it dispatches using round-robin index rotation across the pre-warmed pool. Synchronous ONNX model file reading or `commit_from_file` calls are strictly prohibited on the query path and never hold exclusive write locks on `sessions`.
+3. **Concurrency Target (AC2)**: Five parallel searches complete in under twice the latency of a single search ($T_{\text{fanout}(5)} < 2 \times T_{\text{single}}$).
+
 ---
 
 ## 5. Multiplicative Structural Priors ($M_{\text{struct}}$)
@@ -330,3 +337,4 @@ The automated test suite verifies all ranking and retrieval invariants:
 - **Chunking & Contextual Headers**: `test_contextual_header_formatting`, `test_line_boundary_splitting_and_overlap` in `src/chunker.rs`
 - **BM25 Lexical Index**: `test_bm25_exact_match_retrieval`, `test_tokenizer_preserves_identifiers_and_splits` in `src/bm25.rs`
 - **Recency Decay & Salience**: `test_daily_decay_monotonic`, `test_task_type_immunity`, `test_floor_invariance`
+- **Concurrent Search Fan-out (AC1 & AC2)**: `test_concurrent_five_searches_do_not_serialise` in `src/mcp_server/tests/slow_tail_tests.rs` ensuring 5 concurrent searches complete in under twice single query latency, and OpenTelemetry trace analysis verifying `encode_query` does not block on model disk loading or session mutexes.

@@ -500,7 +500,8 @@ impl LruQueryCache {
 }
 
 /// Max parallel ONNX sessions for CPU mode, computed from available cores.
-/// Pool pre-warms with at least 2 sessions on multi-core systems so concurrent searches do not serialise.
+/// Pool pre-warms with enough sessions so concurrent searches (such as a 5-search fan-out)
+/// do not serialise behind busy sessions or stall on disk loading.
 fn max_sessions_cpu() -> usize {
     let cores = std::thread::available_parallelism()
         .map(|n| n.get())
@@ -508,7 +509,11 @@ fn max_sessions_cpu() -> usize {
     if cores <= 1 {
         1
     } else {
-        (cores / 2).clamp(2, 4)
+        // Multi-core systems with >= 5 cores allocate at least 5 sessions (up to 8)
+        // so a fan-out of 5 parallel searches runs concurrently.
+        let half = cores / 2;
+        let base = half.clamp(2, 8);
+        base.max(5.min(cores))
     }
 }
 
@@ -518,6 +523,7 @@ fn threads_per_session_cpu(cores: usize, max_sess: usize) -> usize {
 
 struct SessionPool {
     sessions: parking_lot::RwLock<Vec<Arc<Mutex<Session>>>>,
+    next_session_idx: std::sync::atomic::AtomicUsize,
     model_path: PathBuf,
     tokenizer: tokenizers::Tokenizer,
     /// Whether the model expects token_type_ids as input (BERT: yes, XLM-RoBERTa: no).
@@ -618,24 +624,36 @@ impl SessionPool {
             max_sessions_cpu()
         };
         let mut initial_sessions = vec![Arc::new(Mutex::new(session))];
-        if !using_gpu && max_sess >= 2 {
+        if !using_gpu && max_sess > 1 {
             let cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
             let sess_threads = if override_threads > 0 {
                 override_threads
             } else {
                 threads_per_session_cpu(cores, max_sess)
             };
-            if let Ok(extra_sess) = Session::builder()
-                .and_then(|b| b.with_optimization_level(GraphOptimizationLevel::Level3))
-                .and_then(|b| b.with_intra_threads(sess_threads))
-                .and_then(|b| b.commit_from_file(&config.model_path))
-            {
+            let to_add = max_sess - 1;
+            let model_path = &config.model_path;
+            let new_sessions: Vec<_> = std::thread::scope(|s| {
+                let handles: Vec<_> = (0..to_add)
+                    .map(|_| {
+                        s.spawn(|| {
+                            Session::builder()
+                                .and_then(|b| b.with_optimization_level(GraphOptimizationLevel::Level3))
+                                .and_then(|b| b.with_intra_threads(sess_threads))
+                                .and_then(|b| b.commit_from_file(model_path))
+                        })
+                    })
+                    .collect();
+                handles.into_iter().map(|h| h.join().unwrap()).collect()
+            });
+            for extra_sess in new_sessions.into_iter().flatten() {
                 initial_sessions.push(Arc::new(Mutex::new(extra_sess)));
             }
         }
 
         let pool = Self {
             sessions: parking_lot::RwLock::new(initial_sessions),
+            next_session_idx: std::sync::atomic::AtomicUsize::new(0),
             model_path: config.model_path.clone(),
             tokenizer,
             uses_token_type_ids,
@@ -779,9 +797,23 @@ impl SessionPool {
         tracing::warn!("Downgrading from CUDA to CPU parallel mode");
         eprintln!("  GPU not accelerating — switching to CPU parallel mode");
 
+        let max_sess = if self.override_max_sessions > 0 {
+            self.override_max_sessions
+        } else {
+            max_sessions_cpu()
+        };
+        let cores = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(4);
+        let sess_threads = if self.override_threads > 0 {
+            self.override_threads
+        } else {
+            threads_per_session_cpu(cores, max_sess)
+        };
+
         let cpu_session = Session::builder()
             .and_then(|b| b.with_optimization_level(GraphOptimizationLevel::Level3))
-            .and_then(|b| b.with_intra_threads(THREADS_PER_SESSION))
+            .and_then(|b| b.with_intra_threads(sess_threads))
             .and_then(|b| b.commit_from_file(&self.model_path))
             .with_context(|| {
                 format!(
@@ -790,9 +822,30 @@ impl SessionPool {
                 )
             })?;
 
+        let mut initial_sessions = vec![Arc::new(Mutex::new(cpu_session))];
+        if max_sess > 1 {
+            let to_add = max_sess - 1;
+            let model_path = &self.model_path;
+            let new_sessions: Vec<_> = std::thread::scope(|s| {
+                let handles: Vec<_> = (0..to_add)
+                    .map(|_| {
+                        s.spawn(|| {
+                            Session::builder()
+                                .and_then(|b| b.with_optimization_level(GraphOptimizationLevel::Level3))
+                                .and_then(|b| b.with_intra_threads(sess_threads))
+                                .and_then(|b| b.commit_from_file(model_path))
+                        })
+                    })
+                    .collect();
+                handles.into_iter().map(|h| h.join().unwrap()).collect()
+            });
+            for extra_sess in new_sessions.into_iter().flatten() {
+                initial_sessions.push(Arc::new(Mutex::new(extra_sess)));
+            }
+        }
+
         let mut sessions = self.sessions.write();
-        sessions.clear();
-        sessions.push(Arc::new(Mutex::new(cpu_session)));
+        *sessions = initial_sessions;
 
         self.gpu_mode.store(false, Ordering::Relaxed);
         tracing::info!(
@@ -856,49 +909,19 @@ impl SessionPool {
         Ok(())
     }
 
-    /// Get the first available (unlocked) session, or spawn a new session if pool not full, or block on session 0.
+    /// Get the first available (unlocked) session, or distribute across sessions via round-robin.
+    /// Never performs synchronous disk I/O or takes exclusive write locks on the query path.
     fn acquire_session(&self) -> Arc<Mutex<Session>> {
-        {
-            let sessions = self.sessions.read();
-            // Try each session without blocking
-            for session in sessions.iter() {
-                if session.try_lock().is_some() {
-                    return Arc::clone(session);
-                }
-            }
-        }
-        let max_sess = if self.override_max_sessions > 0 {
-            self.override_max_sessions
-        } else {
-            max_sessions_cpu()
-        };
-        let mut sessions = self.sessions.write();
+        let sessions = self.sessions.read();
+        // Try each session without blocking
         for session in sessions.iter() {
             if session.try_lock().is_some() {
                 return Arc::clone(session);
             }
         }
-        if sessions.len() < max_sess && !self.gpu_mode.load(Ordering::Relaxed) {
-            let cores = std::thread::available_parallelism()
-                .map(|n| n.get())
-                .unwrap_or(4);
-            let threads = if self.override_threads > 0 {
-                self.override_threads
-            } else {
-                threads_per_session_cpu(cores, max_sess)
-            };
-            if let Ok(sess) = Session::builder()
-                .and_then(|b| b.with_optimization_level(ort::session::builder::GraphOptimizationLevel::Level3))
-                .and_then(|b| b.with_intra_threads(threads))
-                .and_then(|b| b.commit_from_file(&self.model_path))
-            {
-                let arc = Arc::new(Mutex::new(sess));
-                sessions.push(Arc::clone(&arc));
-                return arc;
-            }
-        }
-        // All busy — return first (caller will block on lock)
-        Arc::clone(&sessions[0])
+        // All busy — distribute across existing sessions via round-robin so callers don't all block on session 0
+        let idx = self.next_session_idx.fetch_add(1, Ordering::Relaxed) % sessions.len();
+        Arc::clone(&sessions[idx])
     }
 }
 
@@ -971,10 +994,11 @@ impl Embedder {
             override_batch_size: 0,
             is_dummy: false,
             query_cache: parking_lot::Mutex::new(LruQueryCache::new(512)),
-            dummy_sessions: parking_lot::RwLock::new(vec![
-                Arc::new(Mutex::new(())),
-                Arc::new(Mutex::new(())),
-            ]),
+            dummy_sessions: parking_lot::RwLock::new(
+                (0..max_sessions_cpu())
+                    .map(|_| Arc::new(Mutex::new(())))
+                    .collect(),
+            ),
             dummy_delay: parking_lot::Mutex::new(None),
         })
     }
@@ -1011,10 +1035,11 @@ impl Embedder {
             override_batch_size: 0,
             is_dummy: true,
             query_cache: parking_lot::Mutex::new(LruQueryCache::new(512)),
-            dummy_sessions: parking_lot::RwLock::new(vec![
-                Arc::new(Mutex::new(())),
-                Arc::new(Mutex::new(())),
-            ]),
+            dummy_sessions: parking_lot::RwLock::new(
+                (0..max_sessions_cpu())
+                    .map(|_| Arc::new(Mutex::new(())))
+                    .collect(),
+            ),
             dummy_delay: parking_lot::Mutex::new(None),
         }
     }
@@ -1147,7 +1172,12 @@ impl Embedder {
                     break;
                 }
             }
-            let _guard = _guard.unwrap_or_else(|| dummy_pool[0].lock());
+            let _guard = _guard.unwrap_or_else(|| {
+                static DUMMY_IDX: std::sync::atomic::AtomicUsize =
+                    std::sync::atomic::AtomicUsize::new(0);
+                let idx = DUMMY_IDX.fetch_add(1, Ordering::Relaxed) % dummy_pool.len();
+                dummy_pool[idx].lock()
+            });
             use opentelemetry::trace::Span;
             span.end();
 
