@@ -2561,22 +2561,27 @@ impl PkbSearchServer {
         };
 
         if update_map.is_empty() {
-            let (node_title, node_status, node_modified) = {
+            let (node_title, node_type, node_status, node_modified) = {
                 let graph = self.graph.read();
                 if let Some(node) = graph.resolve(id) {
                     (
                         Some(node.label.clone()),
+                        node.node_type.clone(),
                         node.status.clone(),
                         node.modified.clone(),
                     )
                 } else {
-                    (None, None, None)
+                    (None, None, None, None)
                 }
             };
+            let doc_type = node_type.as_deref().unwrap_or("task");
+            let type_title = Self::capitalize_first(doc_type);
+            let msg = format!("{type_title} {id} unchanged (no modifications)");
             let mut summary_obj = serde_json::json!({
                 "id": id,
+                "type": doc_type,
                 "modified": node_modified.unwrap_or_else(|| chrono::Utc::now().to_rfc3339()),
-                "message": format!("Task {id} unchanged (no modifications)"),
+                "message": msg,
             });
             if let Some(t) = node_title {
                 summary_obj["title"] = serde_json::json!(t);
@@ -2584,7 +2589,6 @@ impl PkbSearchServer {
             if let Some(s) = node_status {
                 summary_obj["status"] = serde_json::json!(s);
             }
-            let msg = format!("Task {id} unchanged (no modifications)");
             return Ok(Self::structured_result(msg, summary_obj));
         }
 
@@ -2642,7 +2646,24 @@ impl PkbSearchServer {
 
         tracing::debug!(target: "perf::update_task", phase = "TOTAL", elapsed_ms = t_total.elapsed().as_secs_f64() * 1000.0);
 
-        // Soft warning if setting a terminal status via update_task instead of release_task
+        let (node_title, node_type, node_status, node_modified) = {
+            let graph = self.graph.read();
+            if let Some(node) = graph.resolve(id) {
+                (
+                    Some(node.label.clone()),
+                    node.node_type.clone(),
+                    node.status.clone(),
+                    node.modified.clone(),
+                )
+            } else {
+                (None, None, None, None)
+            }
+        };
+        let doc_type = node_type.as_deref().unwrap_or("task");
+        let type_title = Self::capitalize_first(doc_type);
+
+        // Soft warning if setting a terminal status via update_task instead of release_task.
+        // Only emit release_task hint if doc_type is "task" (mem #801).
         let terminal_statuses = [
             "done",
             "review",
@@ -2651,35 +2672,29 @@ impl PkbSearchServer {
             "partial",
             "failed",
         ];
-        let hint = updates
-            .get("status")
-            .and_then(|v| v.as_str())
-            .filter(|s| terminal_statuses.contains(s))
-            .map(|s| {
-                format!(
-                "\nHINT: Use release_task(id=\"...\", status=\"{s}\", summary=\"...\") instead of \
-                 update_task for status transitions. release_task captures work history."
-            )
-            })
-            .unwrap_or_default();
-
-        let (node_title, node_status, node_modified) = {
-            let graph = self.graph.read();
-            if let Some(node) = graph.resolve(id) {
-                (
-                    Some(node.label.clone()),
-                    node.status.clone(),
-                    node.modified.clone(),
+        let hint = if doc_type == "task" {
+            updates
+                .get("status")
+                .and_then(|v| v.as_str())
+                .filter(|s| terminal_statuses.contains(s))
+                .map(|s| {
+                    format!(
+                    "\nHINT: Use release_task(id=\"...\", status=\"{s}\", summary=\"...\") instead of \
+                     update_task for status transitions. release_task captures work history."
                 )
-            } else {
-                (None, None, None)
-            }
+                })
+                .unwrap_or_default()
+        } else {
+            String::new()
         };
+
         let new_modified = node_modified.unwrap_or_else(|| chrono::Utc::now().to_rfc3339());
+        let msg = format!("{type_title} updated: `{id}`{hint}");
         let mut summary_obj = serde_json::json!({
             "id": id,
+            "type": doc_type,
             "modified": new_modified,
-            "message": format!("Task updated: `{id}`{hint}"),
+            "message": msg,
         });
         if let Some(t) = node_title {
             summary_obj["title"] = serde_json::json!(t);
@@ -2687,7 +2702,6 @@ impl PkbSearchServer {
         if let Some(s) = node_status {
             summary_obj["status"] = serde_json::json!(s);
         }
-        let msg = format!("Task updated: `{id}`{hint}");
         Ok(Self::structured_result(msg, summary_obj))
     }
 

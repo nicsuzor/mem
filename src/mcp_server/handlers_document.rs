@@ -903,7 +903,8 @@ impl PkbSearchServer {
 
         tracing::debug!(target: "perf::create_document", phase = "TOTAL", elapsed_ms = t_total.elapsed().as_secs_f64() * 1000.0);
 
-        let mut msg = format!("Document created: `{filename}` (`{doc_id}`)");
+        let type_title = Self::capitalize_first(doc_type);
+        let mut msg = format!("{type_title} created: `{filename}` (`{doc_id}`)");
         if !warnings.is_empty() {
             msg.push_str("\n\nHierarchy warnings:\n");
             for w in &warnings {
@@ -911,7 +912,17 @@ impl PkbSearchServer {
             }
         }
 
-        Ok(CallToolResult::success(vec![Content::text(msg)]))
+        let mut payload = serde_json::json!({
+            "id": doc_id,
+            "title": title,
+            "type": doc_type,
+            "message": msg,
+        });
+        if !warnings.is_empty() {
+            payload["warnings"] = serde_json::json!(warnings);
+        }
+
+        Ok(Self::structured_result(msg, payload))
     }
 
     /// Convert a `document_crud` write error into an `McpError`, giving a
@@ -1014,6 +1025,7 @@ impl PkbSearchServer {
 
         let abs_path = self.abs_path_for_node(node, Some(&graph))?;
         let label = node.label.clone();
+        let node_type = node.node_type.as_deref().unwrap_or("document").to_string();
         drop(graph);
 
         let t_total = std::time::Instant::now();
@@ -1060,12 +1072,13 @@ impl PkbSearchServer {
             .map(|s| format!(" under ## {s}"))
             .unwrap_or_default();
         let msg = format!(
-            "Appended to: {} (`{}`){section_msg}\nmodified: {}",
+            "Appended to {node_type}: {} (`{}`){section_msg}\nmodified: {}",
             label, id, new_modified
         );
         let summary = serde_json::json!({
             "id": id,
             "title": label,
+            "type": node_type,
             "modified": new_modified,
             "message": msg,
         });
@@ -1109,7 +1122,7 @@ impl PkbSearchServer {
 
         let expected_modified = args.get("expected_modified").and_then(|v| v.as_str());
 
-        let (abs_path, label) = {
+        let (abs_path, label, node_type) = {
             let graph = self.graph.read();
             let node = graph.resolve(id).ok_or_else(|| McpError {
                 code: ErrorCode::INVALID_PARAMS,
@@ -1119,6 +1132,7 @@ impl PkbSearchServer {
             (
                 self.abs_path_for_node(node, Some(&graph))?,
                 node.label.clone(),
+                node.node_type.as_deref().unwrap_or("document").to_string(),
             )
         };
 
@@ -1146,10 +1160,14 @@ impl PkbSearchServer {
             self.rebuild_graph();
         }
 
+        let type_title = Self::capitalize_first(&node_type);
+        let msg = format!("{type_title} body updated: `{id}`");
         let response_payload = serde_json::json!({
             "ok": true,
             "id": id,
             "title": label,
+            "type": node_type,
+            "message": msg,
             "body_chars_before": result.body_chars_before,
             "body_chars_after": result.body_chars_after,
             "preserve_frontmatter": preserve_frontmatter,
@@ -1160,7 +1178,7 @@ impl PkbSearchServer {
             message: Cow::from(format!("Failed to serialize response: {e}")),
             data: None,
         })?;
-        Ok(CallToolResult::success(vec![Content::text(response_text)]))
+        Ok(Self::structured_result(response_text, response_payload))
     }
 
     pub(crate) fn handle_edit_body(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
@@ -1196,7 +1214,7 @@ impl PkbSearchServer {
 
         let expected_modified = args.get("expected_modified").and_then(|v| v.as_str());
 
-        let (abs_path, label) = {
+        let (abs_path, label, node_type) = {
             let graph = self.graph.read();
             let node = graph.resolve(id).ok_or_else(|| McpError {
                 code: ErrorCode::INVALID_PARAMS,
@@ -1206,6 +1224,7 @@ impl PkbSearchServer {
             (
                 self.abs_path_for_node(node, Some(&graph))?,
                 node.label.clone(),
+                node.node_type.as_deref().unwrap_or("document").to_string(),
             )
         };
 
@@ -1233,10 +1252,14 @@ impl PkbSearchServer {
             }
         }
 
+        let type_title = Self::capitalize_first(&node_type);
+        let msg = format!("{type_title} edited: `{id}`");
         let response_payload = serde_json::json!({
             "ok": true,
             "id": id,
             "title": label,
+            "type": node_type,
+            "message": msg,
             "dry_run": dry_run,
             "body_chars_before": result.body_chars_before,
             "body_chars_after": result.body_chars_after,
@@ -1249,7 +1272,7 @@ impl PkbSearchServer {
             message: Cow::from(format!("Failed to serialize response: {e}")),
             data: None,
         })?;
-        Ok(CallToolResult::success(vec![Content::text(response_text)]))
+        Ok(Self::structured_result(response_text, response_payload))
     }
 
     pub(crate) fn handle_add_observations(
@@ -1593,6 +1616,7 @@ impl PkbSearchServer {
         let abs_path = self.abs_path_for_node(node, Some(&graph))?;
         let label = node.label.clone();
         let node_id = node.id.clone();
+        let node_type = node.node_type.as_deref().unwrap_or("document").to_string();
         drop(graph); // release read lock before write operations
 
         let t_total = std::time::Instant::now();
@@ -1620,13 +1644,15 @@ impl PkbSearchServer {
 
         tracing::debug!(target: "perf::delete_document", phase = "TOTAL", elapsed_ms = t_total.elapsed().as_secs_f64() * 1000.0);
 
+        let msg = format!("Deleted {node_type}: {} (`{}`)", label, node_id);
         let payload = serde_json::json!({
             "id": node_id,
+            "type": node_type,
             "deleted": true,
-            "message": format!("Deleted: {} (`{}`)", label, node_id),
+            "message": msg,
         });
         Ok(Self::structured_result(
-            format!("Deleted: {} (`{}`)", label, node_id),
+            msg,
             payload,
         ))
     }

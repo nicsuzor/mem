@@ -99,7 +99,7 @@ fn create_document_passes_relative_path_and_wikilink() {
             "body": format!("See `{RELATIVE}` or {WIKILINK} for the principle."),
         }))
         .unwrap();
-    assert!(text_of(&res).contains("Document created"));
+    assert!(text_of(&res).contains("Note created"));
 }
 
 #[test]

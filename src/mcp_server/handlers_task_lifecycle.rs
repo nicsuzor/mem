@@ -442,6 +442,7 @@ impl PkbSearchServer {
         let abs_path = self.abs_path_for_node(node, Some(&graph))?;
         let label = node.label.clone();
         let node_id = node.id.clone();
+        let node_type = node.node_type.as_deref().unwrap_or("task").to_string();
         drop(graph);
 
         // Number of descendants this close cascades shut (0 unless recursive).
@@ -543,10 +544,11 @@ impl PkbSearchServer {
         let response = serde_json::json!({
             "ok": true,
             "id": id,
+            "type": node_type,
             "title": title_to_use,
             "status": "done",
             "modified": new_modified,
-            "message": format!("Completed: {} (`{}`)", title_to_use, id),
+            "message": format!("Completed {node_type}: {} (`{}`)", title_to_use, id),
             "neighborhood": neighborhood,
         });
         let text = serde_json::to_string_pretty(&response).unwrap_or_default();
@@ -1016,6 +1018,7 @@ impl PkbSearchServer {
         let abs_path = self.abs_path_for_node(node, Some(&graph))?;
         let label = node.label.clone();
         let node_id = node.id.clone();
+        let node_type = node.node_type.as_deref().unwrap_or("task").to_string();
         drop(graph);
 
         // academicOps#2747: release to done requires all acceptance criteria checkboxes to be ticked.
@@ -1260,7 +1263,7 @@ impl PkbSearchServer {
             }
         }
 
-        let mut response_text = format!("Released: {} → {} (`{}`)", label, status, id);
+        let mut response_text = format!("Released {node_type}: {} → {} (`{}`)", label, status, id);
         for w in &warnings {
             response_text.push_str(&format!("\n{w}"));
         }
@@ -1282,6 +1285,7 @@ impl PkbSearchServer {
         let mut json = serde_json::json!({
             "ok": true,
             "id": id,
+            "type": node_type,
             "title": label,
             "status": status,
             "modified": new_modified,

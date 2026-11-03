@@ -2609,7 +2609,7 @@ fn test_mcp_endpoints_never_disclose_server_paths() {
         .iter()
         .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
         .collect();
-    assert!(doc_text.starts_with("Document created: "));
+    assert!(doc_text.starts_with("Note created: "));
     assert!(!doc_text.contains(root_str), "Must not leak root path");
     assert!(
         !doc_text.contains(".md"),
@@ -2656,7 +2656,7 @@ fn test_mcp_endpoints_never_disclose_server_paths() {
         .iter()
         .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
         .collect();
-    assert_eq!(del_text, "Deleted: Doc To Delete (`note-todelete`)");
+    assert_eq!(del_text, "Deleted note: Doc To Delete (`note-todelete`)");
     assert!(!del_text.contains(root_str), "Must not leak root path");
 
     // 4. handle_decompose_task

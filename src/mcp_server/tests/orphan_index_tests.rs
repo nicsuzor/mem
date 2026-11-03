@@ -298,7 +298,7 @@ fn test_delete_document_removes_vector_index_entry_and_leaves_zero_orphans() {
     let del_res = server
         .handle_delete_document(&json!({"id": "task-live"}))
         .expect("delete succeeds");
-    assert!(result_text(&del_res).contains("Deleted: Live Task (`task-live`)"));
+    assert!(result_text(&del_res).contains("Deleted task: Live Task (`task-live`)"));
 
     // Immediately check for orphans: must be 0 orphans (no vector index entry left behind!)
     let after_repair = server

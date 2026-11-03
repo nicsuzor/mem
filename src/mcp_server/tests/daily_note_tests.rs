@@ -22,7 +22,7 @@ fn daily_note_create_and_rewrite_leaves_exactly_one_file() {
         .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
         .collect();
     assert!(
-        create_text.contains("Document created:"),
+        create_text.contains("Daily created:"),
         "Expected creation success, got: {create_text}"
     );
 

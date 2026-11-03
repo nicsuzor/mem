@@ -287,4 +287,12 @@ impl PkbSearchServer {
             None => JsonValue::Object(serde_json::Map::new()),
         }
     }
+
+    pub(crate) fn capitalize_first(s: &str) -> String {
+        let mut chars = s.chars();
+        match chars.next() {
+            None => String::new(),
+            Some(f) => f.to_uppercase().collect::<String>() + chars.as_str(),
+        }
+    }
 }
