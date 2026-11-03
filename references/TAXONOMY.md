@@ -138,7 +138,7 @@ A `template` node holds the canonical body and metadata for a recurring workflow
 | `project`     | Project identifier — inherited by each instance                                         |
 | `template_id` | (On instances only) Back-reference to the template that spawned this instance           |
 
-**Placement**: a template is filed as `<snake_case id>.md` (id only, no title) in `workflows/`, or in `<project>/workflows/` when it has a `project`. `create` and `convert_document` route templates there by default (see `specs/pkb-rules.md` §3.10).
+**Placement**: a template is filed as `<snake_case id>.md` (id only, no title) in `workflows/`, or in `<project>/workflows/` when it has a `project`. `create` and `convert_document` route templates there by default (see `specs/pkb-rules.md` §3.11).
 
 **Pattern for recurring workflows** (`/daily`, `/retro`, `/sleep`, `/supervisor` session logs, `/issue-sweep` cycles):
 
@@ -198,7 +198,7 @@ The tree hierarchy is a **spanning tree** of the underlying dependency graph. It
 | `someday`     | Parked idea — may never be worked; differs from `inbox` by explicit deferral     |
 | `cancelled`   | Complete (dropped or withdrawn) — will not be done; decision made to drop        |
 | `failed`      | Attempted and will not be completed — terminal failure, distinct from `cancelled` (no longer wanted) and `done` |
-| `archived`    | Retired note or historical record — marked for removal to the sessions repository |
+| `archived`    | Retired note or historical record — retained in place in the PKB, hidden from default search and hydration |
 
 **Default is `inbox`**: Every new node starts as `inbox` regardless of how it was created.
 
