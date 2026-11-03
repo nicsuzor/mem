@@ -310,6 +310,12 @@ impl PkbSearchServer {
         });
         let doc_type = args.get("type").and_then(|v| v.as_str());
         let status = args.get("status").and_then(|v| v.as_str());
+        let title_contains = args.get("title_contains").and_then(|v| v.as_str());
+        let date_filter = crate::date_filter::DateFilter::from_args(args).map_err(|e| McpError {
+            code: ErrorCode::INVALID_PARAMS,
+            message: Cow::from(format!("Invalid date filter: {e}")),
+            data: None,
+        })?;
         let format = args
             .get("format")
             .and_then(|v| v.as_str())
@@ -342,7 +348,6 @@ impl PkbSearchServer {
 
         let graph = self.graph.read();
         results.retain(|r| r.path.is_file() && graph.resolve(&r.id).is_some());
-        drop(graph);
 
         if let Some(ref req_tags) = tags_vec {
             results.retain(|r| {
@@ -352,9 +357,39 @@ impl PkbSearchServer {
             });
         }
 
+        if let Some(tc) = title_contains {
+            let tc_lower = tc.to_lowercase();
+            results.retain(|r| r.title.to_lowercase().contains(&tc_lower));
+        }
+
+        let get_effective_mod = |r_id: &str, r_path: &Path| -> String {
+            if let Some(fm_mod) = graph
+                .resolve(r_id)
+                .and_then(|n| n.modified.clone())
+                .filter(|s| !s.trim().is_empty())
+            {
+                return fm_mod;
+            }
+            if let Ok(m) = std::fs::metadata(r_path) {
+                if let Ok(sys_time) = m.modified() {
+                    let dt: chrono::DateTime<chrono::Utc> = sys_time.into();
+                    return dt.to_rfc3339();
+                }
+            }
+            chrono::Utc::now().to_rfc3339()
+        };
+
+        if date_filter.is_active() {
+            results.retain(|r| {
+                let mod_time = get_effective_mod(&r.id, &r.path);
+                date_filter.matches(Some(&mod_time))
+            });
+        }
+
         let total = results.len();
 
         if total == 0 {
+            drop(graph);
             let zero = serde_json::json!({
                 "total": 0,
                 "showing": 0,
@@ -391,11 +426,13 @@ impl PkbSearchServer {
                         break;
                     }
                 }
+                let effective_mod = get_effective_mod(&r.id, &r.path);
                 let mut obj = serde_json::json!({
                     "id": r.id,
                     "title": r.title,
                     "type": r.doc_type,
                     "tags": r.tags,
+                    "modified": effective_mod,
                 });
                 if let Some(ref st) = r.status {
                     obj["status"] = serde_json::json!(st);
@@ -407,6 +444,7 @@ impl PkbSearchServer {
                 }
                 docs.push(obj);
             }
+            drop(graph);
 
             let mut payload = serde_json::json!({
                 "total": total,
@@ -448,17 +486,20 @@ impl PkbSearchServer {
             }
             output.push('\n');
 
+            let effective_mod = get_effective_mod(&r.id, &r.path);
             let mut obj = serde_json::json!({
                 "id": r.id,
                 "title": r.title,
                 "type": r.doc_type,
                 "tags": r.tags,
+                "modified": effective_mod,
             });
             if let Some(ref st) = r.status {
                 obj["status"] = serde_json::json!(st);
             }
             rendered_items.push(obj);
         }
+        drop(graph);
 
         let mut payload = serde_json::json!({
             "total": total,
@@ -1403,6 +1444,103 @@ impl PkbSearchServer {
         &self,
         args: &JsonValue,
     ) -> Result<CallToolResult, McpError> {
+        let type_guard = args.get("type").and_then(|v| v.as_str());
+
+        // Check if batch deletion (`ids`) was passed:
+        let ids_opt: Option<Vec<String>> =
+            args.get("ids").and_then(|v| v.as_array()).map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(|s| s.trim().to_string()))
+                    .filter(|s| !s.is_empty())
+                    .collect()
+            });
+
+        if let Some(ids) = ids_opt {
+            let mut deleted_count = 0;
+            let mut failed_count = 0;
+            let mut results = Vec::new();
+
+            for id in ids {
+                let graph = self.graph.read();
+                let node = match graph.resolve(&id) {
+                    Some(n) => n.clone(),
+                    None => {
+                        results.push(serde_json::json!({
+                            "id": id,
+                            "deleted": false,
+                            "error": format!("Document not found: {id}"),
+                        }));
+                        failed_count += 1;
+                        continue;
+                    }
+                };
+
+                if let Some(guard) = type_guard {
+                    let node_type = node.node_type.as_deref().unwrap_or("");
+                    let matches = if guard.eq_ignore_ascii_case("memory") {
+                        let memory_types = ["memory", "note", "insight", "observation"];
+                        memory_types.iter().any(|mt| node_type.eq_ignore_ascii_case(mt))
+                    } else {
+                        node_type.eq_ignore_ascii_case(guard)
+                    };
+                    if !matches {
+                        results.push(serde_json::json!({
+                            "id": id,
+                            "deleted": false,
+                            "error": format!(
+                                "Failed: type guard mismatch for document {id}: expected '{guard}', got {:?}",
+                                node.node_type
+                            ),
+                        }));
+                        failed_count += 1;
+                        continue;
+                    }
+                }
+
+                let abs_path = match self.abs_path_for_node(&node, Some(&graph)) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        results.push(serde_json::json!({
+                            "id": id,
+                            "deleted": false,
+                            "error": format!("Could not resolve path: {e}"),
+                        }));
+                        failed_count += 1;
+                        continue;
+                    }
+                };
+                let node_id = node.id.clone();
+                drop(graph);
+
+                if let Err(e) = crate::document_crud::delete_document(&abs_path) {
+                    results.push(serde_json::json!({
+                        "id": id,
+                        "deleted": false,
+                        "error": format!("Failed to delete: {e}"),
+                    }));
+                    failed_count += 1;
+                    continue;
+                }
+
+                self.rebuild_graph_remove(&node_id);
+                self.try_remove_document(&node_id, Some(&abs_path));
+
+                results.push(serde_json::json!({
+                    "id": id,
+                    "deleted": true,
+                }));
+                deleted_count += 1;
+            }
+
+            let payload = serde_json::json!({
+                "deleted_count": deleted_count,
+                "failed_count": failed_count,
+                "results": results,
+            });
+            let text = format!("Deleted {deleted_count} document(s), {failed_count} failed.");
+            return Ok(Self::structured_result(text, payload));
+        }
+
         let id = args
             .get("id")
             .and_then(|v| v.as_str())
@@ -1476,10 +1614,15 @@ impl PkbSearchServer {
 
         tracing::debug!(target: "perf::delete_document", phase = "TOTAL", elapsed_ms = t_total.elapsed().as_secs_f64() * 1000.0);
 
-        Ok(CallToolResult::success(vec![Content::text(format!(
-            "Deleted: {} (`{}`)",
-            label, node_id
-        ))]))
+        let payload = serde_json::json!({
+            "id": node_id,
+            "deleted": true,
+            "message": format!("Deleted: {} (`{}`)", label, node_id),
+        });
+        Ok(Self::structured_result(
+            format!("Deleted: {} (`{}`)", label, node_id),
+            payload,
+        ))
     }
 
     pub(crate) fn handle_convert_document(
@@ -1497,7 +1640,9 @@ impl PkbSearchServer {
                 })
         };
         let id = required("id")?;
-        let new_type = required("type")?;
+        let new_type = args.get("type").and_then(|v| v.as_str()).filter(|s| !s.trim().is_empty());
+        let new_title = args.get("title").and_then(|v| v.as_str()).filter(|s| !s.trim().is_empty());
+        let slug = args.get("slug").and_then(|v| v.as_str()).filter(|s| !s.trim().is_empty());
         let dir = args.get("dir").and_then(|v| v.as_str());
         let status = args.get("status").and_then(|v| v.as_str());
 
@@ -1521,6 +1666,8 @@ impl PkbSearchServer {
             &node_id,
             &label,
             new_type,
+            new_title,
+            slug,
             dir,
             status,
         )
@@ -1555,7 +1702,7 @@ impl PkbSearchServer {
         let payload = serde_json::json!({
             "ok": true,
             "id": result.id,
-            "title": label,
+            "title": result.title,
             "old_type": result.old_type,
             "type": result.new_type,
             "status": result.status,
@@ -1564,9 +1711,10 @@ impl PkbSearchServer {
             "retyped": result.retyped,
             "moved": result.moved,
         });
-        Ok(CallToolResult::success(vec![Content::text(
+        Ok(Self::structured_result(
             payload.to_string(),
-        )]))
+            payload,
+        ))
     }
 
     /// Build the compact "mutation neighborhood" returned by `complete_task` and

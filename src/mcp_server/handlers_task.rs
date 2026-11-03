@@ -2187,14 +2187,18 @@ impl PkbSearchServer {
                 data: None,
             })?;
 
-        let (path, canonical_id) = {
+        let (mut path, mut canonical_id, node_type) = {
             let graph = self.graph.read();
             let node = graph.resolve(id).ok_or_else(|| McpError {
                 code: ErrorCode::INVALID_PARAMS,
                 message: Cow::from(format!("Document not found: {id}")),
                 data: None,
             })?;
-            (self.abs_path_for_node(node, Some(&graph))?, node.id.clone())
+            (
+                self.abs_path_for_node(node, Some(&graph))?,
+                node.id.clone(),
+                node.node_type.clone(),
+            )
         };
 
         // Accept two forms for convenience:
@@ -2260,6 +2264,45 @@ impl PkbSearchServer {
                 ),
                 data: None,
             });
+        }
+
+        // Shim for converting non-task notes into tasks when `type: "task"` is provided
+        if let Some(new_type) = updates.get("type").and_then(|v| v.as_str()) {
+            let current_type = node_type.as_deref().unwrap_or("");
+            if !crate::graph::TASK_TYPES.contains(&current_type)
+                && crate::graph::TASK_TYPES.contains(&new_type)
+            {
+                let mut conv_args = serde_json::Map::new();
+                conv_args.insert("id".to_string(), serde_json::json!(id));
+                conv_args.insert("type".to_string(), serde_json::json!(new_type));
+                if let Some(t) = updates.get("title").and_then(|v| v.as_str()) {
+                    conv_args.insert("title".to_string(), serde_json::json!(t));
+                }
+                if let Some(s) = updates.get("status").and_then(|v| v.as_str()) {
+                    conv_args.insert("status".to_string(), serde_json::json!(s));
+                }
+                if let Some(d) = args.get("dir").and_then(|v| v.as_str()) {
+                    conv_args.insert("dir".to_string(), serde_json::json!(d));
+                }
+                let res = self.handle_convert_document(&serde_json::Value::Object(conv_args))?;
+                updates.remove("type");
+                updates.remove("title");
+                updates.remove("status");
+                if updates.is_empty() {
+                    return Ok(res);
+                }
+                let (new_path, new_canonical_id) = {
+                    let graph = self.graph.read();
+                    let node = graph.resolve(id).ok_or_else(|| McpError {
+                        code: ErrorCode::INTERNAL_ERROR,
+                        message: Cow::from(format!("Document not found after conversion: {id}")),
+                        data: None,
+                    })?;
+                    (self.abs_path_for_node(node, Some(&graph))?, node.id.clone())
+                };
+                path = new_path;
+                canonical_id = new_canonical_id;
+            }
         }
 
         // Validate + canonicalize a project change against polecat.yaml before

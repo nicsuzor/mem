@@ -244,13 +244,22 @@ Single reads return the document payload once using `body` (the redundant `conte
 - `tags` (string or array of strings, optional): Filter requiring all specified tags.
 - `type` (string, optional): Filter by document type.
 - `status` (string, optional): Filter by task status.
+- `title_contains` (string, optional): Case-insensitive substring filter on document title.
+- `since` / `before` (string, optional): ISO date / RFC3339 range filters on document `modified` time.
 - `fields` (string or array of strings, optional): Field projection in JSON mode.
-- `format` (string, optional, enum: `["markdown", "json"]`): Return format.
-- `limit` (integer, optional): Maximum items to return.
-- `offset` (integer, optional): Pagination offset.
+- `limit` (integer, optional): Maximum results to return (capped at `MAX_RESULTS`).
+- `offset` (integer, optional, default 0): Result pagination offset.
+- `budget_ms` (integer, optional): Soft deadline in milliseconds for partial results.
+- `format` (string, optional, enum: `["markdown", "json"]`, default `"markdown"`): Output formatting mode.
 
 **Structured Output (`documents`)**:
 Responses carry matching documents under a single `documents` array (never duplicating under `items`). Empty matches return `"documents": []`.
+- `id` (string): Canonical document identifier.
+- `title` (string): Document title.
+- `type` (string, optional): Node document type.
+- `tags` (array of strings): Tags defined on document.
+- `status` (string, optional): Document status if present.
+- `modified` (string): Last modified timestamp in RFC 3339 format, resolved from frontmatter `modified` or falling back to the file's disk modification time. Never `null` when the file has a modified time.
 
 #### Task Listing Schema (`list_tasks`)
 
@@ -323,7 +332,9 @@ Create and maintain knowledge artifacts. Notes, memories, insights.
 
 **Routing**: Documents auto-route to subdirectories by type (tasks/ projects/ goals/ notes/).
 
-**Convert in place** (`convert_document`): given an existing document ID and a new `type`, the server replaces the frontmatter `type`, then moves and renames the *same* file to `<dir>/<id>_<title-slug>.md` and reindexes it (graph patch, vector entry re-keyed to the new path). The ID never changes: it is written into frontmatter before the rename, so a document whose ID was only its filename stem (e.g. a mobile capture) keeps it. `dir` defaults to the type's routing directory (task/learn → `tasks/`, target → `targets/`, memory → `memories/`, otherwise `notes/`). Converting to a task type always leaves a valid task status: the `status` argument, else the existing status, else `inbox`. An existing status that is not a valid task status is rejected unless `status` replaces it. Every check runs before any write. The retype and the move are separate git commits, so git records the move as a rename. Re-running with the same arguments is a no-op, and finishes a conversion whose move step failed. Parent, project and other fields are set afterwards with `update_task`.
+**Batch Deletion** (`delete`): Accepts either a single `id` or a list of `ids`. When passed a list of `ids`, one call attempts to delete all specified documents, updating the graph and vector index for each. Missing or invalid IDs are reported with individual failure outcomes without aborting the deletion of valid IDs in the list.
+
+**Convert and Rename in place** (`convert_document`): given an existing document ID, optionally a new `type`, new `title`, and/or filename `slug`, the server updates frontmatter `title` and/or `type`, moves and renames the *same* file to `<dir>/<id>_<title_or_slug>.md` (`<dir>/<snake_case id>.md` for workflows), and reindexes it (graph patch, vector entry re-keyed to the new path). The canonical `id` is retained in frontmatter, and any differing previous filename stem or alias is recorded under `alias` so the note remains continuously reachable by its old ID and historical identifiers. When `type` is omitted, the document preserves its existing type. `dir` defaults to the routing directory for the document type (task/learn → `tasks/`, target → `targets/`, memory → `memories/`, otherwise `notes/`). Converting to a task type always leaves a valid task status: the `status` argument, else the existing status, else `inbox`. An existing status that is not a valid task status is rejected unless `status` replaces it. Every check runs before any write. The retype and the move are separate git commits, so git records the move as a rename. Re-running with the same arguments is a no-op, and finishes a conversion whose move step failed. Parent, project and other fields are set afterwards with `update_task`.
 
 **Success criteria**:
 
