@@ -76,7 +76,7 @@ fn test_list_documents_filter_title_substring_and_date_window() {
     })).expect("handle_list_documents should succeed");
 
     let out = json_of(&res);
-    let items = out["items"].as_array().expect("items should be an array");
+    let items = out["documents"].as_array().expect("documents should be an array");
     assert_eq!(items.len(), 1, "Only doc-2 should match both filters: {items:?}");
     assert_eq!(items[0]["id"], "doc-2");
     assert_eq!(items[0]["title"], "Alpha Design Spec");
@@ -111,7 +111,7 @@ fn test_list_documents_returns_real_modified_time_not_null() {
     })).expect("handle_list_documents json mode");
 
     let out_json = json_of(&res_json);
-    let items = out_json["items"].as_array().expect("items array");
+    let items = out_json["documents"].as_array().expect("documents array");
     assert_eq!(items.len(), 2);
 
     for item in items {
@@ -142,7 +142,7 @@ fn test_list_documents_returns_real_modified_time_not_null() {
         "format": "markdown"
     })).expect("handle_list_documents markdown mode");
     let out_md = json_of(&res_md);
-    let md_items = out_md["items"].as_array().expect("md items array");
+    let md_items = out_md["documents"].as_array().expect("md documents array");
     for item in md_items {
         assert!(item["modified"].is_string());
     }
