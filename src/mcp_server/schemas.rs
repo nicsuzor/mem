@@ -31,9 +31,9 @@ impl PkbSearchServer {
                         "boost_id": { "type": "string" },
                         "detail": {
                             "type": "string",
-                            "enum": ["chunk", "snippet", "full", "metadata", "ids"],
+                            "enum": ["chunk", "snippet", "summary", "full", "metadata", "ids"],
                             "default": "chunk",
-                            "description": "Level of detail: chunk, snippet, full, metadata, ids."
+                            "description": "Level of detail: chunk, snippet, summary, full, metadata, ids."
                         },
                         "ids_only": { "type": "boolean" },
                         "max_bytes": { "type": "integer" },
