@@ -163,9 +163,9 @@ fn test_list_tasks_projects_body_excerpt_and_relationship_summary() {
         }))
         .expect("list_tasks should succeed");
     let structured = res.structured_content.expect("structuredContent required");
-    let items = structured["items"]
+    let items = structured["tasks"]
         .as_array()
-        .expect("items array required");
+        .expect("tasks array required");
     assert!(!items.is_empty());
 
     let child_item = items

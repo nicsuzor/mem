@@ -366,6 +366,28 @@ impl PkbSearchServer {
             .get("detail")
             .and_then(|v| v.as_str())
             .unwrap_or("chunk");
+        const VALID_SEARCH_DETAILS: &[&str] = &["chunk", "snippet", "full", "metadata", "ids"];
+        if let Some(raw_detail) = args.get("detail") {
+            if let Some(d) = raw_detail.as_str() {
+                if !VALID_SEARCH_DETAILS.contains(&d.to_ascii_lowercase().as_str()) {
+                    return Err(McpError {
+                        code: ErrorCode::INVALID_PARAMS,
+                        message: Cow::from(format!(
+                            "Invalid detail '{d}'. Valid values: chunk, snippet, full, metadata, ids"
+                        )),
+                        data: None,
+                    });
+                }
+            } else {
+                return Err(McpError {
+                    code: ErrorCode::INVALID_PARAMS,
+                    message: Cow::from(
+                        "Invalid detail. Valid values: chunk, snippet, full, metadata, ids",
+                    ),
+                    data: None,
+                });
+            }
+        }
         let ids_only = args
             .get("ids_only")
             .and_then(|v| v.as_bool())
@@ -532,7 +554,6 @@ impl PkbSearchServer {
             let zero = serde_json::json!({
                 "total": 0,
                 "showing": 0,
-                "items": [],
                 "count": 0,
                 "results": [],
                 "ranking": ranking_label,
@@ -561,7 +582,7 @@ impl PkbSearchServer {
                 "showing": id_list.len(),
                 "count": id_list.len(),
                 "ids": id_list.clone(),
-                "items": id_list,
+                "results": id_list,
                 "ranking": ranking_label,
                 "reranker_loaded": reranker_loaded,
             });
@@ -602,6 +623,18 @@ impl PkbSearchServer {
                         .unwrap_or("untyped");
                     let status = node.and_then(|n| n.status.clone());
                     let project = node.and_then(|n| n.project.clone());
+
+                    if detail.eq_ignore_ascii_case("metadata") {
+                        let hit_status = status.or_else(|| r.status.clone());
+                        return serde_json::json!({
+                            "id": display_id,
+                            "title": r.title,
+                            "type": node_type,
+                            "status": hit_status,
+                            "score": score,
+                        });
+                    }
+
                     let mut obj = serde_json::json!({
                         "id": display_id,
                         "title": r.title,
@@ -634,7 +667,6 @@ impl PkbSearchServer {
                 "total": json_results.len(),
                 "showing": json_results.len(),
                 "count": json_results.len(),
-                "items": json_results.clone(),
                 "results": json_results,
                 "ranking": ranking_label,
                 "reranker_loaded": reranker_loaded,
@@ -672,7 +704,7 @@ impl PkbSearchServer {
                 r.title,
                 score
             ));
-            if (*recency_decay - 1.0).abs() > 1e-4 || (*read_boost - 1.0).abs() > 1e-4 || *salience_score > 0.0 {
+            if detail != "metadata" && ((*recency_decay - 1.0).abs() > 1e-4 || (*read_boost - 1.0).abs() > 1e-4 || *salience_score > 0.0) {
                 output.push_str(&format!(
                     "**Priors:** recency={:.3}, recent_read={:.3}, salience={:.1}\n",
                     recency_decay, read_boost, salience_score
@@ -689,7 +721,7 @@ impl PkbSearchServer {
             if let Some(project) = node.and_then(|n| n.project.as_deref()) {
                 output.push_str(&format!("**Project:** {project}\n"));
             }
-            if !r.tags.is_empty() {
+            if detail != "metadata" && !r.tags.is_empty() {
                 output.push_str(&format!("**Tags:** {}\n", r.tags.join(", ")));
             }
             let extract: std::borrow::Cow<'_, str> = match detail {
@@ -741,16 +773,36 @@ impl PkbSearchServer {
             "count": scored.len(),
             "ranking": ranking_label,
             "reranker_loaded": reranker_loaded,
-            "items": scored.iter().map(|(r, score, recency_decay, read_boost, salience)| {
-                serde_json::json!({
-                    "id": r.id,
-                    "title": r.title,
-                    "score": score,
-                    "tags": r.tags,
-                    "recency_decay": recency_decay,
-                    "recent_read_boost": read_boost,
-                    "salience": salience,
-                })
+            "results": scored.iter().map(|(r, score, recency_decay, read_boost, salience)| {
+                if detail.eq_ignore_ascii_case("metadata") {
+                    let node = graph.get_node(&r.id);
+                    let display_id = node
+                        .map(|n| n.task_id.as_deref().unwrap_or(&n.id))
+                        .unwrap_or(&r.id);
+                    let node_type = r
+                        .doc_type
+                        .as_deref()
+                        .or_else(|| node.and_then(|n| n.node_type.as_deref()))
+                        .unwrap_or("untyped");
+                    let hit_status = node.and_then(|n| n.status.clone()).or_else(|| r.status.clone());
+                    serde_json::json!({
+                        "id": display_id,
+                        "title": r.title,
+                        "type": node_type,
+                        "status": hit_status,
+                        "score": score,
+                    })
+                } else {
+                    serde_json::json!({
+                        "id": r.id,
+                        "title": r.title,
+                        "score": score,
+                        "tags": r.tags,
+                        "recency_decay": recency_decay,
+                        "recent_read_boost": read_boost,
+                        "salience": salience,
+                    })
+                }
             }).collect::<Vec<_>>(),
         });
         Ok(Self::structured_result(output, payload))
@@ -1709,7 +1761,7 @@ mod search_status_projection_tests {
                 .expect("search");
             let text = result_text(&res);
             let json_val: serde_json::Value = serde_json::from_str(&text).expect("valid json");
-            let items = json_val["items"].as_array().expect("items array");
+            let items = json_val["results"].as_array().expect("results array");
             assert_eq!(items.len(), 1, "expected 1 item, got json: {text}");
             items[0]["score"].as_f64().expect("score")
         };
