@@ -9,6 +9,28 @@ use super::{PkbSearchServer, MAX_RESULTS};
 impl PkbSearchServer {
     pub(crate) fn handle_get_document(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
         self.ensure_graph_fresh();
+        if let Some(raw_detail) = args.get("detail") {
+            const VALID_DOC_DETAILS: &[&str] = &["metadata", "summary", "full"];
+            if let Some(d) = raw_detail.as_str() {
+                if !VALID_DOC_DETAILS.contains(&d.to_ascii_lowercase().as_str()) {
+                    return Err(McpError {
+                        code: ErrorCode::INVALID_PARAMS,
+                        message: Cow::from(format!(
+                            "Invalid detail '{d}'. Valid values: metadata, summary, full"
+                        )),
+                        data: None,
+                    });
+                }
+            } else {
+                return Err(McpError {
+                    code: ErrorCode::INVALID_PARAMS,
+                    message: Cow::from(
+                        "Invalid detail. Valid values: metadata, summary, full",
+                    ),
+                    data: None,
+                });
+            }
+        }
         if args.get("path").is_some() {
             return Err(McpError {
                 code: ErrorCode::INVALID_PARAMS,
@@ -131,6 +153,46 @@ impl PkbSearchServer {
         })?;
 
         let detail = args.get("detail").and_then(|v| v.as_str());
+        if let Some(raw_detail) = args.get("detail") {
+            const VALID_DOC_DETAILS: &[&str] = &["metadata", "summary", "full"];
+            if let Some(d) = raw_detail.as_str() {
+                if !VALID_DOC_DETAILS.contains(&d.to_ascii_lowercase().as_str()) {
+                    return Err(McpError {
+                        code: ErrorCode::INVALID_PARAMS,
+                        message: Cow::from(format!(
+                            "Invalid detail '{d}'. Valid values: metadata, summary, full"
+                        )),
+                        data: None,
+                    });
+                }
+            } else {
+                return Err(McpError {
+                    code: ErrorCode::INVALID_PARAMS,
+                    message: Cow::from(
+                        "Invalid detail. Valid values: metadata, summary, full",
+                    ),
+                    data: None,
+                });
+            }
+        }
+
+        let fields_filter: Option<std::collections::HashSet<String>> = args.get("fields").and_then(|v| {
+            if let Some(arr) = v.as_array() {
+                Some(
+                    arr.iter()
+                        .filter_map(|s| s.as_str().map(|k| k.to_string()))
+                        .collect(),
+                )
+            } else {
+                v.as_str().map(|s| {
+                    s.split(',')
+                        .map(|k| k.trim().to_string())
+                        .filter(|k| !k.is_empty())
+                        .collect()
+                })
+            }
+        });
+
         let max_bytes = args
             .get("max_bytes")
             .and_then(|v| v.as_u64())
@@ -147,11 +209,12 @@ impl PkbSearchServer {
 
         let matter = gray_matter::Matter::<gray_matter::engine::YAML>::new();
         let parsed = matter.parse(&content);
-        let frontmatter = parsed
+        let mut frontmatter = parsed
             .data
             .as_ref()
             .and_then(|d| d.deserialize::<JsonValue>().ok())
             .unwrap_or(JsonValue::Object(serde_json::Map::new()));
+        Self::prune_null_and_empty(&mut frontmatter);
 
         let body = parsed.content.trim().to_string();
         let (truncated_body, truncated, total_bytes) = if detail == Some("summary") {
@@ -178,8 +241,13 @@ impl PkbSearchServer {
         });
 
         if !metadata_only {
-            structured["content"] = serde_json::json!(truncated_body);
             structured["body"] = serde_json::json!(truncated_body);
+        }
+
+        if let Some(ref filter) = fields_filter {
+            if let Some(map) = structured.as_object_mut() {
+                map.retain(|k, _| filter.contains(k));
+            }
         }
 
         Self::prune_null_and_empty(&mut structured);
@@ -246,6 +314,22 @@ impl PkbSearchServer {
             .get("format")
             .and_then(|v| v.as_str())
             .unwrap_or("markdown");
+        let fields_filter: Option<std::collections::HashSet<String>> = args.get("fields").and_then(|v| {
+            if let Some(arr) = v.as_array() {
+                Some(
+                    arr.iter()
+                        .filter_map(|s| s.as_str().map(|k| k.to_string()))
+                        .collect(),
+                )
+            } else {
+                v.as_str().map(|s| {
+                    s.split(',')
+                        .map(|k| k.trim().to_string())
+                        .filter(|k| !k.is_empty())
+                        .collect()
+                })
+            }
+        });
         let limit = args
             .get("limit")
             .and_then(|v| v.as_u64())
@@ -274,7 +358,6 @@ impl PkbSearchServer {
             let zero = serde_json::json!({
                 "total": 0,
                 "showing": 0,
-                "items": [],
                 "documents": [],
             });
             return Ok(Self::structured_result(
@@ -317,6 +400,11 @@ impl PkbSearchServer {
                 if let Some(ref st) = r.status {
                     obj["status"] = serde_json::json!(st);
                 }
+                if let Some(ref filter) = fields_filter {
+                    if let Some(map) = obj.as_object_mut() {
+                        map.retain(|k, _| filter.contains(k));
+                    }
+                }
                 docs.push(obj);
             }
 
@@ -324,7 +412,6 @@ impl PkbSearchServer {
                 "total": total,
                 "showing": docs.len(),
                 "offset": offset,
-                "items": docs.clone(),
                 "documents": docs,
             });
             if budget_ms.is_some() || !timed_out.is_empty() {
@@ -377,7 +464,7 @@ impl PkbSearchServer {
             "total": total,
             "showing": rendered_items.len(),
             "offset": offset,
-            "items": rendered_items,
+            "documents": rendered_items,
         });
         if budget_ms.is_some() || !timed_out.is_empty() {
             payload["timed_out"] = serde_json::json!(timed_out);
