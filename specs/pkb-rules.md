@@ -85,7 +85,7 @@ A rule has exactly one home. A copy cannot be kept in step with its source, so e
 | An agent's behaviour | that agent's definition in the academicOps plugins (`plugins/ida/agents/<agent>.md`); what is personal to Nic lives only in the local `.agents/CORE.md` and `.agents/SOUL.md` of the agent's own directory |
 | Rules binding every agent | the always-on axioms (§8.1) |
 
-None is duplicated into the PKB, `CLAUDE.md` or another instruction file. The PKB holds facts, findings, decisions and state, never a restatement of the doctrine that governs how they are handled.
+None is duplicated into the PKB, `CLAUDE.md` or another instruction file. The PKB holds facts, findings, substantive domain and project decisions, and state, never a restatement of the doctrine that governs how they are handled. In particular, behavioural rules and operational constraints must never be filed as standing-decision notes or `memory` nodes in the PKB. Behavioural doctrine lives exclusively in its ratified home: specs, agent definitions, or the always-on axioms.
 
 A defect in anything that ships via the plugins (skill, agent definition, hook) is fixed in the canonical source in academicOps and lands through a gated PR from a clean per-task worktree, so it reaches every host. An edit to an installed or symlinked copy is never a local fix: it mutates the shared checkout or is overwritten on the next install. The only legitimate local edit is a machine-local preference in a file that is not a checkout of the repository.
 
@@ -172,6 +172,13 @@ Material brought in from outside (documents, diagrams, old notes, transcripts) i
 - Co-occurrence across projects is the highest-value capture. When a source names several existing projects together, record the relation even if each project is well documented alone.
 - A recurring strategic tension (prototyping against shipping, research against operations) is knowledge in its own right: one note, wikilinked from every project it affects.
 
+### 2.8. One subject, one note
+
+Every subject, topic, or domain entity has exactly one canonical note in the PKB:
+
+1. **Ruling and enforcement live together.** A substantive ruling or design decision and its current operational state — whether it is implemented, built, deployed, or enforced — sit together in the same note. Never split a ruling and its implementation status into twin notes (e.g. one note recording the decision and a second note tracking whether the decision is built or enforced). When an agent checks whether a ruling is live, it reads both the ruling and its current operational state from that single document.
+2. **Immediate consolidation.** When a second note on an existing subject is discovered or created, merge it into the canonical note immediately (§3.3). A second note is never left standing as a companion, shadow, or follow-up note.
+
 ---
 
 ## 3. Graph hygiene and placement
@@ -182,10 +189,10 @@ When a task settles, its durable knowledge moves to a canonical note. Settled ta
 
 1. **Does it persist beyond the task?** Checklist state, branch names, PR links and debug flags stop mattering once the criteria are met. Drop them.
 2. **Is it narration?** Retry logs, test output, diffs and commit SHAs are history. Only the surviving lesson passes forward.
-3. **Is it one of the five durable kinds?** Architectural invariant or system constraint; empirical finding with a verified root cause; standing decision; domain concept or taxonomy; living procedure. Anything else is commentary.
+3. **Is it one of the five durable kinds?** Architectural invariant or system constraint; empirical finding with a verified root cause; standing decision (substantive domain or project choice, never an agent behavioural rule); domain concept or taxonomy; living procedure. Anything else is commentary.
 4. **Is it already canonical?** If an existing note holds it as accurately, do not add a copy.
 
-Only a proposition passing all four is extracted. A task that yields nothing is deleted without a knowledge write. A standing rule is not extracted into the PKB at all: it goes to its home under §1.4.
+Only a proposition passing all four is extracted. A task that yields nothing is deleted without a knowledge write. A standing rule is not extracted into the PKB at all: it goes to its home under §1.4. In particular, a behavioural rule or operational constraint governing agents or the PKB must never be sent to a standing-decision note or memory in the PKB.
 
 ### 3.2. Destination and the pre-deletion gate
 
@@ -203,16 +210,33 @@ Duplicate detection returns candidates, not verdicts. A `find_duplicates` score 
 
 Invariants:
 
-- The PKB accepts `archived` as a status on any note. An archive script moves every PKB note with status `archived` out of the PKB into the sessions repository and removes it from the PKB.
+- The PKB relies on one canonical archive marker: `status: archived`. Archived and log material stays in place within the PKB, hidden from hydration and default search at query time, reachable on explicit request (via `tiers`). Nothing is moved out of the PKB into the sessions repository or deleted by an archive script. No parallel archive fields exist.
 - Settled tasks are deleted after a retention period once durable knowledge is captured.
 - A consolidation that produces concatenated bodies has failed.
 - Hygiene runs in every consolidation pass and whenever a task is released as done; it does not wait to be asked for.
 
-### 3.4. Clean first; git is the recovery
+### 3.4. Archive versus delete test
+
+When cleaning, consolidating, or evaluating candidate nodes, an agent applies this test to decide between **archive** (mark with `status: archived`, kept in place) and **delete** (outright deletion from the PKB):
+
+1. **Explicit user-requested archival record?**
+   - *Test*: Did Nic explicitly ask for this record, or this category of record, to be kept in the PKB?
+   - *Coverage*: **A transcript Nic asked for** (e.g. verbatim session transcripts, meeting records, or worked reviews Nic directed to be kept in his second brain).
+   - *Disposition*: **Archive** (`status: archived`). Kept in place in the PKB, excluded from default search and hydration, reachable on explicit request (`tiers`).
+2. **Immutable evidence node cited by a current note?**
+   - *Test*: Is this node an evidentiary record, benchmark dataset, evaluation corpus, failure catalog, or discovery report cited by a living, canonical knowledge note, spec, or active task?
+   - *Coverage*: **An evidence node cited by a current note** (e.g. empirical data, evaluation suites, or historical failure surveys underpinning an active claim).
+   - *Disposition*: **Archive** (`status: archived`). Kept in place in the PKB under `status: archived` to preserve incoming wikilinks and primary-source citations without surfacing as current doctrine in default search. Not deleted while an active note cites it.
+3. **Superseded statement of state?**
+   - *Test*: Is the node an obsolete statement of past system, project, or world state, an outdated progress summary, or an unreferenced historical revision that has been overtaken by events or superseded by a current note that does not cite it as evidence?
+   - *Coverage*: **A superseded statement of state** (e.g. outdated progress summaries, obsolete status assertions, or stale intermediate findings).
+   - *Disposition*: **Delete outright**. The PKB holds only what is true now (§1.1, §2.1). Superseded state is never archived or left in place; git commit history, session transcripts, and audit logs preserve historical state.
+
+### 3.5. Clean first; git is the recovery
 
 Agents delete, merge and consolidate PKB nodes on the ratified rules in this specification alone. Git is the recovery path; there is no per-batch sign-off before a deletion or merge. Nic: "nah, git is fine, we trust git recovery always. clean first, ask forgiveness not permission always unless it's going out to external stakeholders". The sole exception is anything going out to external stakeholders (a message, submission, publication, calendar invitation, or any change visible outside Nic's own systems), which still waits for his sign-off.
 
-### 3.5. Intake: one epic per body of related work
+### 3.6. Intake: one epic per body of related work
 
 Nic, 2026-09-11: "consolidate related tasks under a single epic where possible, even if they get added separately. Ideally we would hand sara an entire epic, with multiple tasks that can be executed at roughly the same time."
 
@@ -222,7 +246,7 @@ Nic, 2026-09-11: "consolidate related tasks under a single epic where possible, 
 4. **Project roots are not epics.** Related children under a root are grouped into a named epic beneath it.
 5. **Edges follow the grouping.** Sibling `depends_on` edges under one task collapse into subtask ordering; cross-epic dependencies stay edges.
 
-### 3.6. Continuous curation
+### 3.7. Continuous curation
 
 Nic, 2026-09-18, as a standing mandate for every session:
 
@@ -231,12 +255,12 @@ Nic, 2026-09-18, as a standing mandate for every session:
 - Curation actions: consolidate overlapping tasks into one task with scoped subtasks; cluster under a parent that cleanly bounds the work; deduplicate; sequence with `depends_on`; weight `contributes_to` edges to reflect real leverage.
 - When capture finds an existing task for the same thing, the new context merges into the existing node rather than creating a twin. Repeatedly hitting the same obstacle is evidence for a higher intent band.
 
-### 3.7. One node per obligation; tags drive nothing
+### 3.8. One node per obligation; tags drive nothing
 
 - **One node per obligation.** Accepting or declining an invitation, writing or refusing a reference, answering or not answering an inquiry is the same obligation as doing it, and the task that does it records the answer. A "decide whether" node beside a "do it" node is merged into the do-it task. A genuine fork, two mutually exclusive courses each of which is real work, is modelled as mutually blocking option nodes, not as a decision task.
 - **Tags carry no work and drive no surface.** Nothing in the engine, a daily note, a brief or a dispatch surface reads a tag to decide what Nic is shown or what an agent does. A real decision is a task on the graph, parented and edged like any other.
 
-### 3.8. Locating work
+### 3.9. Locating work
 
 - Locate parent epics, duplicates and existing tasks with hybrid search (`search`, `task_search`) first. Do not traverse the graph node by node through parents, children and dependency trees to explore hierarchy; it burns tool calls and context.
 - A pre-creation duplicate search runs across all types. Filtering to `type=epic` misses overlapping `task` and `learn` nodes.
@@ -244,15 +268,15 @@ Nic, 2026-09-18, as a standing mandate for every session:
 - **A fixable defect is a node the moment it is named.** When a brief, task body or report names a specific, fixable defect, the defect becomes its own task node as the sentence is written, and the sentence cites the node's id. A bullet in a brief cannot be claimed, carries no status and drifts unreconciled; a defect narrated only in chat is gone at session end.
 - Relationships, dependencies and blockers discovered in a session are written to the graph as edges or wikilinks. Conversation is ephemeral; the graph is working memory.
 
-### 3.9. Minting a node
+### 3.10. Minting a node
 
 - **Ask, or probe.** A question a person can answer in a sentence is asked in conversation and never becomes a task. An unknown that needs investigation becomes an explicit probe (`type: learn`) with observable acceptance criteria, and the work that waits on its answer `depends_on` it.
 - **Find out cheaply before committing.** Where paths diverge on an unknown, a low-cost discriminating probe comes before heavy work on any branch.
 - **Place work where its scope is shared.** Place a node under the highest container whose whole scope it serves, not under the nearest or current one. Work that affects several projects is not buried in one project's leaf. It reaches the goal or target it serves through `contributes_to` (§2.6), never by being parented to it.
-- **No task flooding.** Never batch-generate unverified nodes. Each node minted is checked for duplicates first (§3.8).
+- **No task flooding.** Never batch-generate unverified nodes. Each node minted is checked for duplicates first (§3.9).
 - **A review is its own node only when a separate evaluator must discharge it in a different session.** Otherwise it is a checklist line on the task it reviews. An empty placeholder review node is deleted.
 
-### 3.10. Workflow placement
+### 3.11. Workflow placement
 
 A workflow (`type: template`) is filed as `<snake_case id>.md`: the id only, never the title. It lives in `workflows/` when it has no `project`, and in `<project>/workflows/` when it is project-scoped, so the directory shows its tier. The whole name is snake_case, id included (Nic, 2026-10-20). The frontmatter `id` is unchanged and remains what resolution reads. `create` and `convert_document` apply this placement by default.
 
