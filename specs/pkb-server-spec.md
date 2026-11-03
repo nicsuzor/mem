@@ -351,6 +351,22 @@ Create and maintain knowledge artifacts. Notes, memories, insights.
 - Frontmatter always valid YAML with required fields (id, title, type, created, modified)
 - Files human-readable without tools (US1)
 - Flexible ID resolution (by ID, filename stem, or title)
+- **AC1: Non-Task Write Replies**: Write tools (`create`, `update_task`, `append`, `update_body`, `edit_body`, `delete`, `release_task`, `complete_task`) label their reply with the written node's own type (e.g. `Note`, `Template`, `Memory`, `Target`) rather than generic "Document" or "Task", include `"type": "<node_type>"` in structured payloads, and suppress task-specific hints on non-task nodes.
+  - Mapped tests:
+    - `write_reply_type_tests::test_create_document_names_non_task_type`
+    - `write_reply_type_tests::test_update_task_on_non_task_names_node_type_and_suppresses_release_hint`
+    - `write_reply_type_tests::test_append_names_non_task_type`
+    - `write_reply_type_tests::test_update_body_names_non_task_type`
+    - `write_reply_type_tests::test_edit_body_names_non_task_type`
+    - `write_reply_type_tests::test_delete_names_non_task_type`
+    - `write_reply_type_tests::test_release_task_on_non_task_names_node_type`
+    - `write_reply_type_tests::test_complete_task_on_non_task_names_node_type`
+- **AC2: Task Write Replies**: Task writes continue to reply naming tasks (e.g. `Task updated`, `Task created`, `Deleted task`, `Released task`).
+  - Mapped tests:
+    - `write_reply_type_tests::test_create_task_names_task_type`
+    - `write_reply_type_tests::test_update_task_on_task_names_task_and_keeps_release_hint`
+    - `write_reply_type_tests::test_delete_task_names_task_type`
+    - `write_reply_type_tests::test_release_task_on_task_names_task_type`
 
 ### 4. Knowledge Graph
 

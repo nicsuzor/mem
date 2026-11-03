@@ -33,6 +33,7 @@ mod title_and_filename_rules_tests;
 mod read_body_truncation_tests;
 mod alias_and_links_in_tests;
 mod document_tools_enhancements_tests;
+mod write_reply_type_tests;
 
 
 pub(crate) fn make_doc(
