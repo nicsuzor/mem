@@ -481,6 +481,10 @@ pub fn lint_file(
 
     check_markdown_body(&content, &mut diags);
 
+    if let Some(known_ids) = known_ids {
+        check_wikilinks(&content, known_ids, &mut diags);
+    }
+
     // ── Self-heal a missing id, regardless of --fix ───────────────────
     //
     // A missing id must never hard-fail CI (see the demoted `task-no-id`
@@ -2440,6 +2444,158 @@ pub fn cycle_product(
     best
 }
 
+/// Build known ID and entity set for reference and wikilink checking across a PKB.
+/// Includes node id, task_id, aliases, permalinks, titles, and filenames (both stem and .md).
+pub fn build_known_ids(pkb_root: &Path) -> HashSet<String> {
+    let files = pkb::scan_directory(pkb_root);
+    let ids: HashSet<String> = files
+        .par_iter()
+        .filter_map(|p| {
+            let mut ids = Vec::new();
+            // 5. Filename & stem & relative paths
+            if let Some(stem) = p.file_stem().and_then(|s| s.to_str()) {
+                ids.push(stem.to_string());
+                ids.push(stem.to_lowercase());
+            }
+            if let Some(fname) = p.file_name().and_then(|s| s.to_str()) {
+                ids.push(fname.to_string());
+                ids.push(fname.to_lowercase());
+            }
+            if let Ok(rel) = p.strip_prefix(pkb_root) {
+                let rel_str = rel.to_string_lossy().to_string();
+                ids.push(rel_str.clone());
+                ids.push(rel_str.to_lowercase());
+                if let Some(rel_no_ext) = rel_str.strip_suffix(".md") {
+                    ids.push(rel_no_ext.to_string());
+                    ids.push(rel_no_ext.to_lowercase());
+                }
+            }
+
+            // 1-4. Frontmatter: id, task_id, permalink, alias/aliases, title
+            if let Ok(content) = std::fs::read_to_string(p) {
+                let matter = Matter::<YAML>::new();
+                let parsed = matter.parse(&content);
+                if let Some(fm) = parsed
+                    .data
+                    .as_ref()
+                    .and_then(|d| d.deserialize::<serde_json::Value>().ok())
+                {
+                    // id & task_id
+                    for id_key in &["id", "task_id"] {
+                        if let Some(id) = fm.get(*id_key).and_then(|v| v.as_str()) {
+                            ids.push(id.to_string());
+                            ids.push(id.to_lowercase());
+                        }
+                    }
+                    // permalink
+                    if let Some(pl) = fm.get("permalink").and_then(|v| v.as_str()) {
+                        ids.push(pl.to_string());
+                        ids.push(pl.to_lowercase());
+                    }
+                    // title
+                    if let Some(title) = fm.get("title").and_then(|v| v.as_str()) {
+                        ids.push(title.to_string());
+                        ids.push(title.to_lowercase());
+                    }
+                    // alias & aliases
+                    for key in &["alias", "aliases"] {
+                        if let Some(arr) = fm.get(*key).and_then(|v| v.as_array()) {
+                            for item in arr {
+                                if let Some(s) = item.as_str() {
+                                    ids.push(s.to_string());
+                                    ids.push(s.to_lowercase());
+                                }
+                            }
+                        } else if let Some(s) = fm.get(*key).and_then(|v| v.as_str()) {
+                            ids.push(s.to_string());
+                            ids.push(s.to_lowercase());
+                        }
+                    }
+                }
+            }
+            Some(ids)
+        })
+        .flatten()
+        .collect();
+    ids
+}
+
+fn is_target_known(target: &str, known_ids: &HashSet<String>) -> bool {
+    if known_ids.contains(target) || known_ids.contains(&target.to_lowercase()) {
+        return true;
+    }
+    if let Some(stripped) = target.strip_suffix(".md") {
+        if known_ids.contains(stripped) || known_ids.contains(&stripped.to_lowercase()) {
+            return true;
+        }
+    } else {
+        let with_md = format!("{target}.md");
+        if known_ids.contains(&with_md) || known_ids.contains(&with_md.to_lowercase()) {
+            return true;
+        }
+    }
+    // If target has path components (e.g. "archive/copyright.md" or "archive/copyright"), check filename / stem
+    if target.contains('/') || target.contains('\\') {
+        let p = Path::new(target);
+        if let Some(stem) = p.file_stem().and_then(|s| s.to_str()) {
+            if known_ids.contains(stem) || known_ids.contains(&stem.to_lowercase()) {
+                return true;
+            }
+        }
+        if let Some(fname) = p.file_name().and_then(|s| s.to_str()) {
+            if known_ids.contains(fname) || known_ids.contains(&fname.to_lowercase()) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Check all wikilinks in `content` against `known_ids`.
+/// Reports any link whose target does not resolve to an id, alias, permalink, title, or filename.
+pub fn check_wikilinks(
+    content: &str,
+    known_ids: &HashSet<String>,
+    diags: &mut Vec<Diagnostic>,
+) {
+    static WIKILINK_RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let re = WIKILINK_RE.get_or_init(|| regex::Regex::new(r"\[\[(.*?)\]\]").unwrap());
+
+    for (i, line) in content.lines().enumerate() {
+        let line_num = i + 1;
+        if !line.contains("[[") {
+            continue;
+        }
+        for cap in re.captures_iter(line) {
+            let inner = &cap[1];
+            let trimmed = inner.trim();
+            if trimmed.starts_with('#') {
+                // Intra-document section anchor like [[#heading]] or [[#heading|display]]
+                continue;
+            }
+            let target_part = trimmed.split('|').next().unwrap_or("");
+            let target = target_part.split('#').next().unwrap_or("").trim();
+            let is_broken = if target.is_empty() {
+                true
+            } else {
+                !is_target_known(target, known_ids)
+            };
+            if is_broken {
+                diags.push(Diagnostic::simple(
+                    Severity::Warning,
+                    "ref-broken-wikilink",
+                    format!(
+                        "broken wikilink '[[{}]]' does not resolve to any node by id, alias, permalink, title, or filename",
+                        inner
+                    ),
+                    Some(line_num),
+                    false,
+                ));
+            }
+        }
+    }
+}
+
 /// Lint all markdown files under a PKB root directory.
 pub fn lint_directory(
     pkb_root: &Path,
@@ -2461,41 +2617,7 @@ pub fn lint_directory_with_cap(
 
     // Build known ID set for reference checking
     let known_ids: Option<HashSet<String>> = if check_refs {
-        let ids: HashSet<String> = files
-            .par_iter()
-            .filter_map(|p| {
-                let content = std::fs::read_to_string(p).ok()?;
-                let matter = Matter::<YAML>::new();
-                let parsed = matter.parse(&content);
-                parsed.data.as_ref().and_then(|d| {
-                    let fm: serde_json::Value = d.deserialize().ok()?;
-                    let mut ids = Vec::new();
-                    if let Some(id) = fm.get("id").and_then(|v| v.as_str()) {
-                        ids.push(id.to_string());
-                    }
-                    if let Some(stem) = p.file_stem() {
-                        ids.push(stem.to_string_lossy().to_string());
-                    }
-                    if let Some(pl) = fm.get("permalink").and_then(|v| v.as_str()) {
-                        ids.push(pl.to_string());
-                    }
-                    for key in &["alias", "aliases"] {
-                        if let Some(arr) = fm.get(*key).and_then(|v| v.as_array()) {
-                            for item in arr {
-                                if let Some(s) = item.as_str() {
-                                    ids.push(s.to_string());
-                                }
-                            }
-                        } else if let Some(s) = fm.get(*key).and_then(|v| v.as_str()) {
-                            ids.push(s.to_string());
-                        }
-                    }
-                    Some(ids)
-                })
-            })
-            .flatten()
-            .collect();
-        Some(ids)
+        Some(build_known_ids(pkb_root))
     } else {
         None
     };
@@ -4564,5 +4686,89 @@ Body.\n",
         assert!(!fixed_content.contains("task_1"), "task_1 must be removed");
         assert!(!fixed_content.contains("task_2"), "task_2 must be removed");
         assert!(fixed_content.contains("Body content."), "body content preserved");
+    }
+
+    #[test]
+    fn test_lint_broken_wikilinks_resolution() {
+        let tmp = tempfile::tempdir().unwrap();
+        // 1. Note with id & title
+        std::fs::write(
+            tmp.path().join("file_one.md"),
+            "---\nid: target_id_1\ntitle: Alpha Title\ntype: note\n---\n\nAlpha body.\n",
+        ).unwrap();
+        // 2. Note with alias
+        std::fs::write(
+            tmp.path().join("file_two.md"),
+            "---\nid: target_id_2\ntitle: Beta Title\ntype: note\naliases:\n  - Beta Alias\n  - Second Beta\n---\n\nBeta body.\n",
+        ).unwrap();
+        // 3. Note with permalink
+        std::fs::write(
+            tmp.path().join("file_three.md"),
+            "---\nid: target_id_3\ntitle: Gamma Title\ntype: note\npermalink: gamma-link\n---\n\nGamma body.\n",
+        ).unwrap();
+        // 4. Note testing filename stem
+        std::fs::write(
+            tmp.path().join("plain_file.md"),
+            "---\nid: target_id_4\ntitle: Delta Title\ntype: note\n---\n\nDelta body.\n",
+        ).unwrap();
+
+        // 5. Source file referencing target by id, alias, permalink, title, filename, and broken ones
+        let source_content = r#"---
+id: source_note
+title: Source Note
+type: note
+---
+
+Valid links:
+- By id: [[target_id_1]] and uppercase [[TARGET_ID_1]]
+- By alias: [[Beta Alias]] and case [[beta alias|display text]]
+- By permalink: [[gamma-link]]
+- By title: [[Alpha Title]] and heading [[alpha title#Section]]
+- By filename stem: [[plain_file]]
+- By filename with ext: [[plain_file.md]]
+- Intra-document anchor: [[#my-anchor]] and [[#my-anchor|display]]
+
+Broken links:
+- Line 17: [[nonexistent_id]]
+- Line 18: [[broken_with_alias|Display Text]]
+- Line 19: [[broken_with_heading#Heading]]
+- Line 20: [[]]
+"#;
+        let source_path = tmp.path().join("source.md");
+        std::fs::write(&source_path, source_content).unwrap();
+
+        let (results, _) = lint_directory(tmp.path(), false, true);
+        let source_res = results.iter().find(|r| r.path == source_path).expect("source.md results");
+
+        let broken_wikilink_diags: Vec<_> = source_res
+            .diagnostics
+            .iter()
+            .filter(|d| d.rule == "ref-broken-wikilink")
+            .collect();
+
+        // Should report exactly the 4 broken links
+        assert_eq!(
+            broken_wikilink_diags.len(),
+            4,
+            "Expected exactly 4 broken wikilinks, got: {:?}",
+            broken_wikilink_diags
+        );
+
+        // Check each diagnostic details: rule, severity, line number, message naming link
+        let d1 = broken_wikilink_diags.iter().find(|d| d.line == Some(17)).expect("broken on line 17");
+        assert_eq!(d1.severity, Severity::Warning);
+        assert!(d1.message.contains("[[nonexistent_id]]"), "message should name link: {}", d1.message);
+
+        let d2 = broken_wikilink_diags.iter().find(|d| d.line == Some(18)).expect("broken on line 18");
+        assert_eq!(d2.severity, Severity::Warning);
+        assert!(d2.message.contains("[[broken_with_alias|Display Text]]"), "message should name link: {}", d2.message);
+
+        let d3 = broken_wikilink_diags.iter().find(|d| d.line == Some(19)).expect("broken on line 19");
+        assert_eq!(d3.severity, Severity::Warning);
+        assert!(d3.message.contains("[[broken_with_heading#Heading]]"), "message should name link: {}", d3.message);
+
+        let d4 = broken_wikilink_diags.iter().find(|d| d.line == Some(20)).expect("broken on line 20");
+        assert_eq!(d4.severity, Severity::Warning);
+        assert!(d4.message.contains("[[]]"), "message should name link: {}", d4.message);
     }
 }

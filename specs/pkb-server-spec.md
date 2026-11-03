@@ -196,40 +196,43 @@ End-to-end retrieval specification lives in [`specs/search.md`](search.md).
 - `since` / `before` (string, optional): ISO date range filters.
 - `boost_id` (string, optional): Target node ID for graph-proximity boosting.
 - `floor` / `min_score` (number, optional, default 0.0): Strict relevance floor in `[0.0, 1.0]`. Items below floor are never promoted above floor by recency or read priors.
-- `detail` (string, optional, enum: `["chunk", "snippet", "full", "metadata", "ids"]`, default `"chunk"`): Level of text detail in results.
+- `detail` (string, optional, enum: `["chunk", "snippet", "full", "metadata", "ids"]`, default `"chunk"`): Level of text detail in results. 'chunk' returns matching chunk text; 'snippet' returns short ~300-char extract; 'full' returns complete document body (subject to max_bytes); 'metadata' returns lean metadata only (id, title, type, status, score; omitting ranking internals and tag lists); 'ids' returns matching IDs only. Unknown values return `INVALID_PARAMS`.
 - `ids_only` (boolean, optional): Return only matching document IDs.
 - `max_bytes` (integer, optional): Maximum byte cap for returned extracts.
 - `format` (string, optional, enum: `["markdown", "json"]`): Output formatting mode.
 
-**Structured Output (`items` / `results`)**:
+**Structured Output (`results`)**:
+Search responses return a single `results` array (never duplicating entries under `items`).
 Each returned result item contains:
 - `id` (string): Canonical document identifier.
 - `title` (string): Document title.
 - `type` (string): Node document type (e.g., `task`, `note`, `daily`).
 - `score` (number): Final composite score after RRF fusion, cross-encoder reranking, graph proximity, recency decay, and access boost under floor invariance.
-- `tags` (array of strings): Tags defined in document frontmatter.
+- `tags` (array of strings, omitted when `detail: "metadata"`): Tags defined in document frontmatter.
 - `status` (string, optional): Task status if applicable.
-- `project` (string, optional): Canonical project routing slug if applicable.
-- `extract` (string, optional): Best-matching contextual chunk text or snippet.
-- `recency_decay` (number): Document recency factor in `[0.85, 1.0]`. Daily notes decay via `0.85 + 0.15 * exp(-age / 14)`; tasks, epics, projects, and targets are immune (`1.0`).
-- `recent_read_boost` (number): Multiplicative access boost factor in `[1.0, 1.20]` derived from salience.
-- `salience` (number): Decayed salience score (`[0.0, 100.0]`) tracking historical document access frequency and recency.
+- `project` (string, optional, omitted when `detail: "metadata"`): Canonical project routing slug if applicable.
+- `extract` (string, optional, omitted when `detail: "metadata"`): Best-matching contextual chunk text or snippet.
+- `recency_decay` (number, omitted when `detail: "metadata"`): Document recency factor in `[0.85, 1.0]`. Daily notes decay via `0.85 + 0.15 * exp(-age / 14)`; tasks, epics, projects, and targets are immune (`1.0`).
+- `recent_read_boost` (number, omitted when `detail: "metadata"`): Multiplicative access boost factor in `[1.0, 1.20]` derived from salience.
+- `salience` (number, omitted when `detail: "metadata"`): Decayed salience score (`[0.0, 100.0]`) tracking historical document access frequency and recency.
 
 #### Document Retrieval Schema (`get_document`)
 
 **Parameters**:
 - `id` (string, optional): Document ID, title, or filename stem.
 - `ids` (array of strings, optional): Batch read of document IDs.
-- `detail` (string, optional, enum: `["metadata", "summary", "full"]`): Content detail level.
+- `detail` (string, optional, enum: `["metadata", "summary", "full"]`, default `"full"`): Content detail level. 'full' returns complete document body and metadata; 'summary' returns excerpted body up to 300 chars; 'metadata' returns frontmatter and document metadata without body. Unknown values return `INVALID_PARAMS`.
+- `fields` (string or array of strings, optional): Field projection in JSON mode. When specified, only named keys are retained in output.
 - `metadata_only` (boolean, optional): Return only parsed frontmatter.
-- `max_bytes` (integer, optional, default none / full body): Maximum body length before truncation. When omitted, the full body is returned. When truncated, the returned body carries an in-text notice at the cut naming the cut and explaining how to read the rest.
+- `max_bytes` (integer, optional, default none / full body): Maximum body length before truncation. When omitted, single reads return the full body. When truncated, the returned body carries an in-text notice at the cut naming the cut and explaining how to read the rest.
 - `format` (string, optional, enum: `["markdown", "json"]`): Return format.
 
 **Structured Output**:
+Single reads return the document payload once using `body` (the redundant `content` key is removed). Batch reads (`ids`) return `items`. Null and empty frontmatter keys are stripped.
 - `id` (string): Resolved canonical ID.
 - `title` (string): Document title.
-- `frontmatter` (object): Parsed YAML frontmatter.
-- `body` / `content` (string): Document body text (full by default; carries cut notice if truncated by `max_bytes`).
+- `frontmatter` (object): Parsed YAML frontmatter (with null and empty values stripped).
+- `body` (string): Document body text (full by default; carries cut notice if truncated by `max_bytes`).
 - `truncated` (boolean): Whether content was truncated by `max_bytes`.
 - `body_bytes` (integer): Total un-truncated body byte size.
 - `salience` (number): Document salience score, updated exponentially upon MCP retrieval access.
@@ -237,24 +240,31 @@ Each returned result item contains:
 #### Document Listing Schema (`list_documents`)
 
 **Parameters**:
-- `tag` (string, optional): Filter documents containing a specific tag.
-- `tags` (string or array of strings, optional): Filter documents matching all listed tags.
+- `tag` (string, optional): Filter by tag.
+- `tags` (string or array of strings, optional): Filter requiring all specified tags.
 - `type` (string, optional): Filter by document type.
-- `status` (string, optional): Filter by status.
+- `status` (string, optional): Filter by task status.
 - `title_contains` (string, optional): Case-insensitive substring filter on document title.
 - `since` / `before` (string, optional): ISO date / RFC3339 range filters on document `modified` time.
+- `fields` (string or array of strings, optional): Field projection in JSON mode.
 - `limit` (integer, optional): Maximum results to return (capped at `MAX_RESULTS`).
 - `offset` (integer, optional, default 0): Result pagination offset.
 - `budget_ms` (integer, optional): Soft deadline in milliseconds for partial results.
 - `format` (string, optional, enum: `["markdown", "json"]`, default `"markdown"`): Output formatting mode.
 
-**Structured Output (`items` / `documents`)**:
+**Structured Output (`documents`)**:
+Responses carry matching documents under a single `documents` array (never duplicating under `items`). Empty matches return `"documents": []`.
 - `id` (string): Canonical document identifier.
 - `title` (string): Document title.
 - `type` (string, optional): Node document type.
 - `tags` (array of strings): Tags defined on document.
 - `status` (string, optional): Document status if present.
 - `modified` (string): Last modified timestamp in RFC 3339 format, resolved from frontmatter `modified` or falling back to the file's disk modification time. Never `null` when the file has a modified time.
+
+#### Task Listing Schema (`list_tasks`)
+
+**Structured Output (`tasks`)**:
+Responses carry matching tasks under a single `tasks` array (never duplicating under `items`). Empty matches return `"tasks": []`. Batch task reads (`get_task` with `ids`) return `items` and honour `fields` projection. Detail level on `get_task` supports `"full"`, `"summary"`, `"metadata"`, and rejects unknown values with `INVALID_PARAMS`. Null and empty frontmatter keys are stripped.
 
 **Success criteria**:
 

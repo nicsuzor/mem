@@ -540,9 +540,13 @@ enum Commands {
         #[arg(long)]
         fix: bool,
 
-        /// Check cross-references (parent, depends_on) — slower, requires full scan
+        /// Check cross-references (parent, depends_on, wikilinks) — slower, requires full scan
         #[arg(long)]
         refs: bool,
+
+        /// Only report broken wikilinks (implies --refs)
+        #[arg(long)]
+        broken_links: bool,
 
         /// Only show errors (suppress warnings and style)
         #[arg(long)]
@@ -2939,10 +2943,14 @@ async fn main() -> Result<()> {
         Commands::Lint {
             files,
             fix,
-            refs,
+            mut refs,
+            broken_links,
             errors_only,
             format,
         } => {
+            if broken_links {
+                refs = true;
+            }
             let start = std::time::Instant::now();
 
             let (results, summary) = if files.is_empty() {
@@ -2950,7 +2958,11 @@ async fn main() -> Result<()> {
                 lint::lint_directory(&pkb_root, fix, refs)
             } else {
                 // Lint specific files
-                let known_ids = None; // single-file mode skips ref checks
+                let known_ids = if refs {
+                    Some(lint::build_known_ids(&pkb_root))
+                } else {
+                    None
+                };
                 let results: Vec<lint::FileResult> = files
                     .iter()
                     .map(|f| lint::lint_file(f, fix, known_ids.as_ref(), None, None))
@@ -2973,12 +2985,18 @@ async fn main() -> Result<()> {
                 // JSON output for tooling integration
                 let json_results: Vec<serde_json::Value> = results
                     .iter()
-                    .filter(|r| !r.diagnostics.is_empty())
                     .map(|r| {
+                        let filtered_diags: Vec<_> = r.diagnostics.iter()
+                            .filter(|d| !errors_only || d.severity == lint::Severity::Error)
+                            .filter(|d| !broken_links || d.rule == "ref-broken-wikilink")
+                            .collect();
+                        (r, filtered_diags)
+                    })
+                    .filter(|(_, diags)| !diags.is_empty())
+                    .map(|(r, diags)| {
                         serde_json::json!({
                             "file": r.path.display().to_string(),
-                            "diagnostics": r.diagnostics.iter()
-                                .filter(|d| !errors_only || d.severity == lint::Severity::Error)
+                            "diagnostics": diags.iter()
                                 .map(|d| serde_json::json!({
                                     "severity": d.severity.to_string(),
                                     "rule": d.rule,
@@ -3001,6 +3019,7 @@ async fn main() -> Result<()> {
                         .diagnostics
                         .iter()
                         .filter(|d| !errors_only || d.severity == lint::Severity::Error)
+                        .filter(|d| !broken_links || d.rule == "ref-broken-wikilink")
                         .filter(|d| {
                             if d.rule == "flow-no-route" {
                                 if let Some(lint::DiagnosticSubject::Node(ref id)) = d.subject {
@@ -3063,15 +3082,33 @@ async fn main() -> Result<()> {
                 }
 
                 // Summary line
-                eprintln!(
-                    "Checked {} files in {:.1}s — {} errors, {} warnings, {} style ({} files with issues)",
-                    summary.files_checked,
-                    elapsed.as_secs_f64(),
-                    summary.errors,
-                    summary.warnings,
-                    summary.style,
-                    summary.files_with_issues,
-                );
+                if broken_links {
+                    let broken_count: usize = results
+                        .iter()
+                        .map(|r| r.diagnostics.iter().filter(|d| d.rule == "ref-broken-wikilink").count())
+                        .sum();
+                    let broken_files = results
+                        .iter()
+                        .filter(|r| r.diagnostics.iter().any(|d| d.rule == "ref-broken-wikilink"))
+                        .count();
+                    eprintln!(
+                        "Checked {} files in {:.1}s — {} broken wikilinks in {} files",
+                        summary.files_checked,
+                        elapsed.as_secs_f64(),
+                        broken_count,
+                        broken_files,
+                    );
+                } else {
+                    eprintln!(
+                        "Checked {} files in {:.1}s — {} errors, {} warnings, {} style ({} files with issues)",
+                        summary.files_checked,
+                        elapsed.as_secs_f64(),
+                        summary.errors,
+                        summary.warnings,
+                        summary.style,
+                        summary.files_with_issues,
+                    );
+                }
             }
 
             // Exit with non-zero if there are errors
