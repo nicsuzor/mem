@@ -394,14 +394,34 @@ Detailed architecture notes for PKB preview.
 
       const html = fakeMd.render(sampleMarkdown);
 
-      // Verify resolved links point to file:// URI of the target file
+      // Verify Alternative C: Flattened Semantic DOM (Zero nested <a> tags)
       assert.ok(
-        html.includes(`href="file://${taskPath}"`),
-        `Rendered HTML must include file:// link to taskPath, got: ${html}`
+        html.includes('class="mem-pkb-ref-wrapper'),
+        `Rendered HTML must wrap reference in .mem-pkb-ref-wrapper container, got: ${html}`
       );
       assert.ok(
-        html.includes(`href="file://${notePath}"`),
-        `Rendered HTML must include file:// link to notePath, got: ${html}`
+        html.includes('class="mem-pkb-ref-link"'),
+        `Rendered HTML must include .mem-pkb-ref-link anchor, got: ${html}`
+      );
+      assert.ok(
+        html.includes('href="command:mem.openReference?%5B%22task-preview-1%22%5D"'),
+        `Rendered HTML must link via command:mem.openReference URI, got: ${html}`
+      );
+      assert.ok(
+        html.includes(`data-pkb-path="${taskPath}"`),
+        `Rendered HTML must include data-pkb-path, got: ${html}`
+      );
+      assert.ok(
+        html.includes(`data-pkb-uri="file://${taskPath}"`),
+        `Rendered HTML must include data-pkb-uri, got: ${html}`
+      );
+
+      // Verify strict HTML5 DOM compliance: NO nested <a> inside <a> anywhere in the rendered HTML!
+      const nestedAnchorMatch = /<a\b[^>]*>(?:(?!<\/a>)[\s\S])*?<a\b/i.test(html);
+      assert.strictEqual(
+        nestedAnchorMatch,
+        false,
+        `Rendered HTML must contain zero nested <a> tags to prevent Adoption Agency Algorithm ejection!`
       );
 
       // Verify hover preview card contains Title, ID, Type, Status, Intent, Tags, Parent, and body excerpt
@@ -553,7 +573,11 @@ Detailed architecture notes for PKB preview.
 
     // 2. Human title for parent link, no raw [[id]]
     assert.ok(cardHtml.includes('Parent Project'), 'Card must resolve parent to human title');
-    assert.ok(cardHtml.includes('href="file:///tmp/proj-card-parent.md"'), 'Parent title must link to file URI');
+    assert.ok(
+      cardHtml.includes('command:mem.openReference?%5B%22proj-card-parent%22%5D') ||
+        cardHtml.includes('data-parent-uri="file:///tmp/proj-card-parent.md"'),
+      'Parent title must link to parent reference via command or parent URI'
+    );
     assert.ok(!cardHtml.includes('[[proj-card-parent]]'), 'Card must not contain raw [[id]] syntax');
 
     // 3. Body headings formatted as inline micro-headers
@@ -566,35 +590,58 @@ Detailed architecture notes for PKB preview.
       'List heading must render as compact bold inline micro-header'
     );
 
-    // 4. Action footer with extension command links
+    // 4. Top Quick-Action Bar with extension command links
     const encId = encodeURIComponent(JSON.stringify(['task-card-child']));
     assert.ok(
-      cardHtml.includes(`href="command:mem.openReference?${encId}"`),
-      'Action footer must contain command:mem.openReference link'
-    );
-    assert.ok(
-      cardHtml.includes(`href="command:mem.showSubtree?${encId}"`),
-      'Action footer must contain command:mem.showSubtree link'
+      cardHtml.includes('class="mem-pkb-hover-top-actions"'),
+      'Card must contain .mem-pkb-hover-top-actions container'
     );
     assert.ok(
       cardHtml.includes(`href="command:mem.completeTask?${encId}"`),
-      'Action footer must contain command:mem.completeTask link for task node'
+      'Top actions must contain command:mem.completeTask link for task node'
     );
     assert.ok(
-      cardHtml.includes(`href="command:mem.cancelTask?${encId}"`),
-      'Action footer must contain command:mem.cancelTask link for task node'
+      cardHtml.includes(`href="command:mem.readyTask?${encId}"`),
+      'Top actions must contain command:mem.readyTask link for task node'
     );
     assert.ok(
       cardHtml.includes(`href="command:mem.queueTask?${encId}"`),
-      'Action footer must contain command:mem.queueTask link for task node'
+      'Top actions must contain command:mem.queueTask link for task node'
     );
-    assert.ok(cardHtml.includes('$(go-to-file) Open'), 'Open command link must use $(go-to-file) icon');
-    assert.ok(cardHtml.includes('$(type-hierarchy-sub) Subtree'), 'Subtree command link must use $(type-hierarchy-sub) icon');
-    assert.ok(cardHtml.includes('$(check) Complete'), 'Complete command link must use $(check) icon');
-    assert.ok(cardHtml.includes('$(close) Cancel'), 'Cancel command link must use $(close) icon');
-    assert.ok(cardHtml.includes('$(inbox) Queue'), 'Queue command link must use $(inbox) icon');
+    assert.ok(
+      cardHtml.includes(`href="command:mem.cancelTask?${encId}"`),
+      'Top actions must contain command:mem.cancelTask link for task node'
+    );
+    assert.ok(
+      cardHtml.includes(`href="command:mem.startTask?${encId}"`),
+      'Top actions must contain command:mem.startTask link for task node'
+    );
+    assert.ok(
+      cardHtml.includes(`href="command:mem.openReference?${encId}"`),
+      'Top actions must contain command:mem.openReference link'
+    );
+    assert.ok(
+      cardHtml.includes(`href="command:mem.showSubtree?${encId}"`),
+      'Top actions must contain command:mem.showSubtree link'
+    );
+    assert.ok(cardHtml.includes('$(check) Done'), 'Done command link must use $(check) Done');
+    assert.ok(cardHtml.includes('$(play) Ready'), 'Ready command link must use $(play) Ready');
+    assert.ok(cardHtml.includes('$(inbox) Queue'), 'Queue command link must use $(inbox) Queue');
+    assert.ok(cardHtml.includes('$(close) Cancel'), 'Cancel command link must use $(close) Cancel');
+    assert.ok(cardHtml.includes('$(sync~spin) Start'), 'Start command link must use $(sync~spin) Start');
+    assert.ok(cardHtml.includes('$(go-to-file) Open'), 'Open command link must use $(go-to-file) Open');
+    assert.ok(cardHtml.includes('$(type-hierarchy-sub) Subtree'), 'Subtree command link must use $(type-hierarchy-sub) Subtree');
 
-    // Non-task note should omit complete/cancel/queue links
+    // Placement: Top quick actions must appear BEFORE metadata and body
+    const headerPos = cardHtml.indexOf('mem-pkb-hover-header');
+    const actionsPos = cardHtml.indexOf('mem-pkb-hover-top-actions');
+    const metaPos = cardHtml.indexOf('mem-pkb-hover-meta');
+    const bodyPos = cardHtml.indexOf('mem-pkb-hover-body');
+    assert.ok(headerPos < actionsPos, 'Header must precede top actions');
+    assert.ok(actionsPos < metaPos, 'Top actions must precede metadata bar');
+    assert.ok(actionsPos < bodyPos, 'Top actions must precede body excerpt');
+
+    // Non-task note should omit task mutation links but have Open and Subtree at the top
     const nonTaskNode: PkbPreviewNode = {
       id: 'note-reference',
       label: 'Reference Note',
@@ -607,11 +654,14 @@ Detailed architecture notes for PKB preview.
       relPath: 'notes/note-reference.md',
     };
     const nonTaskHtml = renderHoverCardHtml(nonTaskNode);
+    assert.ok(nonTaskHtml.includes('mem-pkb-hover-top-actions'));
     assert.ok(nonTaskHtml.includes('command:mem.openReference?'));
     assert.ok(nonTaskHtml.includes('command:mem.showSubtree?'));
     assert.ok(!nonTaskHtml.includes('command:mem.completeTask?'));
+    assert.ok(!nonTaskHtml.includes('command:mem.readyTask?'));
     assert.ok(!nonTaskHtml.includes('command:mem.cancelTask?'));
     assert.ok(!nonTaskHtml.includes('command:mem.queueTask?'));
+    assert.ok(!nonTaskHtml.includes('command:mem.startTask?'));
   });
 
   it('collectDescendants and renderSubtreeText build child hierarchy and tree structure', () => {
@@ -761,6 +811,27 @@ Child body.
       const childAfterQueue = fs.readFileSync(childTaskPath, 'utf8');
       assert.ok(childAfterQueue.includes('status: queued'), 'Frontmatter must have status: queued after queueTask');
       assert.ok(childAfterQueue.includes('Child body.'), 'Body content must be preserved without corruption');
+
+      // Execute mem.readyTask with array nodeId
+      const readyRes: any = await mockVscode.commands.executeCommand('mem.readyTask', ['cmd-child']);
+      assert.ok(readyRes?.success, 'mem.readyTask must succeed');
+      const childAfterReady = fs.readFileSync(childTaskPath, 'utf8');
+      assert.ok(childAfterReady.includes('status: ready'), 'Frontmatter must have status: ready after readyTask');
+      assert.ok(childAfterReady.includes('Child body.'), 'Body content must be preserved without corruption');
+
+      // Execute mem.startTask with array nodeId
+      const startRes: any = await mockVscode.commands.executeCommand('mem.startTask', ['cmd-child']);
+      assert.ok(startRes?.success, 'mem.startTask must succeed');
+      const childAfterStart = fs.readFileSync(childTaskPath, 'utf8');
+      assert.ok(childAfterStart.includes('status: in_progress'), 'Frontmatter must have status: in_progress after startTask');
+      assert.ok(childAfterStart.includes('Child body.'), 'Body content must be preserved without corruption');
+
+      // Execute mem.pauseTask with array nodeId
+      const pauseRes: any = await mockVscode.commands.executeCommand('mem.pauseTask', ['cmd-child']);
+      assert.ok(pauseRes?.success, 'mem.pauseTask must succeed');
+      const childAfterPause = fs.readFileSync(childTaskPath, 'utf8');
+      assert.ok(childAfterPause.includes('status: paused'), 'Frontmatter must have status: paused after pauseTask');
+      assert.ok(childAfterPause.includes('Child body.'), 'Body content must be preserved without corruption');
     } finally {
       delete process.env.ACA_DATA;
       delete process.env.MEM_TEST_NO_LSP_CLIENT;
@@ -1141,9 +1212,12 @@ Only body.`;
       status: 'ready',
     });
     const taskTip = formatPlainTooltip(taskNode);
-    assert.ok(taskTip.includes('Complete: mem.completeTask'));
-    assert.ok(taskTip.includes('Cancel: mem.cancelTask'));
+    assert.ok(taskTip.includes('Done: mem.completeTask'));
+    assert.ok(taskTip.includes('Ready: mem.readyTask'));
     assert.ok(taskTip.includes('Queue: mem.queueTask'));
+    assert.ok(taskTip.includes('Cancel: mem.cancelTask'));
+    assert.ok(taskTip.includes('Start: mem.startTask'));
+    assert.ok(taskTip.includes('Pause: mem.pauseTask'));
 
     const noteNode = mkNode({
       id: 'note-tooltip',
@@ -1152,9 +1226,12 @@ Only body.`;
     });
     const noteTip = formatPlainTooltip(noteNode);
     assert.ok(noteTip.includes('Open: mem.openReference'));
-    assert.ok(!noteTip.includes('Complete: mem.completeTask'));
+    assert.ok(!noteTip.includes('Done: mem.completeTask'));
+    assert.ok(!noteTip.includes('Ready: mem.readyTask'));
     assert.ok(!noteTip.includes('Cancel: mem.cancelTask'));
     assert.ok(!noteTip.includes('Queue: mem.queueTask'));
+    assert.ok(!noteTip.includes('Start: mem.startTask'));
+    assert.ok(!noteTip.includes('Pause: mem.pauseTask'));
   });
 
   it('updateTaskStatus updates status on disk and reloads preview index', async () => {

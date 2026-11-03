@@ -26,7 +26,10 @@
     "onCommand:mem.showSubtree",
     "onCommand:mem.completeTask",
     "onCommand:mem.cancelTask",
-    "onCommand:mem.queueTask"
+    "onCommand:mem.queueTask",
+    "onCommand:mem.readyTask",
+    "onCommand:mem.startTask",
+    "onCommand:mem.pauseTask"
   ],
   "main": "./out/extension.js",
   "contributes": {
@@ -77,6 +80,18 @@
       {
         "command": "mem.queueTask",
         "title": "Mem: Queue PKB Task"
+      },
+      {
+        "command": "mem.readyTask",
+        "title": "Mem: Mark Task Ready"
+      },
+      {
+        "command": "mem.startTask",
+        "title": "Mem: Start Task (In Progress)"
+      },
+      {
+        "command": "mem.pauseTask",
+        "title": "Mem: Pause Task"
       }
     ],
     "semanticTokenTypes": [

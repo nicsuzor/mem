@@ -1608,7 +1608,9 @@ export function formatPlainTooltip(node: PkbPreviewNode, index?: PkbPreviewIndex
   }
   lines.push('');
   if (isTaskNode(node)) {
-    lines.push('Open: mem.openReference · Subtree: mem.showSubtree · Complete: mem.completeTask · Cancel: mem.cancelTask · Queue: mem.queueTask');
+    lines.push(
+      'Done: mem.completeTask · Ready: mem.readyTask · Queue: mem.queueTask · Cancel: mem.cancelTask · Start: mem.startTask · Pause: mem.pauseTask · Open: mem.openReference · Subtree: mem.showSubtree'
+    );
   } else {
     lines.push('Open: mem.openReference · Subtree: mem.showSubtree');
   }
@@ -1625,6 +1627,37 @@ export function renderHoverCardHtml(
       `<span class="mem-pkb-hover-title">${escapeHtml(node.label)}</span>` +
       `<code class="mem-pkb-hover-id">${escapeHtml(node.id)}</code>` +
       `</span>`
+  );
+
+  // Top Quick Actions Bar: prominently located immediately below header
+  const encId = encodeURIComponent(JSON.stringify([node.id]));
+  const topActions: string[] = [];
+  if (isTaskNode(node)) {
+    topActions.push(
+      `<a href="command:mem.completeTask?${encId}" class="mem-pkb-action-btn done">$(check) Done</a>`
+    );
+    topActions.push(
+      `<a href="command:mem.readyTask?${encId}" class="mem-pkb-action-btn ready">$(play) Ready</a>`
+    );
+    topActions.push(
+      `<a href="command:mem.queueTask?${encId}" class="mem-pkb-action-btn queue">$(inbox) Queue</a>`
+    );
+    topActions.push(
+      `<a href="command:mem.cancelTask?${encId}" class="mem-pkb-action-btn cancel">$(close) Cancel</a>`
+    );
+    topActions.push(
+      `<a href="command:mem.startTask?${encId}" class="mem-pkb-action-btn start">$(sync~spin) Start</a>`
+    );
+  }
+  topActions.push(
+    `<a href="command:mem.openReference?${encId}" class="mem-pkb-action-btn open">$(go-to-file) Open</a>`
+  );
+  topActions.push(
+    `<a href="command:mem.showSubtree?${encId}" class="mem-pkb-action-btn subtree">$(type-hierarchy-sub) Subtree</a>`
+  );
+
+  parts.push(
+    `<span class="mem-pkb-hover-top-actions">${topActions.join('')}</span>`
   );
 
   const topBar: string[] = [];
@@ -1655,16 +1688,18 @@ export function renderHoverCardHtml(
 
   if (node.parent) {
     let parentTitle = node.parent;
+    let encParentId = encodeURIComponent(JSON.stringify([node.parent]));
     let parentUri = '#';
     if (index) {
       const parentNode = index.resolve(node.parent);
       if (parentNode) {
         parentTitle = parentNode.label;
+        encParentId = encodeURIComponent(JSON.stringify([parentNode.id]));
         parentUri = `file://${parentNode.absPath}`;
       }
     }
     parts.push(
-      `<span class="mem-pkb-hover-parent"><strong>Parent:</strong> <a class="mem-pkb-ref" href="${escapeHtml(parentUri)}">${escapeHtml(parentTitle)}</a></span>`
+      `<span class="mem-pkb-hover-parent"><strong>Parent:</strong> <a class="mem-pkb-action-btn parent" href="command:mem.openReference?${encParentId}" data-parent-uri="${escapeHtml(parentUri)}">${escapeHtml(parentTitle)}</a></span>`
     );
   }
 
@@ -1674,42 +1709,26 @@ export function renderHoverCardHtml(
     parts.push(`<span class="mem-pkb-hover-body">${compactBody}</span>`);
   }
 
-  const encId = encodeURIComponent(JSON.stringify([node.id]));
-  const actions: string[] = [
-    `<a href="command:mem.openReference?${encId}" class="mem-pkb-cmd-link">$(go-to-file) Open</a>`,
-    `<a href="command:mem.showSubtree?${encId}" class="mem-pkb-cmd-link">$(type-hierarchy-sub) Subtree</a>`,
-  ];
-  if (isTaskNode(node)) {
-    actions.push(
-      `<a href="command:mem.completeTask?${encId}" class="mem-pkb-cmd-link">$(check) Complete</a>`
-    );
-    actions.push(
-      `<a href="command:mem.cancelTask?${encId}" class="mem-pkb-cmd-link">$(close) Cancel</a>`
-    );
-    actions.push(
-      `<a href="command:mem.queueTask?${encId}" class="mem-pkb-cmd-link">$(inbox) Queue</a>`
-    );
-  }
-  parts.push(
-    `<span class="mem-pkb-hover-footer">${actions.join('  ·  ')}</span>`
-  );
-
   return `<span class="mem-pkb-hover-card">${parts.join('')}</span>`;
 }
 
 function renderResolvedRefAnchor(node: PkbPreviewNode, displayHtml: string, index?: PkbPreviewIndex): string {
   const fileUri = `file://${node.absPath}`;
+  const encId = encodeURIComponent(JSON.stringify([node.id]));
   const tooltip = formatPlainTooltip(node, index);
   const hoverCard = renderHoverCardHtml(node, index);
   return (
-    `<a class="mem-pkb-ref" href="${escapeHtml(fileUri)}" ` +
+    `<span class="mem-pkb-ref-wrapper mem-pkb-ref" ` +
     `data-pkb-id="${escapeHtml(node.id)}" ` +
     `data-pkb-path="${escapeHtml(node.absPath)}" ` +
-    `data-pkb-uri="${escapeHtml(fileUri)}" ` +
+    `data-pkb-uri="${escapeHtml(fileUri)}">` +
+    `<a class="mem-pkb-ref-link" href="command:mem.openReference?${encId}" ` +
+    `data-file-uri="${escapeHtml(fileUri)}" ` +
     `title="${escapeHtml(tooltip)}">` +
     `<span class="mem-pkb-ref-label">${displayHtml}</span>` +
+    `</a>` +
     `${hoverCard}` +
-    `</a>`
+    `</span>`
   );
 }
 
@@ -1728,13 +1747,13 @@ function renderUnresolvedRefAnchor(
     `<span class="mem-pkb-hover-body">Target node <code>${escapeHtml(target)}</code> was not found in PKB root: <code>${escapeHtml(pkbRoot)}</code></span>` +
     `</span>`;
   return (
-    `<a class="mem-pkb-ref mem-pkb-unresolved" href="#" ` +
+    `<span class="mem-pkb-ref-wrapper mem-pkb-ref mem-pkb-unresolved" ` +
     `data-pkb-id="${escapeHtml(target)}" ` +
     `data-pkb-unresolved="true" ` +
     `title="${escapeHtml(diag)}">` +
     `<span class="mem-pkb-ref-label">${escapeHtml(displayText)}</span>` +
     `${card}` +
-    `</a>`
+    `</span>`
   );
 }
 
@@ -2730,8 +2749,11 @@ export function activate(context: vscode.ExtensionContext): { extendMarkdownIt: 
   };
 
   const completeTaskCmd = registerTaskMutationCommand('mem.completeTask', 'done', 'Complete');
-  const cancelTaskCmd = registerTaskMutationCommand('mem.cancelTask', 'cancelled', 'Cancel');
+  const readyTaskCmd = registerTaskMutationCommand('mem.readyTask', 'ready', 'Ready');
   const queueTaskCmd = registerTaskMutationCommand('mem.queueTask', 'queued', 'Queue');
+  const cancelTaskCmd = registerTaskMutationCommand('mem.cancelTask', 'cancelled', 'Cancel');
+  const startTaskCmd = registerTaskMutationCommand('mem.startTask', 'in_progress', 'Start');
+  const pauseTaskCmd = registerTaskMutationCommand('mem.pauseTask', 'paused', 'Pause');
 
   // Setup gutter badge decorations
   const badgesDir = path.join(context.extensionPath || __dirname, '..', 'media', 'badges');
@@ -2838,8 +2860,11 @@ export function activate(context: vscode.ExtensionContext): { extendMarkdownIt: 
     showVersionCmd,
     dispatchCmd,
     completeTaskCmd,
+    readyTaskCmd,
+    queueTaskCmd,
     cancelTaskCmd,
-    queueTaskCmd
+    startTaskCmd,
+    pauseTaskCmd
   );
 
   const mdPlugin = createMarkdownItPlugin(previewIndex);

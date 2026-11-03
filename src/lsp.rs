@@ -406,6 +406,50 @@ impl LspServer {
         // Title and ID header
         lines.push(format!("### {} (`{}`)\n", node.label, node.id));
 
+        // Top quick-action bar: prominent one-click buttons before metadata and body
+        let json_arg =
+            serde_json::to_string(&[&node.id]).unwrap_or_else(|_| format!("[\"{}\"]", node.id));
+        let encoded_arg: String = url::form_urlencoded::byte_serialize(json_arg.as_bytes())
+            .collect::<String>()
+            .replace('+', "%20");
+
+        let mut actions = Vec::new();
+        if is_task_node(node) {
+            actions.push(format!(
+                "[$(check) Done](command:mem.completeTask?{})",
+                encoded_arg
+            ));
+            actions.push(format!(
+                "[$(play) Ready](command:mem.readyTask?{})",
+                encoded_arg
+            ));
+            actions.push(format!(
+                "[$(inbox) Queue](command:mem.queueTask?{})",
+                encoded_arg
+            ));
+            actions.push(format!(
+                "[$(close) Cancel](command:mem.cancelTask?{})",
+                encoded_arg
+            ));
+            actions.push(format!(
+                "[$(sync~spin) Start](command:mem.startTask?{})",
+                encoded_arg
+            ));
+        }
+        actions.push(format!(
+            "[$(go-to-file) Open](command:mem.openReference?{})",
+            encoded_arg
+        ));
+        actions.push(format!(
+            "[$(type-hierarchy-sub) Subtree](command:mem.showSubtree?{})",
+            encoded_arg
+        ));
+
+        lines.push(actions.join("  ·  "));
+        lines.push(String::new());
+        lines.push("---".to_string());
+        lines.push(String::new());
+
         // Top bar: type, status, weight/intent, tags as codicons with compact labels
         let mut top_bar_items = Vec::new();
         if let Some(ref t) = node.node_type {
@@ -462,38 +506,6 @@ impl LspServer {
                 lines.push(String::new());
             }
         }
-
-        // Action footer: command links running extension commands on this node
-        lines.push("---\n".to_string());
-        let json_arg =
-            serde_json::to_string(&[&node.id]).unwrap_or_else(|_| format!("[\"{}\"]", node.id));
-        let encoded_arg: String = url::form_urlencoded::byte_serialize(json_arg.as_bytes())
-            .collect::<String>()
-            .replace('+', "%20");
-        let open_link = format!(
-            "[$(go-to-file) Open](command:mem.openReference?{})",
-            encoded_arg
-        );
-        let subtree_link = format!(
-            "[$(type-hierarchy-sub) Subtree](command:mem.showSubtree?{})",
-            encoded_arg
-        );
-        let mut actions = vec![open_link, subtree_link];
-        if is_task_node(node) {
-            actions.push(format!(
-                "[$(check) Complete](command:mem.completeTask?{})",
-                encoded_arg
-            ));
-            actions.push(format!(
-                "[$(close) Cancel](command:mem.cancelTask?{})",
-                encoded_arg
-            ));
-            actions.push(format!(
-                "[$(inbox) Queue](command:mem.queueTask?{})",
-                encoded_arg
-            ));
-        }
-        lines.push(actions.join("  ·  "));
 
         lines.join("\n")
     }
@@ -1540,11 +1552,21 @@ mod tests {
         let fake_path = pkb_root.join("tasks").join("task-foo.md");
         let preview = server.format_hover_preview(&task_node, &fake_path);
 
-        assert!(preview.contains("command:mem.openReference?%5B%22task-foo%22%5D"));
-        assert!(preview.contains("command:mem.showSubtree?%5B%22task-foo%22%5D"));
-        assert!(preview.contains("[$(check) Complete](command:mem.completeTask?%5B%22task-foo%22%5D)"));
-        assert!(preview.contains("[$(close) Cancel](command:mem.cancelTask?%5B%22task-foo%22%5D)"));
+        // Top quick-action buttons must contain full action set
+        assert!(preview.contains("[$(check) Done](command:mem.completeTask?%5B%22task-foo%22%5D)"));
+        assert!(preview.contains("[$(play) Ready](command:mem.readyTask?%5B%22task-foo%22%5D)"));
         assert!(preview.contains("[$(inbox) Queue](command:mem.queueTask?%5B%22task-foo%22%5D)"));
+        assert!(preview.contains("[$(close) Cancel](command:mem.cancelTask?%5B%22task-foo%22%5D)"));
+        assert!(preview.contains("[$(sync~spin) Start](command:mem.startTask?%5B%22task-foo%22%5D)"));
+        assert!(preview.contains("[$(go-to-file) Open](command:mem.openReference?%5B%22task-foo%22%5D)"));
+        assert!(preview.contains("[$(type-hierarchy-sub) Subtree](command:mem.showSubtree?%5B%22task-foo%22%5D)"));
+
+        // Placement: Top quick actions must sit ABOVE metadata bar ($(checklist) task)
+        let header_idx = preview.find("### Foo Task (`task-foo`)").expect("Header missing");
+        let actions_idx = preview.find("[$(check) Done]").expect("Actions missing");
+        let meta_idx = preview.find("$(checklist) task").expect("Metadata missing");
+        assert!(header_idx < actions_idx, "Header must precede actions");
+        assert!(actions_idx < meta_idx, "Top quick actions must sit above metadata bar");
     }
 
     #[test]
@@ -1557,10 +1579,19 @@ mod tests {
         let fake_path = pkb_root.join("notes").join("concept-bar.md");
         let preview = server.format_hover_preview(&note_node, &fake_path);
 
-        assert!(preview.contains("command:mem.openReference?%5B%22concept-bar%22%5D"));
-        assert!(preview.contains("command:mem.showSubtree?%5B%22concept-bar%22%5D"));
+        assert!(preview.contains("[$(go-to-file) Open](command:mem.openReference?%5B%22concept-bar%22%5D)"));
+        assert!(preview.contains("[$(type-hierarchy-sub) Subtree](command:mem.showSubtree?%5B%22concept-bar%22%5D)"));
         assert!(!preview.contains("command:mem.completeTask?"));
+        assert!(!preview.contains("command:mem.readyTask?"));
         assert!(!preview.contains("command:mem.cancelTask?"));
         assert!(!preview.contains("command:mem.queueTask?"));
+        assert!(!preview.contains("command:mem.startTask?"));
+
+        // Non-task top actions must also sit above metadata
+        let header_idx = preview.find("### Bar Concept (`concept-bar`)").expect("Header missing");
+        let actions_idx = preview.find("[$(go-to-file) Open]").expect("Actions missing");
+        let meta_idx = preview.find("$(note) note").expect("Metadata missing");
+        assert!(header_idx < actions_idx, "Header must precede actions");
+        assert!(actions_idx < meta_idx, "Top navigation actions must sit above metadata bar");
     }
 }

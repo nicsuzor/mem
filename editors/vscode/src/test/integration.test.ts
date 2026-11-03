@@ -349,8 +349,12 @@ It must be shown in hover preview and opened in a new tab.
     const expectedUri = `file://${expectedTaskPath}`;
 
     assert.ok(
-      previewHtml.includes(`href="${expectedUri}"`),
-      `Markdown Preview must link to ${expectedUri}`
+      previewHtml.includes('command:mem.openReference?%5B%22task-integration%22%5D'),
+      `Markdown Preview must link to task-integration via command:mem.openReference URI`
+    );
+    assert.ok(
+      previewHtml.includes(`data-pkb-uri="${expectedUri}"`),
+      `Markdown Preview must include data-pkb-uri=${expectedUri}`
     );
     assert.ok(
       previewHtml.includes('mem-pkb-hover-card'),

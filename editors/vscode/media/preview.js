@@ -33,7 +33,7 @@
 
   function bindPreviewListeners(root) {
     if (!root || !root.querySelectorAll) return;
-    var refs = root.querySelectorAll('.mem-pkb-ref');
+    var refs = root.querySelectorAll('.mem-pkb-ref-wrapper, .mem-pkb-ref');
     for (var i = 0; i < refs.length; i++) {
       var ref = refs[i];
       if (ref.getAttribute('data-pkb-bound') === 'true') continue;
