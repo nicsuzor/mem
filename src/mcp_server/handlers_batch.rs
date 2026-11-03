@@ -874,6 +874,8 @@ impl PkbSearchServer {
         let stale_report = crate::check_index_staleness_with_stats(&self.pkb_root, &self.store);
         let stale_docs = stale_report.stale_count;
         let is_fresh = stale_docs == 0;
+        let ghost_count = node_count.saturating_sub(indexed_file_count);
+        let unparseable_count = disk_file_count.saturating_sub(indexed_file_count);
 
         let info = serde_json::json!({
             "name": env!("CARGO_PKG_NAME"),
@@ -881,9 +883,12 @@ impl PkbSearchServer {
             "git_hash": env!("BUILD_GIT_HASH"),
             "build_profile": if cfg!(debug_assertions) { "debug" } else { "release" },
             "index": {
-                "document_count": node_count,
+                "document_count": indexed_file_count,
+                "node_count": node_count,
+                "ghost_node_count": ghost_count,
                 "disk_file_count": disk_file_count,
                 "indexed_file_count": indexed_file_count,
+                "unparseable_file_count": unparseable_count,
                 "vector_count": vector_count,
                 "last_reindex": {
                     "timestamp": last_reindex.timestamp,

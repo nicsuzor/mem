@@ -167,6 +167,23 @@ pub fn check_index_staleness(
     check_index_staleness_with_stats(pkb_root, store).stale_count
 }
 
+fn collect_file_stamps(
+    files: &[std::path::PathBuf],
+    pkb_root: &std::path::Path,
+) -> std::collections::HashMap<std::path::PathBuf, vectordb::FileStamp> {
+    let mut stamps = std::collections::HashMap::with_capacity(files.len());
+    for file_path in files {
+        if let Ok(rel_path) = file_path.strip_prefix(pkb_root) {
+            if let Ok(meta) = file_path.metadata() {
+                if let Some(stamp) = vectordb::FileStamp::from_metadata(&meta) {
+                    stamps.insert(rel_path.to_path_buf(), stamp);
+                }
+            }
+        }
+    }
+    stamps
+}
+
 /// Index PKB files into the vector store. Returns (indexed, removed, total).
 ///
 /// Uses batch-parallel embedding: all chunks from all new/modified documents are
@@ -271,6 +288,16 @@ pub fn index_pkb(
     }
 
     if docs_to_index.is_empty() {
+        // Record filesystem stamps for all scanned files even when no chunk re-embeddings were needed
+        let initial_stamps = collect_file_stamps(&files, pkb_root);
+        store.read().set_stamps(initial_stamps);
+        store.read().save_stamps();
+        if indexed > 0 {
+            if let Err(e) = store.read().save(_db_path) {
+                tracing::error!("Failed to save store after metadata updates: {e}");
+            }
+        }
+
         let total = store.read().len();
         tracing::info!("Indexing complete: {indexed} updated, {removed} removed, {total} total");
         return (indexed, removed, total);
@@ -327,16 +354,7 @@ pub fn index_pkb(
     }
 
     // Record filesystem stamps for all scanned files that are now up to date
-    let mut initial_stamps = std::collections::HashMap::with_capacity(files.len());
-    for file_path in &files {
-        if let Ok(rel_path) = file_path.strip_prefix(pkb_root) {
-            if let Ok(meta) = file_path.metadata() {
-                if let Some(stamp) = vectordb::FileStamp::from_metadata(&meta) {
-                    initial_stamps.insert(rel_path.to_path_buf(), stamp);
-                }
-            }
-        }
-    }
+    let initial_stamps = collect_file_stamps(&files, pkb_root);
     store.read().set_stamps(initial_stamps);
     store.read().save_stamps();
 
