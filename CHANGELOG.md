@@ -5,6 +5,35 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.5](https://github.com/nicsuzor/mem/compare/mem-v0.5.4...mem-v0.5.5) (2026-11-03)
+
+
+### Features
+
+* **document:** add filters, real dates, batch delete, and rename tools ([#813](https://github.com/nicsuzor/mem/issues/813)) ([3caab30](https://github.com/nicsuzor/mem/commit/3caab30115b7659569f4213a9ae2a4878779d627))
+* **lint:** report broken wikilinks in pkb lint ([#807](https://github.com/nicsuzor/mem/issues/807)) ([66a75b1](https://github.com/nicsuzor/mem/commit/66a75b15fb4f097f42b027b05e7686915dd89168))
+* **mcp:** label write replies by node type and suppress task hints on non-tasks ([#801](https://github.com/nicsuzor/mem/issues/801)) ([#824](https://github.com/nicsuzor/mem/issues/824)) ([36a4111](https://github.com/nicsuzor/mem/commit/36a41116be8fb7cc5f2de125c926e7203b47c55e))
+* **mcp:** resolve aliases and return inbound links on node reads (mem_30463615) ([#811](https://github.com/nicsuzor/mem/issues/811)) ([00e7962](https://github.com/nicsuzor/mem/commit/00e796203be3fd66b5c7605a1c23029adcc8a980))
+* **mcp:** return one lean, validated payload from every PKB MCP read ([#812](https://github.com/nicsuzor/mem/issues/812)) ([f84ded2](https://github.com/nicsuzor/mem/commit/f84ded230cdd1d4c942c709ca2b1bccdcf1d5061))
+
+
+### Bug Fixes
+
+* **embeddings:** pre-warm ONNX sessions and eliminate query disk loading for fast fan-out ([#810](https://github.com/nicsuzor/mem/issues/810)) ([17be75a](https://github.com/nicsuzor/mem/commit/17be75a9cebd5e5f435b375f566d3f035aaf83e9))
+* **flow:** report non-ok flow status on stale or disagreeing inputs ([#805](https://github.com/nicsuzor/mem/issues/805)) ([71b8e39](https://github.com/nicsuzor/mem/commit/71b8e39c7351874c7a662d81fef0c1bab2082d46))
+* **status:** align status counts with stores and persist reindex stamps ([#823](https://github.com/nicsuzor/mem/issues/823)) ([34b0232](https://github.com/nicsuzor/mem/commit/34b0232b9e9c54fa974256e35d78f2e1dec0391a))
+
+
+### Documentation
+
+* **spec:** amend link attribution rule so only Nic edits read as his ([#802](https://github.com/nicsuzor/mem/issues/802)) ([371f6f8](https://github.com/nicsuzor/mem/commit/371f6f8a6ae051031ddc7a66de26df62eb53b58b))
+* **specs:** exclude rules from memory, settle archive vs delete, and require one note per subject ([#821](https://github.com/nicsuzor/mem/issues/821)) ([4c4b450](https://github.com/nicsuzor/mem/commit/4c4b4501770c56f8f57b83ab4b63f549c5653922))
+
+
+### Tests
+
+* **mcp:** verify single body payload in batch get_document and document spec ([#815](https://github.com/nicsuzor/mem/issues/815), [#817](https://github.com/nicsuzor/mem/issues/817)) ([#822](https://github.com/nicsuzor/mem/issues/822)) ([36e1190](https://github.com/nicsuzor/mem/commit/36e1190e0dc020b5755e107273d106370859f3c4))
+
 ## [0.5.4](https://github.com/nicsuzor/mem/compare/mem-v0.5.3...mem-v0.5.4) (2026-10-30)
 
 
