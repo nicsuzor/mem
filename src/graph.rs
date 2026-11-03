@@ -147,6 +147,7 @@ pub enum LinkLabel {
     Supports,
     Alternative,
     Settles,
+    Link,
 }
 
 impl LinkLabel {
@@ -158,6 +159,7 @@ impl LinkLabel {
             LinkLabel::Supports => "supports",
             LinkLabel::Alternative => "alternative",
             LinkLabel::Settles => "settles",
+            LinkLabel::Link => "link",
         }
     }
 }
@@ -178,6 +180,7 @@ impl LinkLabel {
             "supports" => Some(LinkLabel::Supports),
             "alternative" => Some(LinkLabel::Alternative),
             "settles" => Some(LinkLabel::Settles),
+            "link" => Some(LinkLabel::Link),
             _ => None,
         }
     }
@@ -190,6 +193,7 @@ impl LinkLabel {
             LinkLabel::Supports => SUPPORTS_QUANTUM,
             LinkLabel::Alternative => ALTERNATIVE_QUANTUM,
             LinkLabel::Settles => SETTLES_QUANTUM,
+            LinkLabel::Link => DEFAULT_QUANTUM,
         }
     }
 }
@@ -370,6 +374,8 @@ impl FlowEdge {
 /// A resolved link view for tool output (links_out / links_in, §7.2).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ResolvedLink {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub to: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -3023,6 +3029,18 @@ impl GraphNode {
             }
             if let Some(fid) = f.get("id").and_then(|v| v.as_str()) {
                 permalinks.push(fid.trim().to_lowercase());
+            }
+            for a in parse_string_array(f, "alias") {
+                let trimmed = a.trim().to_lowercase();
+                if !trimmed.is_empty() {
+                    permalinks.push(trimmed);
+                }
+            }
+            for a in parse_string_array(f, "aliases") {
+                let trimmed = a.trim().to_lowercase();
+                if !trimmed.is_empty() {
+                    permalinks.push(trimmed);
+                }
             }
         }
         if let Some(stem) = doc.path.file_stem() {

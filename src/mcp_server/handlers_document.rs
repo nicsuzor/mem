@@ -168,10 +168,16 @@ impl PkbSearchServer {
             .write()
             .record_access(&node_id, crate::salience::AccessType::McpRetrieval);
 
+        let links_in = {
+            let graph = self.graph.read();
+            graph.links_in(&node_id)
+        };
+
         let mut structured = serde_json::json!({
-            "id": query,
+            "id": node_id,
             "title": label,
             "frontmatter": frontmatter,
+            "links_in": links_in,
             "truncated": truncated,
             "body_bytes": total_bytes,
             "salience": salience_score,

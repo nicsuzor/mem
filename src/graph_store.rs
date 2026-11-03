@@ -673,6 +673,7 @@ impl GraphStore {
             if edge.src == node_id {
                 let strength = edge.strength();
                 links.push(ResolvedLink {
+                    id: Some(edge.dst.clone()),
                     to: Some(edge.dst),
                     from: None,
                     label: edge.label,
@@ -694,11 +695,16 @@ impl GraphStore {
 
     /// Incoming flow links into a given node (pkb-flow-engine §7.2).
     pub fn links_in(&self, node_id: &str) -> Vec<ResolvedLink> {
+        let canon = self
+            .resolve(node_id)
+            .map(|n| n.id.clone())
+            .unwrap_or_else(|| node_id.to_string());
         let mut links = Vec::new();
         for edge in self.resolve_flow_edges() {
-            if edge.dst == node_id {
+            if edge.dst == canon {
                 let strength = edge.strength();
                 links.push(ResolvedLink {
+                    id: Some(edge.src.clone()),
                     to: None,
                     from: Some(edge.src),
                     label: edge.label,
@@ -709,6 +715,42 @@ impl GraphStore {
                     set_by: edge.set_by,
                     strength,
                 });
+            }
+        }
+        for edge in &self.edges {
+            let target_canon = self
+                .resolve(&edge.target)
+                .map(|n| n.id.as_str())
+                .unwrap_or(&edge.target);
+            if target_canon == canon && edge.source != canon {
+                let label = match edge.edge_type {
+                    crate::graph::EdgeType::DependsOn => crate::graph::LinkLabel::Needs,
+                    crate::graph::EdgeType::SoftDependsOn => crate::graph::LinkLabel::Supports,
+                    crate::graph::EdgeType::Parent => crate::graph::LinkLabel::PartOf,
+                    crate::graph::EdgeType::ContributesTo => crate::graph::LinkLabel::Serves,
+                    crate::graph::EdgeType::Closes => crate::graph::LinkLabel::Settles,
+                    crate::graph::EdgeType::Link => crate::graph::LinkLabel::Link,
+                    crate::graph::EdgeType::Supersedes | crate::graph::EdgeType::SimilarTo => {
+                        continue
+                    }
+                };
+                if !links
+                    .iter()
+                    .any(|l| l.from.as_deref() == Some(&edge.source) && l.label == label)
+                {
+                    links.push(ResolvedLink {
+                        id: Some(edge.source.clone()),
+                        to: None,
+                        from: Some(edge.source.clone()),
+                        label,
+                        quantum: label.default_quantum(),
+                        probability: 1.0,
+                        effect: crate::graph::LinkEffect::Helps,
+                        justification: None,
+                        set_by: crate::graph::LinkSetBy::Migrated,
+                        strength: label.default_quantum(),
+                    });
+                }
             }
         }
         links.sort_by(|a, b| {
