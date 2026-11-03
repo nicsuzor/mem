@@ -320,12 +320,43 @@ pub struct VectorStore {
     db_path: parking_lot::RwLock<Option<PathBuf>>,
 }
 
+/// Category 2 Reference types expanding under the `note` / `notes` family.
+pub const NOTE_FAMILY: &[&str] = &[
+    "note",
+    "knowledge",
+    "memory",
+    "observation",
+    "insight",
+    "exploration",
+];
+
+/// Category 1 Actionable types expanding under the `task` / `actionable` family.
+pub const TASK_FAMILY: &[&str] = &[
+    "task", "epic", "learn", "pr", "bug", "feature", "action",
+];
+
+/// Expand taxonomic type family keyword to constituent types.
+pub fn expand_type_family(token: &str) -> Vec<&'static str> {
+    let t = token.trim().to_ascii_lowercase();
+    if t == "note" || t == "notes" {
+        NOTE_FAMILY.to_vec()
+    } else if t == "task" || t == "tasks" || t == "actionable" {
+        TASK_FAMILY.to_vec()
+    } else {
+        Vec::new()
+    }
+}
+
 /// Helper to check if a document's doc_type matches an optional type filter string.
 ///
 /// Supports:
 /// - Single type: e.g. `"task"`, `"template"`, `"note"`
-/// - Comma-separated positive types: e.g. `"task,epic"`
-/// - Negated types (prefixed with `!`): e.g. `"!task"`, `"!task,!epic"`
+/// - Taxonomic family expansion: `"note"` expands to Category 2 reference types (`note`, `knowledge`, `memory`, etc.),
+///   and `"task"` expands to Category 1 actionable types (`task`, `epic`, `learn`, `pr`, etc.)
+/// - Exact match syntax: `"=note"` restricts strictly to literal type `note` without family expansion
+/// - Exact negation syntax: `!=note` excludes only literal type `note` while allowing other family members
+/// - Family negation syntax: `!note` excludes the whole note family (`!note,!knowledge,!memory,...`)
+/// - Comma-separated composite expressions: e.g. `"note,task"`, `"note,!memory"`, `"=note,task"`
 /// - Case-insensitive matching
 pub fn matches_type_filter(doc_type: Option<&str>, filter: Option<&str>) -> bool {
     let Some(filter) = filter else {
@@ -336,41 +367,73 @@ pub fn matches_type_filter(doc_type: Option<&str>, filter: Option<&str>) -> bool
         return true;
     }
 
-    let mut pos_types = Vec::new();
-    let mut neg_types = Vec::new();
+    let mut pos_exact = Vec::new();
+    let mut pos_expanded = Vec::new();
+    let mut neg_exact = Vec::new();
+    let mut neg_expanded = Vec::new();
 
     for part in filter.split(',') {
         let trimmed = part.trim();
         if trimmed.is_empty() {
             continue;
         }
-        if let Some(negated) = trimmed.strip_prefix('!') {
-            let neg_clean = negated.trim();
-            if !neg_clean.is_empty() {
-                neg_types.push(neg_clean);
+
+        if let Some(exact_neg) = trimmed.strip_prefix("!=") {
+            let clean = exact_neg.trim();
+            if !clean.is_empty() {
+                neg_exact.push(clean);
+            }
+        } else if let Some(family_neg) = trimmed.strip_prefix('!') {
+            let clean = family_neg.trim();
+            if !clean.is_empty() {
+                let exp = expand_type_family(clean);
+                if !exp.is_empty() {
+                    for m in exp {
+                        neg_expanded.push(m);
+                    }
+                } else {
+                    neg_expanded.push(clean);
+                }
+            }
+        } else if let Some(exact_pos) = trimmed.strip_prefix('=') {
+            let clean = exact_pos.trim();
+            if !clean.is_empty() {
+                pos_exact.push(clean);
             }
         } else {
-            pos_types.push(trimmed);
+            let exp = expand_type_family(trimmed);
+            if !exp.is_empty() {
+                for m in exp {
+                    pos_expanded.push(m);
+                }
+            } else {
+                pos_expanded.push(trimmed);
+            }
         }
     }
 
-    if pos_types.is_empty() && neg_types.is_empty() {
+    if pos_exact.is_empty() && pos_expanded.is_empty() && neg_exact.is_empty() && neg_expanded.is_empty() {
         return true;
     }
 
-    // Check negations first: if doc_type matches any negated type, exclude it
-    if !neg_types.is_empty() {
-        if let Some(dt) = doc_type {
-            if neg_types.iter().any(|n| dt.eq_ignore_ascii_case(n)) {
-                return false;
-            }
+    // Check negations first
+    if let Some(dt) = doc_type {
+        if neg_exact.iter().any(|n| dt.eq_ignore_ascii_case(n)) {
+            return false;
+        }
+        if neg_expanded.iter().any(|n| dt.eq_ignore_ascii_case(n)) {
+            return false;
         }
     }
 
-    // If positive types are specified, doc_type must match at least one positive type
-    if !pos_types.is_empty() {
+    // Check positive rules
+    let has_positive_rules = !pos_exact.is_empty() || !pos_expanded.is_empty();
+    if has_positive_rules {
         match doc_type {
-            Some(dt) => pos_types.iter().any(|p| dt.eq_ignore_ascii_case(p)),
+            Some(dt) => {
+                pos_exact.iter().any(|p| dt.eq_ignore_ascii_case(p))
+                    || pos_expanded.iter().any(|p| dt.eq_ignore_ascii_case(p))
+            }
             None => false,
         }
     } else {
@@ -1847,6 +1910,54 @@ mod tests {
         assert!(!matches_type_filter(Some("task"), Some("!task,!epic")));
         assert!(!matches_type_filter(Some("epic"), Some("!task,!epic")));
         assert!(matches_type_filter(Some("note"), Some("!task,!epic")));
+    }
+
+    #[test]
+    fn test_matches_type_filter_negated_note_family() {
+        // C7: type: "!note" excludes all members of note family, but allows task
+        assert!(!matches_type_filter(Some("note"), Some("!note")));
+        assert!(!matches_type_filter(Some("knowledge"), Some("!note")));
+        assert!(!matches_type_filter(Some("memory"), Some("!note")));
+        assert!(!matches_type_filter(Some("observation"), Some("!note")));
+        assert!(!matches_type_filter(Some("insight"), Some("!note")));
+        assert!(!matches_type_filter(Some("exploration"), Some("!note")));
+        assert!(matches_type_filter(Some("task"), Some("!note")));
+        assert!(matches_type_filter(Some("epic"), Some("!note")));
+    }
+
+    #[test]
+    fn test_matches_type_filter_exact_syntax() {
+        // C8: type: "=note" matches only literal "note", excluding other family members
+        assert!(matches_type_filter(Some("note"), Some("=note")));
+        assert!(matches_type_filter(Some("Note"), Some("=note")));
+        assert!(!matches_type_filter(Some("knowledge"), Some("=note")));
+        assert!(!matches_type_filter(Some("memory"), Some("=note")));
+        assert!(!matches_type_filter(Some("task"), Some("=note")));
+    }
+
+    #[test]
+    fn test_matches_type_filter_exact_negation() {
+        // C9: type: "!=note" excludes literal "note", but allows knowledge and memory
+        assert!(!matches_type_filter(Some("note"), Some("!=note")));
+        assert!(!matches_type_filter(Some("Note"), Some("!=note")));
+        assert!(matches_type_filter(Some("knowledge"), Some("!=note")));
+        assert!(matches_type_filter(Some("memory"), Some("!=note")));
+        assert!(matches_type_filter(Some("task"), Some("!=note")));
+    }
+
+    #[test]
+    fn test_matches_type_filter_composite_expressions() {
+        // C10: composite expressions: "note,task" allows both families; "note,!memory" allows note family except memory
+        assert!(matches_type_filter(Some("note"), Some("note,task")));
+        assert!(matches_type_filter(Some("knowledge"), Some("note,task")));
+        assert!(matches_type_filter(Some("task"), Some("note,task")));
+        assert!(matches_type_filter(Some("epic"), Some("note,task")));
+        assert!(!matches_type_filter(Some("template"), Some("note,task")));
+
+        assert!(matches_type_filter(Some("note"), Some("note,!memory")));
+        assert!(matches_type_filter(Some("knowledge"), Some("note,!memory")));
+        assert!(!matches_type_filter(Some("memory"), Some("note,!memory")));
+        assert!(!matches_type_filter(Some("task"), Some("note,!memory")));
     }
 
     #[test]

@@ -1678,6 +1678,100 @@ mod search_status_projection_tests {
         );
     }
 
+    fn seed_extra_doc(server: &PkbSearchServer, id: &str, title: &str, doc_type: &str, body: &str) {
+        let pkb_root = &server.pkb_root;
+        let doc_path = pkb_root.join(format!("{id}.md"));
+        std::fs::write(
+            &doc_path,
+            format!("---\nid: {id}\ntitle: \"{title}\"\ntype: {doc_type}\n---\n\n{body}"),
+        )
+        .unwrap();
+        let doc = crate::pkb::parse_file(&doc_path).unwrap();
+        let emb = server
+            .embedder
+            .encode_query("widget architecture note retrieval")
+            .unwrap();
+        server
+            .store
+            .write()
+            .insert_precomputed(&doc, vec![doc.body.clone()], vec![emb]);
+        server
+            .graph
+            .write()
+            .replace_node(crate::graph::GraphNode::from_pkb_document(&doc));
+    }
+
+    #[test]
+    fn test_search_type_filter_note_family_expands_to_knowledge_and_memory() {
+        // C5: type: "note" expands to knowledge and memory
+        let dir = tempfile::tempdir().expect("tempdir");
+        let server = build_seeded_server(dir.path());
+        seed_extra_doc(
+            &server,
+            "knowledge-widget-1",
+            "Widget knowledge artifact",
+            "knowledge",
+            "Widget retrieval knowledge details.",
+        );
+        seed_extra_doc(
+            &server,
+            "mem-widget-1",
+            "Widget memory entry",
+            "memory",
+            "Widget retrieval memory details.",
+        );
+
+        let result = server
+            .handle_pkb_search(&serde_json::json!({"query": "widget", "type": "note", "limit": 10}))
+            .expect("search");
+        let text = result_text(&result);
+
+        assert!(!text.contains("No results found"));
+        assert!(text.contains("**Type:** note"), "should return note: {text}");
+        assert!(text.contains("**Type:** knowledge"), "should return knowledge: {text}");
+        assert!(text.contains("**Type:** memory"), "should return memory: {text}");
+        assert!(!text.contains("**Type:** task"), "should not return task: {text}");
+        assert!(!text.contains("**Type:** template"), "should not return template: {text}");
+    }
+
+    #[test]
+    fn test_search_type_filter_actionable_family_expansion() {
+        // C6: type: "task" or "actionable" expands to tasks and epics
+        let dir = tempfile::tempdir().expect("tempdir");
+        let server = build_seeded_server(dir.path());
+        seed_extra_doc(
+            &server,
+            "epic-widget-1",
+            "Widget epic roadmap",
+            "epic",
+            "Widget retrieval epic details.",
+        );
+
+        // Test type: "task"
+        let result_task = server
+            .handle_pkb_search(&serde_json::json!({"query": "widget", "type": "task", "limit": 10}))
+            .expect("search");
+        let text_task = result_text(&result_task);
+
+        assert!(!text_task.contains("No results found"));
+        assert!(text_task.contains("**Type:** task"), "should return task: {text_task}");
+        assert!(text_task.contains("**Type:** epic"), "should return epic: {text_task}");
+        assert!(!text_task.contains("**Type:** note"), "should not return note: {text_task}");
+        assert!(!text_task.contains("**Type:** template"), "should not return template: {text_task}");
+
+        // Test type: "actionable"
+        let result_act = server
+            .handle_pkb_search(&serde_json::json!({"query": "widget", "type": "actionable", "limit": 10}))
+            .expect("search");
+        let text_act = result_text(&result_act);
+
+        assert!(!text_act.contains("No results found"));
+        assert!(text_act.contains("**Type:** task"), "should return task: {text_act}");
+        assert!(text_act.contains("**Type:** epic"), "should return epic: {text_act}");
+        assert!(!text_act.contains("**Type:** note"), "should not return note: {text_act}");
+        assert!(!text_act.contains("**Type:** template"), "should not return template: {text_act}");
+    }
+
     #[test]
     fn test_search_reports_fused_when_reranker_off() {
         let dir = tempfile::tempdir().expect("tempdir");
