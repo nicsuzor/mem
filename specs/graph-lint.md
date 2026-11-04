@@ -172,7 +172,7 @@ An **assumed** example edits a real node hypothetically, because the live graph 
 
 | Rule | Fires when | Severity | Real example | Agent may fix unasked? | Traces to |
 |---|---|---|---|---|---|
-| `flow-edge-label-invalid` | `label` is not one of `serves`, `needs`, `part_of`, `supports`, `alternative`, `settles` | error | **Assumed:** `label: blocks` on `aops_epic_task_lifecycle → spec_a98d0e11`. `blocks` is a computed inverse, not a label (§5.2) | yes, if only padding differs (L10); otherwise no | S2, S3, §5.2 |
+| `flow-edge-label-invalid` | `label` is not a stored label of the edge-label schema (`LinkLabel::STORED` in `src/graph.rs`: `serves`, `needs`, `part_of`, `supports`, `alternative`, `settles`). A computed label (`link`, which names body wikilinks in `links_in`) is refused with its replacement named (`use \`serves\``) | error | **Assumed:** `label: blocks` on `aops_epic_task_lifecycle → spec_a98d0e11`. `blocks` is a computed inverse, not a label (§5.2) | yes, if only padding differs (L10); otherwise no | S2, S3, §5.2 |
 | `flow-edge-effect-invalid` | `effect` is not `helps` or `harms` | error | **Assumed:** `effect: negative` on `proj-db6ded3c → targ_safety` | no | S12, §5.1 |
 | `flow-edge-negative` | `quantum` or `probability` is below 0. The sign belongs in `effect` | error | **Assumed:** `quantum: -0.3` on `proj-db6ded3c → targ_safety`, meant as "puts safety at risk" | no: `-0.3` may be a typo or a harm, and choosing between them is a judgement | S12, §5.1 |
 | `flow-edge-effect-ignored` | `effect: harms` on an `alternative` or `settles` edge. The flow does not read these edges, so the sign has no effect | warning | **Assumed:** `personal_92d5909f → brain_bf2be9d8` as `settles` with `effect: harms` | no | S2, S3, §3.2, §6 |

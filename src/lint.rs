@@ -1360,12 +1360,15 @@ fn check_frontmatter(
                     // Label validation
                     if let Some(label_str) = label_val.and_then(|v| v.as_str()) {
                         let trimmed = label_str.trim();
-                        let valid = ["serves", "needs", "part_of", "supports", "alternative", "settles"];
-                        if !valid.contains(&trimmed.to_lowercase().as_str()) {
+                        if LinkLabel::from_str(trimmed).is_none() {
                             diags.push(Diagnostic::edge(
                                 Severity::Error,
                                 "flow-edge-label-invalid",
-                                format!("Invalid edge label '{}'", label_str),
+                                format!(
+                                    "Invalid edge label '{}': {}",
+                                    label_str,
+                                    LinkLabel::rejection(label_str)
+                                ),
                                 &edge_from,
                                 &edge_to,
                                 label_str,
@@ -1414,7 +1417,10 @@ fn check_frontmatter(
                                 ));
                             } else if eff_trimmed == "harms" {
                                 let norm_label = raw_label_str.trim().to_lowercase();
-                                if norm_label == "alternative" || norm_label == "settles" {
+                                if matches!(
+                                    LinkLabel::from_str(&norm_label),
+                                    Some(LinkLabel::Alternative | LinkLabel::Settles)
+                                ) {
                                     diags.push(Diagnostic::edge(
                                         Severity::Warning,
                                         "flow-edge-effect-ignored",
@@ -1988,8 +1994,7 @@ fn apply_fixes(
                 if let Some(obj) = item.as_object() {
                     if let Some(s) = obj.get("label").and_then(|v| v.as_str()) {
                         let trimmed = s.trim();
-                        let valid = ["serves", "needs", "part_of", "supports", "alternative", "settles"];
-                        if s != trimmed && valid.contains(&trimmed.to_lowercase().as_str()) {
+                        if s != trimmed && LinkLabel::from_str(trimmed).is_some() {
                             let patterns = [
                                 format!("label: \"{}\"", s),
                                 format!("label: '{}'", s),

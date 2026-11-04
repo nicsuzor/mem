@@ -41,6 +41,8 @@ pub mod udiff;
 pub mod vectordb;
 
 #[cfg(test)]
+mod edge_label_schema_tests;
+#[cfg(test)]
 mod reproduction;
 
 use parking_lot::RwLock;
