@@ -137,29 +137,117 @@ pub const SUPPORTS_QUANTUM: f64 = 0.0;
 pub const SERVES_QUANTUM: f64 = 0.0;
 pub const MIGRATED_SUPPORTS_QUANTUM: f64 = 0.3;
 
-/// Edge labels for flow rule links (flow-rule §5.2, pkb-flow-engine §3.1).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum LinkLabel {
-    Serves,
-    Needs,
-    PartOf,
-    Supports,
-    Alternative,
-    Settles,
-    Link,
+/// The edge-label schema: the single definition of the edge-label set.
+///
+/// `stored` rows are the labels a frontmatter `links[].label` may carry
+/// (flow-rule §5.2, Q21). `computed` rows are labels the server emits in tool
+/// output but never reads from frontmatter; each names the stored label that
+/// replaces it. Rows are `Variant => "canonical" [| "alias" ...], default_quantum`
+/// (computed rows add `=> Replacement`).
+///
+/// The enum, [`LinkLabel::ALL`], [`LinkLabel::STORED`], [`LinkLabel::COMPUTED`],
+/// [`LinkLabel::as_str`], [`LinkLabel::from_str`], [`LinkLabel::default_quantum`],
+/// [`LinkLabel::replacement`], [`LinkLabel::expected_set`] and
+/// [`LinkLabel::rejection`] are all generated from this table. The frontmatter
+/// parser, write-path validation, write-path error messages and `pkb lint` read
+/// the set only through these, so adding a row here is the whole change needed
+/// to admit a new label (enforced by `edge_label_schema_tests`).
+macro_rules! edge_label_schema {
+    (
+        stored { $( $(#[$sdoc:meta])* $svar:ident => $sname:literal $(| $salias:literal)*, $sq:expr; )+ }
+        computed { $( $(#[$cdoc:meta])* $cvar:ident => $cname:literal, $cq:expr => $crepl:ident; )* }
+    ) => {
+        /// Edge labels for flow rule links (flow-rule §5.2, pkb-flow-engine §3.1).
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+        pub enum LinkLabel {
+            $( $(#[$sdoc])* #[serde(rename = $sname)] $svar, )+
+            $( $(#[$cdoc])* #[serde(rename = $cname)] $cvar, )*
+        }
+
+        impl LinkLabel {
+            /// Labels a frontmatter `links[].label` may carry, in schema order.
+            pub const STORED: &'static [LinkLabel] = &[$( LinkLabel::$svar ),+];
+            /// Labels emitted in tool output only; refused on read, write and lint.
+            pub const COMPUTED: &'static [LinkLabel] = &[$( LinkLabel::$cvar ),*];
+            /// Every label: stored, then computed.
+            pub const ALL: &'static [LinkLabel] =
+                &[$( LinkLabel::$svar, )+ $( LinkLabel::$cvar, )*];
+
+            pub fn as_str(&self) -> &'static str {
+                match self {
+                    $( LinkLabel::$svar => $sname, )+
+                    $( LinkLabel::$cvar => $cname, )*
+                }
+            }
+
+            /// Parse a stored label (trimmed, case-insensitive, aliases
+            /// accepted). Computed labels and unknown strings return `None`.
+            #[allow(clippy::should_implement_trait)]
+            pub fn from_str(s: &str) -> Option<LinkLabel> {
+                match s.trim().to_lowercase().as_str() {
+                    $( $sname $(| $salias)* => Some(LinkLabel::$svar), )+
+                    _ => None,
+                }
+            }
+
+            pub fn default_quantum(&self) -> f64 {
+                match self {
+                    $( LinkLabel::$svar => $sq, )+
+                    $( LinkLabel::$cvar => $cq, )*
+                }
+            }
+
+            /// For a computed label, the stored label to write instead.
+            pub fn replacement(&self) -> Option<LinkLabel> {
+                match self {
+                    $( LinkLabel::$cvar => Some(LinkLabel::$crepl), )*
+                    _ => None,
+                }
+            }
+
+            pub fn is_stored(&self) -> bool {
+                Self::STORED.contains(self)
+            }
+        }
+    };
+}
+
+edge_label_schema! {
+    stored {
+        Serves => "serves", DEFAULT_QUANTUM;
+        Needs => "needs", NEEDS_QUANTUM;
+        PartOf => "part_of" | "part-of", PART_OF_QUANTUM;
+        Supports => "supports", SUPPORTS_QUANTUM;
+        Alternative => "alternative", ALTERNATIVE_QUANTUM;
+        Settles => "settles", SETTLES_QUANTUM;
+    }
+    computed {
+        /// A body wikilink, as it appears in `links_in`. Wikilinks are not
+        /// flow edges (flow-rule §5.2, Q23), so `link` is never stored; an
+        /// unvalued `serves` carries the same zero default quantum.
+        Link => "link", DEFAULT_QUANTUM => Serves;
+    }
 }
 
 impl LinkLabel {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            LinkLabel::Serves => "serves",
-            LinkLabel::Needs => "needs",
-            LinkLabel::PartOf => "part_of",
-            LinkLabel::Supports => "supports",
-            LinkLabel::Alternative => "alternative",
-            LinkLabel::Settles => "settles",
-            LinkLabel::Link => "link",
+    /// The stored label set as written in error messages: `{serves, needs, ...}`.
+    pub fn expected_set() -> String {
+        let names: Vec<&str> = Self::STORED.iter().map(|l| l.as_str()).collect();
+        format!("{{{}}}", names.join(", "))
+    }
+
+    /// The reason a string is refused as a stored label, shared by the
+    /// parser, write-path validation and `pkb lint`:
+    /// `not in {serves, ...}` plus, for a computed label, its replacement.
+    pub fn rejection(s: &str) -> String {
+        let norm = s.trim().to_lowercase();
+        let computed = Self::COMPUTED.iter().find(|l| l.as_str() == norm);
+        match computed.and_then(|l| l.replacement().map(|r| (l, r))) {
+            Some((l, r)) => format!(
+                "not in {}; `{l}` is computed for output, not stored: use `{r}`",
+                Self::expected_set()
+            ),
+            None => format!("not in {}", Self::expected_set()),
         }
     }
 }
@@ -167,34 +255,6 @@ impl LinkLabel {
 impl std::fmt::Display for LinkLabel {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.as_str())
-    }
-}
-
-impl LinkLabel {
-    #[allow(clippy::should_implement_trait)]
-    pub fn from_str(s: &str) -> Option<LinkLabel> {
-        match s.trim().to_lowercase().as_str() {
-            "serves" => Some(LinkLabel::Serves),
-            "needs" => Some(LinkLabel::Needs),
-            "part_of" | "part-of" => Some(LinkLabel::PartOf),
-            "supports" => Some(LinkLabel::Supports),
-            "alternative" => Some(LinkLabel::Alternative),
-            "settles" => Some(LinkLabel::Settles),
-            "link" => Some(LinkLabel::Link),
-            _ => None,
-        }
-    }
-
-    pub fn default_quantum(&self) -> f64 {
-        match self {
-            LinkLabel::Serves => DEFAULT_QUANTUM,
-            LinkLabel::Needs => NEEDS_QUANTUM,
-            LinkLabel::PartOf => PART_OF_QUANTUM,
-            LinkLabel::Supports => SUPPORTS_QUANTUM,
-            LinkLabel::Alternative => ALTERNATIVE_QUANTUM,
-            LinkLabel::Settles => SETTLES_QUANTUM,
-            LinkLabel::Link => DEFAULT_QUANTUM,
-        }
     }
 }
 
@@ -225,14 +285,15 @@ impl LinkEffect {
     }
 }
 
-/// Provenance of a link: nic | agent-proposed | migrated (R26, E17).
+/// Provenance of a link: nic | agent-proposed | migrated | unattributed (R26, R27, E17).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 #[serde(rename_all = "kebab-case")]
 pub enum LinkSetBy {
-    #[default]
     Nic,
     AgentProposed,
     Migrated,
+    #[default]
+    Unattributed,
 }
 
 impl LinkSetBy {
@@ -241,6 +302,7 @@ impl LinkSetBy {
             LinkSetBy::Nic => "nic",
             LinkSetBy::AgentProposed => "agent-proposed",
             LinkSetBy::Migrated => "migrated",
+            LinkSetBy::Unattributed => "unattributed",
         }
     }
 
@@ -250,6 +312,7 @@ impl LinkSetBy {
             "nic" => Some(LinkSetBy::Nic),
             "agent-proposed" | "agent_proposed" => Some(LinkSetBy::AgentProposed),
             "migrated" => Some(LinkSetBy::Migrated),
+            "unattributed" => Some(LinkSetBy::Unattributed),
             _ => None,
         }
     }
@@ -568,7 +631,8 @@ pub fn validate_links_value(val: &serde_json::Value) -> Result<(), String> {
                 .ok_or_else(|| format!("links[{i}].label must be a string"))?;
             if LinkLabel::from_str(s).is_none() {
                 return Err(format!(
-                    "links[{i}].label \"{s}\" not in {{serves, needs, part_of, supports, alternative, settles}}"
+                    "links[{i}].label \"{s}\" {}",
+                    LinkLabel::rejection(s)
                 ));
             }
         }
@@ -596,7 +660,7 @@ pub fn validate_links_value(val: &serde_json::Value) -> Result<(), String> {
                 .ok_or_else(|| format!("links[{i}].set_by must be a string"))?;
             if LinkSetBy::from_str(s).is_none() {
                 return Err(format!(
-                    "links[{i}].set_by \"{s}\" not in {{nic, agent-proposed, migrated}}"
+                    "links[{i}].set_by \"{s}\" not in {{nic, agent-proposed, migrated, unattributed}}"
                 ));
             }
         }
@@ -762,9 +826,9 @@ pub fn validate_contributes_to_value(val: &serde_json::Value) -> Result<(), Stri
             let s = sb_val
                 .as_str()
                 .ok_or_else(|| format!("contributes_to[{i}].set_by must be a string"))?;
-            if !matches!(s, "nic" | "agent-proposed" | "migrated") {
+            if !matches!(s, "nic" | "agent-proposed" | "migrated" | "unattributed") {
                 return Err(format!(
-                    "contributes_to[{i}].set_by \"{s}\" not in {{nic, agent-proposed, migrated}}"
+                    "contributes_to[{i}].set_by \"{s}\" not in {{nic, agent-proposed, migrated, unattributed}}"
                 ));
             }
         }
@@ -2509,7 +2573,10 @@ impl GraphNode {
                             None => {
                                 parse_warnings.push(ParseWarning {
                                     field: format!("links[{i}].label"),
-                                    message: format!("unrecognized link label \"{v}\"; not in {{serves, needs, part_of, supports, alternative, settles}}"),
+                                    message: format!(
+                                        "unrecognized link label {v}; {}",
+                                        LinkLabel::rejection(v.as_str().unwrap_or_default())
+                                    ),
                                 });
                                 continue;
                             }
@@ -2525,10 +2592,10 @@ impl GraphNode {
                                     field: format!("links[{i}].set_by"),
                                     message: format!("unrecognized set_by \"{v}\""),
                                 });
-                                LinkSetBy::Nic
+                                LinkSetBy::Unattributed
                             }
                         },
-                        None => LinkSetBy::Nic,
+                        None => LinkSetBy::Unattributed,
                     };
 
                     let quantum = match obj.get("quantum") {

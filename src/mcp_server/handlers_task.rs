@@ -209,6 +209,9 @@ impl PkbSearchServer {
                 "deadline_class",
                 "allow_missing_parent",
                 "force",
+                "_client",
+                "_session",
+                "_meta",
             ];
             let received: Vec<&str> = obj.keys().map(|s| s.as_str()).collect();
             let unknown: Vec<&str> = received
@@ -250,7 +253,10 @@ impl PkbSearchServer {
             self.reject_machine_paths(body, None)?;
         }
 
-        if let Some(links_val) = args.get("links") {
+        let is_dashboard = super::is_dashboard_client(args);
+        let mut links_opt = args.get("links").cloned();
+        if let Some(ref mut links_val) = links_opt {
+            super::process_tool_links(links_val, is_dashboard)?;
             crate::graph::validate_links_value(links_val).map_err(|e| McpError {
                 code: ErrorCode::INVALID_PARAMS,
                 message: Cow::from(e),
@@ -375,8 +381,8 @@ impl PkbSearchServer {
                 .and_then(|v| v.as_array())
                 .cloned()
                 .unwrap_or_default(),
-            links: args
-                .get("links")
+            links: links_opt
+                .as_ref()
                 .and_then(|v| v.as_array())
                 .cloned()
                 .unwrap_or_default(),
@@ -2215,6 +2221,9 @@ impl PkbSearchServer {
             "unparent",
             "force",
             "allow_missing_parent",
+            "_client",
+            "_session",
+            "_meta",
         ];
         let top_level_fields: serde_json::Map<String, serde_json::Value> = args
             .as_object()
@@ -2362,6 +2371,37 @@ impl PkbSearchServer {
                     })?;
                 updates.insert("project".to_string(), serde_json::Value::String(canonical));
             }
+        }
+
+        let is_dashboard = super::is_dashboard_client(args);
+        if let Some(links_val) = updates.get_mut("links") {
+            super::process_tool_links(links_val, is_dashboard)?;
+            crate::graph::validate_links_value(links_val).map_err(|e| McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from(e),
+                data: None,
+            })?;
+        }
+        if let Some(worth_val) = updates.get("worth") {
+            crate::graph::validate_worth_value(worth_val).map_err(|e| McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from(e),
+                data: None,
+            })?;
+        }
+        if let Some(dc_val) = updates.get("deadline_class") {
+            crate::graph::validate_deadline_class_value(dc_val).map_err(|e| McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from(e),
+                data: None,
+            })?;
+        }
+        if let Some(ct_val) = updates.get("contributes_to") {
+            crate::graph::validate_contributes_to_value(ct_val).map_err(|e| McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from(e),
+                data: None,
+            })?;
         }
 
         // Validate parent change: reject if the new parent does not exist

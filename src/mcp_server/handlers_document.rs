@@ -702,7 +702,10 @@ impl PkbSearchServer {
             self.reject_machine_paths(body, None)?;
         }
 
-        if let Some(links_val) = args.get("links") {
+        let is_dashboard = super::is_dashboard_client(args);
+        let mut links_opt = args.get("links").cloned();
+        if let Some(ref mut links_val) = links_opt {
+            super::process_tool_links(links_val, is_dashboard)?;
             crate::graph::validate_links_value(links_val).map_err(|e| McpError {
                 code: ErrorCode::INVALID_PARAMS,
                 message: Cow::from(e),
@@ -823,8 +826,8 @@ impl PkbSearchServer {
                 .and_then(|v| v.as_array())
                 .cloned()
                 .unwrap_or_default(),
-            links: args
-                .get("links")
+            links: links_opt
+                .as_ref()
                 .and_then(|v| v.as_array())
                 .cloned()
                 .unwrap_or_default(),

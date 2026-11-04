@@ -275,7 +275,17 @@ impl PkbSearchServer {
                 }
             }
         }
-        let updates_val = JsonValue::Object(updates.clone());
+        let is_dashboard = super::is_dashboard_client(args);
+        let mut updates_obj = updates.clone();
+        if let Some(links_val) = updates_obj.get_mut("links") {
+            super::process_tool_links(links_val, is_dashboard)?;
+            crate::graph::validate_links_value(links_val).map_err(|e| McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from(e),
+                data: None,
+            })?;
+        }
+        let updates_val = JsonValue::Object(updates_obj);
         let summary = crate::batch_ops::update::batch_update(
             &graph,
             &self.pkb_root,

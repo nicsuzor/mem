@@ -422,7 +422,9 @@ Labels name what the link is for. Two of them feed the decision rule. None of th
 
 **Labels not carried over.**
 
-- **Wikilinks and `supersedes`.** These are not edges of this model (section 8).
+- **Wikilinks and `supersedes`.** These are not edges of this model (section 8). Tool output names an inbound wikilink in `links_in` with the computed label `link`; `link` is never stored, and the parser, write path and linter refuse it as a `links[].label` and name `serves` as the replacement.
+
+**One definition.** The label set is defined once, in the edge-label schema table in `src/graph.rs` (`LinkLabel::STORED`, `LinkLabel::COMPUTED`). The frontmatter parser, write-path validation, its error messages and `pkb lint` all read the set from it; `edge_label_schema_tests` fails if any of them keeps its own copy.
 - **A separate `blocks` label.** `blocks` and `soft_blocks` are inverses filled in from `depends_on` and `soft_depends_on` by the `compute_inverses` stage (`ranking.md` §1; `src/graph_store.rs:477`). They are not stored.
 
 **Whether a hard block is its own label.** This model keeps it as its own label (`needs`) because display needs it for the ready filter. In the maths it is a contribution at full quantum (Q5).
