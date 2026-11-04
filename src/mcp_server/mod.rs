@@ -1882,6 +1882,7 @@ impl PkbSearchServer {
                         canonical_name_task
                     );
                 }
+                apply_client_identity(&mut args, client_context.client_name.as_deref());
                 this_task.dispatch_tool_sync(&canonical_name_task, &args)
             };
 
@@ -2112,3 +2113,73 @@ impl ServerHandler for PkbSearchServer {
 }
 
 impl FactsProvider for PkbSearchServer {}
+
+/// MCP `initialize` client name of the dashboard (R27 Route 1).
+pub(crate) const DASHBOARD_CLIENT: &str = "overwhelm-dashboard";
+
+/// Set the server-owned `_client` marker from the session's MCP `initialize`
+/// client identity (R27 Route 1). Any caller-supplied `_client` is dropped
+/// first, so an agent cannot claim dashboard identity through tool arguments
+/// and attribute links to Nic.
+pub(crate) fn apply_client_identity(args: &mut JsonValue, client_name: Option<&str>) {
+    if let Some(obj) = args.as_object_mut() {
+        obj.remove("_client");
+        if client_name == Some(DASHBOARD_CLIENT) {
+            obj.insert("_client".to_string(), serde_json::json!(DASHBOARD_CLIENT));
+        }
+    }
+}
+
+/// Whether this call came from the dashboard. Reads only the server-owned
+/// `_client` marker set by [`apply_client_identity`].
+pub(crate) fn is_dashboard_client(args: &JsonValue) -> bool {
+    args.get("_client").and_then(|v| v.as_str()) == Some(DASHBOARD_CLIENT)
+}
+
+
+pub(crate) fn process_tool_links(links_val: &mut JsonValue, is_dashboard: bool) -> Result<(), McpError> {
+    if let Some(links_arr) = links_val.as_array_mut() {
+        for link_val in links_arr.iter_mut() {
+            if let Some(obj) = link_val.as_object_mut() {
+                let set_by = obj.get("set_by").and_then(|v| v.as_str());
+                if !is_dashboard {
+                    if set_by == Some("nic") {
+                        return Err(McpError {
+                            code: ErrorCode::INVALID_PARAMS,
+                            message: Cow::from(
+                                "Agents cannot attribute links to nic; use set_by: 'agent-proposed' with justification",
+                            ),
+                            data: None,
+                        });
+                    }
+                    if set_by.is_none() {
+                        obj.insert("set_by".to_string(), serde_json::json!("agent-proposed"));
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod client_identity_tests {
+    use super::*;
+
+    #[test]
+    fn caller_supplied_client_marker_is_dropped_for_agents() {
+        let mut args = serde_json::json!({"_client": DASHBOARD_CLIENT, "title": "x"});
+        apply_client_identity(&mut args, Some("claude-code"));
+        assert!(!is_dashboard_client(&args));
+        apply_client_identity(&mut args, None);
+        assert!(!is_dashboard_client(&args));
+        assert_eq!(args["title"], "x");
+    }
+
+    #[test]
+    fn dashboard_session_sets_marker() {
+        let mut args = serde_json::json!({"_client": "spoof"});
+        apply_client_identity(&mut args, Some(DASHBOARD_CLIENT));
+        assert!(is_dashboard_client(&args));
+    }
+}

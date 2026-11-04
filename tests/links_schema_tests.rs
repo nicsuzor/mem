@@ -142,7 +142,7 @@ fn test_links_entry_errors_are_isolated() {
 /// - `standing_weight` fallback and precedence warning when both `worth` and `standing_weight` present.
 /// - Unclassed `due` is fake; node without `due` has `deadline_class: None`.
 /// - `needs` link with no quantum carries 1.0.
-/// - `agent-proposed` reads at 0.0 whatever label; `nic` reads at stated quantum; omitted `set_by` reads as `nic`.
+/// - `agent-proposed` reads at 0.0 whatever label; `nic` reads at stated quantum; omitted `set_by` reads as `unattributed` (R27).
 #[test]
 fn test_links_schema_mapping() {
     let tmp = tempdir().unwrap();
@@ -329,7 +329,7 @@ fn test_links_schema_mapping() {
     );
     let doc_no_due = make_doc("task_no_due", json!({ "id": "task_no_due" }));
 
-    // 9. R26 Proposals: agent-proposed reads at 0.0 whatever label; nic reads at stated; omitted reads as nic
+    // 9. R26 Proposals: agent-proposed reads at 0.0 whatever label; nic reads at stated; omitted reads as unattributed (R27)
     let doc_proposals = make_doc(
         "task_props",
         json!({
@@ -643,8 +643,8 @@ fn test_links_schema_mapping() {
         .unwrap();
     assert_eq!(
         l_omitted.set_by,
-        LinkSetBy::Nic,
-        "omitted set_by defaults to nic"
+        LinkSetBy::Unattributed,
+        "omitted set_by reads as unattributed, never nic (R27)"
     );
     assert_eq!(l_omitted.quantum, 0.65);
 

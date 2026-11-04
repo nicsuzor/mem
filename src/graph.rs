@@ -285,14 +285,15 @@ impl LinkEffect {
     }
 }
 
-/// Provenance of a link: nic | agent-proposed | migrated (R26, E17).
+/// Provenance of a link: nic | agent-proposed | migrated | unattributed (R26, R27, E17).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 #[serde(rename_all = "kebab-case")]
 pub enum LinkSetBy {
-    #[default]
     Nic,
     AgentProposed,
     Migrated,
+    #[default]
+    Unattributed,
 }
 
 impl LinkSetBy {
@@ -301,6 +302,7 @@ impl LinkSetBy {
             LinkSetBy::Nic => "nic",
             LinkSetBy::AgentProposed => "agent-proposed",
             LinkSetBy::Migrated => "migrated",
+            LinkSetBy::Unattributed => "unattributed",
         }
     }
 
@@ -310,6 +312,7 @@ impl LinkSetBy {
             "nic" => Some(LinkSetBy::Nic),
             "agent-proposed" | "agent_proposed" => Some(LinkSetBy::AgentProposed),
             "migrated" => Some(LinkSetBy::Migrated),
+            "unattributed" => Some(LinkSetBy::Unattributed),
             _ => None,
         }
     }
@@ -657,7 +660,7 @@ pub fn validate_links_value(val: &serde_json::Value) -> Result<(), String> {
                 .ok_or_else(|| format!("links[{i}].set_by must be a string"))?;
             if LinkSetBy::from_str(s).is_none() {
                 return Err(format!(
-                    "links[{i}].set_by \"{s}\" not in {{nic, agent-proposed, migrated}}"
+                    "links[{i}].set_by \"{s}\" not in {{nic, agent-proposed, migrated, unattributed}}"
                 ));
             }
         }
@@ -823,9 +826,9 @@ pub fn validate_contributes_to_value(val: &serde_json::Value) -> Result<(), Stri
             let s = sb_val
                 .as_str()
                 .ok_or_else(|| format!("contributes_to[{i}].set_by must be a string"))?;
-            if !matches!(s, "nic" | "agent-proposed" | "migrated") {
+            if !matches!(s, "nic" | "agent-proposed" | "migrated" | "unattributed") {
                 return Err(format!(
-                    "contributes_to[{i}].set_by \"{s}\" not in {{nic, agent-proposed, migrated}}"
+                    "contributes_to[{i}].set_by \"{s}\" not in {{nic, agent-proposed, migrated, unattributed}}"
                 ));
             }
         }
@@ -2589,10 +2592,10 @@ impl GraphNode {
                                     field: format!("links[{i}].set_by"),
                                     message: format!("unrecognized set_by \"{v}\""),
                                 });
-                                LinkSetBy::Nic
+                                LinkSetBy::Unattributed
                             }
                         },
-                        None => LinkSetBy::Nic,
+                        None => LinkSetBy::Unattributed,
                     };
 
                     let quantum = match obj.get("quantum") {
