@@ -348,11 +348,29 @@ pub fn document_recency_decay(
     1.0
 }
 
+/// Continuous soft-knee saturation curve activating at threshold T = 0.900
+/// and asymptotically approaching ceiling C = 0.990.
+///
+/// Preserves C^0 continuity at T, C^1 smooth derivative (unit slope at T),
+/// strict monotonicity, and strictly bounds non-exact scores <= 0.990.
+pub fn soft_knee_ceiling(s: f64) -> f64 {
+    const T: f64 = 0.900;
+    const C: f64 = 0.990;
+    if s <= T {
+        s
+    } else {
+        let k = C - T; // 0.090
+        let delta = s - T;
+        T + (k * delta) / (k + delta)
+    }
+}
+
 /// Apply multiplicative priors (recency decay and recent-read boost) to a normalized
 /// relevance score in [0, 1].
 ///
 /// Invariance: No recency or recent-read prior moves a below-floor item above the relevance floor.
 /// Priors only reorder items that are already at or above the floor.
+/// Continuous soft-knee saturation ensures boosted scores never plateau at 1.000.
 pub fn apply_priors_with_floor(
     score: f64,
     floor: f64,
@@ -365,9 +383,66 @@ pub fn apply_priors_with_floor(
         let attenuated = score * recency_factor;
         attenuated.min(score).min(if floor > 1e-6 { floor - 1e-6 } else { floor }).max(0.0)
     } else {
-        // At or above floor: apply bounded multiplicative priors
+        // At or above floor: apply bounded multiplicative priors with soft-knee ceiling
         let combined = recency_factor * recent_read_boost;
-        (score * combined).clamp(floor, 1.0)
+        let boosted = score * combined;
+        soft_knee_ceiling(boosted).max(floor)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_soft_knee_ceiling_properties() {
+        // C0 continuity at T = 0.900
+        assert_eq!(soft_knee_ceiling(0.900), 0.900);
+        assert_eq!(soft_knee_ceiling(0.850), 0.850);
+
+        // Strictly monotonic above T
+        let s1 = soft_knee_ceiling(0.920);
+        let s2 = soft_knee_ceiling(0.960);
+        let s3 = soft_knee_ceiling(1.050);
+        let s4 = soft_knee_ceiling(1.500);
+        let s5 = soft_knee_ceiling(10.0);
+
+        assert!(s1 < s2, "s1 ({s1}) < s2 ({s2})");
+        assert!(s2 < s3, "s2 ({s2}) < s3 ({s3})");
+        assert!(s3 < s4, "s3 ({s3}) < s4 ({s4})");
+        assert!(s4 < s5, "s4 ({s4}) < s5 ({s5})");
+
+        // Asymptotic ceiling at 0.990
+        assert!(s5 <= 0.990, "s5 ({s5}) must not exceed ceiling 0.990");
+        assert!(s5 > 0.985);
+
+        // C1 continuous derivative at T (unit slope)
+        let eps = 1e-6;
+        let slope_right = (soft_knee_ceiling(0.900 + eps) - 0.900) / eps;
+        assert!((slope_right - 1.0).abs() < 1e-4, "slope at T+ must be ~1.0, got {slope_right}");
+    }
+
+    #[test]
+    fn test_apply_priors_preserves_score_delta_above_floor() {
+        // C4: Soft-knee saturation preserves rank ordering (d S_out / d S > 0),
+        // exhibits continuous derivative at T = 0.900, and never depresses a candidate below relevance floor.
+        let floor = 0.50;
+        let recency = 1.0;
+        let read_boost = 1.15;
+        let s1 = 0.85;
+        let s2 = 0.92;
+        let s3 = 0.96;
+
+        let out1 = apply_priors_with_floor(s1, floor, recency, read_boost);
+        let out2 = apply_priors_with_floor(s2, floor, recency, read_boost);
+        let out3 = apply_priors_with_floor(s3, floor, recency, read_boost);
+
+        assert!(out1 < out2, "out1 ({out1}) must be strictly less than out2 ({out2})");
+        assert!(out2 < out3, "out2 ({out2}) must be strictly less than out3 ({out3})");
+        assert!(out3 <= 0.990, "out3 ({out3}) must not exceed soft ceiling 0.990");
+        assert!(out1 >= floor, "out1 must meet or exceed floor");
+        assert!(out2 >= floor, "out2 must meet or exceed floor");
+        assert!(out3 >= floor, "out3 must meet or exceed floor");
     }
 }
 

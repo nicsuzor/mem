@@ -221,10 +221,35 @@ fn test_no_prior_moves_below_floor_item_above_floor() {
     assert!((boosted - 0.60).abs() < 1e-5, "expected 0.60, got {boosted}");
     assert!(boosted >= floor);
 
-    // Near ceiling clamped to 1.0
+    // Near ceiling softly saturates below 1.0 (<= 0.990)
     let score_high = 0.95;
     let boosted_high = mem::salience::apply_priors_with_floor(score_high, floor, recency_1, max_read_boost);
-    assert_eq!(boosted_high, 1.0);
+    assert!(boosted_high < 1.0, "boosted_high ({boosted_high}) must not saturate at 1.0");
+    assert!(boosted_high <= 0.990, "boosted_high ({boosted_high}) must be <= 0.990");
+    assert!(boosted_high > 0.900, "boosted_high ({boosted_high}) must be > 0.900");
+}
+
+#[test]
+fn test_apply_priors_preserves_score_delta_above_floor() {
+    // C4: Soft-knee saturation preserves rank ordering (d S_out / d S > 0),
+    // exhibits continuous derivative at T = 0.900, and never depresses a candidate below relevance floor.
+    let floor = 0.50;
+    let recency = 1.0;
+    let read_boost = 1.15;
+    let s1 = 0.85;
+    let s2 = 0.92;
+    let s3 = 0.96;
+
+    let out1 = mem::salience::apply_priors_with_floor(s1, floor, recency, read_boost);
+    let out2 = mem::salience::apply_priors_with_floor(s2, floor, recency, read_boost);
+    let out3 = mem::salience::apply_priors_with_floor(s3, floor, recency, read_boost);
+
+    assert!(out1 < out2, "out1 ({out1}) must be strictly less than out2 ({out2})");
+    assert!(out2 < out3, "out2 ({out2}) must be strictly less than out3 ({out3})");
+    assert!(out3 <= 0.990, "out3 ({out3}) must not exceed soft ceiling 0.990");
+    assert!(out1 >= floor, "out1 must meet or exceed floor");
+    assert!(out2 >= floor, "out2 must meet or exceed floor");
+    assert!(out3 >= floor, "out3 must meet or exceed floor");
 }
 
 #[test]

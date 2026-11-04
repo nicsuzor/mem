@@ -44,8 +44,8 @@ pub const EPSILON: f32 = 1e-9;
 /// Multiplier for exact ID, filename, or alias matches (m_id = 2.0).
 pub const M_ID_EXACT_MATCH: f32 = 2.0;
 
-/// Dominant anchor boost added in hybrid retrieval for exact ID matches.
-pub const EXACT_ID_HYBRID_BOOST: f32 = 10.0;
+/// Dominant anchor boost added in hybrid retrieval for exact ID matches (pinned to 1.000).
+pub const EXACT_ID_HYBRID_BOOST: f32 = 1.0;
 
 /// Default ID multiplier when no exact match (m_id = 1.0).
 pub const M_ID_DEFAULT: f32 = 1.0;
@@ -446,8 +446,12 @@ pub fn try_fuse_tm2c2<G: GraphStructuralLookup>(
             None => 1.0,
         };
         let is_exact = is_exact_id_match(&clean_query, &r.id, &r.path, &aliases);
-        let anchor_boost = if is_exact { EXACT_ID_HYBRID_BOOST } else { 0.0 };
-        r.score = r.score * m_struct * m_temporal + anchor_boost;
+        if is_exact {
+            r.score = EXACT_ID_HYBRID_BOOST;
+        } else {
+            let s_boosted = (r.score * m_struct * m_temporal) as f64;
+            r.score = crate::salience::soft_knee_ceiling(s_boosted) as f32;
+        }
     }
 
     // 6. Final sort descending by score, breaking ties by document ID then chunk ID
@@ -563,8 +567,10 @@ mod tests {
         let fused = fuse_tm2c2(vec_res, bm25_res, "prose query for doc", &config, None, &(), None, 10);
         assert_eq!(fused.len(), 1);
         // Single candidate with surviving dense modality sets s_norm = 1.0
-        // s_fused = 1.0 (surviving modality), M_struct = 1.0
-        assert!((fused[0].score - 1.0).abs() < 1e-4);
+        // s_fused = 1.0 (surviving modality), M_struct = 1.0, then soft-knee ceiling
+        // A normalised 1.0 is a non-identity hit, so it passes through the
+        // soft-knee ceiling (search.md §7.1): never 1.000.
+        assert!((fused[0].score as f64 - crate::salience::soft_knee_ceiling(1.0)).abs() < 1e-4);
     }
 
     #[test]
@@ -575,7 +581,9 @@ mod tests {
 
         let fused = fuse_tm2c2(vec_res, bm25_res, "prose query for doc", &config, None, &(), None, 10);
         assert_eq!(fused.len(), 1);
-        assert!((fused[0].score - 1.0).abs() < 1e-4);
+        // A normalised 1.0 is a non-identity hit, so it passes through the
+        // soft-knee ceiling (search.md §7.1): never 1.000.
+        assert!((fused[0].score as f64 - crate::salience::soft_knee_ceiling(1.0)).abs() < 1e-4);
     }
 
     #[test]
@@ -586,7 +594,9 @@ mod tests {
 
         let fused = fuse_tm2c2(vec_res, bm25_res, "prose query", &config, None, &(), None, 10);
         assert_eq!(fused.len(), 1);
-        assert!((fused[0].score - 1.0).abs() < 1e-4);
+        // A normalised 1.0 is a non-identity hit, so it passes through the
+        // soft-knee ceiling (search.md §7.1): never 1.000.
+        assert!((fused[0].score as f64 - crate::salience::soft_knee_ceiling(1.0)).abs() < 1e-4);
     }
 
     #[test]
@@ -603,10 +613,10 @@ mod tests {
 
         let fused = fuse_tm2c2(vec_res, bm25_res, "test query", &config, None, &(), None, 10);
         assert_eq!(fused.len(), 2);
-        // doc_a has max in both (s_norm_dense=1.0, s_norm_lex=1.0) -> fused = 1.0
+        // doc_a has max in both (s_norm_dense=1.0, s_norm_lex=1.0) -> fused = 1.0 before the soft-knee ceiling
         // doc_b has min in both (s_norm_dense=0.0, s_norm_lex=0.0) -> fused = 0.0
         assert_eq!(fused[0].id, "doc_a");
-        assert!((fused[0].score - 1.0).abs() < 1e-3);
+        assert!((fused[0].score as f64 - crate::salience::soft_knee_ceiling(1.0)).abs() < 1e-3);
         assert_eq!(fused[1].id, "doc_b");
         assert!(fused[1].score < 1e-3);
     }
@@ -809,7 +819,7 @@ mod tests {
         assert_eq!(fused[0].id, "aops_8a2448c0", "Exact ID match must be ranked #1 in hybrid retrieval");
         assert!(fused[0].score >= EXACT_ID_HYBRID_BOOST, "Exact ID match must receive dominant anchor boost");
         if fused.len() > 1 {
-            assert!(fused[0].score > fused[1].score + 5.0);
+            assert!(fused[0].score > fused[1].score);
         }
     }
 
@@ -829,6 +839,33 @@ mod tests {
         assert!(!fused.is_empty());
         assert_eq!(fused[0].id, "kb_295732fd", "Bracketed ID query must rank target #1 in hybrid retrieval");
         assert!(fused[0].score >= EXACT_ID_HYBRID_BOOST);
+    }
+
+    #[test]
+    fn test_exact_id_scores_one_prose_hits_sub_one() {
+        // C2: Searching by exact ID returns score: 1.000. Searching topical prose returns top hits with score <= 0.990.
+        let config = RankingConfig::default();
+        let target = make_result("kb_pkb_search_ranking", "Search Ranking and Fusion", 0.10, Some("active"));
+        let competitor = make_result("doc_semantic", "Search Ranking in Practice", 0.95, Some("active"));
+
+        let vec_res = vec![competitor.clone(), target.clone()];
+        let bm25_res = vec![
+            make_result("kb_pkb_search_ranking", target.title.as_str(), 1005.0, Some("active")),
+            make_result("doc_semantic", competitor.title.as_str(), 5.0, Some("active")),
+        ];
+
+        // 1. Exact ID query returns 1.000
+        let fused_exact = fuse_tm2c2(vec_res.clone(), bm25_res.clone(), "kb_pkb_search_ranking", &config, None, &(), None, 10);
+        assert!(!fused_exact.is_empty());
+        assert_eq!(fused_exact[0].id, "kb_pkb_search_ranking");
+        assert_eq!(fused_exact[0].score, 1.0, "Exact ID query must score exactly 1.000");
+
+        // 2. Topical prose query returns <= 0.990
+        let fused_prose = fuse_tm2c2(vec_res, bm25_res, "search ranking in distributed systems", &config, None, &(), None, 10);
+        assert!(!fused_prose.is_empty());
+        for hit in &fused_prose {
+            assert!(hit.score <= 0.990, "Topical prose hits must be <= 0.990; got {}", hit.score);
+        }
     }
 
     #[test]
