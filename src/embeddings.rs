@@ -521,6 +521,73 @@ fn threads_per_session_cpu(cores: usize, max_sess: usize) -> usize {
     (cores / max_sess).clamp(1, 4)
 }
 
+/// Max parallel ONNX sessions for CPU mode: the core-count target, capped by memory.
+///
+/// Every session holds its own optimised copy of the model weights (BGE-M3: ~1.3 GB
+/// resident per session), and each grows an inference arena on top. Sized from cores
+/// alone, a 12-core host pre-warms 6 sessions (~8 GB) and a 10 GB container is
+/// OOM-killed on the first document embed. The pool therefore takes at most as many
+/// sessions as fit in half the memory limit, at one on-disk model size each; the other
+/// half is headroom for the graph, the vector store and inference arenas.
+fn max_sessions_for(model_path: &std::path::Path) -> usize {
+    let cpu = max_sessions_cpu();
+    match (memory_limit_bytes(), model_weight_bytes(model_path)) {
+        (Some(limit), Some(per_session)) => sessions_within_memory(cpu, limit, per_session),
+        _ => cpu,
+    }
+}
+
+/// `cpu` sessions, reduced to those whose weights fit in half of `limit`. Never below 1.
+fn sessions_within_memory(cpu: usize, limit: u64, per_session: u64) -> usize {
+    if per_session == 0 {
+        return cpu;
+    }
+    let fit = (limit / 2 / per_session) as usize;
+    cpu.min(fit).max(1)
+}
+
+/// On-disk size of the model: the graph file plus its external weights file, if any.
+fn model_weight_bytes(model_path: &std::path::Path) -> Option<u64> {
+    let graph = std::fs::metadata(model_path).ok()?.len();
+    let mut data_path = model_path.as_os_str().to_owned();
+    data_path.push("_data");
+    let data = std::fs::metadata(&data_path).map(|m| m.len()).unwrap_or(0);
+    Some(graph + data)
+}
+
+/// Memory this process may use: the cgroup limit if one is set, else physical memory.
+fn memory_limit_bytes() -> Option<u64> {
+    let physical = std::fs::read_to_string("/proc/meminfo")
+        .ok()
+        .and_then(|s| parse_meminfo_total(&s));
+    let cgroup = [
+        "/sys/fs/cgroup/memory.max",
+        "/sys/fs/cgroup/memory/memory.limit_in_bytes",
+    ]
+    .iter()
+    .find_map(|p| std::fs::read_to_string(p).ok())
+    .and_then(|s| s.trim().parse::<u64>().ok());
+    match (cgroup, physical) {
+        (Some(c), Some(p)) => Some(c.min(p)),
+        (c, p) => c.or(p),
+    }
+}
+
+/// `MemTotal` from /proc/meminfo, in bytes.
+fn parse_meminfo_total(meminfo: &str) -> Option<u64> {
+    meminfo
+        .lines()
+        .find_map(|l| l.strip_prefix("MemTotal:"))
+        .and_then(|rest| {
+            rest.trim()
+                .trim_end_matches("kB")
+                .trim()
+                .parse::<u64>()
+                .ok()
+        })
+        .map(|kb| kb * 1024)
+}
+
 struct SessionPool {
     sessions: parking_lot::RwLock<Vec<Arc<Mutex<Session>>>>,
     next_session_idx: std::sync::atomic::AtomicUsize,
@@ -621,7 +688,7 @@ impl SessionPool {
         let max_sess = if override_max_sessions > 0 {
             override_max_sessions
         } else {
-            max_sessions_cpu()
+            max_sessions_for(&config.model_path)
         };
         let mut initial_sessions = vec![Arc::new(Mutex::new(session))];
         if !using_gpu && max_sess > 1 {
@@ -814,7 +881,7 @@ impl SessionPool {
         let max_sess = if self.override_max_sessions > 0 {
             self.override_max_sessions
         } else {
-            max_sessions_cpu()
+            max_sessions_for(&self.model_path)
         };
         let cores = std::thread::available_parallelism()
             .map(|n| n.get())
@@ -878,7 +945,7 @@ impl SessionPool {
         self.gpu_mode.store(false, Ordering::Relaxed);
         tracing::info!(
             "Now using CPU parallel mode (up to {} sessions)",
-            max_sessions_cpu()
+            max_sess
         );
         Ok(())
     }
@@ -896,7 +963,7 @@ impl SessionPool {
         let max_sess = if self.override_max_sessions > 0 {
             self.override_max_sessions
         } else {
-            max_sessions_cpu()
+            max_sessions_for(&self.model_path)
         };
         let threads = if self.override_threads > 0 {
             self.override_threads
@@ -1102,7 +1169,7 @@ impl Embedder {
         let sessions = if self.override_max_sessions > 0 {
             self.override_max_sessions
         } else {
-            max_sessions_cpu()
+            max_sessions_for(&self.config.model_path)
         };
         let threads = if self.override_threads > 0 {
             self.override_threads
@@ -1766,6 +1833,40 @@ fn chunk_fixed_size(text: &str, config: &ChunkConfig) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const GIB: u64 = 1024 * 1024 * 1024;
+
+    #[test]
+    fn session_pool_is_capped_by_memory() {
+        // The 2026-11-05 nicwin crash loop: 12 cores want 6 sessions, but a 10 GiB
+        // container holds only 2 copies of BGE-M3's 2.27 GB weights in half its limit.
+        let bge_m3 = 2_267_545_531;
+        assert_eq!(sessions_within_memory(6, 10 * GIB, bge_m3), 2);
+        // Plenty of memory: the core-count target stands.
+        assert_eq!(sessions_within_memory(6, 64 * GIB, bge_m3), 6);
+        // Too little memory for even one in half the limit: still one session.
+        assert_eq!(sessions_within_memory(6, 2 * GIB, bge_m3), 1);
+        // Unknown model size: no memory cap.
+        assert_eq!(sessions_within_memory(6, 10 * GIB, 0), 6);
+    }
+
+    #[test]
+    fn meminfo_total_parses_to_bytes() {
+        let meminfo = "MemTotal:       49283072 kB\nMemFree:         2000000 kB\n";
+        assert_eq!(parse_meminfo_total(meminfo), Some(49_283_072 * 1024));
+        assert_eq!(parse_meminfo_total("MemFree: 1 kB\n"), None);
+    }
+
+    #[test]
+    fn model_weight_bytes_counts_external_data() {
+        let dir = tempfile::tempdir().unwrap();
+        let model = dir.path().join("model.onnx");
+        std::fs::write(&model, vec![0u8; 10]).unwrap();
+        assert_eq!(model_weight_bytes(&model), Some(10));
+        std::fs::write(dir.path().join("model.onnx_data"), vec![0u8; 90]).unwrap();
+        assert_eq!(model_weight_bytes(&model), Some(100));
+        assert_eq!(model_weight_bytes(&dir.path().join("missing.onnx")), None);
+    }
 
     /// Verify that the embedding model produces discriminative vectors.
     /// A query should be more similar to a topically-related document than to an unrelated one.
