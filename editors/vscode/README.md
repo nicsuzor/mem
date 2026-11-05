@@ -44,3 +44,7 @@ Requires the `pkb` CLI binary built with LSP support (`cargo install --path .` f
 - `mem.restartServer`: Restart the `pkb lsp` language server process and reload the Markdown Preview index.
 - `mem.showVersion`: Display extension version, server status, binary version & path, resolved `pkbRoot`, indexed node count, and last error.
 - `mem.showLogs`: Reveal the `Mem PKB LSP` OutputChannel logs.
+
+## Builds & Releases
+
+Extension packaging uses dynamic build-time versioning derived from git commit depth (`git rev-list --count HEAD`) and the base major.minor prefix declared in `package.json`. On every commit to `main` impacting the extension or the Rust language server (`src/**`), GitHub Actions CI automatically compiles and packages `mem-vscode-${BASE_PREFIX}.${REV_COUNT}.vsix` and updates the latest release asset.
