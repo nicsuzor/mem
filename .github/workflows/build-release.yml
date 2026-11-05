@@ -91,6 +91,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ startsWith(inputs.tag, 'mem-') && inputs.tag || format('mem-{0}', inputs.tag) }}
+          fetch-depth: 0
 
       - uses: actions/setup-node@v4
         with:
@@ -101,6 +102,14 @@ jobs:
       - name: Install dependencies
         working-directory: editors/vscode
         run: npm ci
+
+      - name: Bump extension version
+        run: |
+          REV_COUNT=$(git rev-list --count HEAD)
+          BASE_PREFIX=$(node -p "require('./editors/vscode/package.json').version.split('.').slice(0, 2).join('.')")
+          TARGET_VERSION="${BASE_PREFIX}.${REV_COUNT}"
+          echo "Bumping extension version to ${TARGET_VERSION}"
+          node ./editors/vscode/scripts/bump-version.js "${TARGET_VERSION}"
 
       - name: Package extension
         working-directory: editors/vscode
