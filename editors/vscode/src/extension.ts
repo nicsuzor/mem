@@ -1634,26 +1634,29 @@ export function renderHoverCardHtml(
   const topActions: string[] = [];
   if (isTaskNode(node)) {
     topActions.push(
-      `<a href="command:mem.completeTask?${encId}" class="mem-pkb-action-btn done">$(check) Done</a>`
+      `<a href="command:mem.completeTask?${encId}" class="mem-pkb-action-btn done">Done</a>`
     );
     topActions.push(
-      `<a href="command:mem.readyTask?${encId}" class="mem-pkb-action-btn ready">$(play) Ready</a>`
+      `<a href="command:mem.readyTask?${encId}" class="mem-pkb-action-btn ready">Ready</a>`
     );
     topActions.push(
-      `<a href="command:mem.queueTask?${encId}" class="mem-pkb-action-btn queue">$(inbox) Queue</a>`
+      `<a href="command:mem.queueTask?${encId}" class="mem-pkb-action-btn queue">Queue</a>`
     );
     topActions.push(
-      `<a href="command:mem.cancelTask?${encId}" class="mem-pkb-action-btn cancel">$(close) Cancel</a>`
+      `<a href="command:mem.pauseTask?${encId}" class="mem-pkb-action-btn pause">Pause</a>`
     );
     topActions.push(
-      `<a href="command:mem.startTask?${encId}" class="mem-pkb-action-btn start">$(sync~spin) Start</a>`
+      `<a href="command:mem.cancelTask?${encId}" class="mem-pkb-action-btn cancel">Cancel</a>`
+    );
+    topActions.push(
+      `<a href="command:mem.startTask?${encId}" class="mem-pkb-action-btn start">Start</a>`
     );
   }
   topActions.push(
-    `<a href="command:mem.openReference?${encId}" class="mem-pkb-action-btn open">$(go-to-file) Open</a>`
+    `<a href="command:mem.openReference?${encId}" class="mem-pkb-action-btn open">Open</a>`
   );
   topActions.push(
-    `<a href="command:mem.showSubtree?${encId}" class="mem-pkb-action-btn subtree">$(type-hierarchy-sub) Subtree</a>`
+    `<a href="command:mem.showSubtree?${encId}" class="mem-pkb-action-btn subtree">Subtree</a>`
   );
 
   parts.push(
@@ -1663,24 +1666,24 @@ export function renderHoverCardHtml(
   const topBar: string[] = [];
   if (node.type) {
     topBar.push(
-      `<span class="mem-pkb-hover-badge">${typeCodicon(node.type)} ${escapeHtml(node.type)}</span>`
+      `<span class="mem-pkb-hover-badge">${escapeHtml(node.type)}</span>`
     );
   }
   if (node.status) {
     topBar.push(
-      `<span class="mem-pkb-hover-badge">${statusCodicon(node.status)} ${escapeHtml(node.status)}</span>`
+      `<span class="mem-pkb-hover-badge">${escapeHtml(node.status)}</span>`
     );
   }
-  if (node.intent !== undefined) {
+  if (node.intent !== undefined && node.intent !== null) {
     topBar.push(
-      `<span class="mem-pkb-hover-badge">$(flame) intent ${escapeHtml(String(node.intent))}</span>`
+      `<span class="mem-pkb-hover-badge">intent ${escapeHtml(String(node.intent))}</span>`
     );
   }
-  if (node.tags.length > 0) {
+  if (node.tags && node.tags.length > 0) {
     const tagSpans = node.tags
       .map((t) => `<span class="mem-pkb-hover-tag">#${escapeHtml(t)}</span>`)
       .join(' ');
-    topBar.push(`<span class="mem-pkb-hover-tags">$(tag) ${tagSpans}</span>`);
+    topBar.push(`<span class="mem-pkb-hover-tags">${tagSpans}</span>`);
   }
   if (topBar.length > 0) {
     parts.push(`<span class="mem-pkb-hover-meta">${topBar.join('  ·  ')}</span>`);
@@ -2287,6 +2290,10 @@ export function activate(context: vscode.ExtensionContext): { extendMarkdownIt: 
       { scheme: 'file', language: 'markdown' },
       { scheme: 'untitled', language: 'markdown' },
     ],
+    markdown: {
+      isTrusted: true,
+      supportThemeIcons: true,
+    },
     outputChannel: outChannel,
     traceOutputChannel: traceChannel,
     synchronize: {
