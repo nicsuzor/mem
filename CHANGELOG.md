@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.7](https://github.com/nicsuzor/mem/compare/mem-v0.5.6...mem-v0.5.7) (2026-11-05)
+
+
+### Features
+
+* **links:** enforce R27 link attribution (unattributed default, no agent-as-nic) ([11b6cf4](https://github.com/nicsuzor/mem/commit/11b6cf456ae2d69b7c860f7b3200ebf4c1b00020))
+* **lint:** ignore code fences and backticks in broken-wikilink lint and cache known IDs ([#827](https://github.com/nicsuzor/mem/issues/827)) ([e11f2a8](https://github.com/nicsuzor/mem/commit/e11f2a81c15620fbe16f272002bb14f875f845f9))
+* **lsp,vscode:** hover quick actions and preview links (mem_a6bb79db) ([#830](https://github.com/nicsuzor/mem/issues/830)) ([25d5a70](https://github.com/nicsuzor/mem/commit/25d5a7046a18bc91a3eb92379f89c1e2f5f0de86))
+* **search:** soft-knee score ceiling and taxonomic type families (spec [#825](https://github.com/nicsuzor/mem/issues/825) code) ([715cc60](https://github.com/nicsuzor/mem/commit/715cc601af268385c7b49bccde5738162e6ecd83))
+
+
+### Bug Fixes
+
+* **embeddings:** cap the ONNX session pool by memory, not cores alone ([#836](https://github.com/nicsuzor/mem/issues/836)) ([f8d195d](https://github.com/nicsuzor/mem/commit/f8d195d627e74a4a164e0cd982b14b6fe6e29b01))
+* **graph:** define the edge-label schema once; refuse computed `link` as a stored label ([1962cd7](https://github.com/nicsuzor/mem/commit/1962cd76d806f448494d249f5597c3a7d5f61d79))
+* **mcp:** support mixed update_task calls without dropping fields (mem_33da554c) ([#829](https://github.com/nicsuzor/mem/issues/829)) ([b10194b](https://github.com/nicsuzor/mem/commit/b10194b49d624c95e982adf1fb5c6acf70c1caa2))
+
+
+### Miscellaneous
+
+* **vscode:** bump extension version to 0.1.11 (mem_d1a986b7) ([#834](https://github.com/nicsuzor/mem/issues/834)) ([c95718b](https://github.com/nicsuzor/mem/commit/c95718b6547f0ef9183e0b30b0c53fd931472364))
+
 ## [0.5.6](https://github.com/nicsuzor/mem/compare/mem-v0.5.5...mem-v0.5.6) (2026-11-03)
 
 
