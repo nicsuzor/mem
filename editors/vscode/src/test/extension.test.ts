@@ -564,11 +564,14 @@ Detailed architecture notes for PKB preview.
 
     const cardHtml = renderHoverCardHtml(node, mockIndex);
 
-    // 1. Top bar codicons & compact labels
-    assert.ok(cardHtml.includes('$(checklist) task'), 'Top bar must contain type codicon and compact label');
-    assert.ok(cardHtml.includes('$(sync~spin) in_progress'), 'Top bar must contain status codicon and compact label');
-    assert.ok(cardHtml.includes('$(flame) intent 3'), 'Top bar must contain intent codicon');
-    assert.ok(cardHtml.includes('$(tag)'), 'Top bar must contain tag codicon');
+    // 1. Top bar clean text & compact labels (no raw codicon syntax in HTML)
+    assert.ok(!cardHtml.includes('$(checklist)'), 'Top bar HTML must not contain raw codicon string $(checklist)');
+    assert.ok(!cardHtml.includes('$(sync~spin)'), 'Top bar HTML must not contain raw codicon string $(sync~spin)');
+    assert.ok(!cardHtml.includes('$(flame)'), 'Top bar HTML must not contain raw codicon string $(flame)');
+    assert.ok(!cardHtml.includes('$(tag)'), 'Top bar HTML must not contain raw codicon string $(tag)');
+    assert.ok(cardHtml.includes('task'), 'Top bar must contain type label');
+    assert.ok(cardHtml.includes('in_progress'), 'Top bar must contain status label');
+    assert.ok(cardHtml.includes('intent 3'), 'Top bar must contain intent label');
     assert.ok(cardHtml.includes('#ui') && cardHtml.includes('#compact'), 'Top bar must contain styled tags');
 
     // 2. Human title for parent link, no raw [[id]]
@@ -609,6 +612,10 @@ Detailed architecture notes for PKB preview.
       'Top actions must contain command:mem.queueTask link for task node'
     );
     assert.ok(
+      cardHtml.includes(`href="command:mem.pauseTask?${encId}"`),
+      'Top actions must contain command:mem.pauseTask link for task node'
+    );
+    assert.ok(
       cardHtml.includes(`href="command:mem.cancelTask?${encId}"`),
       'Top actions must contain command:mem.cancelTask link for task node'
     );
@@ -624,13 +631,15 @@ Detailed architecture notes for PKB preview.
       cardHtml.includes(`href="command:mem.showSubtree?${encId}"`),
       'Top actions must contain command:mem.showSubtree link'
     );
-    assert.ok(cardHtml.includes('$(check) Done'), 'Done command link must use $(check) Done');
-    assert.ok(cardHtml.includes('$(play) Ready'), 'Ready command link must use $(play) Ready');
-    assert.ok(cardHtml.includes('$(inbox) Queue'), 'Queue command link must use $(inbox) Queue');
-    assert.ok(cardHtml.includes('$(close) Cancel'), 'Cancel command link must use $(close) Cancel');
-    assert.ok(cardHtml.includes('$(sync~spin) Start'), 'Start command link must use $(sync~spin) Start');
-    assert.ok(cardHtml.includes('$(go-to-file) Open'), 'Open command link must use $(go-to-file) Open');
-    assert.ok(cardHtml.includes('$(type-hierarchy-sub) Subtree'), 'Subtree command link must use $(type-hierarchy-sub) Subtree');
+    assert.ok(cardHtml.includes('>Done</a>'), 'Done command link must display clean text Done');
+    assert.ok(cardHtml.includes('>Ready</a>'), 'Ready command link must display clean text Ready');
+    assert.ok(cardHtml.includes('>Queue</a>'), 'Queue command link must display clean text Queue');
+    assert.ok(cardHtml.includes('>Pause</a>'), 'Pause command link must display clean text Pause');
+    assert.ok(cardHtml.includes('>Cancel</a>'), 'Cancel command link must display clean text Cancel');
+    assert.ok(cardHtml.includes('>Start</a>'), 'Start command link must display clean text Start');
+    assert.ok(cardHtml.includes('>Open</a>'), 'Open command link must display clean text Open');
+    assert.ok(cardHtml.includes('>Subtree</a>'), 'Subtree command link must display clean text Subtree');
+    assert.ok(!cardHtml.includes('$(check)'), 'Preview HTML must not contain raw codicon code $(check)');
 
     // Placement: Top quick actions must appear BEFORE metadata and body
     const headerPos = cardHtml.indexOf('mem-pkb-hover-header');

@@ -263,6 +263,10 @@ It must be shown in hover preview and opened in a new tab.
       hoverMarkdown.includes('command:mem.queueTask?%5B%22task-integration%22%5D'),
       `Hover preview action footer must have queueTask command link, got: ${hoverMarkdown}`
     );
+    assert.ok(
+      hoverMarkdown.includes('command:mem.pauseTask?%5B%22task-integration%22%5D'),
+      `Hover preview action footer must have pauseTask command link, got: ${hoverMarkdown}`
+    );
   });
 
   it('The reference opens the whole referenced file in a new editor tab', async () => {

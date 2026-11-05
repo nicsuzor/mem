@@ -428,6 +428,10 @@ impl LspServer {
                 encoded_arg
             ));
             actions.push(format!(
+                "[$(debug-pause) Pause](command:mem.pauseTask?{})",
+                encoded_arg
+            ));
+            actions.push(format!(
                 "[$(close) Cancel](command:mem.cancelTask?{})",
                 encoded_arg
             ));
@@ -1556,6 +1560,7 @@ mod tests {
         assert!(preview.contains("[$(check) Done](command:mem.completeTask?%5B%22task-foo%22%5D)"));
         assert!(preview.contains("[$(play) Ready](command:mem.readyTask?%5B%22task-foo%22%5D)"));
         assert!(preview.contains("[$(inbox) Queue](command:mem.queueTask?%5B%22task-foo%22%5D)"));
+        assert!(preview.contains("[$(debug-pause) Pause](command:mem.pauseTask?%5B%22task-foo%22%5D)"));
         assert!(preview.contains("[$(close) Cancel](command:mem.cancelTask?%5B%22task-foo%22%5D)"));
         assert!(preview.contains("[$(sync~spin) Start](command:mem.startTask?%5B%22task-foo%22%5D)"));
         assert!(preview.contains("[$(go-to-file) Open](command:mem.openReference?%5B%22task-foo%22%5D)"));
@@ -1586,6 +1591,7 @@ mod tests {
         assert!(!preview.contains("command:mem.cancelTask?"));
         assert!(!preview.contains("command:mem.queueTask?"));
         assert!(!preview.contains("command:mem.startTask?"));
+        assert!(!preview.contains("command:mem.pauseTask?"));
 
         // Non-task top actions must also sit above metadata
         let header_idx = preview.find("### Bar Concept (`concept-bar`)").expect("Header missing");

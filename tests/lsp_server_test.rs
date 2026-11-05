@@ -1279,6 +1279,10 @@ Footer test content.
         "Hover footer must contain command:mem.queueTask link for task, got:\n{hover_text}"
     );
     assert!(
+        hover_text.contains("command:mem.pauseTask?"),
+        "Hover footer must contain command:mem.pauseTask link for task, got:\n{hover_text}"
+    );
+    assert!(
         hover_text.contains("task-footer"),
         "Command links must target the hovered node id 'task-footer', got:\n{hover_text}"
     );
@@ -1343,6 +1347,7 @@ Plain note body.
     assert!(!hover_text.contains("command:mem.completeTask?"));
     assert!(!hover_text.contains("command:mem.cancelTask?"));
     assert!(!hover_text.contains("command:mem.queueTask?"));
+    assert!(!hover_text.contains("command:mem.pauseTask?"));
 }
 
 
