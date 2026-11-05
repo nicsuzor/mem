@@ -100,7 +100,7 @@ The server computes deterministic metrics (counts, depths, degrees). It does NOT
 ### Performance & Availability
 
 - **Immediate Feedback**: CLI commands (search, tasks, status) respond in <500ms for typical PKBs (<5,000 nodes).
-- **Search Latency**: MCP hybrid search returns results within 2 seconds. A fan-out of 5 parallel searches completes in under twice the latency of a single query without serialising, supported by a pre-warmed multi-session embedding pool.
+- **Search Latency**: MCP hybrid search returns results within 2 seconds. A fan-out of 5 parallel searches completes in under twice the latency of a single query without serialising, supported by a pre-warmed multi-session embedding pool sized to the host's cores and capped by its memory limit.
 - **Self-invalidating graph index (validate-on-read)**: the in-memory graph index validates on-disk freshness against a fast stat-only generation stamp (`file_count` + `max_mtime`, ~32–45ms for 8,000 files). If an external write occurs (a write from another `pkb mcp` process, git-sync sidecar, CLI mutation, or direct text edit), read operations (`list_tasks`, `get_task`, `task_search`, `task_summary`, etc.) automatically invalidate and rebuild the graph before responding. `refresh_graph` remains available as an explicit escape hatch but is no longer a precondition for freshness. Internal in-place graph mutations (e.g. `upsert_node_in_place`) maintain this generation stamp incrementally in O(1) time without rescanning the filesystem while holding the exclusive graph write lock.
 
 ### Data Integrity & Portability
