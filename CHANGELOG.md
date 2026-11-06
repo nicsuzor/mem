@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.8](https://github.com/nicsuzor/mem/compare/mem-v0.5.7...mem-v0.5.8) (2026-11-06)
+
+
+### Features
+
+* **ci:** build and monotonic version bump LSP extension on every commit ([#837](https://github.com/nicsuzor/mem/issues/837)) ([404193b](https://github.com/nicsuzor/mem/commit/404193b9c9ac733387338fe55a05c33fe4d2ba56))
+* **lsp,vscode:** support theme icons, pause action, clean preview hover text (mem_cb001d16) ([#838](https://github.com/nicsuzor/mem/issues/838)) ([3cb03c5](https://github.com/nicsuzor/mem/commit/3cb03c5d833907a093098227b1bc483057018b72))
+
+
+### Bug Fixes
+
+* **graph:** immediately synchronize dependency and inverse block states on removal ([#843](https://github.com/nicsuzor/mem/issues/843)) ([22a5179](https://github.com/nicsuzor/mem/commit/22a517969b25c10e79277c07aa4198fcf1a5e947))
+
+
+### Documentation
+
+* **specs:** align pkb-rules with specification standard ([#844](https://github.com/nicsuzor/mem/issues/844)) ([10e6267](https://github.com/nicsuzor/mem/commit/10e6267a94568d152d97a4cef8f6e2191d43b042))
+
 ## [0.5.7](https://github.com/nicsuzor/mem/compare/mem-v0.5.6...mem-v0.5.7) (2026-11-05)
 
 
