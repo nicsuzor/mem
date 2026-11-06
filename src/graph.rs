@@ -963,14 +963,24 @@ pub struct GraphNode {
     pub target_ancestors: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub depends_on: Vec<String>,
+    #[serde(skip)]
+    pub depends_on_raw: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub soft_depends_on: Vec<String>,
+    #[serde(skip)]
+    pub soft_depends_on_raw: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub blocks: Vec<String>,
+    #[serde(skip)]
+    pub blocks_raw: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub soft_blocks: Vec<String>,
+    #[serde(skip)]
+    pub soft_blocks_raw: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub children: Vec<String>,
+    #[serde(skip)]
+    pub children_raw: Vec<String>,
     /// Sub-tasks (type=subtask) — travel with the parent and render as checkboxes.
     /// Computed from edges; not stored in frontmatter.
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -3139,10 +3149,15 @@ impl GraphNode {
             target_ancestors: Vec::new(),
             contributes_to,
             contributed_by: Vec::new(),
+            depends_on_raw: depends_on.clone(),
             depends_on,
+            soft_depends_on_raw: soft_depends_on.clone(),
             soft_depends_on,
+            blocks_raw: blocks.clone(),
             blocks,
+            soft_blocks_raw: soft_blocks.clone(),
             soft_blocks,
+            children_raw: children.clone(),
             children,
             subtasks: Vec::new(),
             due,

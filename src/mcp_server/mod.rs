@@ -622,13 +622,17 @@ impl PkbSearchServer {
         let _t = std::time::Instant::now();
         {
             let mut g = self.graph.write();
-            g.upsert_node_in_place(node, &self.pkb_root);
+            let affected = g.upsert_node_in_place(node, &self.pkb_root);
             g.reclassify();
             // Insert inside the write lock so the ID is visible to any
             // concurrent Tier-2 phase-2 swap before the write lock is released.
             // If inserted after the lock, a Tier-2 that already holds the
             // write lock for its swap will miss this ID and drop the node.
-            self.patched_during_rebuild.lock().insert(patched_id);
+            let mut patched = self.patched_during_rebuild.lock();
+            patched.insert(patched_id);
+            for a in affected {
+                patched.insert(a);
+            }
         }
         tracing::debug!(target: "perf::graph_rebuild", phase = "inplace_patch", elapsed_ms = _t.elapsed().as_secs_f64() * 1000.0);
 
@@ -650,8 +654,11 @@ impl PkbSearchServer {
             for doc in &docs {
                 let node = crate::graph::GraphNode::from_pkb_document(doc);
                 let patched_id = node.id.clone();
-                g.upsert_node_in_place(node, &self.pkb_root);
+                let affected = g.upsert_node_in_place(node, &self.pkb_root);
                 patched.insert(patched_id);
+                for a in affected {
+                    patched.insert(a);
+                }
             }
             g.reclassify();
         }
