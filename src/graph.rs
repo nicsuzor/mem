@@ -131,11 +131,7 @@ where
 pub const DEFAULT_QUANTUM: f64 = 0.0;
 pub const PART_OF_QUANTUM: f64 = 0.0;
 pub const NEEDS_QUANTUM: f64 = 1.0;
-pub const SETTLES_QUANTUM: f64 = 1.0;
-pub const ALTERNATIVE_QUANTUM: f64 = 0.0;
-pub const SUPPORTS_QUANTUM: f64 = 0.0;
 pub const SERVES_QUANTUM: f64 = 0.0;
-pub const MIGRATED_SUPPORTS_QUANTUM: f64 = 0.3;
 
 /// The edge-label schema: the single definition of the edge-label set.
 ///
@@ -217,9 +213,6 @@ edge_label_schema! {
         Serves => "serves", DEFAULT_QUANTUM;
         Needs => "needs", NEEDS_QUANTUM;
         PartOf => "part_of" | "part-of", PART_OF_QUANTUM;
-        Supports => "supports", SUPPORTS_QUANTUM;
-        Alternative => "alternative", ALTERNATIVE_QUANTUM;
-        Settles => "settles", SETTLES_QUANTUM;
     }
     computed {
         /// A body wikilink, as it appears in `links_in`. Wikilinks are not
@@ -1025,6 +1018,8 @@ pub struct GraphNode {
     /// (parent + contributes_to + closes edges).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub target_ancestors: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub needs: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub depends_on: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -2515,7 +2510,7 @@ impl GraphNode {
         let word_count = doc.body.split_whitespace().count() as i32;
         let has_acceptance_criteria = detect_acceptance_criteria(&doc.body);
 
-        let (depends_on, soft_depends_on, children, blocks, soft_blocks, closes) = match fm {
+        let (mut depends_on, soft_depends_on, children, blocks, soft_blocks, closes) = match fm {
             Some(f) => (
                 parse_string_array(f, "depends_on"),
                 parse_string_array(f, "soft_depends_on"),
@@ -2526,6 +2521,16 @@ impl GraphNode {
             ),
             None => (vec![], vec![], vec![], vec![], vec![], vec![]),
         };
+        let mut needs = fm
+            .as_ref()
+            .map(|f| parse_string_array(f, "needs"))
+            .unwrap_or_default();
+        if needs.is_empty() {
+            needs = depends_on.clone();
+        }
+        if depends_on.is_empty() {
+            depends_on = needs.clone();
+        }
 
         // Consolidated flow links (§3.1, R4, R5, R6, R7, R26)
         let mut links: Vec<Link> = Vec::new();
@@ -2710,7 +2715,95 @@ impl GraphNode {
                 }
             };
 
-        // R7: Map depends_on
+        // Map needs (first-class prerequisite relation, points B -> A)
+        if let Some(needs_val) = fm.as_ref().and_then(|f| f.get("needs")) {
+            if let Some(arr) = needs_val.as_array() {
+                for item in arr {
+                    if let Some(s) = item.as_str() {
+                        let t = s.trim();
+                        if !t.is_empty() {
+                            add_mapped_link(
+                                t.to_string(),
+                                true,
+                                LinkLabel::Needs,
+                                NEEDS_QUANTUM,
+                                1.0,
+                                LinkEffect::Helps,
+                                None,
+                                LinkSetBy::Migrated,
+                                "needs",
+                                &mut parse_warnings,
+                            );
+                        }
+                    } else if let Some(obj) = item.as_object() {
+                        if let Some(t) = obj
+                            .get("to")
+                            .or_else(|| obj.get("id"))
+                            .or_else(|| obj.get("target"))
+                            .and_then(|v| v.as_str())
+                            .map(str::trim)
+                            .filter(|s| !s.is_empty())
+                        {
+                            let q = obj
+                                .get("quantum")
+                                .and_then(|v| parse_quantum_word_or_float(v).ok().flatten())
+                                .unwrap_or(NEEDS_QUANTUM);
+                            let sb = obj
+                                .get("set_by")
+                                .and_then(|v| v.as_str())
+                                .and_then(LinkSetBy::from_str)
+                                .unwrap_or(LinkSetBy::Migrated);
+                            let p = obj
+                                .get("probability")
+                                .or_else(|| obj.get("certainty"))
+                                .and_then(|v| parse_probability_word_or_float(v).ok().flatten())
+                                .unwrap_or(1.0);
+                            let eff = obj
+                                .get("effect")
+                                .and_then(|v| v.as_str())
+                                .and_then(LinkEffect::from_str)
+                                .unwrap_or(LinkEffect::Helps);
+                            let just = obj
+                                .get("justification")
+                                .and_then(|v| v.as_str())
+                                .map(String::from);
+                            add_mapped_link(
+                                t.to_string(),
+                                true,
+                                LinkLabel::Needs,
+                                q,
+                                p,
+                                eff,
+                                just,
+                                sb,
+                                "needs",
+                                &mut parse_warnings,
+                            );
+                        }
+                    }
+                }
+            } else if let Some(s) = needs_val.as_str() {
+                for part in s.split(',') {
+                    let t = part.trim();
+                    if !t.is_empty() {
+                        add_mapped_link(
+                            t.to_string(),
+                            true,
+                            LinkLabel::Needs,
+                            NEEDS_QUANTUM,
+                            1.0,
+                            LinkEffect::Helps,
+                            None,
+                            LinkSetBy::Migrated,
+                            "needs",
+                            &mut parse_warnings,
+                        );
+                    }
+                }
+            }
+        }
+
+        // R7: Map depends_on (legacy alias of needs; points B -> A)
         if let Some(dep_val) = fm.as_ref().and_then(|f| f.get("depends_on")) {
             if let Some(arr) = dep_val.as_array() {
                 for item in arr {
@@ -2719,7 +2812,7 @@ impl GraphNode {
                         if !t.is_empty() {
                             add_mapped_link(
                                 t.to_string(),
-                                false,
+                                true,
                                 LinkLabel::Needs,
                                 NEEDS_QUANTUM,
                                 1.0,
@@ -2764,7 +2857,7 @@ impl GraphNode {
                                 .map(String::from);
                             add_mapped_link(
                                 t.to_string(),
-                                false,
+                                true,
                                 LinkLabel::Needs,
                                 q,
                                 p,
@@ -2783,7 +2876,7 @@ impl GraphNode {
                     if !t.is_empty() {
                         add_mapped_link(
                             t.to_string(),
-                            false,
+                            true,
                             LinkLabel::Needs,
                             NEEDS_QUANTUM,
                             1.0,
@@ -2798,92 +2891,12 @@ impl GraphNode {
             }
         }
 
-        // R7: Map soft_depends_on
-        if let Some(sdep_val) = fm.as_ref().and_then(|f| f.get("soft_depends_on")) {
-            if let Some(arr) = sdep_val.as_array() {
-                for item in arr {
-                    if let Some(s) = item.as_str() {
-                        let t = s.trim();
-                        if !t.is_empty() {
-                            add_mapped_link(
-                                t.to_string(),
-                                false,
-                                LinkLabel::Supports,
-                                MIGRATED_SUPPORTS_QUANTUM,
-                                1.0,
-                                LinkEffect::Helps,
-                                None,
-                                LinkSetBy::Migrated,
-                                "soft_depends_on",
-                                &mut parse_warnings,
-                            );
-                        }
-                    } else if let Some(obj) = item.as_object() {
-                        if let Some(t) = obj
-                            .get("to")
-                            .or_else(|| obj.get("id"))
-                            .or_else(|| obj.get("target"))
-                            .and_then(|v| v.as_str())
-                            .map(str::trim)
-                            .filter(|s| !s.is_empty())
-                        {
-                            let q = obj
-                                .get("quantum")
-                                .and_then(|v| parse_quantum_word_or_float(v).ok().flatten())
-                                .unwrap_or(MIGRATED_SUPPORTS_QUANTUM);
-                            let sb = obj
-                                .get("set_by")
-                                .and_then(|v| v.as_str())
-                                .and_then(LinkSetBy::from_str)
-                                .unwrap_or(LinkSetBy::Migrated);
-                            let p = obj
-                                .get("probability")
-                                .or_else(|| obj.get("certainty"))
-                                .and_then(|v| parse_probability_word_or_float(v).ok().flatten())
-                                .unwrap_or(1.0);
-                            let eff = obj
-                                .get("effect")
-                                .and_then(|v| v.as_str())
-                                .and_then(LinkEffect::from_str)
-                                .unwrap_or(LinkEffect::Helps);
-                            let just = obj
-                                .get("justification")
-                                .and_then(|v| v.as_str())
-                                .map(String::from);
-                            add_mapped_link(
-                                t.to_string(),
-                                false,
-                                LinkLabel::Supports,
-                                q,
-                                p,
-                                eff,
-                                just,
-                                sb,
-                                "soft_depends_on",
-                                &mut parse_warnings,
-                            );
-                        }
-                    }
-                }
-            } else if let Some(s) = sdep_val.as_str() {
-                for part in s.split(',') {
-                    let t = part.trim();
-                    if !t.is_empty() {
-                        add_mapped_link(
-                            t.to_string(),
-                            false,
-                            LinkLabel::Supports,
-                            MIGRATED_SUPPORTS_QUANTUM,
-                            1.0,
-                            LinkEffect::Helps,
-                            None,
-                            LinkSetBy::Migrated,
-                            "soft_depends_on",
-                            &mut parse_warnings,
-                        );
-                    }
-                }
-            }
+        // Retired: soft_depends_on
+        if let Some(_sdep_val) = fm.as_ref().and_then(|f| f.get("soft_depends_on")) {
+            parse_warnings.push(ParseWarning {
+                field: "soft_depends_on".to_string(),
+                message: "soft_depends_on is retired; use markdown wikilinks in ## Pointers instead".to_string(),
+            });
         }
 
         // R7: Map contributes_to
@@ -3206,6 +3219,7 @@ impl GraphNode {
             target_ancestors: Vec::new(),
             contributes_to,
             contributed_by: Vec::new(),
+            needs,
             depends_on,
             soft_depends_on,
             blocks,

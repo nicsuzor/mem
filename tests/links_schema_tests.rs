@@ -67,7 +67,7 @@ fn test_links_entry_errors_are_isolated() {
         "links": [
             { "to": "targ_valid", "label": "serves", "quantum": 0.6 },
             { "to": "targ_bad_label", "label": "loves" },
-            { "to": "targ_bad_quantum", "label": "supports", "quantum": 1.5 },
+            { "to": "targ_bad_quantum", "label": "serves", "quantum": 1.5 },
             { "to": "targ_unknown_word", "label": "needs", "quantum": "enormous" }
         ]
     });
@@ -88,9 +88,9 @@ fn test_links_entry_errors_are_isolated() {
     assert_eq!(node.links[0].label, LinkLabel::Serves);
     assert!((node.links[0].quantum - 0.6).abs() < 1e-9);
 
-    // Entry 1 (was index 2): quantum 1.5 kept at label's default (supports default = 0.0)
+    // Entry 1 (was index 2): quantum 1.5 kept at label's default (serves default = 0.0)
     assert_eq!(node.links[1].to.as_deref(), Some("targ_bad_quantum"));
-    assert_eq!(node.links[1].label, LinkLabel::Supports);
+    assert_eq!(node.links[1].label, LinkLabel::Serves);
     assert!((node.links[1].quantum - 0.0).abs() < 1e-9);
 
     // Entry 2 (was index 3): unknown word kept at label's default (needs default = 1.0)
@@ -113,7 +113,7 @@ fn test_links_entry_errors_are_isolated() {
     );
     assert!(
         w0.message
-            .contains("not in {serves, needs, part_of, supports, alternative, settles}")
+            .contains("not in {serves, needs, part_of}")
     );
 
     let w1 = &node.parse_warnings[1];
@@ -266,7 +266,7 @@ fn test_links_schema_mapping() {
             "status": "open",
             "depends_on": [ "dep_overlap" ],
             "links": [
-                { "from": "dep_overlap", "label": "needs", "quantum": 0.5 }
+                { "to": "dep_overlap", "label": "needs", "quantum": 0.5 }
             ]
         }),
     );
@@ -451,42 +451,38 @@ fn test_links_schema_mapping() {
 
     // Verify 4: Map entries inside old keys
     let node_deps = store.get_node("task_deps").unwrap();
-    // depends_on: bare string -> quantum 1.0, migrated
+    // depends_on: bare string -> quantum 1.0, migrated, points to dep_bare
     let dep_bare_link = node_deps
         .links
         .iter()
-        .find(|l| l.from.as_deref() == Some("dep_bare"))
+        .find(|l| l.to.as_deref() == Some("dep_bare"))
         .unwrap();
     assert_eq!(dep_bare_link.label, LinkLabel::Needs);
     assert_eq!(dep_bare_link.quantum, NEEDS_QUANTUM);
     assert_eq!(dep_bare_link.set_by, LinkSetBy::Migrated);
-    // depends_on: map entry -> quantum 0.7, agent-proposed
+    // depends_on: map entry -> quantum 0.7, agent-proposed, points to dep_map
     let dep_map_link = node_deps
         .links
         .iter()
-        .find(|l| l.from.as_deref() == Some("dep_map"))
+        .find(|l| l.to.as_deref() == Some("dep_map"))
         .unwrap();
     assert_eq!(dep_map_link.label, LinkLabel::Needs);
     assert_eq!(dep_map_link.set_by, LinkSetBy::AgentProposed);
     assert_eq!(dep_map_link.quantum, 0.7); // Stored quantum preserved!
 
-    // soft_depends_on: bare string -> supports, quantum 0.3
-    let soft_bare_link = node_deps
-        .links
-        .iter()
-        .find(|l| l.from.as_deref() == Some("soft_bare"))
-        .unwrap();
-    assert_eq!(soft_bare_link.label, LinkLabel::Supports);
-    assert!((soft_bare_link.quantum - 0.3).abs() < 1e-9);
-
-    // soft_depends_on: map entry with unstated quantum -> supports, quantum 0.3
-    let soft_map_link = node_deps
-        .links
-        .iter()
-        .find(|l| l.from.as_deref() == Some("soft_map"))
-        .unwrap();
-    assert_eq!(soft_map_link.label, LinkLabel::Supports);
-    assert!((soft_map_link.quantum - 0.3).abs() < 1e-9);
+    // soft_depends_on is retired: produces parse warning and no flow links
+    assert!(
+        node_deps
+            .parse_warnings
+            .iter()
+            .any(|w| w.field == "soft_depends_on" && w.message.contains("retired"))
+    );
+    assert!(
+        !node_deps
+            .links
+            .iter()
+            .any(|l| l.to.as_deref() == Some("soft_bare") || l.from.as_deref() == Some("soft_bare"))
+    );
 
     // contributes_to: word "probable" -> 0.85
     let ct_word_link = node_deps
@@ -511,7 +507,7 @@ fn test_links_schema_mapping() {
     let overlap_links: Vec<_> = node_conf
         .links
         .iter()
-        .filter(|l| l.from.as_deref() == Some("dep_overlap"))
+        .filter(|l| l.to.as_deref() == Some("dep_overlap"))
         .collect();
     assert_eq!(
         overlap_links.len(),

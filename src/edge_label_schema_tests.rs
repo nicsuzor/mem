@@ -39,7 +39,7 @@ fn lint_label_diag(label: &str) -> Option<crate::lint::Diagnostic> {
 /// plus strings that are no label at all.
 fn refused() -> Vec<&'static str> {
     let mut v: Vec<&'static str> = LinkLabel::COMPUTED.iter().map(|l| l.as_str()).collect();
-    v.extend(["blocks", "relates", "frobnicates"]);
+    v.extend(["blocks", "relates", "frobnicates", "supports", "settles", "alternative"]);
     v
 }
 

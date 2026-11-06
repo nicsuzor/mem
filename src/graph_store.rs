@@ -725,10 +725,10 @@ impl GraphStore {
             if target_canon == canon && edge.source != canon {
                 let label = match edge.edge_type {
                     crate::graph::EdgeType::DependsOn => crate::graph::LinkLabel::Needs,
-                    crate::graph::EdgeType::SoftDependsOn => crate::graph::LinkLabel::Supports,
+                    crate::graph::EdgeType::SoftDependsOn => continue,
                     crate::graph::EdgeType::Parent => crate::graph::LinkLabel::PartOf,
                     crate::graph::EdgeType::ContributesTo => crate::graph::LinkLabel::Serves,
-                    crate::graph::EdgeType::Closes => crate::graph::LinkLabel::Settles,
+                    crate::graph::EdgeType::Closes => continue,
                     crate::graph::EdgeType::Link => crate::graph::LinkLabel::Link,
                     crate::graph::EdgeType::Supersedes | crate::graph::EdgeType::SimilarTo => {
                         continue

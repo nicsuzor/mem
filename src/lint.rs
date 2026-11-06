@@ -1415,22 +1415,6 @@ fn check_frontmatter(
                                     raw_label_str,
                                     AgentFix::No,
                                 ));
-                            } else if eff_trimmed == "harms" {
-                                let norm_label = raw_label_str.trim().to_lowercase();
-                                if matches!(
-                                    LinkLabel::from_str(&norm_label),
-                                    Some(LinkLabel::Alternative | LinkLabel::Settles)
-                                ) {
-                                    diags.push(Diagnostic::edge(
-                                        Severity::Warning,
-                                        "flow-edge-effect-ignored",
-                                        format!("Effect 'harms' is ignored on '{}' edge", norm_label),
-                                        &edge_from,
-                                        &edge_to,
-                                        raw_label_str,
-                                        AgentFix::No,
-                                    ));
-                                }
                             }
                         } else {
                             diags.push(Diagnostic::edge(
@@ -3126,54 +3110,6 @@ pub fn lint_directory_with_cap(
             }
         }
 
-        // Pass 2.3: Decisions
-        let mut alt_incoming_count: HashMap<&str, usize> = HashMap::new();
-        for e in &flow_edges {
-            if e.label == LinkLabel::Alternative {
-                *alt_incoming_count.entry(&e.dst).or_default() += 1;
-            }
-        }
-        for node in &nodes {
-            if get_state(&node.id) == FlowState::Open {
-                let alts = alt_incoming_count.get(node.id.as_str()).copied().unwrap_or(0);
-                if alts == 1 {
-                    if let Some(path) = id_to_path.get(&node.id) {
-                        extra_diags.entry(path.clone()).or_default().push(Diagnostic::node(
-                            Severity::Warning,
-                            "flow-decision-one-option",
-                            format!(
-                                "Open node '{}' has only 1 incoming alternative edge (decision requires at least 2)",
-                                node.id
-                            ),
-                            &node.id,
-                            AgentFix::No,
-                        ));
-                    }
-                }
-            }
-        }
-        for e in &flow_edges {
-            if e.label == LinkLabel::Settles {
-                let alts = alt_incoming_count.get(e.dst.as_str()).copied().unwrap_or(0);
-                if alts < 2 {
-                    if let Some(path) = id_to_path.get(&e.src) {
-                        extra_diags.entry(path.clone()).or_default().push(Diagnostic::edge(
-                            Severity::Warning,
-                            "flow-settles-no-decision",
-                            format!(
-                                "Settles edge from '{}' points to '{}' which has only {} alternative edge(s) (requires at least 2)",
-                                e.src, e.dst, alts
-                            ),
-                            &e.src,
-                            &e.dst,
-                            "settles",
-                            AgentFix::No,
-                        ));
-                    }
-                }
-            }
-        }
-
         // Pass 3: Flow verdicts
         let mut flow_input = FlowInput::new();
         for node in &nodes {
@@ -4779,8 +4715,7 @@ Body.\n",
 
     #[test]
     fn lint_flow_decisions() {
-        // G15: One alternative into an open node yields flow-decision-one-option;
-        // a settles edge to it yields flow-settles-no-decision; adding a second alternative clears both
+        // ADR e6d668b0: alternative and settles are retired; both trigger flow-edge-label-invalid
         let tmp = tempfile::tempdir().unwrap();
         std::fs::write(
             tmp.path().join("dec.md"),
@@ -4796,24 +4731,11 @@ Body.\n",
         ).unwrap();
 
         let (results, _) = lint_directory(tmp.path(), false, true);
-        let dec_res = results.iter().find(|r| r.path.file_name().unwrap() == "dec.md").unwrap();
-        assert!(dec_res.diagnostics.iter().any(|d| d.rule == "flow-decision-one-option"));
+        let opt1_res = results.iter().find(|r| r.path.file_name().unwrap() == "opt1.md").unwrap();
+        assert!(opt1_res.diagnostics.iter().any(|d| d.rule == "flow-edge-label-invalid"));
 
         let settler_res = results.iter().find(|r| r.path.file_name().unwrap() == "settler.md").unwrap();
-        assert!(settler_res.diagnostics.iter().any(|d| d.rule == "flow-settles-no-decision"));
-
-        // Adding second option
-        std::fs::write(
-            tmp.path().join("opt2.md"),
-            "---\nid: opt2\ntitle: Option 2\ntype: task\nstatus: active\nlinks:\n  - to: dec\n    label: alternative\n---\n\nBody\n",
-        ).unwrap();
-
-        let (results2, _) = lint_directory(tmp.path(), false, true);
-        let dec_res2 = results2.iter().find(|r| r.path.file_name().unwrap() == "dec.md").unwrap();
-        assert!(!dec_res2.diagnostics.iter().any(|d| d.rule == "flow-decision-one-option"));
-
-        let settler_res2 = results2.iter().find(|r| r.path.file_name().unwrap() == "settler.md").unwrap();
-        assert!(!settler_res2.diagnostics.iter().any(|d| d.rule == "flow-settles-no-decision"));
+        assert!(settler_res.diagnostics.iter().any(|d| d.rule == "flow-edge-label-invalid"));
     }
 
     #[test]
