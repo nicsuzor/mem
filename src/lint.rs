@@ -1660,12 +1660,12 @@ fn check_frontmatter(
                     // Provenance: set_by
                     if let Some(set_by_val) = obj.get("set_by") {
                         if let Some(s) = set_by_val.as_str() {
-                            let valid_set_by = ["nic", "agent-proposed", "migrated"];
+                            let valid_set_by = ["nic", "agent-proposed", "migrated", "unattributed"];
                             if !valid_set_by.contains(&s) {
                                 diags.push(Diagnostic::edge(
                                     Severity::Error,
                                     "flow-edge-set-by-invalid",
-                                    format!("Invalid set_by '{}': must be nic, agent-proposed, or migrated", s),
+                                    format!("Invalid set_by '{}': must be nic, agent-proposed, migrated, or unattributed", s),
                                     &edge_from,
                                     &edge_to,
                                     raw_label_str,
@@ -1696,6 +1696,16 @@ fn check_frontmatter(
                                 AgentFix::No,
                             ));
                         }
+                    } else {
+                        diags.push(Diagnostic::edge(
+                            Severity::Style,
+                            "flow-edge-unattributed",
+                            "Link has no set_by key (reads as unattributed). Attribute via dashboard or route evidence.".to_string(),
+                            &edge_from,
+                            &edge_to,
+                            raw_label_str,
+                            AgentFix::Propose,
+                        ));
                     }
                 }
             }
@@ -3508,6 +3518,64 @@ pub fn write_fixes(results: &[FileResult]) -> usize {
         }
     }
     count
+}
+
+/// Context for verifying git commit attribution under Rule R27 (Route 3 & 4).
+#[derive(Debug, Clone)]
+pub struct GitCommitAttributionContext<'a> {
+    pub author_name: &'a str,
+    pub author_email: &'a str,
+    pub commit_message: &'a str,
+    pub env_vars: &'a [(&'a str, &'a str)],
+}
+
+impl<'a> GitCommitAttributionContext<'a> {
+    pub fn is_agent_context(&self) -> bool {
+        let author_lower = self.author_name.to_lowercase();
+        let email_lower = self.author_email.to_lowercase();
+        if author_lower.contains("bot")
+            || author_lower.contains("[bot]")
+            || email_lower.contains("bot")
+            || email_lower.ends_with("@users.noreply.github.com")
+        {
+            return true;
+        }
+
+        for line in self.commit_message.lines() {
+            let trimmed = line.trim();
+            if trimmed.starts_with("Task:")
+                || trimmed.starts_with("Session:")
+                || trimmed.starts_with("Workflow:")
+                || trimmed.starts_with("Agent:")
+            {
+                return true;
+            }
+        }
+
+        for (key, val) in self.env_vars {
+            if !val.is_empty()
+                && (*key == "ANTIGRAVITY_AGENT"
+                    || *key == "POLECAT_TARGET_TASK"
+                    || *key == "AOPS_TASK_ID")
+            {
+                return true;
+            }
+        }
+
+        false
+    }
+}
+
+/// Validates git commit link attribution under Rule R27.
+pub fn validate_git_commit_attribution(
+    context: &GitCommitAttributionContext,
+    changed_links_set_by: &[&str],
+) -> Result<(), String> {
+    let has_nic = changed_links_set_by.iter().any(|&s| s == "nic");
+    if has_nic && context.is_agent_context() {
+        return Err("Agent git commit cannot write set_by: nic; must be agent-proposed or migrated".to_string());
+    }
+    Ok(())
 }
 
 #[cfg(test)]

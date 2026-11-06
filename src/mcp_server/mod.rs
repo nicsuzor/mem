@@ -1882,6 +1882,11 @@ impl PkbSearchServer {
                         canonical_name_task
                     );
                 }
+                if client_context.client_name.as_deref() == Some("overwhelm-dashboard") {
+                    if let Some(obj) = args.as_object_mut() {
+                        obj.entry("_client".to_string()).or_insert_with(|| serde_json::json!("overwhelm-dashboard"));
+                    }
+                }
                 this_task.dispatch_tool_sync(&canonical_name_task, &args)
             };
 
@@ -2112,3 +2117,53 @@ impl ServerHandler for PkbSearchServer {
 }
 
 impl FactsProvider for PkbSearchServer {}
+
+pub(crate) fn is_dashboard_client(args: &JsonValue) -> bool {
+    if let Some(c) = args.get("_client").and_then(|v| v.as_str()) {
+        if c == "overwhelm-dashboard" {
+            return true;
+        }
+    }
+    if let Some(c) = args.get("client").and_then(|v| v.as_str()) {
+        if c == "overwhelm-dashboard" {
+            return true;
+        }
+    }
+    if let Some(meta) = args.get("_meta").and_then(|v| v.as_object()) {
+        if let Some(c) = meta
+            .get("client")
+            .or_else(|| meta.get("client_name"))
+            .and_then(|v| v.as_str())
+        {
+            if c == "overwhelm-dashboard" {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+pub(crate) fn process_tool_links(links_val: &mut JsonValue, is_dashboard: bool) -> Result<(), McpError> {
+    if let Some(links_arr) = links_val.as_array_mut() {
+        for link_val in links_arr.iter_mut() {
+            if let Some(obj) = link_val.as_object_mut() {
+                let set_by = obj.get("set_by").and_then(|v| v.as_str());
+                if !is_dashboard {
+                    if set_by == Some("nic") {
+                        return Err(McpError {
+                            code: ErrorCode::INVALID_PARAMS,
+                            message: Cow::from(
+                                "Agents cannot attribute links to nic; use set_by: 'agent-proposed' with justification",
+                            ),
+                            data: None,
+                        });
+                    }
+                    if set_by.is_none() {
+                        obj.insert("set_by".to_string(), serde_json::json!("agent-proposed"));
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}

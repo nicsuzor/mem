@@ -1334,9 +1334,19 @@ impl PkbSearchServer {
             });
         }
 
+        let is_dashboard = super::is_dashboard_client(args);
         for subtask in subtasks {
             if let Some(body) = subtask.get("body").and_then(|v| v.as_str()) {
                 self.reject_machine_paths(body, None)?;
+            }
+            if let Some(links_val) = subtask.get("links") {
+                let mut links_clone = links_val.clone();
+                super::process_tool_links(&mut links_clone, is_dashboard)?;
+                crate::graph::validate_links_value(&links_clone).map_err(|e| McpError {
+                    code: ErrorCode::INVALID_PARAMS,
+                    message: Cow::from(e),
+                    data: None,
+                })?;
             }
         }
 
@@ -1620,7 +1630,14 @@ impl PkbSearchServer {
                 issue_url: None,
                 release_summary: None,
                 contributes_to: vec![],
-                links: vec![],
+                links: subtask
+                    .get("links")
+                    .cloned()
+                    .map(|mut l| {
+                        let _ = super::process_tool_links(&mut l, is_dashboard);
+                        l.as_array().cloned().unwrap_or_default()
+                    })
+                    .unwrap_or_default(),
                 worth: None,
                 deadline_class: None,
                 classification: subtask
