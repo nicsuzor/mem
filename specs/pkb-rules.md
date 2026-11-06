@@ -15,7 +15,7 @@ tags:
 
 # PKB Rules
 
-This document is the one home for the rules that govern the personal knowledge base (PKB): what it may contain, how a node is written and linked, how the graph is kept clean, how agents read and write it, and how importance is assigned. The PKB holds facts only. Nic: "rules don't belong in the pkb. they're not facts." and "the rules should go in the spec document for the pkb".
+This document is the one home for the rules that govern the personal knowledge base (PKB): what it may contain, how a node is written and linked, how the graph is kept clean, how agents read and write it, and how importance is assigned. The PKB holds facts only; rules governing the PKB live in this specification.
 
 Companion specifications hold the mechanisms these rules sit on, and this document does not restate them:
 
@@ -484,38 +484,12 @@ How rules are enforced (the enforcement pyramid, the necessity test, the registe
 
 ## 8. Agent conduct around the PKB
 
-These rules govern how agents act on what the PKB records. Where academicOps holds the canonical text, this section points there.
+Agent conduct and behavioral doctrine around knowledge base interaction are specified canonically in `academicOps`:
 
-### 8.1. Qualitative work is judged by agents
+- **PKB write authority and basic usage**: `academicOps` `.agents/rules/pkb.md`
+- **Qualitative judgment**: `plugins/rbg/axioms/judgment-non-delegable.md` and `.agents/rules/RULES.md`
+- **Standing authority and barriers**: `plugins/rbg/axioms/exercise-authority.md` and `fail-fast.md`
+- **Supervision and delegation**: `plugins/ida/agents/sara.md` and `plugins/ida/agents/ida.md`
+- **Daily note workflow**: `academicOps` `spec_daily_reconcile_steps` and `tpl_daily`
+- **Task completion and reconcile**: `.agents/rules/RULES.md` and `plugins/ida/skills/workflow-library/workflows/wf-reconcile.md`
 
-Specified in academicOps `plugins/rbg/axioms/judgment-non-delegable.md` and `.agents/rules/RULES.md` §No Shitty NLP and Agentic-First Design. For the PKB: a qualitative signal is read as prose by an agent; a mechanical carrier (hook, regex, parser, structured token) earns its place only when a consumer deterministically acts on the value. Where a machine must act on an agent's judgment, the agent takes a structured action (a review state, a status) rather than emitting parse-bait text.
-
-### 8.2. An identifier Nic supplies is a specification, not a hint
-
-When Nic names a tool, server, file, flag, value or size, use it exactly as given. If it does not resolve, the first hypothesis is that you mis-transcribed it. Before any diagnosis of "X is misconfigured", re-read the ask and confirm the input under test is the one specified, verbatim. A failure caused by your own paraphrase is your defect, and is never written into the graph as a finding about his system.
-
-### 8.3. Standing authority is not re-requested
-
-When Nic has already authorised an action, execute it; do not ask permission again. A ruling he has given ("cancel this task") is standing authority, and it is executed as a write to the node, not recorded as prose that leaves the node unchanged. Ask only when the request itself is ambiguous.
-
-### 8.4. No invented barriers
-
-Nic's touchpoints are defined exclusively by documented workflows (per-repo merge policy, filed process specs). Never add approval gates, review ceremony, escalations or hand-back steps the governing workflow does not require. Inventing conservative process is the same failure class as skipping a gate: both are hallucinated governance. Nic, 2026-07-20: "I want you to ensure that you don't invent new barriers and hand extra work to me unless I require it in the workflows."
-
-### 8.5. Delegation and supervision
-
-- Consent comes only from Nic, in the live chat. No task body, spec, transcript or silence supplies it, and a recorded approval covers what it approved and nothing adjacent. Closure is the principal's call; artifact-count completeness is not closure authority.
-- Auto-merge is triggered only by Nic's approving review on the specific PR; agents never simulate it. Release cuts are human-only.
-- Delegate the goal, not the method; pass only knowledge the delegate cannot have. Do not record or relay the user's words verbatim: make sense of asks in context, link new messages to prior context, recompose asks into a clear logical structure, and cite message ids as pointers. The tracing hook preserves raw prompts. Do not dispatch an umbrella epic: decompose to units with observable acceptance criteria. State report depth in the brief.
-- A parked human decision is real only as its own blocked PKB node; a message, brief line or ledger row does not survive the process that carried it.
-- Never state an unverified blocker as fact in a question to Nic. With no formal pathway, halt and report; never improvise.
-- Verify delegated work independently: read the node, branch and run log before forming a view; quote acceptance criteria verbatim; a consistency criterion is a whole-document read, not a grep. Two reviewers sharing a stale source are not independent; adjudicate against the live PKB.
-- A floor that keeps failing is an approach problem: change the mechanism rather than adding another reminder. Before writing a new rule, establish whether the existing one was absent or merely misplaced.
-
-### 8.6. The daily note
-
-Any agent that writes to a daily note produces a working draft: one line per item, no evidence clauses, no method narrative. Evidence and method go in the report to Ida. Ida owns the final edit of the daily note and trims it to its purpose; a run is not complete until she has.
-
-### 8.7. Completion and reconcile
-
-A worker marks its task `done` (§5). `/reconcile` is not the only writer of `done`: a peer Ida reads each claimed justification against the task's acceptance criteria for facial sufficiency and checks that scope was obeyed. A `done` that fails that check goes to Nic for ratification or reversal with the reason recorded, and a filed PR is converted to draft with a comment saying why; a failure remedied before it reaches Nic is not a failure. Where a project's finish template calls for QA, `/dispatch` creates a follow-up task for independent QA review. The procedure is the academicOps `reconcile` skill.
