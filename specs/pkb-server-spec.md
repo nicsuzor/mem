@@ -138,7 +138,7 @@ Target: 18 tools across 6 groups. Each tool has one clear purpose.
 | 2  | `task_search`         | Search     | Semantic search filtered to task/project/goal types                                                                                                                                                                                                                                             |
 | 3  | `get_document`        | Search     | Read full contents of a document by path                                                                                                                                                                                                                                                        |
 | 4  | `list_documents`      | Search     | Browse/filter documents by tag, type, status, project                                                                                                                                                                                                                                           |
-| 5  | `list_tasks`          | Task read  | List tasks with filters (project, status, priority, assignee). Status filter supports `ready` (no unmet deps) and `blocked` (has unmet deps, includes blocker info).                                                                                                                            |
+| 5  | `list_tasks`          | Task read  | List tasks with filters (project, status, priority, assignee). Status filter supports `ready` (no unmet deps) and `blocked` (computed query filter for tasks with unmet deps; not a stored status; includes blocker info; see `references/TAXONOMY.md`).                                                                     |
 | 6  | `get_task`            | Task read  | Single task detail + all relationships (parent, children, depends_on, blocks). Always includes relationship context.                                                                                                                                                                            |
 | 7  | `get_network_metrics` | Task read  | Centrality metrics for a node: PageRank, betweenness, degree                                                                                                                                                                                                                                    |
 | 8  | `create_task`         | Task write | Create a new task. Params: title (required), id, parent, priority, project, tags, depends_on, assignee, complexity, body. **body** is markdown content (context, AC, rationale) — not frontmatter. Avoid `- [ ]` checklists in body when items will be tracked as subtasks (causes divergence). |
@@ -308,14 +308,7 @@ Track work across sessions. "What needs doing? What's blocked?"
 - `fields` (string or array of strings, optional): Specific fields to retain in output.
 - `include_routes` (boolean, optional, default true): Whether to compute flow routes.
 
-**Task lifecycle**:
-
-```
-queued -> in_progress -> done
-            |              |
-         blocked         review
-```
-**Statuses**: canonical set per [[aops-core/skills/remember/references/TAXONOMY.md#status-values-and-transitions]] — `inbox`, `ready`, `queued`, `in_progress`, `review`, `done`, `blocked`, `paused`, `someday`, `cancelled`, `partial`, `failed`, `archived`.
+**Task lifecycle and statuses**: Single source of truth is `references/TAXONOMY.md` §Status Values and Transitions. The 12 canonical statuses are `inbox`, `ready`, `queued`, `in_progress`, `done`, `partial`, `failed`, `cancelled`, `review`, `paused`, `someday`, and `archived`. `blocked` is a computed graph condition (`is_blocked: true`) rather than a stored status.
 
 **Archived notes**: `archived` is accepted as a status on any note (both tasks and non-task documents). An archive script moves every PKB note with status `archived` into the sessions repository (`archived/`) and removes it from the PKB.
 
