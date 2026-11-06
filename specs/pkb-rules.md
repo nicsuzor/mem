@@ -487,8 +487,8 @@ How rules are enforced (the enforcement pyramid, the necessity test, the registe
 Agent conduct and behavioral doctrine around knowledge base interaction are specified canonically in `academicOps`:
 
 - **PKB write authority and basic usage**: `academicOps` `.agents/rules/pkb.md`
-- **Qualitative judgment**: `plugins/rbg/axioms/judgment-non-delegable.md` and `.agents/rules/RULES.md`
-- **Standing authority and barriers**: `plugins/rbg/axioms/exercise-authority.md` and `fail-fast.md`
+- **Qualitative judgment**: `plugins/rbg/skills/axioms/judgment-non-delegable.md` and `.agents/rules/RULES.md`
+- **Standing authority and barriers**: `plugins/rbg/skills/axioms/exercise-authority.md` and `plugins/rbg/skills/axioms/fail-fast.md`
 - **Supervision and delegation**: `plugins/ida/agents/sara.md` and `plugins/ida/agents/ida.md`
 - **Daily note workflow**: `academicOps` `spec_daily_reconcile_steps` and `tpl_daily`
 - **Task completion and reconcile**: `.agents/rules/RULES.md` and `plugins/ida/skills/workflow-library/workflows/wf-reconcile.md`
