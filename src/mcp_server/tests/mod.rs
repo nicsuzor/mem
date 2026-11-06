@@ -34,6 +34,7 @@ mod read_body_truncation_tests;
 mod alias_and_links_in_tests;
 mod document_tools_enhancements_tests;
 mod write_reply_type_tests;
+mod dependency_removal_tests;
 
 
 pub(crate) fn make_doc(

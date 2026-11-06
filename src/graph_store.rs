@@ -378,9 +378,9 @@ impl GraphStore {
         // 2b. Discover ghost nodes (referenced but not in files)
         // Scans all reference fields for IDs that weren't resolved to files,
         // then creates minimal virtual nodes for them.
-        let mut referenced_ids = HashSet::with_capacity(nodes.len() * 2);
+        let mut referenced_ids: HashSet<String> = HashSet::with_capacity(nodes.len() * 2);
         for n in &nodes {
-            if let Some(ref p) = n.parent {
+            if let Some(p) = n.parent_raw.as_ref().or(n.parent.as_ref()) {
                 referenced_ids.insert(p.clone());
             }
             for c in &n.closes {
@@ -389,19 +389,29 @@ impl GraphStore {
             for ct in &n.contributes_to {
                 referenced_ids.insert(ct.to.clone());
             }
-            for d in &n.depends_on {
+            let deps = if !n.depends_on_raw.is_empty() {
+                &n.depends_on_raw
+            } else {
+                &n.depends_on
+            };
+            for d in deps {
                 referenced_ids.insert(d.clone());
             }
-            for sd in &n.soft_depends_on {
+            let sdeps = if !n.soft_depends_on_raw.is_empty() {
+                &n.soft_depends_on_raw
+            } else {
+                &n.soft_depends_on
+            };
+            for sd in sdeps {
                 referenced_ids.insert(sd.clone());
             }
-            for b in &n.blocks {
+            for b in &n.blocks_raw {
                 referenced_ids.insert(b.clone());
             }
-            for sb in &n.soft_blocks {
+            for sb in &n.soft_blocks_raw {
                 referenced_ids.insert(sb.clone());
             }
-            for child in &n.children {
+            for child in &n.children_raw {
                 referenced_ids.insert(child.clone());
             }
             for link in &n.links {
@@ -865,7 +875,7 @@ impl GraphStore {
     /// (pagerank, children/subtasks inverses) stays consistent until the
     /// background rebuild refreshes them.
     /// Caller is expected to hold the graph write lock.
-    pub fn upsert_node_in_place(&mut self, mut new_node: GraphNode, pkb_root: &Path) {
+    pub fn upsert_node_in_place(&mut self, mut new_node: GraphNode, pkb_root: &Path) -> Vec<String> {
         // Resolve canonical absolute path once, mirroring the build pipeline.
         if new_node.canonical_abs_path.is_none() && !new_node.path.as_os_str().is_empty() {
             let full_path = if new_node.path.is_absolute() {
@@ -896,11 +906,18 @@ impl GraphStore {
                     .cloned()
             })
         });
-        // Capture the old parent and old id before consuming `prior`, so we can
-        // fix up parent→child edges below after the derived-field carry-over.
-        // old_node_id differs from new_node.id when the same file is renamed.
+        // Capture the old parent, old dependencies, and old id before consuming `prior`.
         let old_parent_id: Option<String> = prior.as_ref().and_then(|n| n.parent.clone());
         let old_node_id: Option<String> = prior.as_ref().map(|n| n.id.clone());
+        let old_depends_on: Vec<String> = prior.as_ref().map(|n| n.depends_on.clone()).unwrap_or_default();
+        let old_soft_depends_on: Vec<String> = prior.as_ref().map(|n| n.soft_depends_on.clone()).unwrap_or_default();
+
+        let mut affected_nodes: Vec<String> = vec![new_node.id.clone()];
+        if let Some(ref old_nid) = old_node_id {
+            if old_nid != &new_node.id {
+                affected_nodes.push(old_nid.clone());
+            }
+        }
 
         if let Some(old) = prior {
             // Derived: only carry over if the incoming node didn't supply one.
@@ -908,6 +925,12 @@ impl GraphStore {
             // contributed_by (they come from inverses), so this preserves them.
             if new_node.children.is_empty() {
                 new_node.children = old.children;
+            }
+            if new_node.blocks.is_empty() {
+                new_node.blocks = old.blocks;
+            }
+            if new_node.soft_blocks.is_empty() {
+                new_node.soft_blocks = old.soft_blocks;
             }
             if new_node.subtasks.is_empty() {
                 new_node.subtasks = old.subtasks;
@@ -932,6 +955,22 @@ impl GraphStore {
             }
             if new_node.flow.is_none() {
                 new_node.flow = old.flow;
+            }
+        }
+
+        // Canonicalize new_node depends_on and soft_depends_on references
+        for dep in new_node.depends_on.iter_mut() {
+            if let Some(canon) = self.resolution_map.get(&dep.to_lowercase()).or_else(|| {
+                self.nodes.get(dep.as_str()).map(|n| &n.id)
+            }) {
+                *dep = canon.clone();
+            }
+        }
+        for sdep in new_node.soft_depends_on.iter_mut() {
+            if let Some(canon) = self.resolution_map.get(&sdep.to_lowercase()).or_else(|| {
+                self.nodes.get(sdep.as_str()).map(|n| &n.id)
+            }) {
+                *sdep = canon.clone();
             }
         }
 
@@ -960,18 +999,134 @@ impl GraphStore {
 
         if reparented || renamed {
             if let Some(ref old_pid) = old_parent_id {
-                if let Some(p) = self.nodes.get_mut(old_pid.as_str()) {
+                let resolved_pid = self
+                    .resolution_map
+                    .get(&old_pid.to_lowercase())
+                    .cloned()
+                    .unwrap_or_else(|| old_pid.clone());
+                if let Some(p) = self.nodes.get_mut(&resolved_pid) {
                     let old_nid = old_node_id.as_ref().unwrap_or(&new_node.id);
                     p.children.retain(|c| c != old_nid);
                     p.leaf = p.children.is_empty();
+                    affected_nodes.push(resolved_pid);
                 }
             }
             if let Some(ref new_pid) = new_parent_id {
-                if let Some(p) = self.nodes.get_mut(new_pid.as_str()) {
+                let resolved_pid = self
+                    .resolution_map
+                    .get(&new_pid.to_lowercase())
+                    .cloned()
+                    .unwrap_or_else(|| new_pid.clone());
+                if let Some(p) = self.nodes.get_mut(&resolved_pid) {
                     if !p.children.contains(&new_node.id) {
                         p.children.push(new_node.id.clone());
                     }
                     p.leaf = false;
+                    affected_nodes.push(resolved_pid);
+                }
+            }
+        }
+
+        let old_nid = old_node_id.as_ref().unwrap_or(&new_node.id);
+
+        // Synchronously update dependency `blocks` views when dependencies change or node is renamed.
+        // 1. Dependencies removed from new_node: remove new_node.id (and old_nid) from their blocks.
+        for old_dep in &old_depends_on {
+            let canon_old = self
+                .resolution_map
+                .get(&old_dep.to_lowercase())
+                .cloned()
+                .unwrap_or_else(|| old_dep.clone());
+            if !new_node.depends_on.contains(&canon_old) && !new_node.depends_on.contains(old_dep) {
+                if let Some(dep_node) = self.nodes.get_mut(&canon_old) {
+                    dep_node.blocks.retain(|b| b != &new_node.id && b != old_nid);
+                    affected_nodes.push(canon_old);
+                }
+            }
+        }
+        // 2. Dependencies added to new_node: add new_node.id to their blocks.
+        for new_dep in &new_node.depends_on {
+            let canon_new = self
+                .resolution_map
+                .get(&new_dep.to_lowercase())
+                .cloned()
+                .unwrap_or_else(|| new_dep.clone());
+            if !old_depends_on.contains(&canon_new) && !old_depends_on.contains(new_dep) {
+                if let Some(dep_node) = self.nodes.get_mut(&canon_new) {
+                    if !dep_node.blocks.contains(&new_node.id) {
+                        dep_node.blocks.push(new_node.id.clone());
+                    }
+                    affected_nodes.push(canon_new);
+                }
+            }
+        }
+        // 3. If renamed, update old_nid to new_node.id in unchanged dependencies' blocks.
+        if renamed {
+            for dep in &new_node.depends_on {
+                let canon_dep = self
+                    .resolution_map
+                    .get(&dep.to_lowercase())
+                    .cloned()
+                    .unwrap_or_else(|| dep.clone());
+                if let Some(dep_node) = self.nodes.get_mut(&canon_dep) {
+                    if dep_node.blocks.contains(old_nid) {
+                        dep_node.blocks.retain(|b| b != old_nid);
+                        if !dep_node.blocks.contains(&new_node.id) {
+                            dep_node.blocks.push(new_node.id.clone());
+                        }
+                        affected_nodes.push(canon_dep);
+                    }
+                }
+            }
+        }
+
+        // Synchronously update dependency `soft_blocks` views when soft_depends_on changes or node is renamed.
+        // 1. Soft dependencies removed:
+        for old_sdep in &old_soft_depends_on {
+            let canon_old = self
+                .resolution_map
+                .get(&old_sdep.to_lowercase())
+                .cloned()
+                .unwrap_or_else(|| old_sdep.clone());
+            if !new_node.soft_depends_on.contains(&canon_old) && !new_node.soft_depends_on.contains(old_sdep) {
+                if let Some(dep_node) = self.nodes.get_mut(&canon_old) {
+                    dep_node.soft_blocks.retain(|b| b != &new_node.id && b != old_nid);
+                    affected_nodes.push(canon_old);
+                }
+            }
+        }
+        // 2. Soft dependencies added:
+        for new_sdep in &new_node.soft_depends_on {
+            let canon_new = self
+                .resolution_map
+                .get(&new_sdep.to_lowercase())
+                .cloned()
+                .unwrap_or_else(|| new_sdep.clone());
+            if !old_soft_depends_on.contains(&canon_new) && !old_soft_depends_on.contains(new_sdep) {
+                if let Some(dep_node) = self.nodes.get_mut(&canon_new) {
+                    if !dep_node.soft_blocks.contains(&new_node.id) {
+                        dep_node.soft_blocks.push(new_node.id.clone());
+                    }
+                    affected_nodes.push(canon_new);
+                }
+            }
+        }
+        // 3. If renamed, update in soft_blocks:
+        if renamed {
+            for sdep in &new_node.soft_depends_on {
+                let canon_sdep = self
+                    .resolution_map
+                    .get(&sdep.to_lowercase())
+                    .cloned()
+                    .unwrap_or_else(|| sdep.clone());
+                if let Some(dep_node) = self.nodes.get_mut(&canon_sdep) {
+                    if dep_node.soft_blocks.contains(old_nid) {
+                        dep_node.soft_blocks.retain(|b| b != old_nid);
+                        if !dep_node.soft_blocks.contains(&new_node.id) {
+                            dep_node.soft_blocks.push(new_node.id.clone());
+                        }
+                        affected_nodes.push(canon_sdep);
+                    }
                 }
             }
         }
@@ -1048,6 +1203,9 @@ impl GraphStore {
             self.generation.file_count += 1;
         }
         self.generation.max_mtime = self.generation.max_mtime.max(file_mtime);
+
+        deduplicate_vec(&mut affected_nodes);
+        affected_nodes
     }
 
     /// Cheap in-place removal. Drops the node from `nodes`; stale edges and
@@ -2489,7 +2647,12 @@ fn build_node_edges(
     }
 
     // depends_on -> DependsOn edge (this -> dependency)
-    for dep in &n.depends_on {
+    let deps = if !n.depends_on_raw.is_empty() {
+        &n.depends_on_raw
+    } else {
+        &n.depends_on
+    };
+    for dep in deps {
         if let Some(target_id) = graph::resolve_ref(dep, id_map, path_to_id) {
             if n.id != target_id {
                 edges.push(Edge {
@@ -2502,7 +2665,12 @@ fn build_node_edges(
     }
 
     // soft_depends_on -> SoftDependsOn edge
-    for dep in &n.soft_depends_on {
+    let sdeps = if !n.soft_depends_on_raw.is_empty() {
+        &n.soft_depends_on_raw
+    } else {
+        &n.soft_depends_on
+    };
+    for dep in sdeps {
         if let Some(target_id) = graph::resolve_ref(dep, id_map, path_to_id) {
             if n.id != target_id {
                 edges.push(Edge {
@@ -2515,7 +2683,7 @@ fn build_node_edges(
     }
 
     // children -> Parent edge (child -> this)
-    for child in &n.children {
+    for child in &n.children_raw {
         if let Some(target_id) = graph::resolve_ref(child, id_map, path_to_id) {
             if n.id != target_id {
                 edges.push(Edge {
@@ -2528,7 +2696,7 @@ fn build_node_edges(
     }
 
     // blocks -> DependsOn edge (blocked -> this, i.e. blocked depends on this)
-    for blocked in &n.blocks {
+    for blocked in &n.blocks_raw {
         if let Some(target_id) = graph::resolve_ref(blocked, id_map, path_to_id) {
             if n.id != target_id {
                 edges.push(Edge {
@@ -2541,7 +2709,7 @@ fn build_node_edges(
     }
 
     // soft_blocks -> SoftDependsOn edge (soft-blocked -> this)
-    for blocked in &n.soft_blocks {
+    for blocked in &n.soft_blocks_raw {
         if let Some(target_id) = graph::resolve_ref(blocked, id_map, path_to_id) {
             if n.id != target_id {
                 edges.push(Edge {
@@ -2794,6 +2962,29 @@ fn compute_inverses(
     id_map: &HashMap<String, String>,
     path_to_id: &HashMap<String, String>,
 ) {
+    // Reset computed/derived fields to their raw frontmatter state so incremental
+    // rebuilds do not accumulate stale computed inverses across rebuild cycles.
+    for node in nodes.iter_mut() {
+        if node.depends_on_raw.is_empty() && !node.depends_on.is_empty() && node.blocks.is_empty() {
+            node.depends_on_raw = node.depends_on.clone();
+        }
+        if node.soft_depends_on_raw.is_empty() && !node.soft_depends_on.is_empty() && node.soft_blocks.is_empty() {
+            node.soft_depends_on_raw = node.soft_depends_on.clone();
+        }
+        if node.children_raw.is_empty() && !node.children.is_empty() && node.parent.is_none() {
+            node.children_raw = node.children.clone();
+        }
+
+        node.depends_on = node.depends_on_raw.clone();
+        node.soft_depends_on = node.soft_depends_on_raw.clone();
+        node.blocks = node.blocks_raw.clone();
+        node.soft_blocks = node.soft_blocks_raw.clone();
+        node.children = node.children_raw.clone();
+        node.subtasks.clear();
+        node.contributed_by.clear();
+        node.superseded_by.clear();
+    }
+
     let id_to_idx: HashMap<String, usize> = nodes
         .iter()
         .enumerate()
