@@ -1496,27 +1496,7 @@ pub fn parse_effort_days(effort: &str) -> Option<i64> {
 // ── Canonical status and type values ────────────────────────────────────
 
 /// All recognized canonical status values (post-alias resolution).
-/// See `aops-core/TAXONOMY.md` for semantic definitions.
-///
-/// Lifecycle: `inbox → ready → queued → in_progress → done`
-/// with branches to `review`, `blocked`, `paused`, `someday`, `cancelled`, `partial`.
-///
-/// - **inbox**: default for new nodes — captured but not triaged
-/// - **ready**: decomposed with dependencies resolved (auto-computed)
-/// - **queued**: human-gated — available for agent dispatch (manual promotion)
-/// - **in_progress**: claimed and actively being worked
-/// - **review**: worker asking for help from the agent that next picks it up
-/// - **done**: completed successfully
-/// - **blocked**: waiting on an unresolved external dependency
-/// - **paused**: intentionally stopped mid-flight with intent to resume
-/// - **someday**: explicitly deferred idea — differs from inbox by intent
-/// - **cancelled**: will not be done
-/// - **partial**: worker legitimately stopped at a scope seam — a draft PR plus a
-///   live follow-up task. Not merge-ready (excluded from Nic's merge queue) and not
-///   done (the follow-up child carries the remainder). Surfaced by the §6
-///   partial-orphan backstop via `list_tasks(status="partial")`.
-/// - **failed**: attempted and will not be completed
-/// - **archived**: retired note or historical record marked for removal to sessions repo
+/// Single source of truth is `references/TAXONOMY.md` § "Status Values and Transitions".
 pub const VALID_STATUSES: &[&str] = &[
     "inbox",
     "ready",

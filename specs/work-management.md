@@ -40,8 +40,8 @@ flowchart LR
 
     subgraph RELEASE["Release"]
         R1["release_task(done)"]
-        R2["release_task(review)"]
-        R3["release_task(blocked)"]
+        R2["release_task(partial)"]
+        R3["release_task(failed)"]
     end
 
     C1 --> C2 --> E1 --> E2
@@ -90,15 +90,7 @@ flowchart LR
 
 ### State Machine
 
-```
-inbox → ready → queued → in_progress → done (work complete and verified)
-                                     → review (worker asking for help from the agent that next picks it up)
-                                     → blocked (external dependency)
-                                     → cancelled (abandoned)
-                                     → partial (draft PR + live follow-up task)
-```
-
-See [[aops-core/skills/remember/references/TAXONOMY.md#status-values-and-transitions]] for canonical status definitions.
+Task statuses, valid transitions, and authority over who may set them are specified exclusively in `references/TAXONOMY.md` §Status Values and Transitions.
 
 **`inbox → ready` graduation** requires the task to have:
 
@@ -160,9 +152,9 @@ release_task(id, status, summary, pr_url?, branch?, blocker?, reason?)
 | ------------- | -------- | --------- | --------- | --------- |
 | `done`        | REQUIRED | optional  | -         | -         |
 | `review`      | REQUIRED | optional  | -         | REQUIRED  |
-| `blocked`     | REQUIRED | -         | soft-warn | -         |
-| `cancelled`   | REQUIRED | -         | -         | soft-warn |
+| `cancelled`   | REQUIRED | -         | -         | REQUIRED  |
 | `partial`     | REQUIRED | optional  | -         | REQUIRED  |
+| `failed`      | REQUIRED | -         | -         | REQUIRED  |
 
 `release_task` appends a timestamped evidence block to the task body, sets `released_at` in frontmatter, and records `pr_url`/`branch` if provided.
 
@@ -178,9 +170,7 @@ release_task(id, status, summary, pr_url?, branch?, blocker?, reason?)
 
 ### Statuses
 
-Statuses are canonical — see [[aops-core/skills/remember/references/TAXONOMY.md#status-values-and-transitions]]. The work-management subsystem uses the canonical set without extensions.
-
-**Default on create**: `inbox`. Tasks graduate to `ready` once decomposition and dependency resolution are complete. The human promotes `ready → queued` to make tasks available for agent dispatch; a direct request from the human for the work counts as that promotion, and agents never write `queued` on work nobody asked for. Agents pull only from `queued`.
+Task statuses are canonical — see `references/TAXONOMY.md` §Status Values and Transitions. The work-management subsystem uses the canonical set without extensions.
 
 ## Multi-Project Organization
 
