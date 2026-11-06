@@ -107,8 +107,8 @@ where
     let b_init = tasks_init.iter().find(|t| t["id"] == id_b).unwrap();
     assert_eq!(b_init["blocked"], true, "task B must have blocked: true initially in list_tasks");
     assert_eq!(b_init["ready"], false, "task B must have ready: false initially in list_tasks");
-    assert_eq!(server.graph.read().is_blocked(&id_b), true, "graph.is_blocked(&id_b) must be true initially");
-    assert_eq!(server.graph.read().is_ready(&id_b), false, "graph.is_ready(&id_b) must be false initially");
+    assert!(server.graph.read().is_blocked(&id_b), "graph.is_blocked(&id_b) must be true initially");
+    assert!(!server.graph.read().is_ready(&id_b), "graph.is_ready(&id_b) must be false initially");
 
     // Remove dependency using the provided payload
     let update_payload = build_payload(&id_a, &id_b);
@@ -163,12 +163,12 @@ where
         b_in_list["ready"], true,
         "straight after write: task B in list_tasks must have ready: true"
     );
-    assert_eq!(
-        server.graph.read().is_blocked(&id_b), false,
+    assert!(
+        !server.graph.read().is_blocked(&id_b),
         "straight after write: graph.is_blocked(&id_b) must be false"
     );
-    assert_eq!(
-        server.graph.read().is_ready(&id_b), true,
+    assert!(
+        server.graph.read().is_ready(&id_b),
         "straight after write: graph.is_ready(&id_b) must be true"
     );
 
@@ -223,12 +223,12 @@ where
         b_in_list_tier2["ready"], true,
         "after background rebuild: task B in list_tasks must have ready: true"
     );
-    assert_eq!(
-        server.graph.read().is_blocked(&id_b), false,
+    assert!(
+        !server.graph.read().is_blocked(&id_b),
         "after background rebuild: graph.is_blocked(&id_b) must be false"
     );
-    assert_eq!(
-        server.graph.read().is_ready(&id_b), true,
+    assert!(
+        server.graph.read().is_ready(&id_b),
         "after background rebuild: graph.is_ready(&id_b) must be true"
     );
 }
