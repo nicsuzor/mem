@@ -36,6 +36,7 @@ mod document_tools_enhancements_tests;
 mod write_reply_type_tests;
 mod dependency_removal_tests;
 mod tool_efficiency_tests;
+mod prompt_tests;
 
 
 pub(crate) fn make_doc(
