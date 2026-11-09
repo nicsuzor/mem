@@ -1682,6 +1682,7 @@ impl PkbSearchServer {
             "list_tasks" => self.handle_list_tasks(args),
             "nested_tasks" => self.handle_nested_tasks(args),
             "get_task" => self.handle_get_task(args),
+            "get_task_status" => self.handle_get_task_status(args),
             "update_task" => self.handle_update_task(args),
             "retrieve_memory" => self.handle_retrieve_memory(args),
             "detect_weight_divergence" => self.handle_detect_weight_divergence(args),
@@ -1926,6 +1927,37 @@ impl PkbSearchServer {
                 "result-bytes",
                 response_bytes as i64,
             ));
+            current_span.set_attribute(opentelemetry::KeyValue::new(
+                "mcp.response_bytes",
+                response_bytes as i64,
+            ));
+            let estimated_tokens = (response_bytes / 4) as i64;
+            current_span.set_attribute(opentelemetry::KeyValue::new(
+                "mcp.estimated_prompt_tokens",
+                estimated_tokens,
+            ));
+            current_span.set_attribute(opentelemetry::KeyValue::new(
+                "estimated_prompt_tokens",
+                estimated_tokens,
+            ));
+
+            if let Some(detail) = args.get("detail").and_then(|v| v.as_str()) {
+                current_span.set_attribute(opentelemetry::KeyValue::new(
+                    "mcp.detail_level",
+                    detail.to_string(),
+                ));
+            }
+
+            let has_fields = args.get("fields").map_or(false, |f| {
+                f.as_array().map_or(false, |a| !a.is_empty())
+                    || f.as_str().map_or(false, |s| !s.trim().is_empty())
+            }) || metrics.fields_projected;
+            if has_fields {
+                current_span.set_attribute(opentelemetry::KeyValue::new(
+                    "mcp.projected",
+                    true,
+                ));
+            }
 
             let graph_read_wait_ms = (metrics.graph_read_wait_us as f64) / 1000.0;
             current_span.set_attribute(opentelemetry::KeyValue::new(
@@ -1992,6 +2024,7 @@ impl PkbSearchServer {
 
         let latency = start.elapsed().as_millis();
         crate::telemetry::record_call(&tool_name, response_bytes, latency, is_error);
+        let estimated_tokens = (response_bytes / 4) as u64;
 
         match &log_session_id {
             None => {
@@ -2001,6 +2034,7 @@ impl PkbSearchServer {
                     status = %if is_error { "error" } else { "ok" },
                     latency_ms = latency as u64,
                     response_bytes,
+                    estimated_tokens,
                     "tool call"
                 );
             }
@@ -2011,6 +2045,7 @@ impl PkbSearchServer {
                     status = %if is_error { "error" } else { "ok" },
                     latency_ms = latency as u64,
                     response_bytes,
+                    estimated_tokens,
                     session = %sid,
                     "tool call"
                 );

@@ -437,7 +437,7 @@ project: aops
 
         // Response is get_task JSON for the SAME id — no copy was created.
         assert!(
-            text.contains("\"id\": \"plain-task\""),
+            text.contains("\"id\": \"plain-task\"") || text.contains("\"id\":\"plain-task\""),
             "response should describe the same task, in place; got: {text}"
         );
         assert!(

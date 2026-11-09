@@ -504,6 +504,7 @@ fn test_every_tool_rejects_when_any_required_field_is_missing() {
         json!({ "id": "task-seed1", "status": "done", "summary": "Finished work" }),
     );
     valid_samples.insert("get_task", json!({ "id": "task-seed1" }));
+    valid_samples.insert("get_task_status", json!({ "id": "task-seed1" }));
     valid_samples.insert(
         "update_task",
         json!({ "id": "task-seed1", "status": "inbox" }),

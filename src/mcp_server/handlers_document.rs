@@ -86,7 +86,7 @@ impl PkbSearchServer {
             if budget_ms.is_some() || !timed_out.is_empty() {
                 res_obj["timed_out"] = serde_json::json!(timed_out);
             }
-            let text = serde_json::to_string_pretty(&res_obj).unwrap_or_default();
+            let text = serde_json::to_string(&res_obj).unwrap_or_default();
             return Ok(Self::structured_result(text, res_obj));
         }
 
@@ -259,7 +259,7 @@ impl PkbSearchServer {
         Self::prune_null_and_empty(&mut structured);
 
         if format.eq_ignore_ascii_case("json") {
-            let json_str = serde_json::to_string_pretty(&structured).unwrap_or_default();
+            let json_str = serde_json::to_string(&structured).unwrap_or_default();
             return Ok(Self::structured_result(json_str, structured));
         }
 
@@ -461,7 +461,7 @@ impl PkbSearchServer {
             if budget_ms.is_some() || !timed_out.is_empty() {
                 payload["timed_out"] = serde_json::json!(timed_out);
             }
-            let json_str = serde_json::to_string_pretty(&payload).unwrap_or_default();
+            let json_str = serde_json::to_string(&payload).unwrap_or_default();
             return Ok(Self::structured_result(json_str, payload));
         }
 
