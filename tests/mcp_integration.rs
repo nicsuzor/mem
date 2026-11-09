@@ -160,6 +160,18 @@ fn tools_list_request(id: u64) -> String {
     jsonrpc_request(id, "tools/list", json!({ "_meta": protocol_meta() }))
 }
 
+fn prompts_list_request(id: u64) -> String {
+    jsonrpc_request(id, "prompts/list", json!({ "_meta": protocol_meta() }))
+}
+
+fn prompt_get_request(id: u64, name: &str, args: Value) -> String {
+    jsonrpc_request(
+        id,
+        "prompts/get",
+        json!({"name": name, "arguments": args, "_meta": protocol_meta()}),
+    )
+}
+
 // ── Stdio helpers ────────────────────────────────────────────────────────
 
 /// Send JSON-RPC messages over stdio and collect responses.
@@ -623,6 +635,81 @@ fn test_stdio_tool_call() {
     );
 }
 
+#[test]
+fn test_stdio_prompts_list_and_get() {
+    let responses = stdio_session(&[
+        discover_request(1),
+        prompts_list_request(2),
+        prompt_get_request(3, "find-task", json!({"query": "integration testing"})),
+        prompt_get_request(4, "task-status", json!({"id": "task-test-01"})),
+    ]);
+
+    // 1. Verify prompts/list (id=2)
+    let list_response = responses
+        .iter()
+        .find(|r| r.get("id") == Some(&json!(2)))
+        .expect("no response with id=2 for prompts/list");
+
+    assert!(
+        list_response.get("result").is_some(),
+        "prompts/list returned error: {list_response}"
+    );
+    let prompts = list_response["result"]["prompts"]
+        .as_array()
+        .expect("prompts array in prompts/list result");
+
+    let prompt_names: Vec<&str> = prompts
+        .iter()
+        .filter_map(|p| p.get("name").and_then(|n| n.as_str()))
+        .collect();
+
+    assert!(prompt_names.contains(&"find-task"));
+    assert!(prompt_names.contains(&"explore-topic"));
+    assert!(prompt_names.contains(&"navigate-graph"));
+    assert!(prompt_names.contains(&"find-by-tag"));
+    assert!(prompt_names.contains(&"task-status"));
+    assert!(prompt_names.contains(&"ready-tasks"));
+    assert!(prompt_names.contains(&"task-dependencies"));
+    assert!(!prompt_names.contains(&"polecat-compose"));
+
+    // 2. Verify prompts/get find-task (id=3)
+    let get_find_task = responses
+        .iter()
+        .find(|r| r.get("id") == Some(&json!(3)))
+        .expect("no response with id=3 for prompts/get find-task");
+
+    assert!(
+        get_find_task.get("result").is_some(),
+        "find-task returned error: {get_find_task}"
+    );
+    let messages = get_find_task["result"]["messages"]
+        .as_array()
+        .expect("messages array in get_prompt result");
+    assert!(!messages.is_empty());
+    let text = messages[0]["content"]["text"].as_str().unwrap();
+    assert!(text.contains("I want to find a task about 'integration testing'"));
+    assert!(text.contains("task_search"));
+    assert!(text.contains("get_task"));
+
+    // 3. Verify prompts/get task-status (id=4)
+    let get_status = responses
+        .iter()
+        .find(|r| r.get("id") == Some(&json!(4)))
+        .expect("no response with id=4 for prompts/get task-status");
+
+    assert!(
+        get_status.get("result").is_some(),
+        "task-status returned error: {get_status}"
+    );
+    let status_messages = get_status["result"]["messages"]
+        .as_array()
+        .expect("messages array in task-status result");
+    assert!(!status_messages.is_empty());
+    let status_text = status_messages[0]["content"]["text"].as_str().unwrap();
+    assert!(status_text.contains("task-test-01"));
+    assert!(status_text.contains("get_task_status"));
+}
+
 // ── HTTP/SSE tests ───────────────────────────────────────────────────────
 
 #[test]
@@ -846,6 +933,51 @@ fn test_http_tools_list_count() {
             t["name"]
         );
     }
+}
+
+#[test]
+fn test_http_prompts_list_and_get() {
+    let server = HttpServer::start();
+
+    // 1. prompts/list over stateless HTTP
+    let (status, _, body) =
+        http_post_mcp(server.port, &prompts_list_request(2), "prompts/list", None, &[]);
+    assert_eq!(status, 200, "prompts/list returned {status}: {body}");
+
+    let msg: Value = serde_json::from_str(&body).expect("valid JSON from prompts/list");
+    let prompts = msg["result"]["prompts"]
+        .as_array()
+        .expect("prompts/list result missing 'prompts' array");
+
+    let prompt_names: Vec<&str> = prompts
+        .iter()
+        .filter_map(|p| p.get("name").and_then(|n| n.as_str()))
+        .collect();
+
+    assert!(prompt_names.contains(&"find-task"));
+    assert!(prompt_names.contains(&"ready-tasks"));
+    assert!(prompt_names.contains(&"task-status"));
+
+    // 2. prompts/get over stateless HTTP
+    let (status, _, body) = http_post_mcp(
+        server.port,
+        &prompt_get_request(3, "ready-tasks", json!({"limit": 5, "project": "mem"})),
+        "prompts/get",
+        Some("ready-tasks"),
+        &[],
+    );
+    assert_eq!(status, 200, "prompts/get returned {status}: {body}");
+
+    let msg: Value = serde_json::from_str(&body).expect("valid JSON from prompts/get");
+    let prompt_result = &msg["result"];
+    let prompt_messages = prompt_result["messages"]
+        .as_array()
+        .expect("messages array in prompts/get response");
+    assert!(!prompt_messages.is_empty());
+    let text = prompt_messages[0]["content"]["text"].as_str().unwrap();
+    assert!(text.contains("Find unblocked tasks ready for work in priority order"));
+    assert!(text.contains("list_tasks"));
+    assert!(text.contains("Project filter: \"mem\""));
 }
 
 #[test]
