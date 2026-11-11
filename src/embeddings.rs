@@ -118,11 +118,69 @@ impl Default for EmbeddingConfig {
     }
 }
 
-impl EmbeddingConfig {
-    /// Preferred model filenames in priority order (quantized first for speed).
-    const MODEL_NAMES: &[&str] = &["model_quantized.onnx", "model.onnx"];
+/// Which BGE-M3 ONNX weights to load.
+///
+/// Selected with `pkb --model <auto|quantized|fp32>` or `AOPS_MODEL_VARIANT`.
+/// The int8 `quantized` model is fastest on CPU, but its dynamic-quantisation
+/// ops run poorly under the CUDA execution provider (about 10x slower than
+/// `fp32` on an RTX 3080), so GPU reindexing should use `fp32`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ModelVariant {
+    /// Prefer `model_quantized.onnx`, fall back to `model.onnx`.
+    #[default]
+    Auto,
+    /// Require the int8 `model_quantized.onnx`.
+    Quantized,
+    /// Require the full-precision `model.onnx` (+ `model.onnx_data`).
+    Fp32,
+}
+
+impl ModelVariant {
+    /// Env var carrying the variant (set by the `--model` CLI switch).
+    pub const ENV: &'static str = "AOPS_MODEL_VARIANT";
 
     pub fn from_env() -> Self {
+        std::env::var(Self::ENV)
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or_default()
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ModelVariant::Auto => "auto",
+            ModelVariant::Quantized => "quantized",
+            ModelVariant::Fp32 => "fp32",
+        }
+    }
+
+    /// Candidate model filenames in priority order.
+    fn candidates(self) -> &'static [&'static str] {
+        match self {
+            ModelVariant::Auto => &["model_quantized.onnx", "model.onnx"],
+            ModelVariant::Quantized => &["model_quantized.onnx"],
+            ModelVariant::Fp32 => &["model.onnx"],
+        }
+    }
+}
+
+impl std::str::FromStr for ModelVariant {
+    type Err = String;
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "auto" | "" => Ok(ModelVariant::Auto),
+            "quantized" => Ok(ModelVariant::Quantized),
+            "fp32" => Ok(ModelVariant::Fp32),
+            other => Err(format!(
+                "unknown model variant '{other}' (expected auto, quantized or fp32)"
+            )),
+        }
+    }
+}
+
+impl EmbeddingConfig {
+    pub fn from_env() -> Self {
+        let variant = ModelVariant::from_env();
         let base_path = std::env::var("AOPS_MODEL_PATH")
             .map(PathBuf::from)
             .unwrap_or_else(|_| {
@@ -135,11 +193,12 @@ impl EmbeddingConfig {
                 candidates
                     .into_iter()
                     .flatten()
-                    .find(|p| Self::find_model(p).is_some())
+                    .find(|p| Self::find_model_variant(p, variant).is_some())
                     .unwrap_or_else(|| get_cache_dir().join("models/bge-m3"))
             });
 
-        let model_file = Self::find_model(&base_path).unwrap_or_else(|| "model.onnx".to_string());
+        let model_file = Self::find_model_variant(&base_path, variant)
+            .unwrap_or_else(|| variant.candidates()[0].to_string());
 
         let query_dense_token_cap = std::env::var("AOPS_QUERY_DENSE_TOKEN_CAP")
             .ok()
@@ -155,8 +214,14 @@ impl EmbeddingConfig {
     }
 
     /// Find the best available model file in a directory.
+    #[cfg(test)]
     fn find_model(dir: &std::path::Path) -> Option<String> {
-        Self::MODEL_NAMES
+        Self::find_model_variant(dir, ModelVariant::Auto)
+    }
+
+    fn find_model_variant(dir: &std::path::Path, variant: ModelVariant) -> Option<String> {
+        variant
+            .candidates()
             .iter()
             .find(|name| dir.join(name).exists())
             .map(|s| s.to_string())
@@ -633,7 +698,14 @@ impl SessionPool {
             {
                 Ok(session) => {
                     using_gpu = true;
-                    eprintln!("  CUDA execution provider registered — using GPU");
+                    eprintln!(
+                        "  CUDA execution provider registered — using GPU ({})",
+                        config
+                            .model_path
+                            .file_name()
+                            .map(|f| f.to_string_lossy())
+                            .unwrap_or_default()
+                    );
                     session
                 }
                 Err(e) => {
@@ -1075,8 +1147,15 @@ impl Embedder {
             }
 
             let models_dir = download_models()?;
-            let model_file = EmbeddingConfig::find_model(&models_dir)
-                .unwrap_or_else(|| "model_quint8_avx2.onnx".to_string());
+            let variant = ModelVariant::from_env();
+            let model_file = EmbeddingConfig::find_model_variant(&models_dir, variant)
+                .with_context(|| {
+                    format!(
+                        "No {} model in {models_dir:?} (looked for {:?})",
+                        variant.as_str(),
+                        variant.candidates()
+                    )
+                })?;
             config.model_path = models_dir.join(model_file);
             config.tokenizer_path = models_dir.join("tokenizer.json");
         }
@@ -1247,9 +1326,10 @@ impl Embedder {
 
     /// Chunks per ONNX sub-batch (CPU). Smaller = more sub-batches = more sessions in parallel.
     const MAX_BATCH_CPU: usize = 32;
-    /// Chunks per ONNX sub-batch (GPU). GPU thrives on large batches — HBM bandwidth
-    /// is 10-20x higher than DDR so we feed much more data per inference call.
-    const MAX_BATCH_GPU: usize = 256;
+    /// Chunks per ONNX sub-batch (GPU). Measured on an RTX 3080 (10 GB, WSL2) with
+    /// the fp32 model: 32 → ~59 chunks/s, 64 → ~54, 256 → ~19. Large batches of
+    /// ~512-token chunks blow up attention memory, so small batches win.
+    const MAX_BATCH_GPU: usize = 32;
 
     pub fn encode_batch(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>> {
         self.encode_batch_with_cap(texts, self.config.max_length)
@@ -2153,6 +2233,36 @@ After the code.";
 
         let chosen = EmbeddingConfig::find_model(temp_dir.path());
         assert_eq!(chosen, Some("model.onnx".to_string()));
+    }
+
+    #[test]
+    fn find_model_variant_fp32_skips_quantized() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        std::fs::write(temp_dir.path().join("model_quantized.onnx"), b"q").unwrap();
+        std::fs::write(temp_dir.path().join("model.onnx"), b"f").unwrap();
+
+        let chosen = EmbeddingConfig::find_model_variant(temp_dir.path(), ModelVariant::Fp32);
+        assert_eq!(chosen, Some("model.onnx".to_string()));
+    }
+
+    #[test]
+    fn find_model_variant_explicit_does_not_fall_back() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        std::fs::write(temp_dir.path().join("model.onnx"), b"f").unwrap();
+
+        let chosen = EmbeddingConfig::find_model_variant(temp_dir.path(), ModelVariant::Quantized);
+        assert_eq!(chosen, None);
+    }
+
+    #[test]
+    fn model_variant_parses() {
+        assert_eq!("auto".parse::<ModelVariant>(), Ok(ModelVariant::Auto));
+        assert_eq!(
+            "Quantized".parse::<ModelVariant>(),
+            Ok(ModelVariant::Quantized)
+        );
+        assert_eq!("fp32".parse::<ModelVariant>(), Ok(ModelVariant::Fp32));
+        assert!("bogus".parse::<ModelVariant>().is_err());
     }
 
     #[test]
