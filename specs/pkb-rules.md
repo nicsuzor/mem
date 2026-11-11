@@ -332,32 +332,15 @@ A knowledge note that explains a system behaviour is filed only after confirming
 
 ## 5. Task lifecycle
 
-Status values and transitions are specified in `references/TAXONOMY.md`. The rules for using them:
+Canonical status values, their definitions, and authority over who may set them are specified exclusively in `references/TAXONOMY.md` §Status Values and Transitions. Operational rules for using them:
 
 - **Task volume is not a problem.** Hundreds of open tasks is the healthy state; never flag a high count or propose artificial cleanup. There is no task bankruptcy.
 - **Never schedule by calendar day.** Decompose work into tasks with typed dependency edges. `due` is reserved for real external or contractual deadlines and is never fabricated to express importance (§6.1).
 - **Age is not staleness.** Age alone never justifies cancelling, archiving or deprioritising. The only valid cancellation reason is irrelevance: the opportunity closed, the request was withdrawn, the context was eliminated.
-- **Blocked tasks surface through their blockers.** An overdue blocked task with no linked blocker is an integrity defect. A dependency on other work is a `depends_on` edge, not a hand-set `status: blocked`.
+- **Blocked is a computed relation, not a status.** A dependency on other work is a `depends_on` edge, never a hand-set `status: blocked`. An overdue blocked task with no linked blocker is an integrity defect.
 - **State lives in fields, never only in prose.** Every reader of the graph decides done, blocked or ready from the stored `status` and the dependency edges, never from body text. Set terminal states with `release_task`, which carries the evidence or the reason. Body prose may explain a state; it never substitutes for one.
-- **"Complete" means no longer actionable and not waiting on anything, not "successful".** Every tool and calculation treats a cancelled task as complete: a dependent is not blocked by it, and no readiness, ranking, flow or listing path counts it as failed or pending.
 - **Never leave a status the body denies.** Pick the value that is true; if none fits, say so on the node rather than choosing the least-wrong value.
-- **`queued` is Nic's gate.** Only Nic promotes `ready` to `queued`; workers pull only from `queued`.
-- **Workers write `done`.** A worker with PKB access marks its task `done` after `/pull`, with completion evidence; asserting that tests ran suffices for the claim. `merge_ready` is not a status in use. The reconcile check that follows is specified in the academicOps `reconcile` skill (§8.7).
 - **Work done outside agent sessions** is reconciled into the graph so status does not drift.
-
-### 5.1. Choosing a closing status
-
-- **`done` asserts delivery.** A task is `done` when its deliverable verifiably exists where it belongs, judged in its delivery location, never by a run's duration, byte count or self-report. A run that did the work but left it where the deliverable does not live (an unpushed branch, a container workspace) is not `done`. The release cites where the deliverable lives.
-- **`done` is refused while the task's own record shows open work**: a pending checklist item, an unmet acceptance criterion, or a body describing remaining work.
-- **`review` is a worker asking for help from the agent that next picks it up.** Escalation is one level per hop and is an agent's decision, never a server inference. Three shapes are not `review`:
-  - Physically complete work whose durability is only being watched is `done`, reopened if it fails. Nic, 2026-08-21: "just close the task now, i'll reopen if it fails."
-  - Work with a default available: take the default, record it on the node as chosen, close. Only one-way doors and value judgements warrant escalation to the principal.
-  - Work whose remainder is genuinely separate: `done` plus a follow-up, or `partial`. Never hold the finished part open to carry the rest.
-- **`partial` always has a live follow-up child** carrying the remainder; a `partial` with none is a defect.
-- **An attempt that produced nothing shippable is not `partial`.** The task returns to `inbox`. What was learned is worked into its body as instruction (§2.3); the attempt itself is not logged there.
-- **Discharged work awaiting someone else's confirmation is split, not held open.** When the owner has done everything they can and the task waits only on an outcome outside their control (an approval, a reimbursement, an acceptance), model three nodes: the parent renamed to the objective; the action, `done` with evidence; and an open confirm node holding what the other party owes. The action names, by wikilink, the confirmation that could reopen it; the contingency is not a `depends_on` edge, because the action already happened. A negative confirmation reopens the action at its original stakes.
-- **The split applies only when nothing executable remains.** If a chase, escalation or resubmission is still available, the work is not discharged. A confirm node gets no fabricated `due` (§6.3) and no `stakeholder`, a field that names someone waiting on the work, not someone the work waits on.
-- Where nobody owes anything and the work is only being watched, close it and record on the closed node what would reopen it.
 
 ---
 
