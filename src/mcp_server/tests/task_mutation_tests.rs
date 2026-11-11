@@ -128,7 +128,7 @@ fn test_create_task_severity_coercion() {
         .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
         .collect::<String>();
     assert!(
-        get_target_text.contains("\"severity\": 3"),
+        get_target_text.contains("\"severity\": 3") || get_target_text.contains("\"severity\":3"),
         "Target node should retain severity. text: {}",
         get_target_text
     );
@@ -170,7 +170,7 @@ fn test_create_task_severity_coercion() {
         .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
         .collect::<String>();
     assert!(
-        !get_task_text.contains("\"severity\": 3"),
+        !get_task_text.contains("\"severity\": 3") && !get_task_text.contains("\"severity\":3"),
         "Standard task should coerce severity to 0 or null"
     );
 }

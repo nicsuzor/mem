@@ -551,7 +551,7 @@ impl PkbSearchServer {
             "message": format!("Completed {node_type}: {} (`{}`)", title_to_use, id),
             "neighborhood": neighborhood,
         });
-        let text = serde_json::to_string_pretty(&response).unwrap_or_default();
+        let text = serde_json::to_string(&response).unwrap_or_default();
         Ok(Self::structured_result(text, response))
     }
 
@@ -1297,7 +1297,7 @@ impl PkbSearchServer {
         if let Some(nid) = created_id {
             json["created_id"] = serde_json::json!(nid);
         }
-        let text = serde_json::to_string_pretty(&json).unwrap_or_default();
+        let text = serde_json::to_string(&json).unwrap_or_default();
         Ok(Self::structured_result(text, json))
     }
 

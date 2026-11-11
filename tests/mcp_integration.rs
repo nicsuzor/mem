@@ -814,12 +814,16 @@ fn test_http_tools_list_count() {
         .as_array()
         .expect("tools/list result missing 'tools' array");
 
-    // Should match the 17 published primitives
+    // Should match the 18 published primitives
     assert_eq!(
         tools.len(),
-        17,
-        "expected 17 published tools from tools/list, got {}",
+        18,
+        "expected 18 published tools from tools/list, got {}",
         tools.len()
+    );
+    assert!(
+        tools.iter().any(|t| t["name"] == "get_task_status"),
+        "expected get_task_status to be in published tools"
     );
     assert!(
         tools.iter().any(|t| t["name"] == "convert_document"),
@@ -1469,7 +1473,7 @@ fn test_phases_1_to_3_concurrency_and_contracts() {
         .expect("parse list json");
 
         let tools = list_json["result"]["tools"].as_array().expect("tools array");
-        assert_eq!(tools.len(), 17, "Phase 3 contract: exactly 17 published tools");
+        assert_eq!(tools.len(), 18, "Phase 3 contract: exactly 18 published tools");
         assert_eq!(
             list_json["result"]["_meta"]["ttlMs"].as_u64(),
             Some(86_400_000),

@@ -8,6 +8,10 @@ pub struct CallMetrics {
     pub rebuilt: bool,
     pub embed_time_us: u64,
     pub hybrid_search_time_us: u64,
+    pub response_bytes: usize,
+    pub estimated_prompt_tokens: u32,
+    pub truncated: bool,
+    pub fields_projected: bool,
 }
 
 thread_local! {
@@ -50,6 +54,31 @@ impl CallMetrics {
         CURRENT_CALL_METRICS.with(|m| {
             if let Some(ref mut metrics) = *m.borrow_mut() {
                 metrics.hybrid_search_time_us = metrics.hybrid_search_time_us.saturating_add(duration.as_micros() as u64);
+            }
+        });
+    }
+
+    pub fn record_response_size(bytes: usize) {
+        CURRENT_CALL_METRICS.with(|m| {
+            if let Some(ref mut metrics) = *m.borrow_mut() {
+                metrics.response_bytes = bytes;
+                metrics.estimated_prompt_tokens = (bytes / 4) as u32;
+            }
+        });
+    }
+
+    pub fn record_truncation(truncated: bool) {
+        CURRENT_CALL_METRICS.with(|m| {
+            if let Some(ref mut metrics) = *m.borrow_mut() {
+                metrics.truncated = metrics.truncated || truncated;
+            }
+        });
+    }
+
+    pub fn record_fields_projected(projected: bool) {
+        CURRENT_CALL_METRICS.with(|m| {
+            if let Some(ref mut metrics) = *m.borrow_mut() {
+                metrics.fields_projected = metrics.fields_projected || projected;
             }
         });
     }

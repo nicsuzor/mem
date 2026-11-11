@@ -374,7 +374,7 @@ impl PkbSearchServer {
         let detail = args
             .get("detail")
             .and_then(|v| v.as_str())
-            .unwrap_or("chunk");
+            .unwrap_or("snippet");
         const VALID_SEARCH_DETAILS: &[&str] = &["chunk", "snippet", "summary", "full", "metadata", "ids"];
         if let Some(raw_detail) = args.get("detail") {
             if let Some(d) = raw_detail.as_str() {
@@ -604,7 +604,7 @@ impl PkbSearchServer {
             });
 
             if format.eq_ignore_ascii_case("json") {
-                let json_str = serde_json::to_string_pretty(&payload).unwrap_or_default();
+                let json_str = serde_json::to_string(&payload).unwrap_or_default();
                 return Ok(Self::structured_result(json_str, payload));
             }
 
@@ -699,7 +699,7 @@ impl PkbSearchServer {
                 "ranking": ranking_label,
                 "reranker_loaded": reranker_loaded,
             });
-            let json_str = serde_json::to_string_pretty(&payload).unwrap_or_default();
+            let json_str = serde_json::to_string(&payload).unwrap_or_default();
             return Ok(Self::structured_result(json_str, payload));
         }
 
@@ -1222,7 +1222,7 @@ impl PkbSearchServer {
         // report the true totals so a caller can tell truncation happened).
         report.clusters.truncate(limit);
 
-        let json = serde_json::to_string_pretty(&report).unwrap_or_default();
+        let json = serde_json::to_string(&report).unwrap_or_default();
         Ok(CallToolResult::success(vec![Content::text(json)]))
     }
 }

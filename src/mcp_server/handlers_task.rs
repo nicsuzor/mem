@@ -721,11 +721,51 @@ impl PkbSearchServer {
             if budget_ms.is_some() || !timed_out.is_empty() {
                 res_obj["timed_out"] = serde_json::json!(timed_out);
             }
-            let text = serde_json::to_string_pretty(&res_obj).unwrap_or_default();
+            let text = serde_json::to_string(&res_obj).unwrap_or_default();
             return Ok(Self::structured_result(text, res_obj));
         }
 
         self.handle_get_task_single(args)
+    }
+
+    pub(crate) fn handle_get_task_status(
+        &self,
+        args: &JsonValue,
+    ) -> Result<CallToolResult, McpError> {
+        self.ensure_graph_fresh();
+        let id = args
+            .get("id")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.trim().is_empty())
+            .ok_or_else(|| McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from("Missing required parameter: id"),
+                data: None,
+            })?;
+
+        let graph = self.graph.read();
+        let node = graph.resolve(id).ok_or_else(|| McpError {
+            code: ErrorCode::INVALID_PARAMS,
+            message: Cow::from(format!("Task not found: {id}")),
+            data: None,
+        })?;
+
+        let status_str = node.status.as_deref().unwrap_or("unknown");
+        let ready = graph.is_ready(&node.id);
+        let blocked = graph.is_blocked(&node.id);
+
+        let mut res = serde_json::json!({
+            "id": node.id,
+            "status": status_str,
+            "ready": ready,
+            "blocked": blocked,
+        });
+        if let Some(ref a) = node.assignee {
+            res["assignee"] = serde_json::json!(a);
+        }
+
+        let text = serde_json::to_string(&res).unwrap_or_default();
+        Ok(Self::structured_result(text, res))
     }
 
     pub(crate) fn handle_get_task_single(
@@ -1005,10 +1045,13 @@ impl PkbSearchServer {
                 })
             }
         });
+        if fields_filter.is_some() {
+            crate::otel::call_metrics::CallMetrics::record_fields_projected(true);
+        }
         let include_routes = args
             .get("include_routes")
             .and_then(|v| v.as_bool())
-            .unwrap_or(true);
+            .unwrap_or(false);
         let metadata_only = args
             .get("metadata_only")
             .and_then(|v| v.as_bool())
@@ -1173,7 +1216,7 @@ impl PkbSearchServer {
 
         Self::prune_null_and_empty(&mut result);
 
-        let json = serde_json::to_string_pretty(&result).unwrap_or_default();
+        let json = serde_json::to_string(&result).unwrap_or_default();
         Ok(Self::structured_result(json, result))
     }
 
@@ -1286,7 +1329,7 @@ impl PkbSearchServer {
                 "direction": direction,
                 "tree": tree_json,
             });
-            let json_str = serde_json::to_string_pretty(&payload).unwrap_or_default();
+            let json_str = serde_json::to_string(&payload).unwrap_or_default();
             return Ok(CallToolResult::success(vec![Content::text(json_str)]));
         }
 
@@ -1786,7 +1829,7 @@ impl PkbSearchServer {
                 "tasks": tasks_val,
             });
             return Ok(CallToolResult::success(vec![Content::text(
-                serde_json::to_string_pretty(&result).unwrap_or_default(),
+                serde_json::to_string(&result).unwrap_or_default(),
             )]));
         }
 
@@ -1961,7 +2004,7 @@ impl PkbSearchServer {
             if budget_ms.is_some() || !timed_out.is_empty() {
                 result["timed_out"] = serde_json::json!(timed_out);
             }
-            let text = serde_json::to_string_pretty(&result).unwrap_or_default();
+            let text = serde_json::to_string(&result).unwrap_or_default();
             return Ok(Self::structured_result(text, result));
         }
 
@@ -2984,7 +3027,7 @@ impl PkbSearchServer {
         });
 
         Ok(CallToolResult::success(vec![Content::text(
-            serde_json::to_string_pretty(&summary).unwrap_or_default(),
+            serde_json::to_string(&summary).unwrap_or_default(),
         )]))
     }
 }

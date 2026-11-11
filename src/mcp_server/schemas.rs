@@ -32,7 +32,7 @@ impl PkbSearchServer {
                         "detail": {
                             "type": "string",
                             "enum": ["chunk", "snippet", "summary", "full", "metadata", "ids"],
-                            "default": "chunk",
+                            "default": "snippet",
                             "description": "Level of detail: chunk, snippet, summary, full, metadata, ids."
                         },
                         "ids_only": { "type": "boolean" },
@@ -93,7 +93,7 @@ impl PkbSearchServer {
                         "budget_ms": { "type": "integer" },
                         "max_bytes": { "type": "integer", "description": "Maximum body bytes to return. Defaults to returning the full body (no limit)." },
                         "metadata_only": { "type": "boolean" },
-                        "include_routes": { "type": "boolean" },
+                        "include_routes": { "type": "boolean", "default": false, "description": "Include computed Dijkstra routes to open target goals (defaults to false for speed and compact payloads)." },
                         "fields": {
                             "anyOf": [
                                 { "type": "string" },
@@ -105,6 +105,20 @@ impl PkbSearchServer {
                 .unwrap(),
             )
             .with_title("Get Task Detail")
+            .with_annotations(ToolAnnotations::new().read_only(true)),
+            Tool::new(
+                "get_task_status",
+                "Fast lightweight status lookup for a single task (< 150 bytes). Returns id, status, ready, blocked, and assignee without reading body or calculating paths.",
+                serde_json::from_value::<JsonObject>(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "id": { "type": "string", "description": "Task ID, title, or filename stem" }
+                    },
+                    "required": ["id"]
+                }))
+                .unwrap(),
+            )
+            .with_title("Get Task Status (Fastpath)")
             .with_annotations(ToolAnnotations::new().read_only(true)),
             Tool::new(
                 "list_documents",
@@ -1231,6 +1245,17 @@ impl PkbSearchServer {
                     "not_found": { "type": "array", "items": { "type": "string" } },
                     "timed_out": { "type": "array", "items": { "type": "string" } }
                 }
+            }),
+            "get_task_status" => serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "id": { "type": "string" },
+                    "status": { "type": "string" },
+                    "ready": { "type": "boolean" },
+                    "blocked": { "type": "boolean" },
+                    "assignee": { "type": "string" }
+                },
+                "required": ["id", "status", "ready", "blocked"]
             }),
             "update_task" => serde_json::json!({
                 "type": "object",
