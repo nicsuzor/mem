@@ -408,7 +408,7 @@ MCP Client <--stdio--> pkb (MCP server)
 | `AOPS_OFFLINE` | `false` | Disable model/runtime auto-download |
 | `AOPS_DUMMY_EMBEDDER` | `false` | Use zero-vector dummy embedder (for tests/offline) |
 | `AOPS_MODEL_PATH` | (auto) | Override model directory path |
-| `AOPS_MODEL_VARIANT` | `auto` | Embedding weights: `auto` (int8 if present), `quantized`, or `fp32`; same as the global `--model` flag. Use `fp32` for GPU reindexing (int8 runs ~10x slower under CUDA), and keep queries on the same variant as the index |
+| `AOPS_MODEL_VARIANT` | `auto` | Embedding weights: `auto` (int8 if present), `quantized`, or `fp32`; same as the global `--model` flag. Use `fp32` for GPU reindexing (int8 runs ~10x slower under CUDA),; the variants' vectors are compatible, so an index built with `fp32` on GPU can be served with `quantized` on CPU |
 | `ORT_DYLIB_PATH` | (auto) | Override ONNX Runtime library path |
 
 ## Acknowledgments

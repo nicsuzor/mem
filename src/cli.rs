@@ -36,7 +36,7 @@ struct Cli {
 
     /// Embedding model weights: auto (int8 if present, else fp32), quantized (int8), or fp32.
     /// Use fp32 for GPU reindexing — the int8 model runs ~10x slower under CUDA.
-    /// Queries and the index should use the same variant.
+    /// Variants produce compatible vectors: an fp32-built index can be served with int8 queries.
     #[arg(long = "model", global = true, env = "AOPS_MODEL_VARIANT", value_enum)]
     model: Option<ModelArg>,
 
