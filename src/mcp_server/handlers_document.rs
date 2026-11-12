@@ -1174,7 +1174,8 @@ impl PkbSearchServer {
             "body_chars_before": result.body_chars_before,
             "body_chars_after": result.body_chars_after,
             "preserve_frontmatter": preserve_frontmatter,
-            "modified": result.modified
+            "modified": result.modified,
+            "diff": result.diff
         });
         let response_text = serde_json::to_string(&response_payload).map_err(|e| McpError {
             code: ErrorCode::INTERNAL_ERROR,
@@ -1268,7 +1269,8 @@ impl PkbSearchServer {
             "body_chars_after": result.body_chars_after,
             "hunks_applied": result.hunks_applied,
             "preserve_frontmatter": preserve_frontmatter,
-            "modified": result.modified
+            "modified": result.modified,
+            "diff": result.diff
         });
         let response_text = serde_json::to_string(&response_payload).map_err(|e| McpError {
             code: ErrorCode::INTERNAL_ERROR,

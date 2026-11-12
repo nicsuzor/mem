@@ -778,9 +778,58 @@ pub fn apply_diff(content: &str, diff_text: &str) -> Result<DiffResult, UdiffErr
     })
 }
 
+// -----------------------------------------------------------------------------
+// Unified Diff Generator
+// -----------------------------------------------------------------------------
+
+/// Generate a unified diff between two texts using standard 3-line context.
+///
+/// If `label` is provided, headers will be `a/{label}` and `b/{label}`,
+/// otherwise `a` and `b`.
+pub fn generate_unified_diff(old_text: &str, new_text: &str, label: Option<&str>) -> String {
+    let (header_a, header_b) = match label {
+        Some(name) => (format!("a/{name}"), format!("b/{name}")),
+        None => ("a".to_string(), "b".to_string()),
+    };
+    similar::TextDiff::from_lines(old_text, new_text)
+        .unified_diff()
+        .header(&header_a, &header_b)
+        .context_radius(3)
+        .to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_generate_unified_diff_basic() {
+        let old = "line 1\nline 2\nline 3\n";
+        let new = "line 1\nline 2 modified\nline 3\n";
+        let diff = generate_unified_diff(old, new, Some("doc.md"));
+        assert!(diff.contains("--- a/doc.md"));
+        assert!(diff.contains("+++ b/doc.md"));
+        assert!(diff.contains("-line 2"));
+        assert!(diff.contains("+line 2 modified"));
+    }
+
+    #[test]
+    fn test_generate_unified_diff_no_label() {
+        let old = "line 1\n";
+        let new = "line 2\n";
+        let diff = generate_unified_diff(old, new, None);
+        assert!(diff.contains("--- a"));
+        assert!(diff.contains("+++ b"));
+        assert!(diff.contains("-line 1"));
+        assert!(diff.contains("+line 2"));
+    }
+
+    #[test]
+    fn test_generate_unified_diff_identical() {
+        let text = "identical\n";
+        let diff = generate_unified_diff(text, text, Some("doc.md"));
+        assert!(diff.is_empty(), "identical content should produce an empty diff");
+    }
 
     // =========================================================================
     // Ported test cases from Aider's tests/basic/test_udiff.py

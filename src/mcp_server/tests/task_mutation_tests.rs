@@ -3669,3 +3669,172 @@ fn test_schemas_do_not_expose_follow_up_tasks() {
         "get_task output schema must not expose follow_up_tasks"
     );
 }
+
+// ── mem_bca03c3d: Include diff in PKB write responses for edit_body and update_body ──
+
+#[test]
+fn test_update_body_response_includes_diff() {
+    let (_tmp, server) = build_disk_backed_server(&[(
+        "tasks/task-diff1.md",
+        "---\nid: task-diff1\ntitle: Diff Test\ntype: task\nstatus: ready\ncreated: 2026-07-23T10:00:00+00:00\n---\n\nLine 1\nLine 2\n",
+    )]);
+
+    let res = server
+        .handle_update_body(&json!({
+            "id": "task-diff1",
+            "new_body": "Line 1\nLine 2 updated\nLine 3\n",
+        }))
+        .expect("update_body must succeed");
+
+    let text = res
+        .content
+        .iter()
+        .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+        .collect::<String>();
+    let j: serde_json::Value = serde_json::from_str(&text).expect("response must be JSON");
+    let diff = j
+        .get("diff")
+        .and_then(|v| v.as_str())
+        .expect("diff field must be present in response");
+    assert!(diff.contains("--- a/task-diff1"));
+    assert!(diff.contains("+++ b/task-diff1"));
+    assert!(diff.contains("-Line 2"));
+    assert!(diff.contains("+Line 2 updated"));
+    assert!(diff.contains("+Line 3"));
+
+    // Also verify structured_content carries diff
+    let structured = res.structured_content.expect("structured_content must exist");
+    assert_eq!(
+        structured.get("diff").and_then(|v| v.as_str()),
+        Some(diff)
+    );
+}
+
+#[test]
+fn test_edit_body_response_includes_diff() {
+    let (_tmp, server) = build_disk_backed_server(&[(
+        "tasks/task-diff2.md",
+        "---\nid: task-diff2\ntitle: Diff Test 2\ntype: task\nstatus: ready\ncreated: 2026-07-23T10:00:00+00:00\n---\n\nInitial line.\nSecond line.\n",
+    )]);
+
+    let diff_input = "@@ ... @@\n-Second line.\n+Updated second line.\n";
+    let res = server
+        .handle_edit_body(&json!({
+            "id": "task-diff2",
+            "diff": diff_input,
+        }))
+        .expect("edit_body must succeed");
+
+    let text = res
+        .content
+        .iter()
+        .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+        .collect::<String>();
+    let j: serde_json::Value = serde_json::from_str(&text).expect("response must be JSON");
+    let diff = j
+        .get("diff")
+        .and_then(|v| v.as_str())
+        .expect("diff field must be present in response");
+    assert!(diff.contains("--- a/task-diff2"));
+    assert!(diff.contains("+++ b/task-diff2"));
+    assert!(diff.contains("-Second line."));
+    assert!(diff.contains("+Updated second line."));
+}
+
+#[test]
+fn test_edit_body_dry_run_response_includes_diff() {
+    let (tmp, server) = build_disk_backed_server(&[(
+        "tasks/task-diff3.md",
+        "---\nid: task-diff3\ntitle: Diff Test 3\ntype: task\nstatus: ready\ncreated: 2026-07-23T10:00:00+00:00\n---\n\nInitial line.\nSecond line.\n",
+    )]);
+
+    let diff_input = "@@ ... @@\n-Second line.\n+Mutated second line.\n";
+    let res = server
+        .handle_edit_body(&json!({
+            "id": "task-diff3",
+            "diff": diff_input,
+            "dry_run": true,
+        }))
+        .expect("edit_body dry_run must succeed");
+
+    let text = res
+        .content
+        .iter()
+        .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+        .collect::<String>();
+    let j: serde_json::Value = serde_json::from_str(&text).expect("response must be JSON");
+    let diff = j
+        .get("diff")
+        .and_then(|v| v.as_str())
+        .expect("diff field must be present in dry_run response");
+    assert!(diff.contains("--- a/task-diff3"));
+    assert!(diff.contains("+++ b/task-diff3"));
+    assert!(diff.contains("-Second line."));
+    assert!(diff.contains("+Mutated second line."));
+
+    // Ensure disk was untouched in dry_run
+    let disk_content = std::fs::read_to_string(tmp.path().join("tasks/task-diff3.md")).unwrap();
+    assert!(disk_content.contains("Second line."));
+    assert!(!disk_content.contains("Mutated second line."));
+}
+
+#[test]
+fn test_edit_alias_tool_dispatch_includes_diff() {
+    let (_tmp, server) = build_disk_backed_server(&[(
+        "tasks/task-diff4.md",
+        "---\nid: task-diff4\ntitle: Diff Test 4\ntype: task\nstatus: ready\ncreated: 2026-07-23T10:00:00+00:00\n---\n\nInitial line.\nSecond line.\n",
+    )]);
+
+    let diff_input = "@@ ... @@\n-Second line.\n+Dispatched second line.\n";
+    let res = server
+        .dispatch_tool_sync(
+            "edit",
+            &json!({
+                "id": "task-diff4",
+                "diff": diff_input,
+            }),
+        )
+        .expect("dispatch_tool_sync('edit') must succeed");
+
+    let text = res
+        .content
+        .iter()
+        .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+        .collect::<String>();
+    let j: serde_json::Value = serde_json::from_str(&text).expect("response must be JSON");
+    let diff = j
+        .get("diff")
+        .and_then(|v| v.as_str())
+        .expect("diff field must be present in edit dispatch response");
+    assert!(diff.contains("--- a/task-diff4"));
+    assert!(diff.contains("+++ b/task-diff4"));
+    assert!(diff.contains("-Second line."));
+    assert!(diff.contains("+Dispatched second line."));
+}
+
+#[test]
+fn test_output_schema_for_update_body_and_edit_body_declares_diff() {
+    let update_schema = PkbSearchServer::output_schema_for_tool("update_body");
+    let update_val = serde_json::to_value(&update_schema).unwrap();
+    assert_eq!(
+        update_val.pointer("/properties/diff/type").and_then(|v| v.as_str()),
+        Some("string"),
+        "update_body output schema must declare diff property as string: {update_val:?}"
+    );
+
+    let edit_body_schema = PkbSearchServer::output_schema_for_tool("edit_body");
+    let edit_body_val = serde_json::to_value(&edit_body_schema).unwrap();
+    assert_eq!(
+        edit_body_val.pointer("/properties/diff/type").and_then(|v| v.as_str()),
+        Some("string"),
+        "edit_body output schema must declare diff property as string: {edit_body_val:?}"
+    );
+
+    let edit_schema = PkbSearchServer::output_schema_for_tool("edit");
+    let edit_val = serde_json::to_value(&edit_schema).unwrap();
+    assert_eq!(
+        edit_val.pointer("/properties/diff/type").and_then(|v| v.as_str()),
+        Some("string"),
+        "edit alias output schema must declare diff property as string: {edit_val:?}"
+    );
+}
