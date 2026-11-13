@@ -1948,9 +1948,9 @@ impl PkbSearchServer {
                 ));
             }
 
-            let has_fields = args.get("fields").map_or(false, |f| {
-                f.as_array().map_or(false, |a| !a.is_empty())
-                    || f.as_str().map_or(false, |s| !s.trim().is_empty())
+            let has_fields = args.get("fields").is_some_and(|f| {
+                f.as_array().is_some_and(|a| !a.is_empty())
+                    || f.as_str().is_some_and(|s| !s.trim().is_empty())
             }) || metrics.fields_projected;
             if has_fields {
                 current_span.set_attribute(opentelemetry::KeyValue::new(

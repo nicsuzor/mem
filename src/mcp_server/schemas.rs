@@ -1115,10 +1115,11 @@ impl PkbSearchServer {
                     "id": { "type": "string" },
                     "modified": { "type": "string" },
                     "message": { "type": "string" },
-                    "bytes_written": { "type": "integer" }
+                    "bytes_written": { "type": "integer" },
+                    "diff": { "type": "string" }
                 }
             }),
-            "edit_body" => serde_json::json!({
+            "edit_body" | "edit" => serde_json::json!({
                 "type": "object",
                 "properties": {
                     "id": { "type": "string" },
@@ -1126,7 +1127,8 @@ impl PkbSearchServer {
                     "message": { "type": "string" },
                     "applied_hunks": { "type": "integer" },
                     "total_hunks": { "type": "integer" },
-                    "dry_run": { "type": "boolean" }
+                    "dry_run": { "type": "boolean" },
+                    "diff": { "type": "string" }
                 }
             }),
             "delete" => serde_json::json!({

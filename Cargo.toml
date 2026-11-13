@@ -80,6 +80,7 @@ ndarray = "0.16"
 # Utilities
 chrono = { version = "0.4", features = ["serde"] }
 regex = "1"
+similar = "2.6"
 md5 = "0.7"
 blake3 = "1"
 rand = "0.9"
