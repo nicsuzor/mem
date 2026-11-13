@@ -207,7 +207,7 @@ Non-linearity defeats the spacing and centring biases that corrupt linear scales
 |---------|-------------|
 | `pkb search <query> [-n limit] [--full]` | Semantic search across the knowledge base |
 | `pkb add <files...>` | Add markdown files to the index |
-| `pkb reindex [--force]` | Re-scan and re-index all PKB files |
+| `pkb reindex [--force] [-b batch]` | Re-scan and re-index all PKB files |
 | `pkb status` | Show index statistics (document count, DB size) |
 
 ### Task Management
@@ -408,6 +408,7 @@ MCP Client <--stdio--> pkb (MCP server)
 | `AOPS_OFFLINE` | `false` | Disable model/runtime auto-download |
 | `AOPS_DUMMY_EMBEDDER` | `false` | Use zero-vector dummy embedder (for tests/offline) |
 | `AOPS_MODEL_PATH` | (auto) | Override model directory path |
+| `AOPS_MODEL_VARIANT` | `auto` | Embedding weights: `auto` (int8 if present), `quantized`, or `fp32`; same as the global `--model` flag. Use `fp32` for GPU reindexing (int8 runs ~10x slower under CUDA),; the variants' vectors are compatible, so an index built with `fp32` on GPU can be served with `quantized` on CPU |
 | `ORT_DYLIB_PATH` | (auto) | Override ONNX Runtime library path |
 
 ## Acknowledgments

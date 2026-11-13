@@ -34,8 +34,31 @@ struct Cli {
     #[arg(long, global = true, env = "PKB_DB_PATH", default_value_t = default_db_path())]
     db_path: String,
 
+    /// Embedding model weights: auto (int8 if present, else fp32), quantized (int8), or fp32.
+    /// Use fp32 for GPU reindexing — the int8 model runs ~10x slower under CUDA.
+    /// Variants produce compatible vectors: an fp32-built index can be served with int8 queries.
+    #[arg(long = "model", global = true, env = "AOPS_MODEL_VARIANT", value_enum)]
+    model: Option<ModelArg>,
+
     #[command(subcommand)]
     command: Option<Commands>,
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+enum ModelArg {
+    Auto,
+    Quantized,
+    Fp32,
+}
+
+impl ModelArg {
+    fn as_str(self) -> &'static str {
+        match self {
+            ModelArg::Auto => "auto",
+            ModelArg::Quantized => "quantized",
+            ModelArg::Fp32 => "fp32",
+        }
+    }
 }
 
 #[derive(Clone, ValueEnum)]
@@ -130,7 +153,7 @@ enum Commands {
         #[arg(short, long)]
         threads: Option<usize>,
 
-        /// Chunks per sub-batch (default: 32)
+        /// Chunks per ONNX sub-batch (default: 32)
         #[arg(short, long)]
         batch_size: Option<usize>,
     },
@@ -149,7 +172,7 @@ enum Commands {
         #[arg(short, long)]
         threads: Option<usize>,
 
-        /// Chunks per sub-batch (default: 32)
+        /// Chunks per ONNX sub-batch (default: 32)
         #[arg(short, long)]
         batch_size: Option<usize>,
 
@@ -1054,6 +1077,11 @@ fn print_staleness_warning(pkb_root: &std::path::Path, missing_id: &str) {
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
+    // The embedder reads its model variant from the environment; forward the
+    // --model switch there before anything constructs an Embedder.
+    if let Some(model) = cli.model {
+        std::env::set_var(mem::embeddings::ModelVariant::ENV, model.as_str());
+    }
     if std::env::args().any(|arg| arg == "--pkb-root" || arg.starts_with("--pkb-root=")) {
         eprintln!("warning: --pkb-root is deprecated, please use --root instead");
     }
