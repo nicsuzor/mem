@@ -159,16 +159,15 @@ Indices are the fractional keys of the `fractional-indexing` 3.2.0 scheme that E
 - **Minting Mechanism (`mint_indices`)**:
   Minting $N$ indices after `after` is `generateNKeysBetween(after, null, N)`: successive integer keys (`a0` → `a1` … `az` → `b00` …), so keys stay short however many are minted. Empty `after` mints from `a0`. A malformed `after` with a readable integer part is stepped past by incrementing that integer part (which sorts above it); an `after` with no readable integer part (e.g. `b0`) is an error.
 - **Scene Maximum (`max_index_of`)**: mutations mint after the highest key among all elements, deleted ones included, since Excalidraw orders deleted elements in the same sequence.
-- **Malformed Key Repair**: `atomic_save` re-keys elements whose index is malformed, keeping array order: each run of malformed keys receives fresh keys between its well-formed neighbours (as Excalidraw's `syncInvalidIndices` does on load) and a `note: re-keyed N malformed fractional index key(s)` line goes to stderr. Elements with missing or duplicate indices are not repaired; `cmd_check` rejects them.
+- **Malformed Key Repair (`reindex` / `check --fix`)**: Existing canvases with malformed, duplicate, or out-of-order fractional keys can be repaired in place via `pkb-excalidraw FILE reindex` or `pkb-excalidraw FILE check --fix`, preserving array z-order (`check --fix` also recomputes stale linear `width`/`height` bounds from `points`). `atomic_save` does **not** silently rewrite invalid keys; instead, its pre-save `cmd_check` gate refuses to write any document containing invalid fractional index keys.
 - **Validation**: `cmd_check` reports every live element whose index is malformed as `invalid fractional index keys (id=index): [...]`.
 
 ### 3.3 Dual Text Synchronization (`text` vs `originalText`)
 Excalidraw text elements contain two text attributes:
-1. `text`: The formatted/word-wrapped text rendered on the canvas (contains hard newlines `\n` inserted by the layout engine).
+1. `text`: The formatted/word-wrapped text rendered on the canvas (contains hard newlines `\n` inserted by the layout engine, including after hyphens like `"well-\nknown"`).
 2. `originalText`: The raw prose entered by the author.
-- **Invariant**: The whitespace-normalized word sequence of `text` and `originalText` must be strictly identical:
-  $$\text{split\_whitespace}(\text{text}) \equiv \text{split\_whitespace}(\text{originalText})$$
-- **Failure Mode**: If `text` and `originalText` diverge in content, the Excalidraw editor silently overwrites `text` with `originalText` on the next interaction, erasing edits.
+- **Invariant**: After normalizing Excalidraw's soft line-wrapping (rejoining hyphen line-wraps `-\n` / `-\r\n` to `-` and splitting on whitespace), the word sequence of `text` and `originalText` must be identical.
+- **Failure Mode**: If `text` and `originalText` diverge in content, the Excalidraw editor silently overwrites `text` with `originalText` on the next interaction, erasing edits. `cmd_check` flags disagreements and explicitly marks long quoted strings with ellipsis and character length (`... (truncated, N chars total)`).
 
 ### 3.4 Bidirectional Container-Text Binding
 When text is enclosed inside a shape (`rectangle`, `ellipse`, `diamond`) or placed as a label on an `arrow`:
@@ -210,7 +209,9 @@ Usage:
   pkb-excalidraw --help [COMMAND]
 
 Projections & Inspection:
-  pkb-excalidraw FILE [summary|map|nodes|edges|arrows|style|check|overlap|arrows-check]
+  pkb-excalidraw FILE [summary|map|nodes|edges|arrows|style|overlap|arrows-check]
+  pkb-excalidraw FILE check [--fix]
+  pkb-excalidraw FILE reindex
   pkb-excalidraw FILE inspect <id>
   pkb-excalidraw FILE get <id>
   pkb-excalidraw FILE describe
@@ -744,9 +745,8 @@ For straight arrows connecting `nodeA` $(x_1, y_1, w_1, h_1)$ to `nodeB` $(x_2, 
    - Diamond: $t = 1 / (|l_x|/a + |l_y|/b)$
 4. Endpoints: $S = C_1 + t_1 u$ with $t_1$ for `nodeA` along $u$; $E = C_2 - t_2 u$ with $t_2$ for `nodeB` along $-u$. Both bindings carry `focus: 0` (the line passes through both centres) and `gap: g`.
 5. Overlap fallback: if $t_1 + t_2 \ge \lVert C_2 - C_1 \rVert$ the grown outlines meet, so $S = C_1$, $E = C_2$ and both bindings carry `gap: 0` (Excalidraw's reading of a binding that points straight at its focus).
-6. Arrow root: $x = S_x, y = S_y$, `points` = `[[0.0, 0.0], [dx, dy]]` with $(dx, dy) = E - S$; `width` = $|dx|$, `height` = $|dy|$.
-7. Arrow Midpoint:
-   $$M = \left( x + \frac{dx}{2}, \, y + \frac{dy}{2} \right)$$
+6. Arrow root: $x = S_x, y = S_y$, `points` = `[[0.0, 0.0], [dx, dy]]` with $(dx, dy) = E - S$ (or with `--curved`, a 3-point bowed arc `[[0.0, 0.0], [mid_x, mid_y], [dx, dy]]` deflected along the chord unit normal); `width` and `height` equal the axis-aligned bounding box extent of `points` (`points_bounding_box`, recomputed automatically whenever `points` is modified via `update --set points` or `move-elem` and verified by `cmd_check`).
+7. Arrow Midpoint: for 2-point arrows $M = (x + dx/2, y + dy/2)$; for $\ge 3$-point curved arrows, the midpoint point `points[len/2]`.
 8. Label Placement: Centered on $M$:
    $$lx = M_x - \frac{ltw}{2.0}, \quad ly = M_y - \frac{lth}{2.0}$$
 
@@ -816,8 +816,8 @@ sequenceDiagram
     participant Disk as Filesystem (.tmp)
     participant Target as Target File (.excalidraw / .excalidraw.md)
 
-    CLI->>CLI: 1. Sort elements by index key, re-key malformed keys
-    CLI->>Val: 2. Run structural validation check
+    CLI->>CLI: 1. Sort elements by index key
+    CLI->>Val: 2. Run structural validation check (rejects invalid fractional keys)
     alt Validation Fails
         Val-->>CLI: Return Err(fails)
         CLI-->>CLI: Abort mutation, target file untouched
@@ -828,8 +828,8 @@ sequenceDiagram
     end
 ```
 
-1. **Index Sort & Repair**: Sorts the in-memory `elements` array so array order strictly equals index order, then re-keys any malformed index keys in place (§3.2).
-2. **Integrity Validation (`cmd_check`)**: Verifies duplicate IDs, index monotonicity, index key format, text sync, and arrow topology. If validation fails, execution halts and the target file is untouched.
+1. **Index Sort**: Sorts the in-memory `elements` array so array order strictly equals index order (explicit `reindex` or `check --fix` repairs malformed/out-of-order keys before saving).
+2. **Integrity Validation (`cmd_check`)**: Verifies duplicate IDs, index monotonicity, index key format (§3.2), linear `points` bounding box dimensions, text sync (§3.3), and arrow topology. If validation fails, execution halts and the target file is untouched.
 3. **Format-Aware Formatting & Temporary Write**:
    - For standard `.excalidraw` files: Serializes pretty-printed JSON.
    - For Obsidian `.excalidraw.md` files: Synchronizes `## Text Elements` with block references (`^<id>`), preserves YAML frontmatter and markdown sections, and updates the ` ```json ` codeblock.
