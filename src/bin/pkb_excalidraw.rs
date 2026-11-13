@@ -224,11 +224,23 @@ pub const COMMAND_REGISTRY: &[CommandInfo] = &[
         name: "check",
         aliases: &[],
         category: "Validation & Integrity",
-        synopsis: "pkb-excalidraw FILE check",
+        synopsis: "pkb-excalidraw FILE check [--fix]",
         summary: "Referential integrity and invariant verification across the canvas",
-        description: "Audits the entire canvas against core Excalidraw invariants: detects duplicate element IDs, verifies that array ordering matches fractional index ordering and that every index key is a well-formed base-62 fractional index, validates bidirectional container/text bindings, checks that arrow bindings are strictly 2-bound or 0-bound (half-bound arrows are invalid), verifies text synchronization, and checks for zero/negative bounding boxes. Exits 0 on success, 1 on errors.",
-        options: &[],
+        description: "Audits the entire canvas against core Excalidraw invariants: detects duplicate element IDs, verifies that array ordering matches fractional index ordering and that every index key is a well-formed base-62 fractional index, validates bidirectional container/text bindings, checks that arrow bindings are strictly 2-bound or 0-bound (half-bound arrows are invalid), checks that arrow/line width and height match the points bounding box, and verifies text synchronization (normalizing wrap line-breaks including hyphen wraps). With --fix, repairs malformed/out-of-order fractional index keys and stale linear width/height bounds from points in place before validating. Exits 0 on success, 1 on errors.",
+        options: &[
+            CommandOption { flag: "--fix", default: "false", description: "Repair invalid/non-monotonic fractional index keys in place before validating" },
+        ],
         example: "pkb-excalidraw diagram.excalidraw check",
+    },
+    CommandInfo {
+        name: "reindex",
+        aliases: &[],
+        category: "Validation & Integrity",
+        synopsis: "pkb-excalidraw FILE reindex",
+        summary: "Repair malformed, duplicate, or out-of-order fractional index keys in place",
+        description: "Re-keys any element whose fractional index key is invalid (under fractional-indexing base-62 validation) or out of order relative to array order, preserving relative z-order and saving atomically.",
+        options: &[],
+        example: "pkb-excalidraw diagram.excalidraw reindex",
     },
     CommandInfo {
         name: "overlap",
@@ -339,13 +351,13 @@ pub const COMMAND_REGISTRY: &[CommandInfo] = &[
         category: "Mutation & CRUD",
         synopsis: "pkb-excalidraw FILE connect --from <id1> --to <id2> [OPTIONS]",
         summary: "Create a 2-way bound directed arrow connecting two elements",
-        description: "Connects two canvas elements with a directed arrow. Computes boundary attachment points (the centre line trimmed to each shape's outline plus a 5px binding gap), generates an arrow element with startBinding and endBinding, registers the arrow in boundElements on both shapes, and optionally creates a centered bound text label.",
+        description: "Connects two canvas elements with a directed arrow. Computes boundary attachment points (the centre line trimmed to each shape's outline plus a 5px binding gap), generates an arrow element with startBinding and endBinding, registers the arrow in boundElements on both shapes, and optionally creates a centered bound text label. With --curved, adds a perpendicular midpoint deflection so the arrow follows a curved arc distinct from straight.",
         options: &[
             CommandOption { flag: "--from <id1>", default: "required", description: "Source element ID" },
             CommandOption { flag: "--to <id2>", default: "required", description: "Destination element ID" },
             CommandOption { flag: "--label \"<label>\"", default: "none", description: "Text label displayed along the arrow midpoint" },
             CommandOption { flag: "--color <hex>", default: "#1e1e1e", description: "Arrow stroke color in hex" },
-            CommandOption { flag: "--curved", default: "false", description: "Use curved bezier line instead of straight segment" },
+            CommandOption { flag: "--curved", default: "false", description: "Route a 3-point curved bezier path with perpendicular midpoint deflection" },
             CommandOption { flag: "--stroke-style <style>", default: "solid", description: "Stroke line pattern: solid, dashed, dotted" },
         ],
         example: "pkb-excalidraw diagram.excalidraw connect --from nodeA --to nodeB --label \"HTTPS / JSON\" --stroke-style dashed --curved",
@@ -831,7 +843,7 @@ pub fn render_brief_usage(styler: &Styler) -> String {
     out.push_str("Token-cheap projections, structural diffs, and mutations for .excalidraw files.\n\n");
     out.push_str(&format!("{}Commands:{}\n", s.bold, s.reset));
     out.push_str("  Projections:     summary, map, nodes, edges, inspect, get, describe, style, query\n");
-    out.push_str("  Validation:      check, overlap, arrows-check\n");
+    out.push_str("  Validation:      check, reindex, overlap, arrows-check\n");
     out.push_str("  Diffing:         diff, struct-diff\n");
     out.push_str("  Mutations:       add-node, update-node, add-text, connect, set-text, fit, move-elem,\n");
     out.push_str("                   delete-elem, update, apply, batch, clear\n");
@@ -853,7 +865,7 @@ Token-cheap projections, structural diffs, and mutations for .excalidraw files.
 
 Commands:
   Projections:     summary, map, nodes, edges, inspect, get, describe, style, query
-  Validation:      check, overlap, arrows-check
+  Validation:      check, reindex, overlap, arrows-check
   Diffing:         diff, struct-diff
   Mutations:       add-node, update-node, add-text, connect, set-text, fit, move-elem,
                    delete-elem, update, apply, batch, clear
@@ -944,6 +956,42 @@ pub fn truncate_safe(s: &str, max_chars: usize) -> &str {
         Some((idx, _)) => &s[..idx],
         None => s,
     }
+}
+
+/// Quotes element text for diagnostic output, marking truncation with ellipsis
+/// and total character length when `s` exceeds `max_chars`.
+pub fn quote_text_for_report(s: &str, max_chars: usize) -> String {
+    let total = s.chars().count();
+    if total <= max_chars {
+        format!("{s:?}")
+    } else {
+        let short = truncate_safe(s, max_chars);
+        format!("{short:?}... (truncated, {total} chars total)")
+    }
+}
+
+/// Normalizes Excalidraw's soft line-wrapping into whitespace-split words,
+/// rejoining intra-word hyphen wraps (`"well-\nknown"` -> `"well-known"`) while
+/// preserving spaced dashes across line wraps (`"this -\nthat"` -> `["this", "-", "that"]`).
+pub fn normalize_wrapped_text(s: &str) -> Vec<String> {
+    let normalized_newlines = s.replace("\r\n", "\n");
+    let chars: Vec<char> = normalized_newlines.chars().collect();
+    let mut rejoined = String::with_capacity(normalized_newlines.len());
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i] == '-' && i + 1 < chars.len() && chars[i + 1] == '\n' {
+            let prev_is_word = i > 0 && !chars[i - 1].is_whitespace();
+            let next_is_word = i + 2 < chars.len() && !chars[i + 2].is_whitespace();
+            if prev_is_word && next_is_word {
+                rejoined.push('-');
+                i += 2;
+                continue;
+            }
+        }
+        rejoined.push(chars[i]);
+        i += 1;
+    }
+    rejoined.split_whitespace().map(str::to_string).collect()
 }
 
 fn format_str_list(items: &[&str]) -> String {
@@ -1321,35 +1369,45 @@ pub fn max_index_of(doc: &Value) -> String {
         .to_string()
 }
 
-/// Re-keys elements whose index is malformed, keeping array order: each run of
-/// malformed keys gets fresh keys between its well-formed neighbours (as
-/// Excalidraw's `syncInvalidIndices` does on load). Returns the number re-keyed.
+/// Re-keys elements whose index is malformed, missing, duplicate, or out of order,
+/// preserving array order: each non-monotonic or invalid run gets fresh keys between
+/// its enclosing monotonic well-formed neighbours. Returns the number re-keyed.
 pub fn repair_malformed_indices(elements: &mut [Value]) -> Result<usize, String> {
     let keys: Vec<Option<String>> = elements
         .iter()
         .map(|e| e.get("index").and_then(|v| v.as_str()).map(str::to_string))
         .collect();
-    let malformed = |k: &Option<String>| match k {
-        Some(k) if !k.is_empty() => validate_order_key(k).is_err(),
-        _ => false,
-    };
-    fn well_formed(k: &Option<String>) -> Option<&str> {
-        k.as_deref().filter(|k| !k.is_empty() && validate_order_key(k).is_ok())
+    let mut keep = vec![false; keys.len()];
+    let mut prev_valid: Option<&str> = None;
+    for (i, k_opt) in keys.iter().enumerate() {
+        if let Some(k) = k_opt.as_deref() {
+            if !k.is_empty() && validate_order_key(k).is_ok()
+                && prev_valid.map(|p| p < k).unwrap_or(true)
+            {
+                keep[i] = true;
+                prev_valid = Some(k);
+            }
+        }
     }
 
     let mut repaired = 0;
     let mut i = 0;
     while i < keys.len() {
-        if !malformed(&keys[i]) {
+        if keep[i] {
             i += 1;
             continue;
         }
         let start = i;
-        while i < keys.len() && malformed(&keys[i]) {
+        while i < keys.len() && !keep[i] {
             i += 1;
         }
-        let lower = keys[..start].iter().rev().find_map(well_formed);
-        let upper = keys[i..].iter().find_map(well_formed);
+        let lower = (0..start)
+            .rev()
+            .find(|&idx| keep[idx])
+            .and_then(|idx| keys[idx].as_deref());
+        let upper = (i..keys.len())
+            .find(|&idx| keep[idx])
+            .and_then(|idx| keys[idx].as_deref());
         let fresh = generate_n_keys_between(lower, upper, i - start)
             .map_err(|e| format!("cannot re-key malformed indices: {e}"))?;
         for (e, k) in elements[start..i].iter_mut().zip(fresh) {
@@ -1358,6 +1416,15 @@ pub fn repair_malformed_indices(elements: &mut [Value]) -> Result<usize, String>
         repaired += i - start;
     }
     Ok(repaired)
+}
+
+/// Repairs malformed or out-of-order fractional index keys in `doc["elements"]`.
+pub fn cmd_reindex(doc: &mut Value) -> Result<usize, String> {
+    let elements = doc
+        .get_mut("elements")
+        .and_then(|v| v.as_array_mut())
+        .ok_or_else(|| "document missing elements array".to_string())?;
+    repair_malformed_indices(elements)
 }
 
 // ============================================================================
@@ -1427,6 +1494,86 @@ pub fn trimmed_arrow_endpoints(from: &Value, to: &Value) -> ((f64, f64), (f64, f
         }
     }
     (c1, c2, 0.0)
+}
+
+/// Computes `(width, height)` as the bounding-box extent of a `points` array
+/// containing at least two `[x, y]` points (as Excalidraw defines linear element bounds).
+pub fn points_bounding_box(points: &[Value]) -> Option<(f64, f64)> {
+    let mut min_x = f64::INFINITY;
+    let mut max_x = f64::NEG_INFINITY;
+    let mut min_y = f64::INFINITY;
+    let mut max_y = f64::NEG_INFINITY;
+    let mut count = 0usize;
+    for p in points {
+        let (px, py) = if let Some(arr) = p.as_array() {
+            if arr.len() < 2 {
+                continue;
+            }
+            (arr[0].as_f64()?, arr[1].as_f64()?)
+        } else if let Some(obj) = p.as_object() {
+            (
+                obj.get("x").and_then(|v| v.as_f64())?,
+                obj.get("y").and_then(|v| v.as_f64())?,
+            )
+        } else {
+            continue;
+        };
+        min_x = min_x.min(px);
+        max_x = max_x.max(px);
+        min_y = min_y.min(py);
+        max_y = max_y.max(py);
+        count += 1;
+    }
+    if count >= 2 {
+        Some((max_x - min_x, max_y - min_y))
+    } else {
+        None
+    }
+}
+
+/// Updates an element's `width` and `height` from its `points` bounding box when present.
+pub fn recompute_points_dimensions(el: &mut Value) {
+    if let Some((w, h)) = el
+        .get("points")
+        .and_then(|v| v.as_array())
+        .and_then(|pts| points_bounding_box(pts))
+    {
+        el["width"] = json!(w);
+        el["height"] = json!(h);
+    }
+}
+
+/// Repairs stale `width`/`height` on live `arrow`/`line` elements whose dimensions
+/// disagree with their `points` bounding box by more than 1.0 px.
+pub fn repair_points_dimensions(doc: &mut Value) -> usize {
+    let Some(elements) = doc.get_mut("elements").and_then(|v| v.as_array_mut()) else {
+        return 0;
+    };
+    let mut repaired = 0usize;
+    for el in elements.iter_mut() {
+        if el.get("isDeleted").and_then(|v| v.as_bool()).unwrap_or(false) {
+            continue;
+        }
+        let e_type = el.get("type").and_then(|v| v.as_str()).unwrap_or("");
+        if e_type != "arrow" && e_type != "line" {
+            continue;
+        }
+        let Some((bw, bh)) = el
+            .get("points")
+            .and_then(|v| v.as_array())
+            .and_then(|pts| points_bounding_box(pts))
+        else {
+            continue;
+        };
+        let w = el.get("width").and_then(|v| v.as_f64()).unwrap_or(f64::NAN);
+        let h = el.get("height").and_then(|v| v.as_f64()).unwrap_or(f64::NAN);
+        if !w.is_finite() || !h.is_finite() || (w - bw).abs() > 1.0 || (h - bh).abs() > 1.0 {
+            el["width"] = json!(bw);
+            el["height"] = json!(bh);
+            repaired += 1;
+        }
+    }
+    repaired
 }
 
 pub fn ccw(a: (f64, f64), b: (f64, f64), c: (f64, f64)) -> f64 {
@@ -1794,10 +1941,6 @@ pub fn atomic_save_ex(file_path: &str, doc: &mut Value, force_obsidian: bool) ->
             let idx_b = b.get("index").and_then(|v| v.as_str()).unwrap_or("");
             idx_a.cmp(idx_b)
         });
-        let repaired = repair_malformed_indices(arr)?;
-        if repaired > 0 {
-            eprintln!("note: re-keyed {repaired} malformed fractional index key(s)");
-        }
     }
 
     // 2. Validate structural integrity
@@ -2195,6 +2338,30 @@ pub fn mutate_connect(
     let ((start_x, start_y), (end_x, end_y), gap) = trimmed_arrow_endpoints(from_elem, to_elem);
     let dx = end_x - start_x;
     let dy = end_y - start_y;
+    let is_curved = curved.unwrap_or(false);
+    let (points_vec, mid_dx, mid_dy): (Vec<[f64; 2]>, f64, f64) = if is_curved {
+        let dist = dx.hypot(dy);
+        let (nx, ny) = if dist > 1e-6 {
+            (-dy / dist, dx / dist)
+        } else {
+            (0.0, 0.0)
+        };
+        let bow = if dist > 1e-6 {
+            (dist * 0.2).clamp(15.0, 80.0).min(dist * 0.4)
+        } else {
+            0.0
+        };
+        let mid_x = dx / 2.0 + nx * bow;
+        let mid_y = dy / 2.0 + ny * bow;
+        (vec![[0.0, 0.0], [mid_x, mid_y], [dx, dy]], mid_x, mid_y)
+    } else {
+        (vec![[0.0, 0.0], [dx, dy]], dx / 2.0, dy / 2.0)
+    };
+    let points_val = json!(points_vec);
+    let (arrow_w, arrow_h) = points_val
+        .as_array()
+        .and_then(|pts| points_bounding_box(pts))
+        .unwrap_or((dx.abs(), dy.abs()));
 
     let arrow_id = new_id();
     let max_idx = max_index_of(doc);
@@ -2221,8 +2388,8 @@ pub fn mutate_connect(
         let label_index = &minted[1];
         let font_size = 16.0;
         let (ltw, lth) = compute_text_dimensions(label_text, font_size);
-        let lx = start_x + dx / 2.0 - ltw / 2.0;
-        let ly = start_y + dy / 2.0 - lth / 2.0;
+        let lx = start_x + mid_dx - ltw / 2.0;
+        let ly = start_y + mid_dy - lth / 2.0;
 
         let seed2: i32 = rng.random_range(1..=i32::MAX);
         let nonce2: i32 = rng.random_range(1..=i32::MAX);
@@ -2272,8 +2439,8 @@ pub fn mutate_connect(
         "type": "arrow",
         "x": start_x,
         "y": start_y,
-        "width": dx.abs(),
-        "height": dy.abs(),
+        "width": arrow_w,
+        "height": arrow_h,
         "angle": 0,
         "strokeColor": color.unwrap_or("#1a1a1a"),
         "backgroundColor": "transparent",
@@ -2285,7 +2452,7 @@ pub fn mutate_connect(
         "groupIds": [],
         "frameId": null,
         "index": arrow_index,
-        "roundness": if curved.unwrap_or(false) { serde_json::json!({ "type": 3 }) } else { serde_json::json!({ "type": 2 }) },
+        "roundness": if is_curved { serde_json::json!({ "type": 3 }) } else { serde_json::json!({ "type": 2 }) },
         "seed": seed1,
         "version": 1,
         "versionNonce": nonce1,
@@ -2294,10 +2461,7 @@ pub fn mutate_connect(
         "updated": stamp,
         "link": null,
         "locked": false,
-        "points": [
-            [0.0, 0.0],
-            [dx, dy]
-        ],
+        "points": points_val,
         "lastCommittedPoint": null,
         "startBinding": {
             "elementId": from_id,
@@ -2343,6 +2507,13 @@ fn get_arrow_midpoint(arrow_elem: &Value) -> (f64, f64) {
     let ax = arrow_elem.get("x").and_then(|v| v.as_f64()).unwrap_or(0.0);
     let ay = arrow_elem.get("y").and_then(|v| v.as_f64()).unwrap_or(0.0);
     if let Some(pts) = arrow_elem.get("points").and_then(|v| v.as_array()) {
+        if pts.len() >= 3 {
+            if let Some(pmid) = pts.get(pts.len() / 2).and_then(|v| v.as_array()) {
+                let mx = pmid.first().and_then(|v| v.as_f64()).unwrap_or(0.0);
+                let my = pmid.get(1).and_then(|v| v.as_f64()).unwrap_or(0.0);
+                return (ax + mx, ay + my);
+            }
+        }
         if pts.len() >= 2 {
             let p0 = pts.first().and_then(|v| v.as_array());
             let pend = pts.last().and_then(|v| v.as_array());
@@ -2577,11 +2748,10 @@ pub fn mutate_move_elem(
                             let py = last_pt[1].as_f64().unwrap_or(0.0);
                             last_pt[0] = json!(px - dx);
                             last_pt[1] = json!(py - dy);
-                            e["width"] = json!((px - dx).abs());
-                            e["height"] = json!((py - dy).abs());
                         }
                     }
                 }
+                recompute_points_dimensions(e);
                 (dx / 2.0, dy / 2.0)
             } else if e_moved {
                 if let Some(pts) = e.get_mut("points").and_then(|v| v.as_array_mut()) {
@@ -2591,11 +2761,10 @@ pub fn mutate_move_elem(
                             let py = last_pt[1].as_f64().unwrap_or(0.0);
                             last_pt[0] = json!(px + dx);
                             last_pt[1] = json!(py + dy);
-                            e["width"] = json!((px + dx).abs());
-                            e["height"] = json!((py + dy).abs());
                         }
                     }
                 }
+                recompute_points_dimensions(e);
                 (dx / 2.0, dy / 2.0)
             } else {
                 (0.0, 0.0)
@@ -3302,11 +3471,15 @@ pub fn mutate_update_elem(
         .find(|e| e.get("id").and_then(|v| v.as_str()) == Some(target_id))
         .ok_or_else(|| format!("element {target_id:?} not found"))?;
 
+    let updated_points = updates_obj.contains_key("points");
     for (k, v) in updates_obj {
         if k == "text" || k == "x" || k == "y" || k == "id" {
             continue;
         }
         el[k] = v.clone();
+    }
+    if updated_points {
+        recompute_points_dimensions(el);
     }
 
     Ok(())
@@ -3754,6 +3927,27 @@ pub fn cmd_check(doc: &Value) -> Result<String, Vec<String>> {
         }
     }
 
+    // 5b. Arrow / line width & height match points bounding box
+    for e in &els {
+        let e_type = e.get("type").and_then(|v| v.as_str()).unwrap_or("");
+        if e_type == "arrow" || e_type == "line" {
+            if let Some(pts) = e.get("points").and_then(|v| v.as_array()) {
+                if let Some((bw, bh)) = points_bounding_box(pts) {
+                    let w = e.get("width").and_then(|v| v.as_f64());
+                    let h = e.get("height").and_then(|v| v.as_f64());
+                    if let (Some(w), Some(h)) = (w, h) {
+                        if (w - bw).abs() > 1.0 || (h - bh).abs() > 1.0 {
+                            let id = e.get("id").and_then(|v| v.as_str()).unwrap_or("");
+                            fails.push(format!(
+                                "{e_type} {id} width/height ({w:.2}x{h:.2}) disagrees with points bounding box ({bw:.2}x{bh:.2})"
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     // 6. Dangling bindings, containers, boundElements, text mismatches
     for e in &els {
         let id = e.get("id").and_then(|v| v.as_str()).unwrap_or("");
@@ -3813,13 +4007,13 @@ pub fn cmd_check(doc: &Value) -> Result<String, Vec<String>> {
         let t = e.get("text").and_then(|v| v.as_str());
         let o = e.get("originalText").and_then(|v| v.as_str());
         if let (Some(t_str), Some(o_str)) = (t, o) {
-            let t_words: Vec<&str> = t_str.split_whitespace().collect();
-            let o_words: Vec<&str> = o_str.split_whitespace().collect();
+            let t_words = normalize_wrapped_text(t_str);
+            let o_words = normalize_wrapped_text(o_str);
             if t_words != o_words {
-                let t_short = truncate_safe(t_str, 60);
-                let o_short = truncate_safe(o_str, 60);
+                let t_quoted = quote_text_for_report(t_str, 60);
+                let o_quoted = quote_text_for_report(o_str, 60);
                 fails.push(format!(
-                    "{id}: text and originalText disagree in content, not just wrapping — one layer is invisible and will be overwritten by the other on next layout (text={t_short:?} originalText={o_short:?})"
+                    "{id}: text and originalText disagree in content, not just wrapping — one layer is invisible and will be overwritten by the other on next layout (text={t_quoted} originalText={o_quoted})"
                 ));
             }
         }
@@ -5141,10 +5335,24 @@ pub fn render_svg(doc: &Value, include_background: bool) -> Result<String, Strin
                         }
                     }
 
+                    let has_roundness = e.get("roundness").map(|v| !v.is_null()).unwrap_or(false);
                     if pts_tuples.len() == 2 {
                         svg.push_str(&format!(
                             r#"  <line x1="{:.1}" y1="{:.1}" x2="{:.1}" y2="{:.1}" stroke="{}" stroke-width="{:.1}"{}{}{} />"#,
                             pts_tuples[0].0, pts_tuples[0].1, pts_tuples[1].0, pts_tuples[1].1,
+                            stroke_color, stroke_width, dash_attr, opacity_attr, marker_attr
+                        ));
+                        svg.push('\n');
+                    } else if pts_tuples.len() == 3 && has_roundness {
+                        // Quadratic Bezier passing through pts_tuples[1] as the curve midpoint
+                        let (x0, y0) = pts_tuples[0];
+                        let (x1, y1) = pts_tuples[1];
+                        let (x2, y2) = pts_tuples[2];
+                        let cx = 2.0 * x1 - 0.5 * (x0 + x2);
+                        let cy = 2.0 * y1 - 0.5 * (y0 + y2);
+                        svg.push_str(&format!(
+                            r#"  <path d="M {:.1},{:.1} Q {:.1},{:.1} {:.1},{:.1}" fill="none" stroke="{}" stroke-width="{:.1}"{}{}{} />"#,
+                            x0, y0, cx, cy, x2, y2,
                             stroke_color, stroke_width, dash_attr, opacity_attr, marker_attr
                         ));
                         svg.push('\n');
@@ -5645,7 +5853,7 @@ fn main() {
     // Normalize command positioning:
     // Support both `pkb-excalidraw FILE COMMAND [args]` and `pkb-excalidraw COMMAND FILE [args]`
     let known_modes = [
-        "summary", "map", "style", "check", "diff", "struct-diff", "lib", "item",
+        "summary", "map", "style", "check", "reindex", "diff", "struct-diff", "lib", "item",
         "nodes", "edges", "arrows", "inspect", "get", "add-node", "update-node", "add-text",
         "connect", "set-text", "fit", "set-stroke-style", "move-elem", "delete-elem", "batch",
         "theme", "overlap", "arrows-check",
@@ -5721,19 +5929,81 @@ fn main() {
             cmd_get(&doc, &extra_args[0]);
         }
         "style" => cmd_style(&doc),
-        "check" => match cmd_check(&doc) {
-            Ok(msg) => {
-                println!("{msg}");
-                process::exit(0);
-            }
-            Err(fails) => {
-                println!("FAIL");
-                for f in fails {
-                    println!("  {f}");
+        "check" => {
+            let fix = extra_args.iter().any(|a| a == "--fix");
+            if fix {
+                let repaired_indices = match cmd_reindex(&mut doc) {
+                    Ok(n) => n,
+                    Err(e) => {
+                        eprintln!("error repairing indices: {e}");
+                        process::exit(1);
+                    }
+                };
+                let repaired_dims = repair_points_dimensions(&mut doc);
+                if repaired_indices > 0 || repaired_dims > 0 {
+                    if let Err(e) = atomic_save_ex(file_path, &mut doc, is_obsidian) {
+                        eprintln!("error saving repaired file: {e}");
+                        process::exit(1);
+                    }
+                    match cmd_check(&doc) {
+                        Ok(msg) => {
+                            if repaired_dims > 0 {
+                                println!(
+                                    "OK: repaired {repaired_indices} index key(s) and {repaired_dims} linear dimension(s); {msg}"
+                                );
+                            } else {
+                                println!("OK: repaired {repaired_indices} index key(s); {msg}");
+                            }
+                            process::exit(0);
+                        }
+                        Err(fails) => {
+                            println!("FAIL");
+                            for f in fails {
+                                println!("  {f}");
+                            }
+                            process::exit(1);
+                        }
+                    }
                 }
-                process::exit(1);
             }
-        },
+            match cmd_check(&doc) {
+                Ok(msg) => {
+                    println!("{msg}");
+                    process::exit(0);
+                }
+                Err(fails) => {
+                    println!("FAIL");
+                    for f in fails {
+                        println!("  {f}");
+                    }
+                    process::exit(1);
+                }
+            }
+        }
+        "reindex" => {
+            match cmd_reindex(&mut doc) {
+                Ok(repaired) => {
+                    let total = doc.get("elements").and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(0);
+                    if repaired > 0 {
+                        if let Err(e) = atomic_save_ex(file_path, &mut doc, is_obsidian) {
+                            eprintln!("error saving reindexed file: {e}");
+                            process::exit(1);
+                        }
+                    } else if let Err(fails) = cmd_check(&doc) {
+                        println!("FAIL");
+                        for f in fails {
+                            println!("  {f}");
+                        }
+                        process::exit(1);
+                    }
+                    println!("OK: reindexed {repaired} elements ({total} total)");
+                }
+                Err(e) => {
+                    eprintln!("error reindexing elements: {e}");
+                    process::exit(1);
+                }
+            }
+        }
         "overlap" => match cmd_overlap(&doc) {
             Ok(_) => {
                 println!("OK: No overlapping elements detected.");
@@ -6467,6 +6737,12 @@ fn main() {
                             process::exit(1);
                         }
                     }
+                    "reindex" => {
+                        if let Err(e) = cmd_reindex(&mut doc) {
+                            eprintln!("batch mutation #{idx} (reindex) failed: {e}");
+                            process::exit(1);
+                        }
+                    }
                     "clear" => {
                         let _ = mutate_clear(&mut doc);
                     }
@@ -7046,7 +7322,7 @@ fn main() {
         }
         _ => {
             let modes = [
-                "summary", "map", "style", "check", "diff", "struct-diff", "lib", "item",
+                "summary", "map", "style", "check", "reindex", "diff", "struct-diff", "lib", "item",
                 "nodes", "edges", "arrows", "inspect", "get", "add-node", "update-node", "add-text",
                 "connect", "set-text", "fit", "set-stroke-style", "move-elem", "delete-elem", "batch",
                 "theme", "overlap", "arrows-check",
