@@ -20,8 +20,6 @@ impl SpanExporter for TestSpanExporter {
     fn shutdown(&mut self) {}
 }
 
-static EFFICIENCY_TEST_MUTEX: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
-
 fn setup_test_server(root: &Path) -> PkbSearchServer {
     std::fs::create_dir_all(root.join("tasks")).unwrap();
     std::fs::create_dir_all(root.join("notes")).unwrap();
@@ -210,7 +208,7 @@ fn test_search_defaults_to_snippet_detail_and_compact() {
 
 #[tokio::test]
 async fn test_otel_spans_record_token_metrics() {
-    let _lock = EFFICIENCY_TEST_MUTEX.lock().await;
+    let _lock = crate::mcp_server::tests::otel_spans_tests::OTEL_TEST_MUTEX.lock().await;
     let exporter = TestSpanExporter::default();
     let provider = TracerProvider::builder()
         .with_simple_exporter(exporter.clone())

@@ -2,15 +2,13 @@ use super::*;
 use crate::mcp_server::tests::otel_spans_tests::InMemorySpanExporter;
 use opentelemetry_sdk::trace::TracerProvider;
 
-static CALLER_SESSION_TEST_MUTEX: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
-
 fn make_meta(map: serde_json::Map<String, serde_json::Value>) -> rmcp::model::RequestMetaObject {
     rmcp::model::RequestMetaObject(rmcp::model::MetaObject(map))
 }
 
 #[tokio::test]
 async fn test_session_source_header() {
-    let _lock = CALLER_SESSION_TEST_MUTEX.lock().await;
+    let _lock = crate::mcp_server::tests::otel_spans_tests::OTEL_TEST_MUTEX.lock().await;
     let exporter = InMemorySpanExporter::default();
     let provider = TracerProvider::builder()
         .with_simple_exporter(exporter.clone())
@@ -53,7 +51,7 @@ async fn test_session_source_header() {
 
 #[tokio::test]
 async fn test_session_source_meta() {
-    let _lock = CALLER_SESSION_TEST_MUTEX.lock().await;
+    let _lock = crate::mcp_server::tests::otel_spans_tests::OTEL_TEST_MUTEX.lock().await;
     let exporter = InMemorySpanExporter::default();
     let provider = TracerProvider::builder()
         .with_simple_exporter(exporter.clone())
@@ -94,7 +92,7 @@ async fn test_session_source_meta() {
 
 #[tokio::test]
 async fn test_session_source_argument_preserved() {
-    let _lock = CALLER_SESSION_TEST_MUTEX.lock().await;
+    let _lock = crate::mcp_server::tests::otel_spans_tests::OTEL_TEST_MUTEX.lock().await;
     let exporter = InMemorySpanExporter::default();
     let provider = TracerProvider::builder()
         .with_simple_exporter(exporter.clone())
@@ -141,7 +139,7 @@ async fn test_session_source_argument_preserved() {
 
 #[tokio::test]
 async fn test_session_precedence_header_over_meta_over_arg() {
-    let _lock = CALLER_SESSION_TEST_MUTEX.lock().await;
+    let _lock = crate::mcp_server::tests::otel_spans_tests::OTEL_TEST_MUTEX.lock().await;
     let exporter = InMemorySpanExporter::default();
     let provider = TracerProvider::builder()
         .with_simple_exporter(exporter.clone())
@@ -164,13 +162,17 @@ async fn test_session_precedence_header_over_meta_over_arg() {
         "session_id": "arg-3"
     });
 
+    exporter.spans.lock().unwrap().clear();
     server
         .execute_tool_call("search", &args, Some(&parts), Some(&meta))
         .await
         .unwrap();
 
     let spans = exporter.spans.lock().unwrap().clone();
-    let span1 = spans.last().expect("span 1");
+    let span1 = spans
+        .iter()
+        .rfind(|s| s.name == "mcp.search")
+        .expect("mcp.search span 1");
     let attrs1: std::collections::HashMap<String, String> = span1
         .attributes
         .iter()
@@ -186,13 +188,17 @@ async fn test_session_precedence_header_over_meta_over_arg() {
     let req_no_sess = http::Request::builder().body(()).unwrap();
     let parts_no_sess = req_no_sess.into_parts().0;
 
+    exporter.spans.lock().unwrap().clear();
     server
         .execute_tool_call("search", &args, Some(&parts_no_sess), Some(&meta))
         .await
         .unwrap();
 
     let spans2 = exporter.spans.lock().unwrap().clone();
-    let span2 = spans2.last().expect("span 2");
+    let span2 = spans2
+        .iter()
+        .rfind(|s| s.name == "mcp.search")
+        .expect("mcp.search span 2");
     let attrs2: std::collections::HashMap<String, String> = span2
         .attributes
         .iter()
@@ -207,7 +213,7 @@ async fn test_session_precedence_header_over_meta_over_arg() {
 
 #[tokio::test]
 async fn test_missing_or_empty_session_id_rejected_on_reads_and_writes() {
-    let _lock = CALLER_SESSION_TEST_MUTEX.lock().await;
+    let _lock = crate::mcp_server::tests::otel_spans_tests::OTEL_TEST_MUTEX.lock().await;
     let exporter = InMemorySpanExporter::default();
     let provider = TracerProvider::builder()
         .with_simple_exporter(exporter.clone())
@@ -281,7 +287,7 @@ async fn test_missing_or_empty_session_id_rejected_on_reads_and_writes() {
 
 #[tokio::test]
 async fn test_stateless_client_info_trace_and_no_leakage() {
-    let _lock = CALLER_SESSION_TEST_MUTEX.lock().await;
+    let _lock = crate::mcp_server::tests::otel_spans_tests::OTEL_TEST_MUTEX.lock().await;
     let exporter = InMemorySpanExporter::default();
     let provider = TracerProvider::builder()
         .with_simple_exporter(exporter.clone())

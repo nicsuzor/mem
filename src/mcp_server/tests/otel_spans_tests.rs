@@ -19,7 +19,7 @@ impl SpanExporter for InMemorySpanExporter {
     fn shutdown(&mut self) {}
 }
 
-static OTEL_TEST_MUTEX: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+pub(crate) static OTEL_TEST_MUTEX: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 #[tokio::test]
 async fn test_named_spans_emitted() {
