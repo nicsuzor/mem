@@ -1066,11 +1066,8 @@ async fn main() -> Result<()> {
         let mut filter =
             tracing_subscriber::EnvFilter::new(if is_protocol_server { "info" } else { "warn" });
         if matches!(command, Commands::Mcp { .. }) {
-            // rmcp logs every session handshake at INFO (create new session,
-            // Service initialized with a full peer_info dump, received
-            // notification, client initialized) and benign session close
-            // errors (task-2ae61ce6). The per-call `pkb::tool_call` summary
-            // is the INFO line per transaction. Refs task_14e0fee6.
+            // Keep rmcp transport noise below INFO so `pkb::tool_call` remains
+            // the one INFO line per transaction.
             filter = filter.add_directive("rmcp=warn".parse().unwrap());
         }
         filter
@@ -3527,16 +3524,6 @@ async fn main() -> Result<()> {
                 graph.read().edge_count()
             );
 
-            let session_registry = mem::otel::session_registry::SessionRegistry::new();
-
-            let prune_registry = session_registry.clone();
-            tokio::spawn(async move {
-                loop {
-                    tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
-                    prune_registry.prune_stale(std::time::Duration::from_secs(86400));
-                }
-            });
-
             // Create MCP server
             let server = mcp_server::PkbSearchServer::new(
                 store,
@@ -3545,76 +3532,37 @@ async fn main() -> Result<()> {
                 db_path.clone(),
                 graph,
             )
-            .with_session_registry(session_registry)
             .with_stale_count(stale_count);
 
             if http {
-                // HTTP/SSE mode
+                // Stateless MCP 2026-07-28 Streamable HTTP mode
                 use rmcp::transport::streamable_http_server::{
-                    session::local::LocalSessionManager, session::never::NeverSessionManager,
-                    StreamableHttpServerConfig, StreamableHttpService,
+                    session::never::NeverSessionManager, StreamableHttpServerConfig,
+                    StreamableHttpService,
                 };
 
                 let ct = tokio_util::sync::CancellationToken::new();
                 let mut config = StreamableHttpServerConfig::default()
-                    .with_sse_keep_alive(Some(std::time::Duration::from_secs(30)))
-                    .with_stateful_mode(true)
+                    .with_legacy_session_mode(false)
+                    .with_stateless_protocol_metadata_required(true)
+                    .with_json_response(true)
+                    .with_sse_keep_alive(None)
                     .with_cancellation_token(ct.clone());
                 if !allowed_hosts.is_empty() {
-                    config = config.with_allowed_hosts(allowed_hosts.clone());
+                    config = config.with_allowed_hosts(allowed_hosts);
                 }
                 eprintln!("   Allowed Host headers: {:?}", config.allowed_hosts);
 
-                // Use a generous keep-alive for MCP sessions (24 hours).
-                // The dashboard legitimately keeps a single MCP session open for days while idle.
-                // Idle != dead; don't kill sessions on inactivity unless we have a specific reason.
-                // Refs task-2ae61ce6.
-                let mut session_manager_inner = LocalSessionManager::default();
-                session_manager_inner.session_config.keep_alive =
-                    Some(std::time::Duration::from_secs(24 * 3600));
-                let session_manager = std::sync::Arc::new(session_manager_inner);
-
-                let server_stateful = server.clone();
+                let session_manager = std::sync::Arc::new(NeverSessionManager::default());
+                let server_http = server.clone();
                 let mcp_service = StreamableHttpService::new(
-                    move || Ok(server_stateful.clone()),
+                    move || Ok(server_http.clone()),
                     session_manager,
                     config,
                 );
 
-                let mut stateless_config = StreamableHttpServerConfig::default()
-                    .with_stateful_mode(false)
-                    .with_json_response(true)
-                    .with_cancellation_token(ct.clone());
-                if !allowed_hosts.is_empty() {
-                    stateless_config = stateless_config.with_allowed_hosts(allowed_hosts);
-                }
-
-                let stateless_session_manager = std::sync::Arc::new(NeverSessionManager::default());
-                let server_stateless = server.clone();
-                let stateless_service = StreamableHttpService::new(
-                    move || Ok(server_stateless.clone()),
-                    stateless_session_manager,
-                    stateless_config,
-                );
-
                 let app = axum::Router::new()
                     .route("/mcp", axum::routing::any_service(mcp_service))
-                    .route(
-                        "/mcp/stateless",
-                        axum::routing::any_service(stateless_service.clone()),
-                    )
-                    .route(
-                        "/mcp/sessionless",
-                        axum::routing::any_service(stateless_service.clone()),
-                    )
-                    .route(
-                        "/stateless",
-                        axum::routing::any_service(stateless_service.clone()),
-                    )
-                    .route(
-                        "/sessionless",
-                        axum::routing::any_service(stateless_service),
-                    )
                     .layer(axum::middleware::from_fn(
                         |mut req: axum::extract::Request, next: axum::middleware::Next| async move {
                             // Ensure Host header is present for HTTP/2 requests where the :authority pseudo-header
@@ -3626,24 +3574,30 @@ async fn main() -> Result<()> {
                                     }
                                 }
                             }
-                            // Normalize Accept header to include text/event-stream so clients sending
-                            // only application/json or */* do not get rejected by rmcp's accept check
-                            if let Some(accept) = req.headers().get(http::header::ACCEPT) {
-                                if let Ok(s) = accept.to_str() {
-                                    if !s.contains("text/event-stream") {
-                                        let new_accept = format!("{s}, text/event-stream");
-                                        if let Ok(val) = http::HeaderValue::from_str(&new_accept) {
-                                            req.headers_mut().insert(http::header::ACCEPT, val);
-                                        }
-                                    }
+                            // Normalize Accept header to include both application/json and text/event-stream
+                            // so clients sending only one (or */*) satisfy rmcp's accept validation.
+                            let mut accept_str = req
+                                .headers()
+                                .get(http::header::ACCEPT)
+                                .and_then(|v| v.to_str().ok())
+                                .unwrap_or("")
+                                .to_string();
+                            let mut additions = Vec::new();
+                            if !accept_str.contains("application/json") {
+                                additions.push("application/json");
+                            }
+                            if !accept_str.contains("text/event-stream") {
+                                additions.push("text/event-stream");
+                            }
+                            if !additions.is_empty() {
+                                if accept_str.is_empty() {
+                                    accept_str = additions.join(", ");
+                                } else {
+                                    accept_str = format!("{accept_str}, {}", additions.join(", "));
                                 }
-                            } else {
-                                req.headers_mut().insert(
-                                    http::header::ACCEPT,
-                                    http::HeaderValue::from_static(
-                                        "application/json, text/event-stream",
-                                    ),
-                                );
+                                if let Ok(val) = http::HeaderValue::from_str(&accept_str) {
+                                    req.headers_mut().insert(http::header::ACCEPT, val);
+                                }
                             }
                             next.run(req).await
                         },
@@ -3652,7 +3606,7 @@ async fn main() -> Result<()> {
                 let addr: std::net::SocketAddr = format!("{host}:{port}").parse()?;
                 let listener = tokio::net::TcpListener::bind(addr).await?;
                 let bound_addr = listener.local_addr()?;
-                eprintln!("   Starting MCP HTTP/SSE server on http://{bound_addr}/mcp (stateless: http://{bound_addr}/mcp/stateless)");
+                eprintln!("   Starting MCP HTTP/SSE server on http://{bound_addr}/mcp");
 
                 use axum::serve::ListenerExt;
                 let keepalive = socket2::TcpKeepalive::new()

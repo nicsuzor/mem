@@ -30,7 +30,7 @@ fn json_of(res: &CallToolResult) -> serde_json::Value {
     let text: String = res
         .content
         .iter()
-        .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+        .filter_map(|c| c.as_text().map(|t| t.text.as_str()))
         .collect();
     serde_json::from_str(&text).unwrap_or_else(|_| panic!("expected JSON, got: {text}"))
 }
@@ -38,7 +38,7 @@ fn json_of(res: &CallToolResult) -> serde_json::Value {
 fn text_of(res: &CallToolResult) -> String {
     res.content
         .iter()
-        .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+        .filter_map(|c| c.as_text().map(|t| t.text.as_str()))
         .collect()
 }
 

@@ -69,7 +69,7 @@ fn extract_task_ids_from_tool_result(res: &rmcp::model::CallToolResult) -> Vec<S
     let text = res
         .content
         .iter()
-        .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+        .filter_map(|c| c.as_text().map(|t| t.text.as_str()))
         .collect::<String>();
     if let Ok(val) = serde_json::from_str::<serde_json::Value>(&text) {
         if let Some(tasks) = val.get("tasks").and_then(|t| t.as_array()) {
@@ -150,7 +150,7 @@ fn test_task_created_with_status_failed_leaves_active_listings() {
         )
         .expect("create_task with status=failed should succeed");
 
-    let text = res.content[0].raw.as_text().unwrap().text.as_str();
+    let text = res.content[0].as_text().unwrap().text.as_str();
     let created: serde_json::Value = serde_json::from_str(text).unwrap();
     let task_id = created.get("id").and_then(|v| v.as_str()).unwrap();
     assert_eq!(
@@ -229,7 +229,7 @@ fn test_task_updated_to_status_failed_leaves_active_listings() {
         )
         .expect("create_task should succeed");
 
-    let text = res.content[0].raw.as_text().unwrap().text.as_str();
+    let text = res.content[0].as_text().unwrap().text.as_str();
     let created: serde_json::Value = serde_json::from_str(text).unwrap();
     let task_id = created.get("id").and_then(|v| v.as_str()).unwrap();
 
@@ -298,7 +298,7 @@ fn test_task_released_with_status_failed_leaves_active_listings() {
         )
         .expect("create_task should succeed");
 
-    let text = res.content[0].raw.as_text().unwrap().text.as_str();
+    let text = res.content[0].as_text().unwrap().text.as_str();
     let created: serde_json::Value = serde_json::from_str(text).unwrap();
     let task_id = created.get("id").and_then(|v| v.as_str()).unwrap();
 
@@ -332,7 +332,7 @@ fn test_task_released_with_status_failed_leaves_active_listings() {
         )
         .expect("releasing as failed with reason must succeed");
 
-    let release_text = release_res.content[0].raw.as_text().unwrap().text.as_str();
+    let release_text = release_res.content[0].as_text().unwrap().text.as_str();
     let release_json: serde_json::Value = serde_json::from_str(release_text).unwrap();
     assert_eq!(
         release_json.get("status").and_then(|v| v.as_str()),

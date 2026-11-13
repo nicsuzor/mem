@@ -152,14 +152,14 @@ fn test_root_level_task_accepts_empty_parent() {
         }))
         .unwrap();
 
-    let text = res.content[0].raw.as_text().unwrap().text.as_str();
+    let text = res.content[0].as_text().unwrap().text.as_str();
     let val: serde_json::Value = serde_json::from_str(text).unwrap();
     assert_eq!(val["status"], "inbox");
     let id = val["id"].as_str().unwrap();
 
     // Verify task was written without a parent
     let task_res = server.bench_get_task(&json!({"id": id})).unwrap();
-    let task_text = task_res.content[0].raw.as_text().unwrap().text.as_str();
+    let task_text = task_res.content[0].as_text().unwrap().text.as_str();
     let task_val: serde_json::Value = serde_json::from_str(task_text).unwrap();
     assert!(task_val.get("parent").is_none() || task_val["parent"].is_null());
 }
@@ -339,7 +339,7 @@ fn test_legacy_epic_in_task_search_and_list_tasks() {
     let res_epic = server
         .dispatch_tool_sync("list_tasks", &json!({"type": "epic"}))
         .unwrap();
-    let text_epic = res_epic.content[0].raw.as_text().unwrap().text.as_str();
+    let text_epic = res_epic.content[0].as_text().unwrap().text.as_str();
     assert!(
         text_epic.contains("Searchable Legacy Epic"),
         "list_tasks(type=epic) must find legacy epic: {text_epic}"
@@ -349,7 +349,7 @@ fn test_legacy_epic_in_task_search_and_list_tasks() {
     let res_task = server
         .dispatch_tool_sync("list_tasks", &json!({"type": "task"}))
         .unwrap();
-    let text_task = res_task.content[0].raw.as_text().unwrap().text.as_str();
+    let text_task = res_task.content[0].as_text().unwrap().text.as_str();
     assert!(
         text_task.contains("Searchable Legacy Epic"),
         "list_tasks(type=task) must include coerced legacy epic: {text_task}"
@@ -359,7 +359,7 @@ fn test_legacy_epic_in_task_search_and_list_tasks() {
     let res_search = server
         .dispatch_tool_sync("task_search", &json!({"query": "Searchable Legacy Epic"}))
         .unwrap();
-    let text_search = res_search.content[0].raw.as_text().unwrap().text.as_str();
+    let text_search = res_search.content[0].as_text().unwrap().text.as_str();
     assert!(
         text_search.contains("Searchable Legacy Epic"),
         "task_search must find legacy epic: {text_search}"

@@ -1,6 +1,5 @@
 use opentelemetry_otlp::WithExportConfig;
 pub mod config;
-pub mod session_registry;
 pub mod client_context;
 pub mod call_metrics;
 

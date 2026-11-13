@@ -1,6 +1,12 @@
+use std::collections::HashMap;
+use std::sync::OnceLock;
+
 use rmcp::model::*;
 
 use super::{PkbSearchServer, GOAL_TYPE_ENUM};
+
+static PUBLISHED_TOOLS: OnceLock<Vec<Tool>> = OnceLock::new();
+static ALL_TOOLS_BY_NAME: OnceLock<HashMap<String, Tool>> = OnceLock::new();
 
 impl PkbSearchServer {
     fn attach_output_schemas(tools: &mut [Tool]) {
@@ -10,10 +16,71 @@ impl PkbSearchServer {
                     serde_json::from_value(Self::output_schema_for_tool(&tool.name)).unwrap(),
                 ));
             }
+
+            let mut schema = (*tool.input_schema).clone();
+            let props = schema
+                .entry("properties".to_string())
+                .or_insert_with(|| serde_json::json!({}));
+            if let Some(props_obj) = props.as_object_mut() {
+                props_obj.insert(
+                    "session_id".to_string(),
+                    serde_json::json!({
+                        "type": "string",
+                        "minLength": 1,
+                        "description": "Calling agent's active session/conversation ID (e.g. CLAUDE_CODE_SESSION_ID or ANTIGRAVITY_CONVERSATION_ID) or client identifier."
+                    }),
+                );
+            }
+            let required = schema
+                .entry("required".to_string())
+                .or_insert_with(|| serde_json::json!([]));
+            if let Some(req_arr) = required.as_array_mut() {
+                if !req_arr.iter().any(|v| v.as_str() == Some("session_id")) {
+                    req_arr.push(serde_json::json!("session_id"));
+                }
+            }
+            tool.input_schema = std::sync::Arc::new(schema);
+
+            let ann = tool.annotations.get_or_insert_with(ToolAnnotations::new);
+            ann.open_world_hint = Some(false);
+            if ann.read_only_hint == Some(true) {
+                ann.destructive_hint.get_or_insert(false);
+                ann.idempotent_hint.get_or_insert(true);
+            } else {
+                ann.read_only_hint.get_or_insert(false);
+                ann.destructive_hint.get_or_insert(false);
+            }
         }
     }
 
+    pub fn published_tools() -> &'static [Tool] {
+        PUBLISHED_TOOLS.get_or_init(Self::build_published_tools)
+    }
+
+    pub fn lookup_tool(name: &str) -> Option<Tool> {
+        let canonical = match name {
+            "pkb_trace" | "pkb_orphans" => name,
+            "edit" => "edit_body",
+            other => other.strip_prefix("pkb_").unwrap_or(other),
+        };
+        let map = ALL_TOOLS_BY_NAME.get_or_init(|| {
+            let mut m = HashMap::new();
+            for tool in Self::published_tools().iter().cloned() {
+                m.insert(tool.name.to_string(), tool);
+            }
+            for tool in Self::get_retired_tools() {
+                m.insert(tool.name.to_string(), tool);
+            }
+            m
+        });
+        map.get(canonical).cloned()
+    }
+
     pub fn get_published_tools() -> Vec<Tool> {
+        Self::published_tools().to_vec()
+    }
+
+    fn build_published_tools() -> Vec<Tool> {
         let mut tools = vec![
             Tool::new(
                 "search",
@@ -370,7 +437,7 @@ impl PkbSearchServer {
                 .unwrap(),
             )
             .with_title("Update Task")
-            .with_annotations(ToolAnnotations::new().idempotent(true)),
+            .with_annotations(ToolAnnotations::new().read_only(false).destructive(false).idempotent(true)),
             Tool::new(
                 "update_body",
                 "Atomically rewrite markdown body of a document. Preserves frontmatter and updates modified date. Supports compare-and-swap via expected_modified.",
@@ -387,7 +454,7 @@ impl PkbSearchServer {
                 .unwrap(),
             )
             .with_title("Rewrite Document Body")
-            .with_annotations(ToolAnnotations::new().read_only(false)),
+            .with_annotations(ToolAnnotations::new().read_only(false).destructive(false).idempotent(true)),
             Tool::new(
                 "edit_body",
                 "Apply unified-diff hunks to document body. Preserves frontmatter and updates modified date. Supports compare-and-swap via expected_modified.",
@@ -441,7 +508,7 @@ impl PkbSearchServer {
                 .unwrap(),
             )
             .with_title("Delete Document")
-            .with_annotations(ToolAnnotations::new().destructive(true)),
+            .with_annotations(ToolAnnotations::new().read_only(false).destructive(true).idempotent(true)),
             Tool::new(
                 "convert_document",
                 "Retype doc (keeps ID), rename title/slug, move to `<dir>/<id>_<slug>.md` (template: `[<project>/]workflows/<snake_id>.md`), reindex.",
@@ -468,15 +535,14 @@ impl PkbSearchServer {
                     "type": "object",
                     "properties": {
                         "id": { "type": "string" },
-                        "assignee": { "type": "string" },
-                        "session_id": { "type": "string" }
+                        "assignee": { "type": "string" }
                     },
                     "required": ["id"]
                 }))
                 .unwrap(),
             )
             .with_title("Claim Template")
-            .with_annotations(ToolAnnotations::new().read_only(false)),
+            .with_annotations(ToolAnnotations::new().read_only(false).destructive(false).idempotent(true)),
             Tool::new(
                 "release_task",
                 "Release a task to a terminal or handoff status (done, review, blocked, cancelled, partial, failed). Evidence-or-failure-reason contract: `summary` (or `completion_evidence`) is always required; releasing to done requires all acceptance checklist items in the task body to be ticked (- [x]); releasing to blocked/cancelled/review/partial/failed additionally requires a non-empty `reason` (or `blocker`, for `blocked`) — a handback with neither is rejected.",
@@ -496,7 +562,6 @@ impl PkbSearchServer {
                         "branch": { "type": "string", "description": "Git branch name (optional)" },
                         "blocker": { "type": "string", "description": "Required when status=blocked (or provide reason)" },
                         "reason": { "type": "string", "description": "Why the task didn't ship cleanly. Required (non-empty) when status is blocked/cancelled/review/partial/failed (for status=blocked, `blocker` may be given instead)." },
-                        "session_id": { "type": "string", "description": "Active session ID" },
                         "issue_url": { "type": "string", "description": "External issue/ticket URL" },
                         "release_summary": { "type": "string", "description": "Detailed technical summary for the release. Warning if > 500 chars." },
                         "body": { "type": "string", "description": "Markdown body for ad-hoc tasks (wikilinks supported; host paths rejected)" },
@@ -733,7 +798,7 @@ impl PkbSearchServer {
                 .unwrap(),
             )
             .with_title("Batch Update Tasks")
-            .with_annotations(ToolAnnotations::new().idempotent(true)),
+            .with_annotations(ToolAnnotations::new().read_only(false).destructive(false).idempotent(true)),
             Tool::new(
                 "detect_weight_divergence",
                 "Detect 'contributes_to' edges with high stated weight but zero interaction on the source task. Captures drift where importance is high but activity is zero.",
@@ -903,7 +968,7 @@ impl PkbSearchServer {
                 .unwrap(),
             )
             .with_title("Batch Merge Tasks")
-            .with_annotations(ToolAnnotations::new().destructive(true).idempotent(true)),
+            .with_annotations(ToolAnnotations::new().read_only(false).destructive(true).idempotent(true)),
             Tool::new(
                 "batch_create_epics",
                 "Group flat tasks into new epic containers. Use to organize a scattered list of tasks into coherent, parented groups.",

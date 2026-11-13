@@ -116,11 +116,19 @@ fn jsonrpc_request(id: u64, method: &str, params: Value) -> String {
     json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params}).to_string()
 }
 
-fn jsonrpc_notification(method: &str) -> String {
-    json!({"jsonrpc": "2.0", "method": method}).to_string()
+fn protocol_meta() -> Value {
+    json!({
+        "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+        "io.modelcontextprotocol/clientCapabilities": {},
+        "io.modelcontextprotocol/clientInfo": {"name": "integration-test", "version": "0.1"}
+    })
 }
 
-fn initialize_request(id: u64) -> String {
+fn discover_request(id: u64) -> String {
+    jsonrpc_request(id, "server/discover", json!({ "_meta": protocol_meta() }))
+}
+
+fn legacy_initialize_request(id: u64) -> String {
     jsonrpc_request(
         id,
         "initialize",
@@ -132,12 +140,24 @@ fn initialize_request(id: u64) -> String {
     )
 }
 
-fn tool_call_request(id: u64, name: &str, args: Value) -> String {
-    jsonrpc_request(id, "tools/call", json!({"name": name, "arguments": args}))
+fn tool_call_request_with_args(id: u64, name: &str, args: Value) -> String {
+    jsonrpc_request(
+        id,
+        "tools/call",
+        json!({"name": name, "arguments": args, "_meta": protocol_meta()}),
+    )
+}
+
+fn tool_call_request(id: u64, name: &str, mut args: Value) -> String {
+    if let Some(obj) = args.as_object_mut() {
+        obj.entry("session_id".to_string())
+            .or_insert_with(|| json!("test-integration-session"));
+    }
+    tool_call_request_with_args(id, name, args)
 }
 
 fn tools_list_request(id: u64) -> String {
-    jsonrpc_request(id, "tools/list", json!({}))
+    jsonrpc_request(id, "tools/list", json!({ "_meta": protocol_meta() }))
 }
 
 // ── Stdio helpers ────────────────────────────────────────────────────────
@@ -432,93 +452,73 @@ fn http_post_route(
     (status_code, headers, body_section)
 }
 
-/// Raw HTTP POST to /mcp endpoint. Returns (status_code, headers, body).
-fn http_post(
+/// Raw HTTP POST to /mcp endpoint with MCP 2026-07-28 headers.
+fn http_post_mcp(
     port: u16,
     body: &str,
-    session_id: Option<&str>,
+    method: &str,
+    name: Option<&str>,
+    extra: &[(&str, &str)],
 ) -> (u16, HashMap<String, String>, String) {
-    let mut extra = Vec::new();
-    if let Some(sid) = session_id {
-        extra.push(("Mcp-Session-Id", sid));
+    let mut headers = vec![
+        ("MCP-Protocol-Version", "2026-07-28"),
+        ("Mcp-Method", method),
+    ];
+    if let Some(n) = name {
+        headers.push(("Mcp-Name", n));
     }
-    http_post_route(port, "/mcp", body, &extra)
+    headers.extend_from_slice(extra);
+    http_post_route(port, "/mcp", body, &headers)
 }
 
-/// Parse SSE event data lines from response body.
-fn parse_sse_messages(body: &str) -> Vec<Value> {
-    body.lines()
-        .filter(|line| line.starts_with("data: "))
-        .filter_map(|line| {
-            let json_str = &line[6..];
-            serde_json::from_str(json_str).ok()
-        })
-        .collect()
-}
-
-/// Full HTTP session: initialize, send notifications/initialized, return session ID.
-fn http_initialize(port: u16) -> (String, Value) {
-    let (status, headers, body) = http_post(port, &initialize_request(1), None);
+/// Discover server metadata over stateless /mcp.
+fn http_discover(port: u16) -> Value {
+    let (status, headers, body) =
+        http_post_mcp(port, &discover_request(1), "server/discover", None, &[]);
     assert_eq!(
         status, 200,
-        "initialize failed with status {status}. Body: {body}"
+        "server/discover failed with status {status}. Body: {body}"
     );
-
-    let session_id = headers
-        .get("mcp-session-id")
-        .expect("no Mcp-Session-Id header in initialize response")
-        .clone();
-
-    let messages = parse_sse_messages(&body);
     assert!(
-        !messages.is_empty(),
-        "no SSE data events in initialize response. Raw body:\n{body}"
+        !headers.contains_key("mcp-session-id"),
+        "sessionless server must not emit Mcp-Session-Id: {headers:?}"
     );
-
-    let init_result = messages[0].clone();
+    let resp: Value = serde_json::from_str(&body)
+        .unwrap_or_else(|e| panic!("invalid JSON from server/discover: {e}\nBody:\n{body}"));
     assert!(
-        init_result.get("result").is_some(),
-        "initialize response missing 'result': {init_result}"
+        resp.get("result").is_some(),
+        "server/discover missing 'result': {resp}"
     );
-
-    // Send initialized notification
-    let (notif_status, _, _) = http_post(
-        port,
-        &jsonrpc_notification("notifications/initialized"),
-        Some(&session_id),
-    );
-    // 200 or 202 both acceptable for notifications
-    assert!(
-        notif_status == 200 || notif_status == 202,
-        "notifications/initialized returned {notif_status}"
-    );
-
-    (session_id, init_result)
+    resp
 }
 
-/// Call a tool over HTTP with an existing session.
-fn http_call_tool(port: u16, session_id: &str, id: u64, tool: &str, args: Value) -> Value {
-    let (status, _, body) = http_post(port, &tool_call_request(id, tool, args), Some(session_id));
-    assert!(
-        status == 200,
-        "tool call '{tool}' returned status {status}. Body:\n{body}"
+/// Call a tool statelessly over HTTP /mcp (no session handshake required).
+fn http_call_tool(port: u16, id: u64, tool: &str, args: Value) -> Value {
+    let (status, headers, body) = http_post_mcp(
+        port,
+        &tool_call_request(id, tool, args),
+        "tools/call",
+        Some(tool),
+        &[],
     );
-
-    let messages = parse_sse_messages(&body);
     assert!(
-        !messages.is_empty(),
-        "no SSE data in tool call '{tool}' response. Raw body:\n{body}"
+        status == 200 || status == 404,
+        "tool call '{tool}' returned unexpected status {status}. Body:\n{body}"
     );
-
-    messages[0].clone()
+    assert!(
+        !headers.contains_key("mcp-session-id"),
+        "tool call response must not set Mcp-Session-Id: {headers:?}"
+    );
+    serde_json::from_str(&body)
+        .unwrap_or_else(|e| panic!("invalid JSON from tool call '{tool}': {e}\nBody:\n{body}"))
 }
 
 // ── Stdio tests ──────────────────────────────────────────────────────────
 
 #[test]
-fn test_stdio_initialize() {
-    let responses = stdio_session(&[initialize_request(1)]);
-    assert!(!responses.is_empty(), "no response from stdio initialize");
+fn test_stdio_discover() {
+    let responses = stdio_session(&[discover_request(1)]);
+    assert!(!responses.is_empty(), "no response from stdio server/discover");
 
     let result = &responses[0];
     assert!(
@@ -526,11 +526,16 @@ fn test_stdio_initialize() {
         "no 'result' in response: {result}"
     );
 
-    let server_info = &result["result"]["serverInfo"];
+    let server_info = &result["result"]["_meta"]["io.modelcontextprotocol/serverInfo"];
     assert_eq!(
         server_info["name"].as_str(),
         Some("pkb"),
         "server name mismatch: {server_info}"
+    );
+    assert_eq!(
+        result["result"]["supportedVersions"],
+        json!(["2026-07-28"]),
+        "unexpected supportedVersions: {result}"
     );
 }
 
@@ -556,11 +561,10 @@ fn test_stdio_stdout_purity() {
         .spawn()
         .expect("failed to spawn pkb mcp");
 
-    // Write initialize request then immediately drop stdin (EOF)
-    // The server processes the initialize request, emits the response, sees EOF, and exits cleanly.
+    // Write discover request then immediately drop stdin (EOF)
     {
         let mut stdin = child.stdin.take().unwrap();
-        writeln!(stdin, "{}", initialize_request(1)).unwrap();
+        writeln!(stdin, "{}", discover_request(1)).unwrap();
         stdin.flush().unwrap();
     }
 
@@ -599,8 +603,7 @@ fn test_stdio_stdout_purity() {
 #[test]
 fn test_stdio_tool_call() {
     let responses = stdio_session(&[
-        initialize_request(1),
-        jsonrpc_notification("notifications/initialized"),
+        discover_request(1),
         tool_call_request(2, "graph_stats", json!({})),
     ]);
 
@@ -626,123 +629,116 @@ fn test_stdio_tool_call() {
 fn test_http_server_starts() {
     let mut server = HttpServer::start();
     assert!(server.is_alive(), "server died after start");
+    let _ = http_discover(server.port);
 }
 
 #[test]
-fn test_http_initialize() {
+fn test_http_discover() {
     let server = HttpServer::start();
-    let (status, headers, body) = http_post(server.port, &initialize_request(1), None);
+    let (status, headers, body) =
+        http_post_mcp(server.port, &discover_request(1), "server/discover", None, &[]);
 
-    assert_eq!(status, 200, "initialize status: {status}");
+    assert_eq!(status, 200, "discover status {status}. Body:\n{body}");
 
-    // Validate SSE content type
     let content_type = headers.get("content-type").expect("no Content-Type header");
     assert!(
-        content_type.contains("text/event-stream"),
-        "expected text/event-stream, got: {content_type}"
+        content_type.contains("application/json"),
+        "expected application/json, got: {content_type}"
     );
-
-    // Validate session ID
     assert!(
-        headers.contains_key("mcp-session-id"),
-        "no Mcp-Session-Id header. Headers: {headers:?}"
+        !headers.contains_key("mcp-session-id"),
+        "stateless server must not emit Mcp-Session-Id. Headers: {headers:?}"
     );
 
-    // Validate response content
-    let messages = parse_sse_messages(&body);
-    assert!(!messages.is_empty(), "no SSE data events. Body:\n{body}");
-
-    let result = &messages[0]["result"];
+    let msg: Value = serde_json::from_str(&body).expect("valid JSON discover response");
+    let result = &msg["result"];
     assert_eq!(
-        result["serverInfo"]["name"].as_str(),
+        result["_meta"]["io.modelcontextprotocol/serverInfo"]["name"].as_str(),
         Some("pkb"),
         "server name mismatch: {result}"
     );
-}
-
-#[test]
-fn test_http_session_reuse() {
-    // THIS IS THE KEY REGRESSION TEST.
-    // Previous QA failed here: session was destroyed when curl closed the
-    // SSE connection. This test uses separate TCP connections to verify
-    // session persistence.
-    let server = HttpServer::start();
-    let (session_id, _) = http_initialize(server.port);
-
-    // Call a tool on a NEW connection with the same session ID
-    let result = http_call_tool(server.port, &session_id, 2, "graph_stats", json!({}));
-
-    assert!(
-        result.get("result").is_some(),
-        "session reuse failed — got error instead of result: {result}\n\
-         This is the exact regression from the previous QA failure.\n\
-         Session ID was: {session_id}"
+    assert_eq!(
+        result["supportedVersions"],
+        json!(["2026-07-28"]),
+        "unexpected supportedVersions: {result}"
     );
+    assert_eq!(result["ttlMs"].as_u64(), Some(300_000));
+    assert_eq!(result["cacheScope"].as_str(), Some("public"));
+    let instructions = result["instructions"]
+        .as_str()
+        .expect("discover must return server instructions");
     assert!(
-        result["result"].get("content").is_some(),
-        "graph_stats via HTTP missing content: {result}"
+        instructions.contains("session_id"),
+        "instructions must tell agents to pass session_id: {instructions}"
     );
 }
 
 #[test]
-fn test_http_mcp_requires_session() {
-    let server = HttpServer::start();
+fn test_http_legacy_initialize_and_duplicate_routes_rejected() {
+    let mut server = HttpServer::start();
 
-    // Direct tools/call on /mcp without session must fail with client error (400 or 422)
-    let (status, _, body) = http_post_route(
+    // Legacy initialize without 2026-07-28 handshake support is rejected
+    let (init_status, _, init_body) = http_post_route(
         server.port,
         "/mcp",
-        &tool_call_request(1, "search", json!({"query": "alpha"})),
-        &[],
+        &legacy_initialize_request(1),
+        &[("Mcp-Method", "initialize")],
     );
     assert!(
-        status == 400 || status == 422,
-        "/mcp without session must return 400 or 422, got {status}. Body: {body}"
+        (400..500).contains(&init_status) || init_body.contains("\"error\""),
+        "legacy initialize must be rejected; status={init_status}, body={init_body}"
     );
 
-    // Initializing properly creates a session
-    let (session_id, _) = http_initialize(server.port);
-
-    // Calling with that session ID succeeds
-    let result = http_call_tool(server.port, &session_id, 2, "graph_stats", json!({}));
-    assert!(
-        result.get("result").is_some(),
-        "/mcp with session must succeed: {result}"
-    );
+    // Duplicate stateless/sessionless routes must not exist (404)
+    for removed_route in ["/mcp/stateless", "/mcp/sessionless", "/stateless", "/sessionless"] {
+        let (st, _, _) = http_post_route(
+            server.port,
+            removed_route,
+            &discover_request(1),
+            &[
+                ("MCP-Protocol-Version", "2026-07-28"),
+                ("Mcp-Method", "server/discover"),
+            ],
+        );
+        assert_eq!(
+            st, 404,
+            "removed route {removed_route} must return 404, got {st}"
+        );
+    }
+    assert!(server.is_alive());
 }
 
 #[test]
-fn test_http_sessionless_route() {
+fn test_http_direct_stateless_tool_call_and_headers() {
     let server = HttpServer::start();
 
-    // Calling /mcp/stateless directly with tools/call, x-session-id, and traceparent (NO initialize, NO Mcp-Session-Id)
+    // Direct tools/call on /mcp WITHOUT any prior discover/initialize or Mcp-Session-Id
     let trace_id = "4bf92f3577b34da6a3ce929d0e0e4736";
     let parent_span_id = "00f067aa0ba902b7";
     let traceparent = format!("00-{trace_id}-{parent_span_id}-01");
-    let (status, headers, body) = http_post_route(
+    let (status, headers, body) = http_post_mcp(
         server.port,
-        "/mcp/stateless",
-        &tool_call_request(1, "search", json!({"query": "alpha"})),
+        &tool_call_request_with_args(1, "search", json!({"query": "alpha"})),
+        "tools/call",
+        Some("search"),
         &[
-            ("x-session-id", "test-stateless-session"),
+            ("x-session-id", "test-stateless-header-session"),
             ("traceparent", &traceparent),
         ],
     );
 
     assert_eq!(
         status, 200,
-        "/mcp/stateless must return 200 OK without initialize, got {status}. Body: {body}"
+        "/mcp stateless call must return 200 OK without prior handshake, got {status}. Body: {body}"
     );
-    // Must return application/json directly without SSE framing
     let content_type = headers.get("content-type").expect("Content-Type header");
     assert!(
         content_type.contains("application/json"),
         "expected application/json, got {content_type}"
     );
-    // Must NOT set Mcp-Session-Id header
     assert!(
         !headers.contains_key("mcp-session-id"),
-        "stateless route must not issue Mcp-Session-Id: {headers:?}"
+        "sessionless server must not issue Mcp-Session-Id: {headers:?}"
     );
 
     let parsed: Value = serde_json::from_str(&body).expect("valid JSON response");
@@ -751,27 +747,39 @@ fn test_http_sessionless_route() {
         "expected result in response: {parsed}"
     );
 
-    // Also verify /mcp/sessionless alias works identically
-    let (alias_status, alias_headers, alias_body) = http_post_route(
+    // Sending Mcp-Session-Id from a stale client never establishes or persists a session,
+    // and without explicit session_id a subsequent call is still rejected with -32602.
+    let (hdr_status, hdr_headers, _) = http_post_mcp(
         server.port,
-        "/mcp/sessionless",
-        &tool_call_request(2, "search", json!({"query": "alpha"})),
-        &[("x-session-id", "test-sessionless-alias")],
+        &tool_call_request(2, "graph_stats", json!({})),
+        "tools/call",
+        Some("graph_stats"),
+        &[("Mcp-Session-Id", "stale-client-session")],
     );
-    assert_eq!(alias_status, 200, "/mcp/sessionless alias must return 200 OK");
+    assert_eq!(hdr_status, 200);
     assert!(
-        !alias_headers.contains_key("mcp-session-id"),
-        "sessionless alias must not issue Mcp-Session-Id"
+        !hdr_headers.contains_key("mcp-session-id"),
+        "sessionless server must never return Mcp-Session-Id"
     );
-    let alias_parsed: Value = serde_json::from_str(&alias_body).expect("valid JSON");
-    assert!(alias_parsed.get("result").is_some());
+    let (unattr_status, _, unattr_body) = http_post_mcp(
+        server.port,
+        &tool_call_request_with_args(3, "graph_stats", json!({})),
+        "tools/call",
+        Some("graph_stats"),
+        &[("Mcp-Session-Id", "stale-client-session")],
+    );
+    assert_eq!(unattr_status, 200);
+    let unattr_json: Value = serde_json::from_str(&unattr_body).expect("valid JSON-RPC error");
+    assert_eq!(
+        unattr_json["error"]["code"].as_i64(),
+        Some(-32602),
+        "Mcp-Session-Id must not bind or substitute for caller session_id: {unattr_json}"
+    );
 }
-
 
 #[test]
 fn test_http_multiple_tools() {
     let server = HttpServer::start();
-    let (session_id, _) = http_initialize(server.port);
 
     let tools = [
         ("graph_stats", json!({})),
@@ -780,13 +788,7 @@ fn test_http_multiple_tools() {
     ];
 
     for (i, (tool_name, args)) in tools.iter().enumerate() {
-        let result = http_call_tool(
-            server.port,
-            &session_id,
-            (i + 2) as u64,
-            tool_name,
-            args.clone(),
-        );
+        let result = http_call_tool(server.port, (i + 2) as u64, tool_name, args.clone());
         assert!(
             result.get("result").is_some(),
             "tool '{tool_name}' (call #{}) returned error: {result}",
@@ -802,25 +804,24 @@ fn test_http_multiple_tools() {
 #[test]
 fn test_http_tools_list_count() {
     let server = HttpServer::start();
-    let (session_id, _) = http_initialize(server.port);
 
-    let (status, _, body) = http_post(server.port, &tools_list_request(2), Some(&session_id));
-    assert_eq!(status, 200);
+    let (status, _, body) =
+        http_post_mcp(server.port, &tools_list_request(2), "tools/list", None, &[]);
+    assert_eq!(status, 200, "tools/list returned {status}: {body}");
 
-    let messages = parse_sse_messages(&body);
-    assert!(!messages.is_empty(), "no SSE data in tools/list response");
-
-    let tools = messages[0]["result"]["tools"]
+    let msg: Value = serde_json::from_str(&body).expect("valid JSON from tools/list");
+    let tools = msg["result"]["tools"]
         .as_array()
         .expect("tools/list result missing 'tools' array");
 
-    // Should match the 18 published primitives
     assert_eq!(
         tools.len(),
         18,
         "expected 18 published tools from tools/list, got {}",
         tools.len()
     );
+    assert_eq!(msg["result"]["ttlMs"].as_u64(), Some(86_400_000));
+    assert_eq!(msg["result"]["cacheScope"].as_str(), Some("public"));
     assert!(
         tools.iter().any(|t| t["name"] == "get_task_status"),
         "expected get_task_status to be in published tools"
@@ -829,52 +830,65 @@ fn test_http_tools_list_count() {
         tools.iter().any(|t| t["name"] == "convert_document"),
         "expected convert_document in HTTP tools/list response"
     );
+    for t in tools {
+        let req = t["inputSchema"]["required"]
+            .as_array()
+            .expect("required array");
+        assert!(
+            req.iter().any(|v| v.as_str() == Some("session_id")),
+            "tool {} missing required session_id",
+            t["name"]
+        );
+        assert_eq!(
+            t["annotations"]["openWorldHint"],
+            json!(false),
+            "tool {} must mark openWorldHint=false",
+            t["name"]
+        );
+    }
 }
 
 #[test]
-fn test_http_error_missing_session_id() {
+fn test_http_error_missing_protocol_metadata_and_missing_session_id() {
     let mut server = HttpServer::start();
-    let (session_id, _) = http_initialize(server.port);
-    let _ = session_id; // establish session but don't use its ID
 
-    // POST a tool call WITHOUT the session ID header
-    let (status, _, _) = http_post(
+    // Missing MCP-Protocol-Version / _meta protocol metadata rejected at transport layer
+    let (meta_status, _, _) = http_post_route(
         server.port,
-        &tool_call_request(99, "graph_stats", json!({})),
-        None, // deliberately missing
+        "/mcp",
+        &jsonrpc_request(98, "tools/list", json!({})),
+        &[],
     );
-
-    // Server should reject with 4xx, NOT crash
     assert!(
-        (400..500).contains(&status),
-        "expected 4xx for missing session ID, got {status}"
+        (400..500).contains(&meta_status),
+        "expected 4xx for missing protocol metadata, got {meta_status}"
     );
-    assert!(server.is_alive(), "server crashed after missing session ID");
-}
 
-#[test]
-fn test_http_error_invalid_session_id() {
-    let mut server = HttpServer::start();
-    let _ = http_initialize(server.port);
-
-    let (status, _, _) = http_post(
+    // Missing tool session_id rejected with JSON-RPC INVALID_PARAMS (-32602) on reads & writes
+    let (status, _, body) = http_post_mcp(
         server.port,
-        &tool_call_request(99, "graph_stats", json!({})),
-        Some("bogus-nonexistent-session-id-12345"),
+        &tool_call_request_with_args(99, "search", json!({"query": "alpha"})),
+        "tools/call",
+        Some("search"),
+        &[],
     );
-
-    assert!(
-        status == 404 || (400..500).contains(&status),
-        "expected 404 for invalid session ID, got {status}"
-    );
-    assert!(server.is_alive(), "server crashed after invalid session ID");
+    assert_eq!(status, 200, "JSON-RPC error expected; status={status}, body={body}");
+    let resp: Value = serde_json::from_str(&body).expect("valid JSON-RPC error");
+    assert_eq!(resp["error"]["code"].as_i64(), Some(-32602));
+    assert!(server.is_alive(), "server crashed after missing session_id");
 }
 
 #[test]
 fn test_http_error_malformed_json() {
     let mut server = HttpServer::start();
 
-    let (status, _, _) = http_post(server.port, "{not valid json at all!!", None);
+    let (status, _, _) = http_post_mcp(
+        server.port,
+        "{not valid json at all!!",
+        "tools/call",
+        Some("search"),
+        &[],
+    );
 
     assert!(
         status >= 400,
@@ -886,11 +900,9 @@ fn test_http_error_malformed_json() {
 #[test]
 fn test_http_error_unknown_tool() {
     let server = HttpServer::start();
-    let (session_id, _) = http_initialize(server.port);
 
     let result = http_call_tool(
         server.port,
-        &session_id,
         99,
         "nonexistent_tool_that_does_not_exist",
         json!({}),
@@ -1009,22 +1021,8 @@ fn test_http_seeded_search_returns_seeded_doc() {
 
     #[allow(clippy::redundant_closure_call)]
     let result = (|| -> Value {
-        let (status, headers, body) = http_post(port, &initialize_request(1), None);
-        assert_eq!(status, 200, "initialize failed: {body}");
-        let session_id = headers
-            .get("mcp-session-id")
-            .expect("missing session id")
-            .clone();
-
-        let (_status, _, _) = http_post(
-            port,
-            &jsonrpc_notification("notifications/initialized"),
-            Some(&session_id),
-        );
-
         http_call_tool(
             port,
-            &session_id,
             2,
             "search",
             json!({"query": unique_phrase, "limit": 5}),
@@ -1055,45 +1053,36 @@ fn test_http_seeded_search_returns_seeded_doc() {
 }
 
 #[test]
-fn test_http_concurrent_sessions() {
+fn test_http_concurrent_stateless_calls() {
     let server = HttpServer::start();
 
     let port = server.port;
     let handles: Vec<_> = (0..2)
         .map(|i| {
             std::thread::spawn(move || {
-                let (session_id, _) = http_initialize(port);
                 let result = http_call_tool(
                     port,
-                    &session_id,
-                    2,
+                    2 + i,
                     if i == 0 {
                         "graph_stats"
                     } else {
                         "task_summary"
                     },
-                    json!({}),
+                    json!({ "session_id": format!("concurrent-sess-{i}") }),
                 );
-                (session_id, result)
+                (i, result)
             })
         })
         .collect();
 
     let results: Vec<_> = handles.into_iter().map(|h| h.join().unwrap()).collect();
 
-    // Both sessions should succeed
-    for (i, (sid, result)) in results.iter().enumerate() {
+    for (i, result) in results {
         assert!(
             result.get("result").is_some(),
-            "concurrent session {i} (sid={sid}) failed: {result}"
+            "concurrent stateless call {i} failed: {result}"
         );
     }
-
-    // Session IDs must be different
-    assert_ne!(
-        results[0].0, results[1].0,
-        "concurrent sessions got the same session ID!"
-    );
 }
 
 // ── SIGKILL-of-harness backstop test ────────────────────────────────────
@@ -1219,16 +1208,17 @@ fn test_http2_listener_serves_requests_with_keepalive() {
 
         let url = format!("http://127.0.0.1:{port}/mcp");
 
-        // Request 1: Initialize session over HTTP/2
-        let init_req = initialize_request(1);
+        // Request 1: Discover server over HTTP/2
         let resp1 = client
             .post(&url)
             .header("Content-Type", "application/json")
             .header("Accept", "application/json, text/event-stream")
-            .body(init_req)
+            .header("MCP-Protocol-Version", "2026-07-28")
+            .header("Mcp-Method", "server/discover")
+            .body(discover_request(1))
             .send()
             .await
-            .expect("failed to send initialize request");
+            .expect("failed to send discover request");
 
         assert_eq!(
             resp1.version(),
@@ -1237,29 +1227,22 @@ fn test_http2_listener_serves_requests_with_keepalive() {
             resp1.version()
         );
         assert_eq!(resp1.status(), reqwest::StatusCode::OK);
-
-        let session_id = resp1
-            .headers()
-            .get("mcp-session-id")
-            .expect("missing mcp-session-id header")
-            .to_str()
-            .expect("valid ascii session id")
-            .to_string();
-
-        // Drain the first response bytes
+        assert!(!resp1.headers().contains_key("mcp-session-id"));
         let _ = resp1.bytes().await;
 
-        // Request 2: Send initialized notification over the same keep-alive HTTP/2 connection
-        let notif_req = jsonrpc_notification("notifications/initialized");
+        // Request 2: Tool call over the same keep-alive HTTP/2 connection without session header
+        let tool_req = tool_call_request(2, "pkb_status", json!({}));
         let resp2 = client
             .post(&url)
             .header("Content-Type", "application/json")
             .header("Accept", "application/json, text/event-stream")
-            .header("Mcp-Session-Id", &session_id)
-            .body(notif_req)
+            .header("MCP-Protocol-Version", "2026-07-28")
+            .header("Mcp-Method", "tools/call")
+            .header("Mcp-Name", "pkb_status")
+            .body(tool_req)
             .send()
             .await
-            .expect("failed to send notification");
+            .expect("failed to send tool call");
 
         assert_eq!(
             resp2.version(),
@@ -1267,38 +1250,18 @@ fn test_http2_listener_serves_requests_with_keepalive() {
             "Expected HTTP/2 protocol on reused connection, got {:?}",
             resp2.version()
         );
-        assert!(resp2.status().is_success());
+        assert_eq!(resp2.status(), reqwest::StatusCode::OK);
 
-        // Request 3: Tool call over the same keep-alive HTTP/2 connection
-        let tool_req = tool_call_request(2, "pkb_status", json!({}));
-        let resp3 = client
-            .post(&url)
-            .header("Content-Type", "application/json")
-            .header("Accept", "application/json, text/event-stream")
-            .header("Mcp-Session-Id", &session_id)
-            .body(tool_req)
-            .send()
-            .await
-            .expect("failed to send tool call");
-
-        assert_eq!(
-            resp3.version(),
-            reqwest::Version::HTTP_2,
-            "Expected HTTP/2 protocol on 3rd request, got {:?}",
-            resp3.version()
-        );
-        assert_eq!(resp3.status(), reqwest::StatusCode::OK);
-
-        let body3 = resp3.text().await.expect("read response body");
+        let body2 = resp2.text().await.expect("read response body");
         assert!(
-            body3.contains("\"name\": \"mem\"") || body3.contains("\"name\":\"mem\""),
-            "Expected tool response to contain name 'mem', got: {body3}"
+            body2.contains("\"name\": \"mem\"") || body2.contains("\"name\":\"mem\""),
+            "Expected tool response to contain name 'mem', got: {body2}"
         );
         let expected_version = env!("CARGO_PKG_VERSION");
         assert!(
-            body3.contains(&format!("\"version\": \"{expected_version}\""))
-                || body3.contains(&format!("\"version\":\"{expected_version}\"")),
-            "Expected tool response to contain version '{expected_version}', got: {body3}"
+            body2.contains(&format!("\"version\": \"{expected_version}\""))
+                || body2.contains(&format!("\"version\":\"{expected_version}\"")),
+            "Expected tool response to contain version '{expected_version}', got: {body2}"
         );
     });
 }
@@ -1323,58 +1286,35 @@ fn test_http2_concurrent_multiplexed_tool_calls() {
 
         let url = format!("http://127.0.0.1:{port}/mcp");
 
-        // Initialize session over HTTP/2
-        let init_resp = client
-            .post(&url)
-            .header("Content-Type", "application/json")
-            .header("Accept", "application/json, text/event-stream")
-            .body(initialize_request(1))
-            .send()
-            .await
-            .expect("init send");
-        assert_eq!(init_resp.version(), reqwest::Version::HTTP_2);
-        assert_eq!(init_resp.status(), reqwest::StatusCode::OK);
-
-        let session_id = init_resp
-            .headers()
-            .get("mcp-session-id")
-            .expect("session id")
-            .to_str()
-            .unwrap()
-            .to_string();
-        let _ = init_resp.bytes().await;
-
-        // Notification
-        let notif_resp = client
-            .post(&url)
-            .header("Content-Type", "application/json")
-            .header("Accept", "application/json, text/event-stream")
-            .header("Mcp-Session-Id", &session_id)
-            .body(jsonrpc_notification("notifications/initialized"))
-            .send()
-            .await
-            .expect("notif send");
-        assert!(notif_resp.status().is_success());
-
-        // Spawn 10 concurrent requests multiplexed over the same HTTP/2 connection
+        // Spawn 10 concurrent stateless requests multiplexed over the same HTTP/2 connection
         let mut tasks = Vec::new();
         for i in 0..10 {
             let client = client.clone();
             let url = url.clone();
-            let session_id = session_id.clone();
             tasks.push(tokio::spawn(async move {
-                let req = match i % 4 {
-                    0 => tool_call_request(100 + i, "pkb_status", json!({})),
-                    1 => tool_call_request(100 + i, "pkb_get_task", json!({"id": "task-test-01"})),
-                    2 => tool_call_request(100 + i, "pkb_list_tasks", json!({"limit": 5})),
-                    _ => tool_call_request(100 + i, "pkb_search", json!({"query": "Sample"})),
+                let (name, req) = match i % 4 {
+                    0 => ("pkb_status", tool_call_request(100 + i, "pkb_status", json!({}))),
+                    1 => (
+                        "pkb_get_task",
+                        tool_call_request(100 + i, "pkb_get_task", json!({"id": "task-test-01"})),
+                    ),
+                    2 => (
+                        "pkb_list_tasks",
+                        tool_call_request(100 + i, "pkb_list_tasks", json!({"limit": 5})),
+                    ),
+                    _ => (
+                        "pkb_search",
+                        tool_call_request(100 + i, "pkb_search", json!({"query": "Sample"})),
+                    ),
                 };
 
                 let resp = client
                     .post(&url)
                     .header("Content-Type", "application/json")
                     .header("Accept", "application/json, text/event-stream")
-                    .header("Mcp-Session-Id", &session_id)
+                    .header("MCP-Protocol-Version", "2026-07-28")
+                    .header("Mcp-Method", "tools/call")
+                    .header("Mcp-Name", name)
                     .body(req)
                     .send()
                     .await
@@ -1420,64 +1360,32 @@ fn test_phases_1_to_3_concurrency_and_contracts() {
 
         let url = format!("http://127.0.0.1:{port}/mcp");
 
-        // Initialize session over HTTP/2
-        let init_resp = client
-            .post(&url)
-            .header("Content-Type", "application/json")
-            .header("Accept", "application/json, text/event-stream")
-            .body(initialize_request(1))
-            .send()
-            .await
-            .expect("init send");
-        assert_eq!(init_resp.version(), reqwest::Version::HTTP_2);
-
-        let session_id = init_resp
-            .headers()
-            .get("mcp-session-id")
-            .expect("session id")
-            .to_str()
-            .unwrap()
-            .to_string();
-        let _ = init_resp.bytes().await;
-
-        let notif_resp = client
-            .post(&url)
-            .header("Content-Type", "application/json")
-            .header("Accept", "application/json, text/event-stream")
-            .header("Mcp-Session-Id", &session_id)
-            .body(jsonrpc_notification("notifications/initialized"))
-            .send()
-            .await
-            .expect("notif send");
-        assert!(notif_resp.status().is_success());
-
-        // ── Phase 3 Contract: 16 tools, outputSchema, ttlMs ──
+        // ── Phase 3 Contract: 18 tools, outputSchema, ttlMs, cacheScope ──
         let list_resp = client
             .post(&url)
             .header("Content-Type", "application/json")
             .header("Accept", "application/json, text/event-stream")
-            .header("Mcp-Session-Id", &session_id)
+            .header("MCP-Protocol-Version", "2026-07-28")
+            .header("Mcp-Method", "tools/list")
             .body(tools_list_request(2))
             .send()
             .await
             .expect("tools list send");
         assert_eq!(list_resp.status(), reqwest::StatusCode::OK);
         let list_text = list_resp.text().await.unwrap();
-        let list_json: Value = serde_json::from_str(
-            list_text
-                .lines()
-                .find(|l| l.starts_with("data: {"))
-                .map(|l| &l[6..])
-                .unwrap_or(&list_text),
-        )
-        .expect("parse list json");
+        let list_json: Value = serde_json::from_str(&list_text).expect("parse list json");
 
         let tools = list_json["result"]["tools"].as_array().expect("tools array");
         assert_eq!(tools.len(), 18, "Phase 3 contract: exactly 18 published tools");
         assert_eq!(
-            list_json["result"]["_meta"]["ttlMs"].as_u64(),
+            list_json["result"]["ttlMs"].as_u64(),
             Some(86_400_000),
             "Phase 3 contract: 24h ttlMs"
+        );
+        assert_eq!(
+            list_json["result"]["cacheScope"].as_str(),
+            Some("public"),
+            "Phase 3 contract: public cacheScope"
         );
         for t in tools {
             assert!(
@@ -1492,7 +1400,9 @@ fn test_phases_1_to_3_concurrency_and_contracts() {
             .post(&url)
             .header("Content-Type", "application/json")
             .header("Accept", "application/json, text/event-stream")
-            .header("Mcp-Session-Id", &session_id)
+            .header("MCP-Protocol-Version", "2026-07-28")
+            .header("Mcp-Method", "tools/call")
+            .header("Mcp-Name", "pkb_search")
             .body(tool_call_request(3, "pkb_search", json!({"query": "nonexistent_term_xyz_123"})))
             .send()
             .await
@@ -1508,7 +1418,9 @@ fn test_phases_1_to_3_concurrency_and_contracts() {
             .post(&url)
             .header("Content-Type", "application/json")
             .header("Accept", "application/json, text/event-stream")
-            .header("Mcp-Session-Id", &session_id)
+            .header("MCP-Protocol-Version", "2026-07-28")
+            .header("Mcp-Method", "tools/call")
+            .header("Mcp-Name", "pkb_get_task")
             .body(tool_call_request(4, "pkb_get_task", json!({"ids": ["task-test-01", "missing-task-id"]})))
             .send()
             .await
@@ -1528,7 +1440,9 @@ fn test_phases_1_to_3_concurrency_and_contracts() {
             .post(&url)
             .header("Content-Type", "application/json")
             .header("Accept", "application/json, text/event-stream")
-            .header("Mcp-Session-Id", &session_id)
+            .header("MCP-Protocol-Version", "2026-07-28")
+            .header("Mcp-Method", "tools/call")
+            .header("Mcp-Name", "pkb_list_tasks")
             .body(tool_call_request(5, "pkb_list_tasks", json!({
                 "fields": ["body_excerpt", "relationship_summary"],
                 "budget_ms": 5000
@@ -1548,13 +1462,14 @@ fn test_phases_1_to_3_concurrency_and_contracts() {
         for (idx, tool_name) in retired_tools.into_iter().enumerate() {
             let client = client.clone();
             let url = url.clone();
-            let session_id = session_id.clone();
             shim_handles.push(tokio::spawn(async move {
                 let resp = client
                     .post(&url)
                     .header("Content-Type", "application/json")
                     .header("Accept", "application/json, text/event-stream")
-                    .header("Mcp-Session-Id", &session_id)
+                    .header("MCP-Protocol-Version", "2026-07-28")
+                    .header("Mcp-Method", "tools/call")
+                    .header("Mcp-Name", tool_name)
                     .body(tool_call_request(200 + idx as u64, tool_name, json!({})))
                     .send()
                     .await

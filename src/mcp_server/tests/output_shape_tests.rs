@@ -263,7 +263,7 @@ fn test_get_task_and_get_document_omit_null_and_empty() {
         &create_res
             .content
             .iter()
-            .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+            .filter_map(|c| c.as_text().map(|t| t.text.as_str()))
             .collect::<String>(),
     )
     .unwrap()

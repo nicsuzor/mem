@@ -131,7 +131,7 @@ fn test_ac2_read_that_cuts_body_returns_notice_inside_body_text_at_cut() {
     );
 
     // Also check text in markdown content
-    let doc_text = &doc_res.content[0].raw.as_text().unwrap().text;
+    let doc_text = &doc_res.content[0].as_text().unwrap().text;
     assert!(
         doc_text.contains("truncated") && doc_text.contains("max_bytes"),
         "AC2: get_document markdown text must also include notice at cut: {doc_text}"

@@ -130,17 +130,20 @@ fn start_server() -> Server {
     }
 }
 
-fn post(port: u16, body: &Value, session: Option<&str>) -> (Option<String>, String) {
+fn post(port: u16, body: &Value, method: &str, tool_name: Option<&str>) -> String {
     let body = body.to_string();
     let mut s = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
     s.set_read_timeout(Some(Duration::from_secs(60))).unwrap();
     let mut req = format!(
         "POST /mcp HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nContent-Type: application/json\r\n\
-         Accept: application/json, text/event-stream\r\nContent-Length: {}\r\n",
+         Accept: application/json, text/event-stream\r\n\
+         MCP-Protocol-Version: 2026-07-28\r\n\
+         Mcp-Method: {method}\r\n\
+         Content-Length: {}\r\n",
         body.len()
     );
-    if let Some(sid) = session {
-        req.push_str(&format!("Mcp-Session-Id: {sid}\r\n"));
+    if let Some(name) = tool_name {
+        req.push_str(&format!("Mcp-Name: {name}\r\n"));
     }
     req.push_str("Connection: close\r\n\r\n");
     req.push_str(&body);
@@ -148,44 +151,50 @@ fn post(port: u16, body: &Value, session: Option<&str>) -> (Option<String>, Stri
     let mut resp = Vec::new();
     let _ = s.read_to_end(&mut resp);
     let resp = String::from_utf8_lossy(&resp).to_string();
-    let (head, rest) = resp.split_once("\r\n\r\n").unwrap_or((&resp, ""));
-    let sid = head.lines().find_map(|l| {
-        let (k, v) = l.split_once(": ")?;
-        k.eq_ignore_ascii_case("mcp-session-id")
-            .then(|| v.trim().to_string())
-    });
-    (sid, rest.to_string())
+    let (_head, rest) = resp.split_once("\r\n\r\n").unwrap_or((&resp, ""));
+    rest.to_string()
 }
 
 fn rpc(id: u64, method: &str, params: Value) -> Value {
     json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params})
 }
 
-/// Run a session of `calls` tool calls; return stderr lines emitted after startup.
+fn protocol_meta() -> Value {
+    json!({
+        "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+        "io.modelcontextprotocol/clientCapabilities": {},
+        "io.modelcontextprotocol/clientInfo": {"name": "log-level-test", "version": "0.1"}
+    })
+}
+
+/// Run stateless MCP 2026-07-28 `calls`; return stderr lines emitted after startup.
 fn run_session(calls: &[(&str, Value, bool)]) -> Vec<String> {
     let server = start_server();
-    let init = rpc(
-        1,
-        "initialize",
-        json!({"protocolVersion": "2024-11-05", "capabilities": {},
-               "clientInfo": {"name": "log-level-test", "version": "0.1"}}),
-    );
-    let (sid, _) = post(server.port, &init, None);
-    let sid = sid.expect("no Mcp-Session-Id");
-    post(
+    let discover_body = post(
         server.port,
-        &json!({"jsonrpc": "2.0", "method": "notifications/initialized"}),
-        Some(&sid),
+        &rpc(1, "server/discover", json!({"_meta": protocol_meta()})),
+        "server/discover",
+        None,
+    );
+    assert!(
+        discover_body.contains("\"result\""),
+        "server/discover failed: {discover_body}"
     );
     for (i, (name, args, expects_error)) in calls.iter().enumerate() {
-        let (_, body) = post(
+        let mut args = args.clone();
+        if let Some(obj) = args.as_object_mut() {
+            obj.entry("session_id".to_string())
+                .or_insert_with(|| json!("log-level-session"));
+        }
+        let body = post(
             server.port,
             &rpc(
                 10 + i as u64,
                 "tools/call",
-                json!({"name": name, "arguments": args}),
+                json!({"name": name, "arguments": args, "_meta": protocol_meta()}),
             ),
-            Some(&sid),
+            "tools/call",
+            Some(name),
         );
         if *expects_error {
             assert!(

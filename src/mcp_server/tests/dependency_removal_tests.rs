@@ -23,7 +23,7 @@ fn setup_test_server() -> (PkbSearchServer, String, String) {
         let text = res
             .content
             .iter()
-            .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+            .filter_map(|c| c.as_text().map(|t| t.text.as_str()))
             .collect::<String>();
         serde_json::from_str(&text).expect("Valid JSON response")
     };
@@ -56,7 +56,7 @@ fn parse_result(res: &CallToolResult) -> serde_json::Value {
     let text = res
         .content
         .iter()
-        .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+        .filter_map(|c| c.as_text().map(|t| t.text.as_str()))
         .collect::<String>();
     serde_json::from_str(&text).expect("Valid JSON response")
 }
