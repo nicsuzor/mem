@@ -5,6 +5,30 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.8](https://github.com/nicsuzor/mem/compare/mem-v0.5.7...mem-v0.5.8) (2026-11-14)
+
+
+### Features
+
+* **ci:** build and monotonic version bump LSP extension on every commit ([#837](https://github.com/nicsuzor/mem/issues/837)) ([404193b](https://github.com/nicsuzor/mem/commit/404193b9c9ac733387338fe55a05c33fe4d2ba56))
+* **embeddings:** add --model variant switch and lower GPU batch to 32 ([#851](https://github.com/nicsuzor/mem/issues/851)) ([d48ae95](https://github.com/nicsuzor/mem/commit/d48ae957b9140ec8b7d92f2c28ad2b922d52260a))
+* **lsp,vscode:** support theme icons, pause action, clean preview hover text (mem_cb001d16) ([#838](https://github.com/nicsuzor/mem/issues/838)) ([3cb03c5](https://github.com/nicsuzor/mem/commit/3cb03c5d833907a093098227b1bc483057018b72))
+* MCP protocol 2026-07-28 stateless server with mandatory session_id ([#855](https://github.com/nicsuzor/mem/issues/855)) ([9359809](https://github.com/nicsuzor/mem/commit/9359809468936fa1c6ed9346aaeec4a095d3d86a))
+* **mcp:** optimize proxy tool payload efficiency and token instrumentation ([#845](https://github.com/nicsuzor/mem/issues/845)) ([9d54175](https://github.com/nicsuzor/mem/commit/9d541757c155c9d8469f0573ad1f36f56cef23b7))
+* **taxonomy:** align task status canonical table and remove deprecated states ([#842](https://github.com/nicsuzor/mem/issues/842)) ([cd83e23](https://github.com/nicsuzor/mem/commit/cd83e23517f4ff6d4cf4523025c042d6c7629bb4))
+
+
+### Bug Fixes
+
+* **excalidraw:** validate fractional indices, curved geometry, bounds sync, and text-wrap check ([#853](https://github.com/nicsuzor/mem/issues/853)) ([8f5743c](https://github.com/nicsuzor/mem/commit/8f5743cd44fc06ed0f8527f59b04bcdcd415de27))
+* **graph:** immediately synchronize dependency and inverse block states on removal ([#843](https://github.com/nicsuzor/mem/issues/843)) ([22a5179](https://github.com/nicsuzor/mem/commit/22a517969b25c10e79277c07aa4198fcf1a5e947))
+* **mcp:** include diff in write responses for edit_body and update_body ([#852](https://github.com/nicsuzor/mem/issues/852)) ([f2ba2de](https://github.com/nicsuzor/mem/commit/f2ba2de9cf5113e4d323f4ecde8ac4e0304e3846))
+
+
+### Documentation
+
+* **specs:** align pkb-rules with specification standard ([#844](https://github.com/nicsuzor/mem/issues/844)) ([10e6267](https://github.com/nicsuzor/mem/commit/10e6267a94568d152d97a4cef8f6e2191d43b042))
+
 ## [0.5.7](https://github.com/nicsuzor/mem/compare/mem-v0.5.6...mem-v0.5.7) (2026-11-05)
 
 
