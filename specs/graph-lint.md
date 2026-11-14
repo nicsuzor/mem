@@ -45,6 +45,7 @@ Traceability tags follow `flow-rule.md`:
 4. **Decisions.** A decision with only one option is a warning, and so is "finding out" work pointed at something that is not a decision. Neither earns anything.
 5. **Deadlines.** A due date with no class (fake, soft or hard) is a warning, and it is read as fake until classed. All six open due dates today have no class.
 6. **Coverage.** Open work with no route to any priced target is noted, not warned. That is 1,255 of 1,502 open items, and for most of them zero is the right answer (U8, U9).
+7. **Double counting.** A task or epic holding a value edge to a target whose own descendants also carry value edges to that target is reported. Under the settled brief (points 19, 32) and the wiring rule of paper-producing targets, the target collects deliverables directly, not both an epic and its constituent subtasks. Counting both delivers the same outcome twice into the target. It is reported as a warning, never a write-time refusal (L4).
 
 **Who may fix what.** Agents fix only mechanical things unasked, such as stray spaces around a scale word (L10). Anything that sets a value (a price, a quantum, a deadline class) can only be proposed by an agent and changes nothing until you approve it. Anything that needs a judgement about the world, such as where an orphaned link should point or how to break a loop, is left for you.
 
@@ -67,6 +68,7 @@ Traceability tags follow `flow-rule.md`:
   - Nothing checks the new edge fields (S2).
   - Nothing checks deadline classes (S5).
   - An unrecognised weight word is only a parse warning, and the edge scores zero (`src/graph.rs:1613`; `pkb-rules.md` §6.4).
+  - Nothing detects double counting across task hierarchies where an ancestor container and its descendants both wire value edges to the same target, inflating the target's delivered share.
 - **They check the wrong loops.** `dep-hard-cycle` follows `parent` and `depends_on` in the same direction (`src/lint.rs:1622-1662`). It cannot see a child that depends on its own parent, which is a full-strength loop under the flow model (section 5.4). It also errors on loops through done nodes, which the flow accepts.
 - **They check fields the maths no longer reads.** These are `severity`, `goal_type`, `edge_template` and `intent` (§9).
 - **They treat a missing parent as a defect.** Under the flow model a parentless node is fine. What matters is whether it reaches anything priced (S7, U9).
@@ -84,7 +86,7 @@ Traceability tags follow `flow-rule.md`:
 
 | In scope | Out of scope, and where it lives |
 |---|---|
-| Checks on target worth, edge fields, loops, decisions, deadline classes and coverage | The flow rule itself: `flow-rule.md` |
+| Checks on target worth, edge fields, loops, decisions, deadline classes, coverage, and double counting | The flow rule itself: `flow-rule.md` |
 | Which current checks retire or change | Conversion of today's fields: migration spec (`epic_d1679d4b`) |
 | The diagnostic contract (fields, severities, exit codes) | Write-time enforcement in the MCP tools and the shape of `graph_stats`: engine and tools spec (`epic_2de1b579`). This spec states the check those surfaces call |
 | | The densify routine that turns proposals into approved values: skills spec (`epic_80ce44ae`) |
@@ -102,7 +104,8 @@ markdown files ──► pass 1: field checks (per file) ───────�
       ▼                                                          ├──► diagnostics ──► text / JSON, exit code
   graph build ──► pass 2: structure checks (whole graph) ────────┤
       │            dangling, cancelled, duplicate, self-edges,    │
-      │            decisions, unpriced targets, deadlines         │
+      │            decisions, unpriced targets, deadlines,        │
+      │            double counting                                │
       ▼                                                          │
   flow engine ──► pass 3: flow verdicts ─────────────────────────┘
                    SaturatedLoop, NoConvergence, loops, reachability
@@ -241,6 +244,88 @@ A loop is a set of nodes that reach each other along flow edges (§3.2). The bri
 
 **Migration lifecycle.** `flow-legacy-field` is emitted as a warning while retired fields stay on disk before cleanup; it is promoted to an error at migration R8 (cleanup) after Nic's explicit `--confirm` (`flow-migration.md` §9).
 
+### 5.9. Double counting
+
+Double counting occurs when an ancestor task and one or more of its descendants both hold value edges to the same strategic target node ($T \in \text{STRATEGIC\_TARGET\_TYPES}$). Under the settled brief (S19, S32) and target wiring doctrine, targets collect deliverable outcomes; counting both an epic and its subtasks allocates credit for the same substantive work multiple times.
+
+| Rule | Fires when | Severity | Real example | Agent may fix unasked? | Traces to |
+|---|---|---|---|---|---|
+| `flow-double-counting` | An ancestor node holding a value edge to a target has one or more descendants that also hold value edges to that same target | warning | **Observed:** 1 fixture pair (`syn_task_multi_parent` and descendant `syn_task_multi_route` both serving `syn_targ_alpha`; reproduced by `python3 specs/graph-lint/examples.py`). Live (observed against the live PKB on 2026-10-31; not reproducible from the committed fixture): three live paper epics where both the parent container and child drafting tasks carry `serves` edges to `targ-1e7d4733`. **Assumed:** `proj-paper-epic` serves `targ-1e7d4733` (quantum 0.85), while child `task-paper-draft` (`part_of` `proj-paper-epic`) also serves `targ-1e7d4733` (quantum 0.75) | no: pruning the ancestor edge vs re-targeting the child edge requires substantive human judgment | S19, S32, L4; `targ-1e7d4733` wiring section |
+
+**Detailed specification of the check:**
+
+1. **Relation that makes a node a descendant:**
+   - **Relation:** Structural containment via `part_of` edges ($D \to \dots \to A$ with `label: part_of`), or in stored frontmatter/graph store, recursive child/subtask links (`node.children` in `src/graph_store.rs:699`).
+   - **Reason:** Structural containment (`part_of`) represents scope subsumption where a subtask is an integral part of the parent's work scope. Functional dependencies (`needs`) or inform/assist relationships (`supports`) between peer tasks do not imply scope containment and therefore do not constitute a descendant relationship for double-counting purposes.
+
+2. **Which edges count toward the target:**
+   - **Label:** Edges pointing to target nodes ($T \in \text{STRATEGIC\_TARGET\_TYPES}$) with value-carrying labels: `serves` (and legacy `contributes_to`) and `supports`. `part_of` carries default quantum 0.0 (S19) and does not transfer worth; `alternative` and `settles` feed the decision rule (§6) and cannot point to strategic targets; `needs` represents hard blocking prerequisites between tasks.
+   - **Reason:** Only value-advancing labels (`serves`, `supports`) flow positive worth into targets. An edge must be a value-contributing link to create double-counted target worth.
+   - **Quantum:** Edges with strictly positive quantum ($\text{quantum} > 0.0$, or strength $\text{quantum} \times \text{probability} > 0.0$).
+   - **Reason:** Under S7 and §5.3, unvalued links carry default quantum 0.0, and unvalued/zero-quantum edges convey zero worth through the flow maths. An edge with quantum 0.0 does not move any worth into the target, so it cannot inflate or double-count the target's delivery in the flow calculation. Only edges with non-zero quantum cause mathematical double-counting.
+   - **Provenance (`set_by`):** All valid provenance values: `nic`, `agent-proposed`, and `migrated`.
+   - **Reason:** Under the 2026-10-22 ruling dropping R26 (and the engine implementation in commit `268ab85`), `agent-proposed` links count in flow calculations immediately alongside `nic` and `migrated` edges. If `agent-proposed` were excluded, unapproved agent wiring mistakes would escape lint detection and quietly distort the flow ranking. Both human and agent-proposed edges actively contribute to target worth and must be linted identically.
+
+3. **Report diagnostic contract:**
+   - **Severity:** `warning`. Writes are never refused for this at write time (consistent with L4 and Telegram 3040); it is a lint report.
+   - **Fix authority:** `no`. Choosing whether to keep the ancestor edge or the child edges requires qualitative judgment about the deliverable unit of work.
+   - **Fields named:**
+     - The ancestor node ID and title.
+     - The target node ID and title.
+     - The ancestor's edge to the target (label, quantum, probability, strength, and `set_by`).
+     - Each descendant's node ID, title, depth/path from ancestor, and edge to the target (label, quantum, probability, strength, and `set_by`).
+
+4. **Worked example:**
+   - **Scenario:** Ancestor `proj-paper-epic` ("TJA Platform Governance Paper") has an edge `proj-paper-epic → targ-1e7d4733` with `label: serves`, `quantum: 0.85`, `probability: 1.00`, `set_by: nic`. Its child task `task-paper-draft` ("Draft empirical analysis section for TJA paper", child via `part_of`) has an edge `task-paper-draft → targ-1e7d4733` with `label: serves`, `quantum: 0.75`, `probability: 0.85`, `set_by: agent-proposed`.
+   - **Text output:**
+     ```text
+     WARNING: flow-double-counting: Ancestor proj-paper-epic ("TJA Platform Governance Paper") and descendant task-paper-draft ("Draft empirical analysis section for TJA paper") both hold value edges to target targ-1e7d4733 ("Prestigious Open-Access Publications"):
+       Ancestor edge: proj-paper-epic -> targ-1e7d4733 (serves, quantum: 0.85, probability: 1.00, strength: 0.85, set_by: nic)
+       Descendant edge: task-paper-draft -> targ-1e7d4733 (serves, quantum: 0.75, probability: 0.85, strength: 0.64, set_by: agent-proposed) [depth 1 via part_of]
+     ```
+   - **JSON diagnostic:**
+     ```json
+     {
+       "severity": "warning",
+       "rule": "flow-double-counting",
+       "message": "Ancestor proj-paper-epic (\"TJA Platform Governance Paper\") and 1 descendant hold value edges to target targ-1e7d4733 (\"Prestigious Open-Access Publications\"): proj-paper-epic -> targ-1e7d4733 (serves, strength 0.85) vs task-paper-draft -> targ-1e7d4733 (serves, strength 0.64)",
+       "fixable": false,
+       "agent_fix": "no",
+       "subject": {
+         "ancestor": "proj-paper-epic",
+         "target": "targ-1e7d4733",
+         "ancestor_edge": {
+           "label": "serves",
+           "quantum": 0.85,
+           "probability": 1.0,
+           "strength": 0.85,
+           "set_by": "nic"
+         },
+         "descendants": [
+           {
+             "id": "task-paper-draft",
+             "edge": {
+               "label": "serves",
+               "quantum": 0.75,
+               "probability": 0.85,
+               "strength": 0.6375,
+               "set_by": "agent-proposed"
+             },
+             "path": ["task-paper-draft", "proj-paper-epic"]
+           }
+         ]
+       }
+     }
+     ```
+
+5. **Consistency and tensions with settled brief:**
+   - **Consistency with Point 19 (`part_of` at quantum 0.0):** Under Point 19, `part_of` is a filing label carrying zero quantum in the flow maths. This linter check operates entirely in Pass 2 (structural graph validation) without changing the flow calculation: `part_of` retains quantum 0.0 in the mathematical solver, but is read by the linter to detect scope containment.
+   - **Consistency with Point 32 (wiring to most specific target):** Point 32 directs agents to wire open work to the most specific existing priced target. The double-counting linter provides the automated check that enforces this rule, ensuring that when specific leaf tasks are wired to a target, containing aggregate epics do not duplicate the link.
+   - **Consistency with L1/L4 (report only, never refuse writes):** Just as L4 specifies that full-strength loops are reported by the linter rather than refused at write time, double counting is reported as a `warning`. Writes are never rejected upon creating or updating tasks.
+   - **Tensions:**
+     - *Tension 1 (Structural containment vs zero-flow physics):* While `part_of` has zero weight in flow calculations (preventing automatic flow propagation through project trees), it carries strict structural authority in the linter. In multi-parent DAGs, if a task is `part_of` multiple containers, any ancestor with a shared target edge will trigger the warning. This tension is intentional: the linter safeguards structural hygiene precisely so the flow maths can remain simple and tree-agnostic.
+     - *Tension 2 (Point 32 specificity vs top-down epic lifecycle):* When an epic is initiated before subtasks exist, it is frequently wired to a target. Later, when subtasks are reified and wired per Point 32, double counting temporarily arises until the epic's edge is pruned. The linter's warning status (non-blocking) allows this intermediate state while flagging it for resolution.
+
 ---
 
 ## 6. No check depends on display (S1, I6)
@@ -272,6 +357,7 @@ A loop is a set of nodes that reach each other along flow edges (§3.2). The bri
 | `KNOWN_KEYS` | `src/lint.rs:115-198` | **Changed.** It gains `worth` and `deadline_class`. Edge sub-fields are checked by section 5.2–5.3. Retired keys leave as the migration spec removes them |
 | `detect_weight_divergence` | MCP tool | **Not a lint check.** It stays an agent diagnostic, reading `quantum × probability` (§9) |
 | `fm-*` file hygiene, `md-*`, `task-no-id`, `task-legacy-id`, `fm-missing-project`, `fm-project-alias`, `fm-unregistered-project`, `superseded-by-hand-written`, `task-missing-ac` | `src/lint.rs` | **Unchanged.** They do not touch the flow's inputs |
+| `flow-double-counting` (warning) | `src/lint.rs` | **New check.** Reports double-counted value edges across hierarchical descendants (points 19, 32; L4) |
 
 ---
 
@@ -287,12 +373,13 @@ A loop is a set of nodes that reach each other along flow edges (§3.2). The bri
 | `line` | optional | as today |
 | `fixable` | bool | true exactly when `agent_fix` is `yes` |
 | `agent_fix` | `yes` \| `propose` \| `no` | **new**: section 4 |
-| `subject` | node id, or `{from, to, label}` | **new**: what the diagnostic is about, so an agent can act without parsing `message` |
+| `subject` | node id, `{from, to, label}`, or `{ancestor, target, ancestor_edge, descendants}` | **new**: what the diagnostic is about, so an agent can act without parsing `message` |
 
 **Rule-specific details.**
 
 - A `flow-loop*` diagnostic lists the loop's nodes and its strongest cycle product.
 - A `flow-target-unpriced` diagnostic gives the number of open nodes whose only routes end at that target.
+- A `flow-double-counting` diagnostic names the ancestor, the target, the ancestor's edge, and every descendant's edge to that target with its path.
 
 **Command line.** Unchanged except as noted:
 
@@ -339,6 +426,7 @@ Each criterion is something an observer can check by running `pkb lint --refs --
 | G19 | Lint output is byte-identical under every display configuration in `flow-rule/display.py` and with the system date set to 2026-01-01 and to 2027-06-01, and the lint module imports no display code | S1, I6, I11 | `T-display` (`lint_display_independent`) |
 | G20 | Running `--fix` changes no `worth`, `quantum`, `probability` or `deadline_class` value except by trimming padding (if L10 allows), and never adds one | §8, `pkb-rules.md` §6.5 | `lint_fix_never_values` |
 | G21 | `examples.py` reproduces every observed fixture number in section 5 | brief §D, the evidence standard; no S, I or U number applies | `python3 specs/graph-lint/examples.py` |
+| G22 | An ancestor node with a value edge (`serves` or `supports` at quantum > 0) to a target whose descendant via `part_of` also carries a value edge to the same target yields `flow-double-counting` (warning, exit 0, `agent_fix: no`) naming the ancestor, target, ancestor edge, and descendant edges. If descendant edge quantum is 0, no diagnostic is emitted | S19, S32, L4 | `lint_flow_double_counting` |
 
 ---
 
@@ -358,6 +446,7 @@ The questions are ordered by consequence.
 10. **L6. Volume of `flow-no-route`.** Is a summary line in text output, with the full list in JSON, the right default for 1,255 items?
 11. **L11. Intent checks (Q10).** If `intent` is dropped, its two checks go too. Until then they stay.
 12. **L12. Unclassed dates (Q18).** If an unclassed date is read as `fake`, is a warning right, or should it be style until a hard deadline is missed?
+13. **L13. Double counting: pruning direction.** When double counting is reported between an epic and its subtasks, `targ-1e7d4733` says the paper outcome (deliverable leaf) wires to the target while drafting micro-steps do not. Should the linter suggest pruning the ancestor edge when descendants are deliverable tasks, or leave the choice entirely to human review? Proposed: leave to human review (`agent_fix: no`).
 
 ---
 

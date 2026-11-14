@@ -134,6 +134,39 @@ def main() -> int:
     open_nodes = [v for v in st if st[v] == "open"]
     unrouted = [v for v in open_nodes if not any(t in g.worth for t in flow._forward(out, v))]
     print(f"open nodes with no route to a priced target: {len(unrouted)} of {len(open_nodes)}")
+
+    print("\n## Double counting")
+    part_of_parents = collections.defaultdict(list)
+    for e in g.edges:
+        if e.label == "part_of":
+            part_of_parents[e.src].append(e.dst)
+
+    def get_ancestors(v):
+        anc = set()
+        stack = list(part_of_parents[v])
+        while stack:
+            curr = stack.pop()
+            if curr not in anc:
+                anc.add(curr)
+                stack.extend(part_of_parents[curr])
+        return anc
+
+    target_value_edges = collections.defaultdict(list)
+    for e in g.edges:
+        if typ.get(e.dst) in STRATEGIC_TARGET_TYPES and e.label in {"serves", "supports"} and e.quantum > 0:
+            target_value_edges[e.dst].append(e)
+
+    dc_reports = []
+    for t, edges in target_value_edges.items():
+        by_src = {e.src: e for e in edges}
+        for src, e_anc in by_src.items():
+            for other, e_desc in by_src.items():
+                if src != other and src in get_ancestors(other):
+                    dc_reports.append((src, other, t))
+    print(f"double-counted target edges: {len(dc_reports)}")
+    for anc, desc, t in dc_reports:
+        print(f"  e.g. {anc} -> {t} and descendant {desc} -> {t}")
+    print("  ASSUMED proj-paper-epic -> targ-1e7d4733 (serves, q 0.85) with child task-paper-draft -> targ-1e7d4733 (serves, q 0.75): 1 double-count warning")
     return 0
 
 
