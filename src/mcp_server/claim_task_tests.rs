@@ -108,7 +108,7 @@ tags:
         let text = result
             .content
             .iter()
-            .filter_map(|c| c.raw.as_text().map(|t| t.text.clone()))
+            .filter_map(|c| c.as_text().map(|t| t.text.clone()))
             .next()
             .expect("result should have text content");
 
@@ -431,7 +431,7 @@ project: aops
         let text = result
             .content
             .iter()
-            .filter_map(|c| c.raw.as_text().map(|t| t.text.clone()))
+            .filter_map(|c| c.as_text().map(|t| t.text.clone()))
             .next()
             .expect("result should have text content");
 
@@ -503,7 +503,7 @@ project: aops
         let text = result
             .content
             .iter()
-            .filter_map(|c| c.raw.as_text().map(|t| t.text.clone()))
+            .filter_map(|c| c.as_text().map(|t| t.text.clone()))
             .next()
             .expect("result should have text content");
         assert!(
@@ -570,7 +570,7 @@ project: aops
         let text: String = result
             .content
             .iter()
-            .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+            .filter_map(|c| c.as_text().map(|t| t.text.as_str()))
             .collect();
 
         // The response should include the created task id
@@ -655,7 +655,7 @@ project: aops
             let t: String = r1
                 .content
                 .iter()
-                .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+                .filter_map(|c| c.as_text().map(|t| t.text.as_str()))
                 .collect();
             serde_json::from_str::<serde_json::Value>(&t)
                 .unwrap()
@@ -668,7 +668,7 @@ project: aops
             let t: String = r2
                 .content
                 .iter()
-                .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+                .filter_map(|c| c.as_text().map(|t| t.text.as_str()))
                 .collect();
             serde_json::from_str::<serde_json::Value>(&t)
                 .unwrap()
@@ -741,7 +741,7 @@ project: aops
         let text: String = result
             .content
             .iter()
-            .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+            .filter_map(|c| c.as_text().map(|t| t.text.as_str()))
             .collect();
         let task_id: String = serde_json::from_str::<serde_json::Value>(&text)
             .unwrap()
@@ -861,7 +861,7 @@ project: aops
         let text: String = result
             .content
             .iter()
-            .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+            .filter_map(|c| c.as_text().map(|t| t.text.as_str()))
             .collect();
         let val: serde_json::Value = serde_json::from_str(&text).unwrap();
         let task_id = val.get("id").and_then(|v| v.as_str()).unwrap().to_string();
@@ -1009,14 +1009,14 @@ project: aops
             "node_id": "task-init",
             "hops": 1
         })).expect("graph_excalidraw should succeed");
-        let text: String = res.content.iter().filter_map(|c| c.raw.as_text().map(|t| t.text.as_str())).collect();
+        let text: String = res.content.iter().filter_map(|c| c.as_text().map(|t| t.text.as_str())).collect();
         assert!(text.contains("Initial Task"), "diagram JSON should contain Initial Task");
 
         // 2. Test diff_excalidraw
         let diff_res = server.handle_diff_excalidraw(&serde_json::json!({
             "canvas": text
         })).expect("diff_excalidraw should succeed");
-        let diff_text: String = diff_res.content.iter().filter_map(|c| c.raw.as_text().map(|t| t.text.as_str())).collect();
+        let diff_text: String = diff_res.content.iter().filter_map(|c| c.as_text().map(|t| t.text.as_str())).collect();
         let diff: crate::excalidraw::GraphDiff = serde_json::from_str(&diff_text).expect("valid diff json");
         assert!(diff.is_empty(), "clean canvas diff should be empty");
 
@@ -1025,7 +1025,7 @@ project: aops
             "canvas": text,
             "dry_run": true
         })).expect("sync dry_run should succeed");
-        let dry_text: String = sync_dry_res.content.iter().filter_map(|c| c.raw.as_text().map(|t| t.text.as_str())).collect();
+        let dry_text: String = sync_dry_res.content.iter().filter_map(|c| c.as_text().map(|t| t.text.as_str())).collect();
         assert!(dry_text.contains("Dry run"), "dry run response mentions dry run");
     }
 
@@ -1218,7 +1218,7 @@ project: aops
         let text: String = res
             .content
             .iter()
-            .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+            .filter_map(|c| c.as_text().map(|t| t.text.as_str()))
             .collect();
         let parsed: serde_json::Value = serde_json::from_str(&text).expect("valid status JSON");
 
@@ -1285,7 +1285,7 @@ project: aops
             let text: String = res
                 .content
                 .iter()
-                .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+                .filter_map(|c| c.as_text().map(|t| t.text.as_str()))
                 .collect();
             serde_json::from_str(&text).expect("valid status json")
         };

@@ -125,7 +125,7 @@ fn test_setting_archived_on_task_and_non_task_notes_succeeds() {
             }),
         )
         .expect("create_task should succeed");
-    let text = res.content[0].raw.as_text().unwrap().text.as_str();
+    let text = res.content[0].as_text().unwrap().text.as_str();
     let created: serde_json::Value = serde_json::from_str(text).unwrap();
     let task_id = created.get("id").and_then(|v| v.as_str()).unwrap();
 

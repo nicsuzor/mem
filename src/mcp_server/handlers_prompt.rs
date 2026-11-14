@@ -33,7 +33,9 @@ impl PkbSearchServer {
                 Some(vec![required_arg("tag", "The tag to filter by")]),
             ),
         ];
-        Ok(ListPromptsResult::with_all_items(prompts))
+        Ok(ListPromptsResult::with_all_items(prompts)
+            .with_ttl_ms(86_400_000)
+            .with_cache_scope(CacheScope::Public))
     }
 
     pub(crate) fn handle_get_prompt(
@@ -50,7 +52,7 @@ impl PkbSearchServer {
                     message: Cow::from("Missing required parameter: query"),
                     data: None,
                 })?;
-                Ok(GetPromptResult::new(vec![PromptMessage::new_text(PromptMessageRole::User, format!(
+                Ok(GetPromptResult::new(vec![PromptMessage::new_text(Role::User, format!(
                     "I want to find a task about '{}'. Please use 'task_search' to find it, then 'get_task' to read the most relevant one.",
                     query
                 ))]))
@@ -61,7 +63,7 @@ impl PkbSearchServer {
                     message: Cow::from("Missing required parameter: query"),
                     data: None,
                 })?;
-                Ok(GetPromptResult::new(vec![PromptMessage::new_text(PromptMessageRole::User, format!(
+                Ok(GetPromptResult::new(vec![PromptMessage::new_text(Role::User, format!(
                     "What do we know about '{}'? Please use 'search' to find documents, then 'get_document' for the full content of relevant ones.",
                     query
                 ))]))
@@ -72,7 +74,7 @@ impl PkbSearchServer {
                     message: Cow::from("Missing required parameter: id"),
                     data: None,
                 })?;
-                Ok(GetPromptResult::new(vec![PromptMessage::new_text(PromptMessageRole::User, format!(
+                Ok(GetPromptResult::new(vec![PromptMessage::new_text(Role::User, format!(
                     "What's connected to '{}'? Please use 'get_task' or 'get_document' to see its relationships in the knowledge graph.",
                     id
                 ))]))
@@ -84,7 +86,7 @@ impl PkbSearchServer {
                     data: None,
                 })?;
                 Ok(GetPromptResult::new(vec![PromptMessage::new_text(
-                    PromptMessageRole::User,
+                    Role::User,
                     format!(
                         "Show me everything tagged '{}'. Please use 'search_by_tag' with this tag.",
                         tag

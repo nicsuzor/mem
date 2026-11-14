@@ -403,8 +403,8 @@ fn test_search_family_descriptions_document_latency_and_timeout_guidance() {
 
 // ── 8. Universal Sweep: Every tool with declared required fields enforces them ──
 
-#[test]
-fn test_every_tool_enforces_declared_required_fields() {
+#[tokio::test]
+async fn test_every_tool_enforces_declared_required_fields() {
     let (server, _tmp) = setup_fixture_pkb();
     let tools = PkbSearchServer::get_all_tools();
 
@@ -417,13 +417,14 @@ fn test_every_tool_enforces_declared_required_fields() {
             .map(|arr| arr.iter().filter_map(|v| v.as_str()).collect::<Vec<&str>>())
             .unwrap_or_default();
 
-        if required.is_empty() {
-            continue;
-        }
+        assert!(
+            required.contains(&"session_id"),
+            "Tool '{name}' must require session_id in inputSchema"
+        );
 
-        // Test that calling with an empty object {} fails with INVALID_PARAMS for tools that have required fields
+        // Calling with an empty object {} fails with INVALID_PARAMS
         let empty_args = json!({});
-        let result = server.dispatch_tool_sync(name, &empty_args);
+        let result = server.execute_tool_call(name, &empty_args, None, None).await;
 
         assert!(
             result.is_err(),
@@ -441,8 +442,8 @@ fn test_every_tool_enforces_declared_required_fields() {
 
 // ── 9. Universal Sweep: Every required field individually rejected when omitted or null ──
 
-#[test]
-fn test_every_tool_rejects_when_any_required_field_is_missing() {
+#[tokio::test]
+async fn test_every_tool_rejects_when_any_required_field_is_missing() {
     let (server, _tmp) = setup_fixture_pkb();
     let tools = PkbSearchServer::get_all_tools();
 
@@ -569,16 +570,22 @@ fn test_every_tool_rejects_when_any_required_field_is_missing() {
             continue;
         }
 
-        let base_sample = valid_samples
+        let mut base_sample = valid_samples
             .get(name)
-            .unwrap_or_else(|| panic!("Missing valid test sample for tool '{name}'"));
+            .cloned()
+            .unwrap_or_else(|| json!({}));
+        base_sample
+            .as_object_mut()
+            .unwrap()
+            .insert("session_id".to_string(), json!("test-session"));
 
         for &req_field in &required {
             // Case 1: Parameter omitted entirely
             let mut omitted_args = base_sample.as_object().unwrap().clone();
             omitted_args.remove(req_field);
-            let result_omitted =
-                server.dispatch_tool_sync(name, &serde_json::Value::Object(omitted_args));
+            let result_omitted = server
+                .execute_tool_call(name, &serde_json::Value::Object(omitted_args), None, None)
+                .await;
             match result_omitted {
                 Ok(_) => {
                     failures.push(format!(
@@ -594,8 +601,9 @@ fn test_every_tool_rejects_when_any_required_field_is_missing() {
             // Case 2: Parameter explicitly null
             let mut null_args = base_sample.as_object().unwrap().clone();
             null_args.insert(req_field.to_string(), serde_json::Value::Null);
-            let result_null =
-                server.dispatch_tool_sync(name, &serde_json::Value::Object(null_args));
+            let result_null = server
+                .execute_tool_call(name, &serde_json::Value::Object(null_args), None, None)
+                .await;
             match result_null {
                 Ok(_) => {
                     failures.push(format!(
@@ -621,8 +629,9 @@ fn test_every_tool_rejects_when_any_required_field_is_missing() {
             if let Some(empty) = empty_val {
                 let mut empty_args = base_sample.as_object().unwrap().clone();
                 empty_args.insert(req_field.to_string(), empty);
-                let result_empty =
-                    server.dispatch_tool_sync(name, &serde_json::Value::Object(empty_args));
+                let result_empty = server
+                    .execute_tool_call(name, &serde_json::Value::Object(empty_args), None, None)
+                    .await;
                 match result_empty {
                     Ok(_) => {
                         failures.push(format!("Tool '{name}' SUCCEEDED when required parameter '{req_field}' was empty (empty string/array/object)"));
@@ -641,8 +650,9 @@ fn test_every_tool_rejects_when_any_required_field_is_missing() {
                     req_field.to_string(),
                     serde_json::Value::String("   ".to_string()),
                 );
-                let result_ws =
-                    server.dispatch_tool_sync(name, &serde_json::Value::Object(ws_args));
+                let result_ws = server
+                    .execute_tool_call(name, &serde_json::Value::Object(ws_args), None, None)
+                    .await;
                 match result_ws {
                     Ok(_) => {
                         failures.push(format!("Tool '{name}' SUCCEEDED when required parameter '{req_field}' was whitespace-only"));

@@ -77,7 +77,7 @@ fn test_list_tasks_superseded_by_mcp_e2e() {
     let text_json: String = res_json
         .content
         .iter()
-        .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+        .filter_map(|c| c.as_text().map(|t| t.text.as_str()))
         .collect();
     let parsed_json: Value = serde_json::from_str(&text_json).expect("valid json output");
 
@@ -104,7 +104,7 @@ fn test_list_tasks_superseded_by_mcp_e2e() {
     let text_md: String = res_md
         .content
         .iter()
-        .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+        .filter_map(|c| c.as_text().map(|t| t.text.as_str()))
         .collect();
 
     assert!(text_md.contains("Superseded By"));
@@ -126,7 +126,7 @@ fn test_list_tasks_superseded_by_mcp_e2e() {
     let text_unfiltered: String = res_unfiltered
         .content
         .iter()
-        .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+        .filter_map(|c| c.as_text().map(|t| t.text.as_str()))
         .collect();
 
     assert!(!text_unfiltered.contains("Superseded By"));

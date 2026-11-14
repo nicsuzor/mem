@@ -331,7 +331,7 @@ fn cli_and_mcp_display_order_parity() {
     let text: String = res
         .content
         .iter()
-        .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+        .filter_map(|c| c.as_text().map(|t| t.text.as_str()))
         .collect();
     let val: serde_json::Value = serde_json::from_str(&text).unwrap();
     let tasks_arr = val
@@ -368,7 +368,7 @@ fn cli_and_mcp_display_order_parity() {
     let text_md: String = res_md
         .content
         .iter()
-        .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+        .filter_map(|c| c.as_text().map(|t| t.text.as_str()))
         .collect();
     let mut mcp_md_ids = Vec::new();
     for line in text_md.lines() {
@@ -458,7 +458,7 @@ fn test_no_output_sums_worth() {
     let summary_text: String = summary_res
         .content
         .iter()
-        .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+        .filter_map(|c| c.as_text().map(|t| t.text.as_str()))
         .collect();
     let summary_json: serde_json::Value = serde_json::from_str(&summary_text).unwrap();
 
@@ -492,7 +492,7 @@ fn test_no_output_sums_worth() {
     let nested_text: String = nested_res
         .content
         .iter()
-        .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+        .filter_map(|c| c.as_text().map(|t| t.text.as_str()))
         .collect();
     if let Ok(nested_json) = serde_json::from_str::<serde_json::Value>(&nested_text) {
         collect_numbers(&nested_json, &mut numbers);

@@ -103,7 +103,7 @@ fn test_get_task_reports_unblocked_and_ready_for_cancelled_dep() {
         .dispatch_tool_sync("get_task", &json!({ "id": "task-dep" }))
         .expect("get_task should succeed");
 
-    let text = res.content[0].raw.as_text().unwrap().text.as_str();
+    let text = res.content[0].as_text().unwrap().text.as_str();
     let val: serde_json::Value = serde_json::from_str(text).unwrap();
 
     assert_eq!(
@@ -134,7 +134,7 @@ fn test_list_tasks_reports_unblocked_and_ready_for_cancelled_dep() {
         .dispatch_tool_sync("list_tasks", &json!({ "format": "json" }))
         .expect("list_tasks should succeed");
 
-    let text = res.content[0].raw.as_text().unwrap().text.as_str();
+    let text = res.content[0].as_text().unwrap().text.as_str();
     let val: serde_json::Value = serde_json::from_str(text).unwrap();
     let tasks = val.get("tasks").and_then(|v| v.as_array()).unwrap();
 
@@ -173,7 +173,7 @@ fn test_nested_tasks_reports_unblocked_for_cancelled_dep() {
         .dispatch_tool_sync("nested_tasks", &json!({ "format": "json" }))
         .expect("nested_tasks should succeed");
 
-    let text = res.content[0].raw.as_text().unwrap().text.as_str();
+    let text = res.content[0].as_text().unwrap().text.as_str();
     let val: serde_json::Value = serde_json::from_str(text).unwrap();
 
     fn find_in_tree(val: &serde_json::Value, id: &str) -> Option<serde_json::Value> {
@@ -215,7 +215,7 @@ fn test_task_summary_counts_cancelled_dep_as_ready_not_blocked() {
         .dispatch_tool_sync("task_summary", &json!({}))
         .expect("task_summary should succeed");
 
-    let text = res.content[0].raw.as_text().unwrap().text.as_str();
+    let text = res.content[0].as_text().unwrap().text.as_str();
     let val: serde_json::Value = serde_json::from_str(text).unwrap();
 
     assert_eq!(
@@ -239,7 +239,7 @@ fn test_export_graph_reports_unblocked_and_ready_for_cancelled_dep() {
         .dispatch_tool_sync("export_graph", &json!({"format": "json"}))
         .expect("export_graph should succeed");
 
-    let text = res.content[0].raw.as_text().unwrap().text.as_str();
+    let text = res.content[0].as_text().unwrap().text.as_str();
     let val: serde_json::Value = serde_json::from_str(text).unwrap();
     let nodes = val.get("nodes").and_then(|v| v.as_array()).unwrap();
 
@@ -306,7 +306,7 @@ fn test_release_task_to_cancelled_unblocks_dependent() {
         )
         .expect("release_task to cancelled must succeed");
 
-    let text = res.content[0].raw.as_text().unwrap().text.as_str();
+    let text = res.content[0].as_text().unwrap().text.as_str();
     let val: serde_json::Value = serde_json::from_str(text).unwrap();
 
     let neighborhood = val.get("neighborhood").expect("neighborhood should exist");
@@ -427,7 +427,7 @@ fn test_transitive_blocking_does_not_propagate_through_cancelled_task() {
     let res = server
         .dispatch_tool_sync("get_task", &json!({ "id": "task-dep" }))
         .expect("get_task should succeed");
-    let text = res.content[0].raw.as_text().unwrap().text.as_str();
+    let text = res.content[0].as_text().unwrap().text.as_str();
     let val: serde_json::Value = serde_json::from_str(text).unwrap();
 
     assert_eq!(val.get("blocked").and_then(|v| v.as_bool()), Some(false));

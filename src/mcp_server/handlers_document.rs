@@ -67,7 +67,7 @@ impl PkbSearchServer {
                         if let Some(val) = res.structured_content {
                             items.push(val);
                         } else if let Some(first) =
-                            res.content.first().and_then(|c| c.raw.as_text())
+                            res.content.first().and_then(|c| c.as_text())
                         {
                             if let Ok(v) = serde_json::from_str::<serde_json::Value>(&first.text) {
                                 items.push(v);
@@ -650,7 +650,7 @@ impl PkbSearchServer {
 
         tracing::debug!(target: "perf::create_memory", phase = "TOTAL", elapsed_ms = t_total.elapsed().as_secs_f64() * 1000.0);
 
-        Ok(CallToolResult::success(vec![Content::text(format!(
+        Ok(CallToolResult::success(vec![ContentBlock::text(format!(
             "Memory created: `{filename}` (`{mem_id}`)"
         ))]))
     }
@@ -1380,7 +1380,7 @@ impl PkbSearchServer {
             message: Cow::from(format!("Failed to serialize response: {e}")),
             data: None,
         })?;
-        Ok(CallToolResult::success(vec![Content::text(response_text)]))
+        Ok(CallToolResult::success(vec![ContentBlock::text(response_text)]))
     }
 
     pub(crate) fn handle_delete_observations(
@@ -1471,7 +1471,7 @@ impl PkbSearchServer {
             message: Cow::from(format!("Failed to serialize response: {e}")),
             data: None,
         })?;
-        Ok(CallToolResult::success(vec![Content::text(response_text)]))
+        Ok(CallToolResult::success(vec![ContentBlock::text(response_text)]))
     }
 
     pub(crate) fn handle_delete_document(
@@ -1915,7 +1915,7 @@ impl PkbSearchServer {
             ));
         }
 
-        Ok(CallToolResult::success(vec![Content::text(format!(
+        Ok(CallToolResult::success(vec![ContentBlock::text(format!(
             "**Found {count} memories for:** \"{query}\"\n\n{output}"
         ))]))
     }
@@ -1982,6 +1982,6 @@ impl PkbSearchServer {
             output.push_str(&format!(" — `{id}`\n"));
         }
 
-        Ok(CallToolResult::success(vec![Content::text(output)]))
+        Ok(CallToolResult::success(vec![ContentBlock::text(output)]))
     }
 }

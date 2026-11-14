@@ -258,7 +258,7 @@ impl PkbSearchServer {
             ));
         }
 
-        Ok(CallToolResult::success(vec![Content::text(format!(
+        Ok(CallToolResult::success(vec![ContentBlock::text(format!(
             "**Found {count} tasks for:** \"{query}\"\n\n{output}"
         ))]))
     }
@@ -900,7 +900,7 @@ impl PkbSearchServer {
         let paths = graph.all_shortest_paths(&from_id, &to_id, max_paths);
 
         if paths.is_empty() {
-            return Ok(CallToolResult::success(vec![Content::text(format!(
+            return Ok(CallToolResult::success(vec![ContentBlock::text(format!(
                 "No path found between `{from_id}` ({from_label}) and `{to_id}` ({to_label})."
             ))]));
         }
@@ -921,7 +921,7 @@ impl PkbSearchServer {
             output.push('\n');
         }
 
-        Ok(CallToolResult::success(vec![Content::text(output)]))
+        Ok(CallToolResult::success(vec![ContentBlock::text(output)]))
     }
 
     pub(crate) fn handle_pkb_orphans(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
@@ -976,7 +976,7 @@ impl PkbSearchServer {
         }
 
         if orphans.is_empty() && lint_warnings.is_empty() {
-            return Ok(CallToolResult::success(vec![Content::text(
+            return Ok(CallToolResult::success(vec![ContentBlock::text(
                 "No orphan nodes or lint warnings found.",
             )]));
         }
@@ -1048,7 +1048,7 @@ impl PkbSearchServer {
             }
         }
 
-        Ok(CallToolResult::success(vec![Content::text(output)]))
+        Ok(CallToolResult::success(vec![ContentBlock::text(output)]))
     }
 
     pub(crate) fn handle_get_semantic_neighbors(
@@ -1080,7 +1080,7 @@ impl PkbSearchServer {
             crate::batch_ops::similarity::find_neighbors(id, &graph, &store, threshold, limit);
 
         if neighbors.is_empty() {
-            return Ok(CallToolResult::success(vec![Content::text(format!(
+            return Ok(CallToolResult::success(vec![ContentBlock::text(format!(
                 "No semantic neighbors found for '{}' above threshold {:.2}.",
                 id, threshold
             ))]));
@@ -1104,7 +1104,7 @@ impl PkbSearchServer {
             ));
         }
 
-        Ok(CallToolResult::success(vec![Content::text(output)]))
+        Ok(CallToolResult::success(vec![ContentBlock::text(output)]))
     }
 
     pub(crate) fn handle_search_by_tag(
@@ -1181,7 +1181,7 @@ impl PkbSearchServer {
             output.push('\n');
         }
 
-        Ok(CallToolResult::success(vec![Content::text(output)]))
+        Ok(CallToolResult::success(vec![ContentBlock::text(output)]))
     }
 
     pub(crate) fn handle_find_duplicates(
@@ -1223,7 +1223,7 @@ impl PkbSearchServer {
         report.clusters.truncate(limit);
 
         let json = serde_json::to_string(&report).unwrap_or_default();
-        Ok(CallToolResult::success(vec![Content::text(json)]))
+        Ok(CallToolResult::success(vec![ContentBlock::text(json)]))
     }
 }
 
@@ -1570,7 +1570,7 @@ mod search_status_projection_tests {
         result
             .content
             .iter()
-            .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+            .filter_map(|c| c.as_text().map(|t| t.text.as_str()))
             .collect::<String>()
     }
 

@@ -36,7 +36,7 @@ fn test_status_diagnostics_integration() {
     let text: String = res
         .content
         .iter()
-        .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+        .filter_map(|c| c.as_text().map(|t| t.text.as_str()))
         .collect();
     let parsed: Value = serde_json::from_str(&text).expect("valid json output");
 
@@ -103,7 +103,7 @@ fn test_status_diagnostics_live_state_mutations() {
         let text: String = res
             .content
             .iter()
-            .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+            .filter_map(|c| c.as_text().map(|t| t.text.as_str()))
             .collect();
         serde_json::from_str(&text).expect("valid json output")
     };

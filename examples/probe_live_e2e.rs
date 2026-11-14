@@ -116,7 +116,6 @@ struct StageTiming {
 
 struct RawResponse {
     status: u16,
-    headers: HashMap<String, String>,
     body: String,
     timing: StageTiming,
 }
@@ -149,9 +148,19 @@ fn read_chunked<R: BufRead>(reader: &mut R) -> String {
     out
 }
 
+const MCP_PROTOCOL_VERSION: &str = "2026-07-28";
+
+fn protocol_meta() -> JsonValue {
+    json!({
+        "io.modelcontextprotocol/protocolVersion": MCP_PROTOCOL_VERSION,
+        "io.modelcontextprotocol/clientCapabilities": {},
+        "io.modelcontextprotocol/clientInfo": {"name": "probe_live_e2e", "version": "0.1"}
+    })
+}
+
 /// Sends one raw HTTP/1.1 POST over a fresh TCP connection and returns the
 /// per-stage timing split alongside the parsed response.
-fn raw_post(url: &ParsedUrl, json_body: &str, session_id: Option<&str>) -> RawResponse {
+fn raw_post(url: &ParsedUrl, json_body: &str, method: &str, tool_name: Option<&str>) -> RawResponse {
     let t0 = Instant::now();
     let addr = format!("{}:{}", url.host, url.port);
     let mut stream = TcpStream::connect(&addr)
@@ -161,14 +170,16 @@ fn raw_post(url: &ParsedUrl, json_body: &str, session_id: Option<&str>) -> RawRe
 
     let t1 = Instant::now();
     let mut req = format!(
-        "POST {} HTTP/1.1\r\nHost: {}:{}\r\nContent-Type: application/json\r\nAccept: application/json, text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n",
+        "POST {} HTTP/1.1\r\nHost: {}:{}\r\nContent-Type: application/json\r\nAccept: application/json, text/event-stream\r\nMCP-Protocol-Version: {}\r\nMcp-Method: {}\r\nContent-Length: {}\r\nConnection: close\r\n",
         url.path,
         url.host,
         url.port,
+        MCP_PROTOCOL_VERSION,
+        method,
         json_body.len()
     );
-    if let Some(sid) = session_id {
-        req.push_str(&format!("Mcp-Session-Id: {sid}\r\n"));
+    if let Some(name) = tool_name {
+        req.push_str(&format!("Mcp-Name: {name}\r\n"));
     }
     req.push_str("\r\n");
     req.push_str(json_body);
@@ -214,7 +225,6 @@ fn raw_post(url: &ParsedUrl, json_body: &str, session_id: Option<&str>) -> RawRe
 
     RawResponse {
         status,
-        headers,
         body,
         timing: StageTiming { connect: t_connect, send: t_send, headers: t_headers, body_read: t_body, total: t0.elapsed() },
     }
@@ -234,53 +244,45 @@ fn extract_json(body: &str) -> Option<JsonValue> {
 
 struct McpClient {
     url: ParsedUrl,
-    session_id: String,
 }
 
 impl McpClient {
     fn connect(url: ParsedUrl) -> Self {
-        let init_body = json!({
+        let discover_body = json!({
             "jsonrpc": "2.0",
             "id": 1,
-            "method": "initialize",
+            "method": "server/discover",
             "params": {
-                "protocolVersion": "2024-11-05",
-                "capabilities": {},
-                "clientInfo": {"name": "probe_live_e2e", "version": "0.1"}
+                "_meta": protocol_meta()
             }
         })
         .to_string();
-        let resp = raw_post(&url, &init_body, None);
-        assert_eq!(resp.status, 200, "initialize failed: {}", resp.body);
-        let session_id = resp
-            .headers
-            .get("mcp-session-id")
-            .cloned()
-            .expect("server did not return Mcp-Session-Id header on initialize");
-        let json = extract_json(&resp.body).expect("initialize response was not parseable JSON/SSE");
-        let server_info = &json["result"]["serverInfo"];
-        println!("Connected: server={} version={} session={}", server_info["name"], server_info["version"], session_id);
+        let resp = raw_post(&url, &discover_body, "server/discover", None);
+        assert_eq!(resp.status, 200, "server/discover failed: {}", resp.body);
+        let json = extract_json(&resp.body).expect("server/discover response was not parseable JSON/SSE");
+        let server_info = &json["result"]["_meta"]["io.modelcontextprotocol/serverInfo"];
+        println!("Connected (sessionless {MCP_PROTOCOL_VERSION}): server={} version={}", server_info["name"], server_info["version"]);
 
-        let notify_body = json!({"jsonrpc": "2.0", "method": "notifications/initialized"}).to_string();
-        let notify_resp = raw_post(&url, &notify_body, Some(&session_id));
-        assert!(
-            notify_resp.status == 202 || notify_resp.status == 200,
-            "notifications/initialized unexpected status {}",
-            notify_resp.status
-        );
-
-        McpClient { url, session_id }
+        McpClient { url }
     }
 
-    fn call(&self, id: u64, name: &str, args: JsonValue) -> (JsonValue, StageTiming) {
+    fn call(&self, id: u64, name: &str, mut args: JsonValue) -> (JsonValue, StageTiming) {
+        if let Some(obj) = args.as_object_mut() {
+            obj.entry("session_id".to_string())
+                .or_insert_with(|| json!("probe_live_e2e"));
+        }
         let body = json!({
             "jsonrpc": "2.0",
             "id": id,
             "method": "tools/call",
-            "params": {"name": name, "arguments": args}
+            "params": {
+                "name": name,
+                "arguments": args,
+                "_meta": protocol_meta()
+            }
         })
         .to_string();
-        let resp = raw_post(&self.url, &body, Some(&self.session_id));
+        let resp = raw_post(&self.url, &body, "tools/call", Some(name));
         assert_eq!(resp.status, 200, "tool call {name} failed with HTTP {}: {}", resp.status, resp.body);
         let json = extract_json(&resp.body).unwrap_or_else(|| panic!("tool call {name} response not parseable: {}", resp.body));
         if let Some(err) = json.get("error") {

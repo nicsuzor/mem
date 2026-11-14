@@ -1707,6 +1707,6 @@ impl PkbSearchServer {
             output.push_str("\nWarning: severity ignored for one or more non-target nodes.\n");
         }
 
-        Ok(CallToolResult::success(vec![Content::text(output)]))
+        Ok(CallToolResult::success(vec![ContentBlock::text(output)]))
     }
 }

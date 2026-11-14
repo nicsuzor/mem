@@ -20,8 +20,6 @@ impl SpanExporter for TestSpanExporter {
     fn shutdown(&mut self) {}
 }
 
-static EFFICIENCY_TEST_MUTEX: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
-
 fn setup_test_server(root: &Path) -> PkbSearchServer {
     std::fs::create_dir_all(root.join("tasks")).unwrap();
     std::fs::create_dir_all(root.join("notes")).unwrap();
@@ -77,7 +75,7 @@ fn test_get_task_status_fastpath_returns_lightweight_payload() {
     let text = res
         .content
         .first()
-        .and_then(|c| c.raw.as_text().map(|t| t.text.as_str()))
+        .and_then(|c| c.as_text().map(|t| t.text.as_str()))
         .expect("text content");
 
     // AC2: Payload must be under 150 bytes
@@ -122,7 +120,7 @@ fn test_get_task_compact_and_routes_inversion() {
     let text = res
         .content
         .first()
-        .and_then(|c| c.raw.as_text().map(|t| t.text.as_str()))
+        .and_then(|c| c.as_text().map(|t| t.text.as_str()))
         .expect("text content");
 
     // AC1: Output must be compact (no multiline indentation spaces like "\n  ")
@@ -144,7 +142,7 @@ fn test_get_task_compact_and_routes_inversion() {
     let text_with_routes = res_with_routes
         .content
         .first()
-        .and_then(|c| c.raw.as_text().map(|t| t.text.as_str()))
+        .and_then(|c| c.as_text().map(|t| t.text.as_str()))
         .expect("text content");
     let val_with_routes: serde_json::Value =
         serde_json::from_str(text_with_routes).expect("valid JSON");
@@ -165,7 +163,7 @@ fn test_get_document_compact_and_projections() {
     let text = res
         .content
         .first()
-        .and_then(|c| c.raw.as_text().map(|t| t.text.as_str()))
+        .and_then(|c| c.as_text().map(|t| t.text.as_str()))
         .expect("text content");
 
     assert!(
@@ -189,7 +187,7 @@ fn test_search_defaults_to_snippet_detail_and_compact() {
     let text = res
         .content
         .first()
-        .and_then(|c| c.raw.as_text().map(|t| t.text.as_str()))
+        .and_then(|c| c.as_text().map(|t| t.text.as_str()))
         .expect("text content");
 
     // Verify compact JSON
@@ -210,7 +208,7 @@ fn test_search_defaults_to_snippet_detail_and_compact() {
 
 #[tokio::test]
 async fn test_otel_spans_record_token_metrics() {
-    let _lock = EFFICIENCY_TEST_MUTEX.lock().await;
+    let _lock = crate::mcp_server::tests::otel_spans_tests::OTEL_TEST_MUTEX.lock().await;
     let exporter = TestSpanExporter::default();
     let provider = TracerProvider::builder()
         .with_simple_exporter(exporter.clone())
@@ -222,7 +220,7 @@ async fn test_otel_spans_record_token_metrics() {
 
     // Execute tool call via server dispatch pipeline
     let result = server
-        .execute_tool_call("get_task_status", &json!({ "id": "task-1" }), None, None)
+        .execute_tool_call("get_task_status", &json!({ "id": "task-1", "session_id": "test-session" }), None, None)
         .await
         .expect("tool call succeeded");
     assert!(result.is_error.is_none() || result.is_error == Some(false));

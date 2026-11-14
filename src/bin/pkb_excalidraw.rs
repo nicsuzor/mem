@@ -1586,12 +1586,8 @@ pub fn segments_intersect(p1: (f64, f64), p2: (f64, f64), p3: (f64, f64), p4: (f
     let d3 = ccw(p1, p2, p3);
     let d4 = ccw(p1, p2, p4);
 
-    if ((d1 > 0.0 && d2 < 0.0) || (d1 < 0.0 && d2 > 0.0))
+    ((d1 > 0.0 && d2 < 0.0) || (d1 < 0.0 && d2 > 0.0))
         && ((d3 > 0.0 && d4 < 0.0) || (d3 < 0.0 && d4 > 0.0))
-    {
-        return true;
-    }
-    false
 }
 
 pub fn point_in_rect(p: (f64, f64), r: (f64, f64, f64, f64)) -> bool {
@@ -1615,15 +1611,10 @@ pub fn segment_intersects_rect(p1: (f64, f64), p2: (f64, f64), r: (f64, f64, f64
     let bot_l = (rx, ry + rh);
     let bot_r = (rx + rw, ry + rh);
 
-    if segments_intersect(p1, p2, top_l, top_r)
+    segments_intersect(p1, p2, top_l, top_r)
         || segments_intersect(p1, p2, top_r, bot_r)
         || segments_intersect(p1, p2, bot_r, bot_l)
         || segments_intersect(p1, p2, bot_l, top_l)
-    {
-        return true;
-    }
-
-    false
 }
 
 pub fn rects_overlap(r1: (f64, f64, f64, f64), r2: (f64, f64, f64, f64)) -> bool {

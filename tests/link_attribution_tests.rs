@@ -214,7 +214,7 @@ fn test_ac1_unattributed_link_in_graph_store_and_read_views() {
     let res = server
         .dispatch_tool_sync("get_task", &json!({"id": "admin-f630bdb4"}))
         .expect("get_task must succeed");
-    let json_text = res.content[0].raw.as_text().unwrap().text.as_str();
+    let json_text = res.content[0].as_text().unwrap().text.as_str();
     let task_val: serde_json::Value = serde_json::from_str(json_text).unwrap();
     let links = task_val.get("links_out").and_then(|v| v.as_array()).unwrap();
     let mcp_link = links
@@ -285,7 +285,7 @@ fn test_ac2_route1_dashboard_allows_nic_attribution() {
     );
 
     let created_out = res.unwrap();
-    let created_text = created_out.content[0].raw.as_text().unwrap().text.as_str();
+    let created_text = created_out.content[0].as_text().unwrap().text.as_str();
     let created_val: serde_json::Value = serde_json::from_str(created_text).unwrap();
     let task_id = created_val["id"].as_str().unwrap();
 
@@ -495,7 +495,7 @@ fn test_ac2_route2_agent_omitted_set_by_defaults_to_proposed() {
     );
 
     let created_out = res.unwrap();
-    let created_text = created_out.content[0].raw.as_text().unwrap().text.as_str();
+    let created_text = created_out.content[0].as_text().unwrap().text.as_str();
     let created_val: serde_json::Value = serde_json::from_str(created_text).unwrap();
     let task_id = created_val["id"].as_str().unwrap();
 
@@ -623,7 +623,7 @@ fn test_ac3_admin_f630bdb4_to_targ_5b675f05_link_not_nic() {
     let res = server
         .dispatch_tool_sync("get_task", &json!({"id": "admin-f630bdb4"}))
         .expect("get_task on admin-f630bdb4 must succeed");
-    let json_text = res.content[0].raw.as_text().unwrap().text.as_str();
+    let json_text = res.content[0].as_text().unwrap().text.as_str();
     let task_val: serde_json::Value = serde_json::from_str(json_text).unwrap();
     let links = task_val.get("links_out").and_then(|v| v.as_array()).unwrap();
     let mcp_link = links
@@ -637,4 +637,78 @@ fn test_ac3_admin_f630bdb4_to_targ_5b675f05_link_not_nic() {
         "AC3 VIOLATION: get_task returns set_by: 'nic' for admin-f630bdb4 link"
     );
     assert_eq!(set_by, "unattributed");
+}
+
+#[tokio::test]
+async fn test_stateless_client_info_dashboard_attribution() {
+    let (server, tmp, _graph) = setup_test_pkb();
+
+    let mut meta_map = serde_json::Map::new();
+    meta_map.insert(
+        "io.modelcontextprotocol/clientInfo".to_string(),
+        json!({ "name": "overwhelm-dashboard", "version": "1.0.0" }),
+    );
+    let meta = rmcp::model::RequestMetaObject(rmcp::model::MetaObject(meta_map));
+
+    // 1. Valid dashboard clientInfo + session_id succeeds and persists set_by: nic
+    let res = server
+        .execute_tool_call(
+            "create_task",
+            &json!({
+                "title": "Stateless Dashboard Task",
+                "slug": "stateless-dash-task",
+                "parent": "proj-root",
+                "project": "proj-root",
+                "session_id": "dash-sess-1",
+                "links": [
+                    {
+                        "to": "targ-5b675f05",
+                        "label": "serves",
+                        "quantum": 0.9,
+                        "set_by": "nic"
+                    }
+                ]
+            }),
+            None,
+            Some(&meta),
+        )
+        .await
+        .expect("Stateless dashboard clientInfo write must succeed");
+    let created_val: serde_json::Value =
+        serde_json::from_str(res.content[0].as_text().unwrap().text.as_str()).unwrap();
+    let task_id = created_val["id"].as_str().unwrap();
+    let content = fs::read_to_string(find_file_by_id(tmp.path(), task_id)).unwrap();
+    assert!(
+        content.contains("set_by: nic"),
+        "Stateless dashboard call must persist set_by: nic. File:\n{content}"
+    );
+
+    // 2. Spoofed _client in args without clientInfo meta is stripped and rejected
+    let spoofed = server
+        .execute_tool_call(
+            "create_task",
+            &json!({
+                "title": "Spoofed Task",
+                "slug": "spoofed-task",
+                "parent": "proj-root",
+                "project": "proj-root",
+                "session_id": "agent-sess-1",
+                "_client": "overwhelm-dashboard",
+                "links": [
+                    {
+                        "to": "targ-5b675f05",
+                        "label": "serves",
+                        "quantum": 0.9,
+                        "set_by": "nic"
+                    }
+                ]
+            }),
+            None,
+            None,
+        )
+        .await;
+    assert!(
+        spoofed.is_err(),
+        "Spoofed _client without clientInfo meta must be rejected"
+    );
 }
