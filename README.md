@@ -337,10 +337,13 @@ It also provides **MCP prompts** to guide AI assistants through common search an
 
 | Prompt | Description | Guidance |
 |--------|-------------|----------|
-| `find-task` | "How do I find a task about X?" | Demonstrates `task_search` then `get_task` |
-| `explore-topic` | "What do we know about X?" | Demonstrates `search` then `get_document` |
-| `navigate-graph` | "What's connected to X?" | Demonstrates `get_task` / `get_document` for relationships |
-| `find-by-tag` | "Show me everything tagged X" | Demonstrates `search_by_tag` usage |
+| `find-task` | Find tasks matching a query with optional status filter | `task_search` with snippet default, then compact `get_task` |
+| `explore-topic` | Explore knowledge base content and notes on a topic | `search` with compact snippets, then `get_document` |
+| `navigate-graph` | Inspect connections, dependencies, and neighbourhood of a node | `get_task` / `get_document` with summary detail; `get_dependency_tree` |
+| `find-by-tag` | Show all documents and tasks associated with a specific tag | `search_by_tag` with `tags` array |
+| `task-status` | Fastpath status, readiness, blocker, and assignee check | Ultra-compact `get_task_status` (< 150 bytes) or `get_task(detail: "metadata")` |
+| `ready-tasks` | List unblocked tasks ready for work in priority flow order | `list_tasks` with `status: "ready"` |
+| `task-dependencies` | Inspect upstream blockers and downstream unblocked tasks | `get_dependency_tree` tree visualization |
 
 ### Tools
 
