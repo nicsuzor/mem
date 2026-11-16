@@ -313,8 +313,8 @@ fn get_models_dir() -> PathBuf {
 ///   `Constant_7_attr__value`, `tokenizer.json`) from `BAAI/bge-m3`.
 ///
 /// Existing destination files are never overwritten, and in-flight downloads stream to a
-/// PID-scoped `.{filename}.{pid}.part` file before atomic rename so concurrent processes
-/// sharing a cache directory never unlink each other's temp files.
+/// unique `.{filename}.{pid}.{nonce}.part` file before atomic rename so concurrent processes
+/// or PID-1 containers sharing a cache directory never collide or unlink each other's temp files.
 fn download_models_into(
     models_dir: &std::path::Path,
     variant: ModelVariant,
@@ -349,13 +349,14 @@ fn download_models_into(
     };
 
     let pid = std::process::id();
+    let nonce: u64 = rand::random();
     for (filename, url) in &files {
         let dest = models_dir.join(filename);
         if dest.exists() {
             continue;
         }
 
-        let tmp = models_dir.join(format!(".{filename}.{pid}.part"));
+        let tmp = models_dir.join(format!(".{filename}.{pid}.{nonce:016x}.part"));
         eprintln!("  Downloading {filename}...");
         let download_result = (|| -> Result<u64> {
             let resp = ureq::get(url)
@@ -3303,22 +3304,36 @@ After the code.";
     #[ignore]
     fn measure_single_query_latency() {
         let embedder = Embedder::new().expect("failed to create embedder");
-        let query = "keyboard EMR interference";
+        let query = format!("{QUERY_PREFIX}keyboard EMR interference");
 
-        // Warmup
-        let _ = embedder.encode_query(query).expect("warmup failed");
+        // Warmup (uncached batch=1 query inference)
+        let _ = embedder
+            .encode_batch_with_cap(&[query.as_str()], DEFAULT_QUERY_DENSE_TOKEN_CAP)
+            .expect("warmup failed");
 
         let iters = 10;
         let mut total_duration = std::time::Duration::ZERO;
 
         for _ in 0..iters {
             let start = std::time::Instant::now();
-            let _ = embedder.encode_query(query).expect("encode failed");
+            let out = embedder
+                .encode_batch_with_cap(&[query.as_str()], DEFAULT_QUERY_DENSE_TOKEN_CAP)
+                .expect("encode failed");
             total_duration += start.elapsed();
+            assert_eq!(out.len(), 1);
         }
 
         let avg_ms = total_duration.as_secs_f64() * 1000.0 / (iters as f64);
+        eprintln!(
+            "SINGLE_QUERY_LATENCY ({}, batch=1 uncached, {iters} iters): {avg_ms:.2} ms",
+            embedder.model_file_name()
+        );
         eprintln!("POST_FIX_AVG_LATENCY_MS: {avg_ms:.2} ms");
+        assert_eq!(
+            embedder.query_cache_len(),
+            0,
+            "measure_single_query_latency must bypass LruQueryCache so iterations run ONNX inference"
+        );
     }
 
     #[test]

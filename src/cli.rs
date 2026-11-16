@@ -34,9 +34,9 @@ struct Cli {
     #[arg(long, global = true, env = "PKB_DB_PATH", default_value_t = default_db_path())]
     db_path: String,
 
-    /// Embedding model weights: auto (int8 if present, else fp32), quantized (int8), or fp32.
-    /// Use fp32 for GPU reindexing — the int8 model runs ~10x slower under CUDA.
-    /// Variants produce compatible vectors: an fp32-built index can be served with int8 queries.
+    /// Embedding model weights: auto (int8 if present, else fp32), quantized (int8), fp16, or fp32.
+    /// Use fp16 or fp32 for GPU reindexing — the int8 model runs ~10x slower under CUDA.
+    /// Variants produce compatible vectors: an fp32- or fp16-built index can be served with int8 queries.
     #[arg(long = "model", global = true, env = "AOPS_MODEL_VARIANT", value_enum)]
     model: Option<ModelArg>,
 
@@ -48,6 +48,7 @@ struct Cli {
 enum ModelArg {
     Auto,
     Quantized,
+    Fp16,
     Fp32,
 }
 
@@ -56,6 +57,7 @@ impl ModelArg {
         match self {
             ModelArg::Auto => "auto",
             ModelArg::Quantized => "quantized",
+            ModelArg::Fp16 => "fp16",
             ModelArg::Fp32 => "fp32",
         }
     }
@@ -1515,7 +1517,11 @@ async fn main() -> Result<()> {
 
             println!("PKB root:    {}", pkb_root.display());
             println!("DB path:     {}", db_path.display());
-            println!("Embeddings:  BGE-M3 ONNX ({}-dim)", embedder.dimension());
+            println!(
+                "Embeddings:  BGE-M3 ONNX ({}-dim, {})",
+                embedder.dimension(),
+                embedder.model_file_name()
+            );
             println!("Documents:   {total}");
             println!("DB size:     {:.1} MB", db_size as f64 / 1_048_576.0);
 
@@ -2654,10 +2660,15 @@ async fn main() -> Result<()> {
             }
 
             let query_embedding = embedder.encode(&query_text)?;
-            let results =
-                store
-                    .read()
-                    .search(&query_embedding, limit * 3, &pkb_root, None, None, None, None);
+            let results = store.read().search(
+                &query_embedding,
+                limit * 3,
+                &pkb_root,
+                None,
+                None,
+                None,
+                None,
+            );
 
             let memory_types = ["memory", "note", "insight", "observation"];
             let mut count = 0;
@@ -3011,7 +3022,9 @@ async fn main() -> Result<()> {
                 let json_results: Vec<serde_json::Value> = results
                     .iter()
                     .map(|r| {
-                        let filtered_diags: Vec<_> = r.diagnostics.iter()
+                        let filtered_diags: Vec<_> = r
+                            .diagnostics
+                            .iter()
                             .filter(|d| !errors_only || d.severity == lint::Severity::Error)
                             .filter(|d| !broken_links || d.rule == "ref-broken-wikilink")
                             .collect();
@@ -3110,11 +3123,20 @@ async fn main() -> Result<()> {
                 if broken_links {
                     let broken_count: usize = results
                         .iter()
-                        .map(|r| r.diagnostics.iter().filter(|d| d.rule == "ref-broken-wikilink").count())
+                        .map(|r| {
+                            r.diagnostics
+                                .iter()
+                                .filter(|d| d.rule == "ref-broken-wikilink")
+                                .count()
+                        })
                         .sum();
                     let broken_files = results
                         .iter()
-                        .filter(|r| r.diagnostics.iter().any(|d| d.rule == "ref-broken-wikilink"))
+                        .filter(|r| {
+                            r.diagnostics
+                                .iter()
+                                .any(|d| d.rule == "ref-broken-wikilink")
+                        })
                         .count();
                     eprintln!(
                         "Checked {} files in {:.1}s — {} broken wikilinks in {} files",
@@ -3518,7 +3540,11 @@ async fn main() -> Result<()> {
             );
             eprintln!("   PKB root: {}", pkb_root.display());
             eprintln!("   DB path:  {}", db_path.display());
-            eprintln!("   Embeddings: BGE-M3 ({}-dim)", embedder.dimension());
+            eprintln!(
+                "   Embeddings: BGE-M3 ({}-dim, {})",
+                embedder.dimension(),
+                embedder.model_file_name()
+            );
 
             // Check index freshness
             eprintln!("   Checking index freshness...");
@@ -4340,14 +4366,11 @@ fn index_pkb(
     let parsed: Vec<_> = to_process
         .into_par_iter()
         .map(|doc| {
-            let chunks: Vec<String> = mem::chunker::chunk_document(
-                &doc.title,
-                doc.doc_type.as_deref(),
-                &doc.body,
-            )
-            .into_iter()
-            .map(|c| c.text)
-            .collect();
+            let chunks: Vec<String> =
+                mem::chunker::chunk_document(&doc.title, doc.doc_type.as_deref(), &doc.body)
+                    .into_iter()
+                    .map(|c| c.text)
+                    .collect();
             (doc, chunks)
         })
         .collect();
@@ -4473,6 +4496,7 @@ fn bench_reindex(
         .unwrap_or(0);
 
     println!("bench-reindex config:");
+    println!("  model:        {}", embedder.model_file_name());
     println!("  cpu cores:    {cores}");
     println!("  sessions:     {eff_sessions}");
     println!("  threads/sess: {eff_threads}");
@@ -4521,14 +4545,11 @@ fn bench_reindex(
         .iter()
         .filter_map(|path| {
             pkb::parse_file_relative(path, pkb_root).map(|doc| {
-                let chunks: Vec<String> = mem::chunker::chunk_document(
-                    &doc.title,
-                    doc.doc_type.as_deref(),
-                    &doc.body,
-                )
-                .into_iter()
-                .map(|c| c.text)
-                .collect();
+                let chunks: Vec<String> =
+                    mem::chunker::chunk_document(&doc.title, doc.doc_type.as_deref(), &doc.body)
+                        .into_iter()
+                        .map(|c| c.text)
+                        .collect();
                 (doc, chunks)
             })
         })
@@ -4868,6 +4889,49 @@ mod tests {
             .find(|a| a.get_id() == "db_path")
             .expect("db_path arg");
         assert_eq!(arg.get_env(), Some(std::ffi::OsStr::new("PKB_DB_PATH")));
+    }
+
+    #[test]
+    fn test_cli_model_arg_parses_fp16_and_preserves_existing_variants() {
+        use clap::CommandFactory;
+
+        let default_cli = Cli::try_parse_from(["pkb", "status"]).expect("omitted --model");
+        assert!(default_cli.model.is_none());
+
+        for (flag_val, expected) in [
+            ("auto", "auto"),
+            ("quantized", "quantized"),
+            ("fp16", "fp16"),
+            ("fp32", "fp32"),
+        ] {
+            let parsed = Cli::try_parse_from(["pkb", "--model", flag_val, "status"])
+                .unwrap_or_else(|e| panic!("--model {flag_val} should parse: {e}"));
+            assert_eq!(parsed.model.map(ModelArg::as_str), Some(expected));
+        }
+
+        assert!(
+            Cli::try_parse_from(["pkb", "--model", "bogus", "status"]).is_err(),
+            "--model bogus must fail to parse"
+        );
+
+        let cmd = Cli::command();
+        let model_arg = cmd
+            .get_arguments()
+            .find(|a| a.get_id() == "model")
+            .expect("model arg");
+        assert_eq!(
+            model_arg.get_env(),
+            Some(std::ffi::OsStr::new("AOPS_MODEL_VARIANT"))
+        );
+        let help = model_arg
+            .get_long_help()
+            .or_else(|| model_arg.get_help())
+            .expect("model help")
+            .to_string();
+        assert!(
+            help.contains("fp16"),
+            "--model help should document fp16, got: {help}"
+        );
     }
 
     #[test]
