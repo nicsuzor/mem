@@ -1618,6 +1618,7 @@ dependencies = [
  "futures-util",
  "glob",
  "gray_matter",
+ "half",
  "http",
  "ignore",
  "indicatif",
