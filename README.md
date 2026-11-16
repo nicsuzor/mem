@@ -337,13 +337,13 @@ It also provides **MCP prompts** to guide AI assistants through common search an
 
 | Prompt | Description | Guidance |
 |--------|-------------|----------|
-| `find-task` | Find tasks matching a query with optional status filter | `task_search` with snippet default, then compact `get_task` |
+| `find-task` | Find tasks matching a query with optional status filter | `search` (`type: "task"`) with snippet default, `list_tasks`, then compact `get_task` or `get_task_status` |
 | `explore-topic` | Explore knowledge base content and notes on a topic | `search` with compact snippets, then `get_document` |
-| `navigate-graph` | Inspect connections, dependencies, and neighbourhood of a node | `get_task` / `get_document` with summary detail; `get_dependency_tree` |
-| `find-by-tag` | Show all documents and tasks associated with a specific tag | `search_by_tag` with `tags` array |
+| `navigate-graph` | Inspect connections, dependencies, and neighbourhood of a node | `get_task` / `get_document` with summary detail |
+| `find-by-tag` | Show all documents and tasks associated with a specific tag | `list_documents` and `list_tasks` with `tags` array, then summary `get_document` / `get_task` |
 | `task-status` | Fastpath status, readiness, blocker, and assignee check | Ultra-compact `get_task_status` (< 150 bytes) or `get_task(detail: "metadata")` |
-| `ready-tasks` | List unblocked tasks ready for work in priority flow order | `list_tasks` with `status: "ready"` |
-| `task-dependencies` | Inspect upstream blockers and downstream unblocked tasks | `get_dependency_tree` tree visualization |
+| `ready-tasks` | List unblocked tasks ready for work in priority flow order | `list_tasks` with `status: ["ready", "queued"]` |
+| `task-dependencies` | Inspect upstream blockers and downstream unblocked tasks | `get_task(detail: "metadata")` inspecting `depends_on`, `blocks`, and `blocked` |
 
 ### Tools
 

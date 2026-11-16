@@ -688,8 +688,9 @@ fn test_stdio_prompts_list_and_get() {
     assert!(!messages.is_empty());
     let text = messages[0]["content"]["text"].as_str().unwrap();
     assert!(text.contains("I want to find a task about 'integration testing'"));
-    assert!(text.contains("task_search"));
+    assert!(text.contains("search"));
     assert!(text.contains("get_task"));
+    assert!(text.contains("<session_id>"));
 
     // 3. Verify prompts/get task-status (id=4)
     let get_status = responses

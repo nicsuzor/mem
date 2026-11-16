@@ -4,6 +4,16 @@ use std::borrow::Cow;
 
 use super::PkbSearchServer;
 
+#[allow(dead_code)]
+pub(crate) const PROMPT_REFERENCED_TOOLS: &[&str] = &[
+    "get_document",
+    "get_task",
+    "get_task_status",
+    "list_documents",
+    "list_tasks",
+    "search",
+];
+
 fn get_required_str<'a>(
     args: &'a serde_json::Map<String, serde_json::Value>,
     param: &str,
@@ -166,7 +176,7 @@ impl PkbSearchServer {
                 let limit = get_optional_positive_int(&arguments, "limit", 5)?;
 
                 let mut msg = format!(
-                    "I want to find a task about '{}'. Please use 'task_search' to find it, then 'get_task' to read the most relevant one.\n\n\
+                    "I want to find a task about '{}'. Please use 'search' to find it, then 'get_task' to inspect details.\n\n\
                      Shortcut parameters:\n\
                      - Query: \"{}\"\n\
                      - Result limit: {}\n",
@@ -179,42 +189,47 @@ impl PkbSearchServer {
 
                 msg.push_str(
                     "\nEfficiency guidance:\n\
-                     1. Call 'task_search' with `{\"query\": \"...\", \"limit\": ...}`. It returns compact snippet excerpts by default to minimize context token usage.\n\
-                     2. When inspecting a retrieved task, call 'get_task' with `\"detail\": \"summary\"` or `\"detail\": \"metadata\"` (which omits full task bodies and routes by default).\n\
-                     3. If only checking completion or readiness, call fastpath 'get_task_status' (`{\"id\": \"...\"}`) which returns lightweight metadata (< 150 bytes)."
+                     1. Call 'search' with `{\"session_id\": \"<session_id>\", \"query\": \"...\", \"type\": \"task\", \"limit\": ...}` (compact snippet default).\n\
+                     2. Alternatively, call 'list_tasks' with `{\"session_id\": \"<session_id>\", \"status\": ...}` when filtering strictly by status.\n\
+                     3. Inspect matching tasks with 'get_task' (`{\"session_id\": \"<session_id>\", \"id\": \"...\", \"detail\": \"summary\"}` or `\"metadata\"`), or check readiness via fastpath 'get_task_status' (`{\"session_id\": \"<session_id>\", \"id\": \"...\"}`, < 150 bytes)."
                 );
 
-                Ok(GetPromptResult::new(vec![PromptMessage::new_text(
-                    Role::User,
-                    msg,
-                )]).with_description("Search for tasks and retrieve with compact token-efficient payload"))
+                Ok(
+                    GetPromptResult::new(vec![PromptMessage::new_text(Role::User, msg)])
+                        .with_description(
+                            "Search for tasks and retrieve with compact token-efficient payload",
+                        ),
+                )
             }
             "explore-topic" => {
                 let query = get_required_str(&arguments, "query")?;
                 let limit = get_optional_positive_int(&arguments, "limit", 5)?;
 
+                let query_json = serde_json::to_string(query).unwrap_or_default();
                 let msg = format!(
-                    "What do we know about '{}'? Please use 'search' to find documents, then 'get_document' for the full content of relevant ones.\n\n\
+                    "What do we know about '{}'? Please use 'search' to find documents, then 'get_document' for relevant ones.\n\n\
                      Shortcut parameters:\n\
-                     - Query: \"{}\"\n\
+                     - Query: {}\n\
                      - Result limit: {}\n\n\
                      Efficiency guidance:\n\
-                     1. Call 'search' with `{{\"query\": \"{}\", \"limit\": {}}}`. Results default to compact snippet level to conserve token context.\n\
-                     2. Drill down into matching documents using 'get_document' with `\"detail\": \"summary\"` or specific `\"fields\"` before fetching full content.",
-                    query, query, limit, query, limit
+                     1. Call 'search' with `{{\"session_id\": \"<session_id>\", \"query\": {}, \"limit\": {}}}` (compact snippet default to conserve context).\n\
+                     2. Drill down into matching documents using 'get_document' with `{{\"session_id\": \"<session_id>\", \"id\": \"...\", \"detail\": \"summary\"}}` or specific `\"fields\"` before fetching \"full\".",
+                    query, query_json, limit, query_json, limit
                 );
 
-                Ok(GetPromptResult::new(vec![PromptMessage::new_text(
-                    Role::User,
-                    msg,
-                )]).with_description("Explore knowledge base topics using compact search snippets"))
+                Ok(
+                    GetPromptResult::new(vec![PromptMessage::new_text(Role::User, msg)])
+                        .with_description(
+                            "Explore knowledge base topics using compact search snippets",
+                        ),
+                )
             }
             "navigate-graph" => {
                 let id = get_required_str(&arguments, "id")?;
                 let direction = get_optional_str(&arguments, "direction");
 
                 let mut msg = format!(
-                    "What's connected to '{}'? Please use 'get_task' or 'get_document' to see its relationships in the knowledge graph.\n\n\
+                    "What's connected to '{}'? Please use 'get_task' or 'get_document' to inspect its relationships in the knowledge graph.\n\n\
                      Shortcut parameters:\n\
                      - Node ID: \"{}\"\n",
                     id, id
@@ -226,15 +241,16 @@ impl PkbSearchServer {
 
                 msg.push_str(
                     "\nEfficiency guidance:\n\
-                     1. Call 'get_task' or 'get_document' with `\"id\": \"...\", \"detail\": \"summary\"` to inspect connected nodes and relationships without loading full document text or computing costly route paths.\n\
-                     2. For dependency trees and blocker analysis, use 'get_dependency_tree' with `{\"id\": \"...\"}`.\n\
-                     3. For broader graph topological neighborhood, use 'pkb_context' with `{\"id\": \"...\"}`."
+                     1. For tasks, call 'get_task' with `{\"session_id\": \"<session_id>\", \"id\": \"...\", \"detail\": \"summary\"}` to inspect 'depends_on', 'blocks', 'children', 'parent', 'links_in', 'links_out', and 'display' without route pathfinding.\n\
+                     2. For documents/notes, call 'get_document' with `{\"session_id\": \"<session_id>\", \"id\": \"...\", \"detail\": \"summary\"}` to inspect 'frontmatter' and 'links_in'."
                 );
 
-                Ok(GetPromptResult::new(vec![PromptMessage::new_text(
-                    Role::User,
-                    msg,
-                )]).with_description("Navigate knowledge graph relationships and dependencies"))
+                Ok(
+                    GetPromptResult::new(vec![PromptMessage::new_text(Role::User, msg)])
+                        .with_description(
+                            "Navigate knowledge graph relationships and dependencies",
+                        ),
+                )
             }
             "find-by-tag" => {
                 let raw_tag = get_required_str(&arguments, "tag")?;
@@ -248,37 +264,41 @@ impl PkbSearchServer {
                 }
                 let limit = get_optional_positive_int(&arguments, "limit", 10)?;
 
+                let tag_json = serde_json::to_string(tag).unwrap_or_default();
                 let msg = format!(
-                    "Show me everything tagged '{}'. Please use 'search_by_tag' with this tag.\n\n\
+                    "Show me everything tagged '{}'. Please use 'list_documents' and 'list_tasks' to find tagged items.\n\n\
                      Shortcut parameters:\n\
-                     - Tag: \"{}\"\n\
+                     - Tag: {}\n\
                      - Result limit: {}\n\n\
                      Efficiency guidance:\n\
-                     Call 'search_by_tag' with `{{\"tags\": [\"{}\"]}}`. Review the compact document list and use 'get_task' or 'get_document' with `\"detail\": \"summary\"` for specific items.",
-                    tag, tag, limit, tag
+                     1. Call 'list_documents' with `{{\"session_id\": \"<session_id>\", \"tags\": [{}], \"limit\": {}}}` for all tagged documents and notes.\n\
+                     2. Call 'list_tasks' with `{{\"session_id\": \"<session_id>\", \"tags\": [{}], \"limit\": {}}}` for tagged tasks in flow order.\n\
+                     3. Inspect specific items using 'get_document' or 'get_task' with `\"detail\": \"summary\"`.",
+                    tag, tag_json, limit, tag_json, limit, tag_json, limit
                 );
 
-                Ok(GetPromptResult::new(vec![PromptMessage::new_text(
-                    Role::User,
-                    msg,
-                )]).with_description("Find documents and tasks tagged with a specific tag"))
+                Ok(
+                    GetPromptResult::new(vec![PromptMessage::new_text(Role::User, msg)])
+                        .with_description("Find documents and tasks tagged with a specific tag"),
+                )
             }
             "task-status" => {
                 let id = get_required_str(&arguments, "id")?;
+                let id_json = serde_json::to_string(id).unwrap_or_default();
 
                 let msg = format!(
                     "Check the status for task '{}'.\n\n\
                      Shortcut parameters:\n\
-                     - Task ID: \"{}\"\n\n\
+                     - Task ID: {}\n\n\
                      Efficiency guidance:\n\
-                     Call fastpath 'get_task_status' with `{{\"id\": \"{}\"}}` (returns an ultra-compact payload < 150 bytes containing {{id, status, ready, blocked, assignee}}), or call 'get_task' with `{{\"id\": \"{}\", \"detail\": \"metadata\"}}` without the token overhead of reading the full task body or calculating route traversals.",
-                    id, id, id, id
+                     Call fastpath 'get_task_status' with `{{\"session_id\": \"<session_id>\", \"id\": {}}}` (< 150 bytes returning {{id, status, ready, blocked, assignee}}), or call 'get_task' with `{{\"session_id\": \"<session_id>\", \"id\": {}, \"detail\": \"metadata\"}}`.",
+                    id, id_json, id_json, id_json
                 );
 
-                Ok(GetPromptResult::new(vec![PromptMessage::new_text(
-                    Role::User,
-                    msg,
-                )]).with_description("Fastpath task status, readiness, and blocker check"))
+                Ok(
+                    GetPromptResult::new(vec![PromptMessage::new_text(Role::User, msg)])
+                        .with_description("Fastpath task status, readiness, and blocker check"),
+                )
             }
             "ready-tasks" => {
                 let limit = get_optional_positive_int(&arguments, "limit", 10)?;
@@ -287,48 +307,56 @@ impl PkbSearchServer {
                 let mut msg = format!(
                     "Find unblocked tasks ready for work in priority order.\n\n\
                      Shortcut parameters:\n\
-                     - Status: \"ready\"\n\
+                     - Status: [\"ready\", \"queued\"]\n\
                      - Result limit: {}\n",
                     limit
                 );
 
-                let mut tool_args = serde_json::json!({
-                    "status": "ready",
-                    "limit": limit
-                });
-
-                if let Some(proj) = project {
-                    msg.push_str(&format!("- Project filter: \"{}\"\n", proj));
-                    tool_args["project"] = serde_json::json!(proj);
-                }
+                let tool_args_str = match project {
+                    Some(proj) => {
+                        let proj_json = serde_json::to_string(proj).unwrap_or_default();
+                        msg.push_str(&format!("- Project filter: {}\n", proj_json));
+                        format!(
+                            r#"{{"session_id": "<session_id>", "status": ["ready", "queued"], "limit": {}, "project": {}}}"#,
+                            limit, proj_json
+                        )
+                    }
+                    None => {
+                        format!(
+                            r#"{{"session_id": "<session_id>", "status": ["ready", "queued"], "limit": {}}}"#,
+                            limit
+                        )
+                    }
+                };
 
                 msg.push_str(&format!(
                     "\nEfficiency guidance:\n\
-                     Call 'list_tasks' with `{}`. Tasks are returned in flow priority order (deadline cliff lane first, followed by highest gain/loss averted) without loading document bodies.",
-                    serde_json::to_string(&tool_args).unwrap_or_default()
+                     Call 'list_tasks' with `{}`. Tasks are returned in flow priority order; inspect `blocked: false` for unblocked ready tasks without loading full document bodies.",
+                    tool_args_str
                 ));
 
-                Ok(GetPromptResult::new(vec![PromptMessage::new_text(
-                    Role::User,
-                    msg,
-                )]).with_description("List ready and unblocked tasks in priority order"))
+                Ok(
+                    GetPromptResult::new(vec![PromptMessage::new_text(Role::User, msg)])
+                        .with_description("List ready and unblocked tasks in priority order"),
+                )
             }
             "task-dependencies" => {
                 let id = get_required_str(&arguments, "id")?;
+                let id_json = serde_json::to_string(id).unwrap_or_default();
 
                 let msg = format!(
                     "Inspect dependencies and blockers for task '{}'.\n\n\
                      Shortcut parameters:\n\
-                     - Task ID: \"{}\"\n\n\
+                     - Task ID: {}\n\n\
                      Efficiency guidance:\n\
-                     Call 'get_dependency_tree' with `{{\"id\": \"{}\"}}` to view upstream blocking dependencies and downstream unblocked tasks in a compact tree structure.",
-                    id, id, id
+                     Call 'get_task' with `{{\"session_id\": \"<session_id>\", \"id\": {}, \"detail\": \"metadata\"}}` to inspect 'depends_on' (upstream blockers), 'blocks' (downstream dependents), 'children', 'parent', and 'blocked' without fetching the body or computing routes.",
+                    id, id_json, id_json
                 );
 
-                Ok(GetPromptResult::new(vec![PromptMessage::new_text(
-                    Role::User,
-                    msg,
-                )]).with_description("Inspect upstream blockers and downstream dependencies"))
+                Ok(
+                    GetPromptResult::new(vec![PromptMessage::new_text(Role::User, msg)])
+                        .with_description("Inspect upstream blockers and downstream dependencies"),
+                )
             }
             _ => Err(McpError {
                 code: ErrorCode::METHOD_NOT_FOUND,
