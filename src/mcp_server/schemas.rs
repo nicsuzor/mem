@@ -342,8 +342,6 @@ impl PkbSearchServer {
                         "released_at": { "type": "string" },
                         "contributes_to": { "type": "array", "items": { "type": "object" } },
                         "supersedes": { "type": "string" },
-                        "superseded_by": { "type": "array", "items": { "type": "string" } },
-                        "blocked": { "type": "boolean" },
                         "blocker": { "type": "string" },
                         "reason": { "type": "string" },
                         "completion_evidence": { "type": "string", "description": "Required when setting status=done" },
