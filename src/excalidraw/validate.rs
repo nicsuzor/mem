@@ -148,6 +148,23 @@ pub fn validate_file(file: &super::schema::ExcalidrawFile) -> Result<Vec<String>
                 ));
             }
 
+            let start_head = e
+                .start_arrowhead
+                .as_deref()
+                .filter(|s| !s.is_empty() && *s != "none");
+            let end_head = e
+                .end_arrowhead
+                .as_deref()
+                .filter(|s| !s.is_empty() && *s != "none");
+            if let (Some(sa), None) = (start_head, end_head) {
+                warnings.push(format!(
+                    "arrow {} arrowhead/binding disagreement: startArrowhead={}, endArrowhead=none — points at startBinding ({}) opposite binding order",
+                    e.id,
+                    sa,
+                    start_id.unwrap_or("none"),
+                ));
+            }
+
             // 3. Dangling arrow bindings — the bound element must actually exist.
             //
             //    Note: law 3.5 in specs/excalidraw-tooling.md additionally
@@ -515,5 +532,38 @@ mod tests {
             .expect("canvas with only pre-existing evidence-class debt must validate Ok");
         assert!(warnings.iter().any(|f| f.contains("stale")));
         assert!(warnings.iter().any(|f| f.contains("originalText")));
+    }
+
+    #[test]
+    fn start_only_arrowhead_emits_disagreement_warning() {
+        let mut file = ExcalidrawFile::default();
+        let a = elem("a", "rectangle");
+        let b = elem("b", "rectangle");
+        let mut arrow = elem("arrow-rev", "arrow");
+        arrow.start_binding = Some(PointBinding {
+            element_id: "a".to_string(),
+            focus: 0.0,
+            gap: 1.0,
+            fixed_point: None,
+        });
+        arrow.end_binding = Some(PointBinding {
+            element_id: "b".to_string(),
+            focus: 0.0,
+            gap: 1.0,
+            fixed_point: None,
+        });
+        arrow.start_arrowhead = Some("arrow".to_string());
+        arrow.end_arrowhead = None;
+        file.elements.push(a);
+        file.elements.push(b);
+        file.elements.push(arrow);
+
+        let warnings = validate_file(&file).expect("disagreement must be a non-fatal warning");
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.contains("arrow-rev") && w.contains("arrowhead/binding disagreement")),
+            "expected arrowhead/binding disagreement warning, got: {warnings:?}"
+        );
     }
 }

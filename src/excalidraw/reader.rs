@@ -60,6 +60,7 @@ pub struct CanvasArrow {
     pub target_node_id: Option<String>,
     pub source_element_id: Option<String>,
     pub target_element_id: Option<String>,
+    pub bidirectional: bool,
     pub edge_type: EdgeType,
     pub label: Option<String>,
     pub custom_data: Option<CustomData>,
@@ -388,12 +389,47 @@ impl CanvasReader {
                 label.as_deref(),
             );
 
+            let has_start_head = arrow_elem
+                .start_arrowhead
+                .as_deref()
+                .is_some_and(|s| !s.is_empty() && s != "none");
+            let has_end_head = arrow_elem
+                .end_arrowhead
+                .as_deref()
+                .is_some_and(|s| !s.is_empty() && s != "none");
+
+            let (source_node_id, target_node_id, source_element_id, target_element_id, bidirectional) =
+                match (has_start_head, has_end_head) {
+                    (true, true) => (
+                        source_node_id,
+                        target_node_id,
+                        start_elem_id,
+                        end_elem_id,
+                        true,
+                    ),
+                    (true, false) => (
+                        target_node_id,
+                        source_node_id,
+                        end_elem_id,
+                        start_elem_id,
+                        false,
+                    ),
+                    (false, true) | (false, false) => (
+                        source_node_id,
+                        target_node_id,
+                        start_elem_id,
+                        end_elem_id,
+                        false,
+                    ),
+                };
+
             parsed_arrows.push(CanvasArrow {
                 element_id: arrow_elem.id.clone(),
                 source_node_id,
                 target_node_id,
-                source_element_id: start_elem_id,
-                target_element_id: end_elem_id,
+                source_element_id,
+                target_element_id,
+                bidirectional,
                 edge_type,
                 label,
                 custom_data: arrow_elem.custom_data.clone(),
@@ -798,5 +834,30 @@ mod tests {
             !canvas.cards[0].is_new,
             "a card whose node id was recovered from its text is not a new node"
         );
+    }
+
+    #[test]
+    fn start_only_arrowhead_reverses_direction_and_both_sets_bidirectional() {
+        let json = r#"{"type":"excalidraw","version":2,"elements":[
+          {"type":"rectangle","id":"r1","x":0,"y":0,"width":100,"height":50,
+           "customData":{"pkb":{"node_id":"task-a"}}},
+          {"type":"rectangle","id":"r2","x":200,"y":0,"width":100,"height":50,
+           "customData":{"pkb":{"node_id":"task-b"}}},
+          {"type":"arrow","id":"a-rev","startBinding":{"elementId":"r1","focus":0,"gap":1},"endBinding":{"elementId":"r2","focus":0,"gap":1},"startArrowhead":"arrow","endArrowhead":null},
+          {"type":"arrow","id":"a-bi","startBinding":{"elementId":"r1","focus":0,"gap":1},"endBinding":{"elementId":"r2","focus":0,"gap":1},"startArrowhead":"arrow","endArrowhead":"arrow"}
+        ]}"#;
+        let file: crate::excalidraw::schema::ExcalidrawFile = serde_json::from_str(json).expect("deser");
+        let canvas = CanvasReader::parse_file(file);
+        assert_eq!(canvas.arrows.len(), 2);
+
+        let rev = canvas.arrows.iter().find(|a| a.element_id == "a-rev").unwrap();
+        assert_eq!(rev.source_node_id.as_deref(), Some("task-b"));
+        assert_eq!(rev.target_node_id.as_deref(), Some("task-a"));
+        assert!(!rev.bidirectional);
+
+        let bi = canvas.arrows.iter().find(|a| a.element_id == "a-bi").unwrap();
+        assert_eq!(bi.source_node_id.as_deref(), Some("task-a"));
+        assert_eq!(bi.target_node_id.as_deref(), Some("task-b"));
+        assert!(bi.bidirectional);
     }
 }
