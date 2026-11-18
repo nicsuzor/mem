@@ -17,7 +17,7 @@
 //!    m_graph(d) = 1 + 0.08 * min(1, ln(1 + deg+(d)) / ln(21)).
 //! 6. Modular temporal/access multiplier hook: M_recency_access(d) (8A composition point).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::Arc;
 
@@ -462,6 +462,149 @@ pub fn try_fuse_tm2c2<G: GraphStructuralLookup>(
     Ok(intermediate)
 }
 
+/// Weight applied to the overlap-coefficient ratio in [`title_match_boost`].
+pub const TITLE_BOOST_WEIGHT: f32 = 2.0;
+
+/// Minimal stopword list for title/query token overlap.
+const TITLE_BOOST_STOPWORDS: &[&str] = &[
+    "a", "an", "and", "at", "for", "in", "is", "of", "on", "or", "the", "to", "with",
+];
+
+/// Token-overlap boost rewarding queries that are a near-exact match to a
+/// document's title.
+pub fn title_match_boost(query: &str, title: &str) -> f32 {
+    fn tokens(s: &str) -> HashSet<String> {
+        s.to_ascii_lowercase()
+            .split(|c: char| !c.is_alphanumeric())
+            .filter(|w| w.len() > 1 && !TITLE_BOOST_STOPWORDS.contains(w))
+            .map(|w| w.to_string())
+            .collect()
+    }
+
+    let q = tokens(query);
+    let t = tokens(title);
+    if q.is_empty() || t.is_empty() {
+        return 0.0;
+    }
+
+    let intersection = q.intersection(&t).count() as f32;
+    let smaller = q.len().min(t.len()) as f32;
+
+    (intersection / smaller) * TITLE_BOOST_WEIGHT
+}
+
+/// `type_boost` for `search`'s type-based ranking bump: surfaces
+/// knowledge/memory/note/insight/observation docs over transient tasks,
+/// absent a title match.
+pub fn type_boost_for(doc_type: Option<&str>) -> f32 {
+    match doc_type.map(|s| s.to_ascii_lowercase()).as_deref() {
+        Some("knowledge") | Some("memory") | Some("note") | Some("insight")
+        | Some("observation") => 0.15,
+        _ => 0.0,
+    }
+}
+
+/// Per-result base ranking score for `search`: fused/semantic `r.score`
+/// rescaled by graph-proximity `boost`, `type_boost`, and `title_boost`.
+pub fn ranked_score(query: &str, r: &SearchResult, boost: f32) -> f32 {
+    let type_boost = type_boost_for(r.doc_type.as_deref());
+    let title_boost = title_match_boost(query, &r.title);
+    r.score * (1.0 + boost + type_boost + title_boost)
+}
+
+/// Per-result ranking score for `task_search` (no `type_boost`, shares `title_match_boost`).
+pub fn task_search_score(query: &str, r: &SearchResult) -> f32 {
+    r.score * (1.0 + title_match_boost(query, &r.title))
+}
+
+/// Full breakdown of post-hybrid scoring components for a candidate.
+#[derive(Debug, Clone)]
+pub struct PostHybridScore {
+    pub node_id: String,
+    pub type_boost: f32,
+    pub title_boost: f32,
+    pub proximity_boost: f32,
+    pub base_score: f32,
+    pub recency_decay: f64,
+    pub read_boost: f64,
+    pub salience_score: f64,
+    pub is_exact_id: bool,
+    pub final_score: f32,
+}
+
+/// Shared production post-hybrid scoring function used by both `handle_pkb_search`
+/// and offline evaluation (`examples/rank_eval.rs`).
+pub fn score_post_hybrid_candidate(
+    query: &str,
+    r: &SearchResult,
+    graph: Option<&crate::graph_store::GraphStore>,
+    boost_map: Option<&HashMap<String, f32>>,
+    salience_store: Option<&crate::salience::SalienceStore>,
+    now: chrono::DateTime<chrono::Utc>,
+    floor: f64,
+) -> PostHybridScore {
+    let node = graph.and_then(|g| g.get_node(&r.id).or_else(|| g.resolve(&r.id)));
+    let node_id = node
+        .as_ref()
+        .map(|n| n.id.clone())
+        .unwrap_or_else(|| r.id.clone());
+
+    let proximity_boost = boost_map
+        .and_then(|m| m.get(&node_id).copied())
+        .unwrap_or(0.0);
+    let type_boost = type_boost_for(r.doc_type.as_deref());
+    let title_boost = title_match_boost(query, &r.title);
+    let base_score = r.score * (1.0 + proximity_boost + type_boost + title_boost);
+
+    let doc_type = r
+        .doc_type
+        .as_deref()
+        .or_else(|| node.as_ref().and_then(|n| n.node_type.as_deref()));
+    let date = r.date.as_deref();
+    let modified = node.as_ref().and_then(|n| n.modified.as_deref());
+
+    let recency_decay = crate::salience::document_recency_decay(doc_type, date, modified, now);
+    let salience_score = salience_store
+        .map(|s| s.get_salience(&node_id))
+        .unwrap_or(0.0);
+    let default_config;
+    let salience_config = match salience_store {
+        Some(s) => s.config(),
+        None => {
+            default_config = crate::salience::SalienceConfig::default();
+            &default_config
+        }
+    };
+    let read_boost = crate::salience::recent_read_boost(salience_score, salience_config);
+
+    let aliases = graph.map(|g| g.aliases(&r.id)).unwrap_or_default();
+    let is_exact_id = is_exact_id_match(query, &r.id, &r.path, &aliases);
+
+    let final_score = if is_exact_id {
+        1.0f32
+    } else {
+        crate::salience::apply_priors_with_floor(
+            base_score as f64,
+            floor,
+            recency_decay,
+            read_boost,
+        ) as f32
+    };
+
+    PostHybridScore {
+        node_id,
+        type_boost,
+        title_boost,
+        proximity_boost,
+        base_score,
+        recency_decay,
+        read_boost,
+        salience_score,
+        is_exact_id,
+        final_score,
+    }
+}
+
 /// Fuse vector and BM25 search results using TM2C2 normalised convex combination,
 /// raw-score silence floor, and structural priors.
 pub fn fuse_tm2c2<G: GraphStructuralLookup>(
@@ -871,5 +1014,68 @@ mod tests {
         assert_eq!(compute_m_id("check task aops_8a2448c0 please", "aops_8a2448c0", &path, &aliases), 2.0);
         assert!(is_exact_id_match("check task aops_8a2448c0 please", "aops_8a2448c0", &path, &aliases));
         assert!(is_exact_id_match("see [[kb_295732fd]] here", "kb_295732fd", &path, &aliases));
+    }
+
+    #[test]
+    fn test_score_post_hybrid_candidate_shared_logic() {
+        use chrono::{TimeZone, Utc};
+
+        let now = Utc.with_ymd_and_hms(2026, 11, 18, 12, 0, 0).unwrap();
+        let mut memory_doc = make_result("mem_alpha", "Synthetic Memory Note", 0.50, Some("active"));
+        memory_doc.doc_type = Some("memory".to_string());
+
+        let mut task_doc = make_result("task_beta", "Unrelated Synthetic Item", 0.50, Some("ready"));
+        task_doc.doc_type = Some("task".to_string());
+
+        // Without title overlap, memory doc receives 0.15 type_boost over task doc.
+        let s_mem = score_post_hybrid_candidate(
+            "quarterly audit plan",
+            &memory_doc,
+            None,
+            None,
+            None,
+            now,
+            0.0,
+        );
+        let s_task = score_post_hybrid_candidate(
+            "quarterly audit plan",
+            &task_doc,
+            None,
+            None,
+            None,
+            now,
+            0.0,
+        );
+        assert!((s_mem.type_boost - 0.15).abs() < 1e-6);
+        assert_eq!(s_task.type_boost, 0.0);
+        assert!(!s_mem.is_exact_id);
+        assert!(s_mem.final_score > s_task.final_score);
+
+        // Exact ID match pins final_score to 1.0 regardless of raw score.
+        let s_exact = score_post_hybrid_candidate(
+            "task_beta",
+            &task_doc,
+            None,
+            None,
+            None,
+            now,
+            0.0,
+        );
+        assert!(s_exact.is_exact_id);
+        assert_eq!(s_exact.final_score, 1.0);
+
+        // Title match boost applies on overlapping tokens.
+        let s_title = score_post_hybrid_candidate(
+            "synthetic memory note",
+            &memory_doc,
+            None,
+            None,
+            None,
+            now,
+            0.0,
+        );
+        assert!((s_title.title_boost - TITLE_BOOST_WEIGHT).abs() < 1e-6);
+        assert!(s_title.final_score <= 0.990);
+        assert!(s_title.final_score > s_mem.final_score);
     }
 }

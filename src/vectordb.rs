@@ -594,6 +594,117 @@ impl VectorStore {
         Ok(count)
     }
 
+    fn migrate_legacy_store(old_store: OldVectorStore, dimension: usize) -> Self {
+        let mut new_store = Self::new(dimension);
+        for (key, old_entry) in old_store.documents {
+            new_store.documents.insert(
+                key,
+                DocumentEntry {
+                    path: old_entry.path,
+                    title: old_entry.title,
+                    doc_type: old_entry.doc_type,
+                    status: old_entry.status,
+                    tags: old_entry.tags,
+                    id: old_entry.id,
+                    date: old_entry.date,
+                    consolidated: None, // New fields initialized
+                    consolidated_at: None, // New fields initialized
+                    modified: old_entry.modified,
+                    confidence: old_entry.confidence,
+                    content_hash: old_entry.content_hash,
+                    file_hash: old_entry.file_hash,
+                    body_hash: old_entry.body_hash,
+                    chunk_embeddings: old_entry.chunk_embeddings,
+                    chunk_texts: old_entry.chunk_texts,
+                    body_chunks: old_entry.body_chunks,
+                },
+            );
+        }
+        new_store
+    }
+
+    fn replay_wal_files(&mut self, path: &Path) {
+        // 1. Replay .wal.compacting first if present from a crashed prior save.
+        let wal_compacting = wal_compacting_path(path);
+        if wal_compacting.exists() {
+            let _ = self.replay_wal(&wal_compacting);
+        }
+        // 2. Replay current .wal.
+        let wal = wal_path(path);
+        if wal.exists() {
+            let _ = self.replay_wal(&wal);
+        }
+    }
+
+    /// Open an existing vector store snapshot strictly read-only.
+    ///
+    /// Fails fast if `path` does not exist, fails to deserialize, or has a
+    /// dimension mismatch. Replays `.wal.compacting` and `.wal` in memory only
+    /// if present, without ever calling `save()` or writing any files to disk.
+    pub fn load_read_only(path: &Path, dimension: usize) -> Result<Self> {
+        if !path.exists() {
+            anyhow::bail!("Vector store snapshot does not exist: {}", path.display());
+        }
+
+        let t_read = std::time::Instant::now();
+        let data = std::fs::read(path)?;
+        let elapsed_read = t_read.elapsed();
+
+        let t_deserialize = std::time::Instant::now();
+        let mut store = match bincode::deserialize::<VectorStore>(&data) {
+            Ok(store) => {
+                if store.dimension != dimension {
+                    anyhow::bail!(
+                        "Vector store dimension mismatch: stored={}, expected={}",
+                        store.dimension,
+                        dimension
+                    );
+                }
+                let elapsed_deserialize = t_deserialize.elapsed();
+                tracing::info!(
+                    "Loaded {} documents read-only in {:.1}ms (read: {:.1}ms, deserialize: {:.1}ms)",
+                    store.documents.len(),
+                    (elapsed_read + elapsed_deserialize).as_secs_f64() * 1000.0,
+                    elapsed_read.as_secs_f64() * 1000.0,
+                    elapsed_deserialize.as_secs_f64() * 1000.0
+                );
+                store
+            }
+            Err(e) => {
+                let old_store = bincode::deserialize::<OldVectorStore>(&data).map_err(|_| {
+                    anyhow::anyhow!(
+                        "Failed to deserialize vector store from {}: {e}",
+                        path.display()
+                    )
+                })?;
+                if old_store.dimension != dimension {
+                    anyhow::bail!(
+                        "Vector store dimension mismatch in legacy store: stored={}, expected={}",
+                        old_store.dimension,
+                        dimension
+                    );
+                }
+                Self::migrate_legacy_store(old_store, dimension)
+            }
+        };
+
+        store.replay_wal_files(path);
+        store.sync_bm25_all();
+
+        let stamps_file = stamps_path(path);
+        if stamps_file.exists() {
+            if let Ok(bytes) = std::fs::read(&stamps_file) {
+                if let Ok(loaded_stamps) =
+                    bincode::deserialize::<HashMap<PathBuf, FileStamp>>(&bytes)
+                {
+                    *store.stamps.write() = loaded_stamps;
+                }
+            }
+        }
+        // Leave db_path as None so save_stamps() cannot write to disk.
+        Ok(store)
+    }
+
     /// Load from disk, or create new if file doesn't exist.
     /// Detects dimension mismatch (e.g. model upgrade) and creates a fresh store.
     /// Replays any uncompacted records from `pkb_vectors.wal.compacting` (if present from a crashed save)
@@ -646,31 +757,7 @@ impl VectorStore {
                                 "Successfully migrated vector DB from legacy format. Salvaged {} documents.",
                                 old_store.documents.len()
                             );
-                            let mut new_store = Self::new(dimension);
-                            for (key, old_entry) in old_store.documents {
-                                new_store.documents.insert(
-                                    key,
-                                    DocumentEntry {
-                                        path: old_entry.path,
-                                        title: old_entry.title,
-                                        doc_type: old_entry.doc_type,
-                                        status: old_entry.status,
-                                        tags: old_entry.tags,
-                                        id: old_entry.id,
-                                        date: old_entry.date,
-                                        consolidated: None, // New fields initialized
-                                        consolidated_at: None, // New fields initialized
-                                        modified: old_entry.modified,
-                                        confidence: old_entry.confidence,
-                                        content_hash: old_entry.content_hash,
-                                        file_hash: old_entry.file_hash,
-                                        body_hash: old_entry.body_hash,
-                                        chunk_embeddings: old_entry.chunk_embeddings,
-                                        chunk_texts: old_entry.chunk_texts,
-                                        body_chunks: old_entry.body_chunks,
-                                    },
-                                );
-                            }
+                            let new_store = Self::migrate_legacy_store(old_store, dimension);
 
                             // Persist the migrated store immediately so subsequent runs do not re-migrate
                             if let Err(e) = new_store.save(path) {
@@ -694,17 +781,7 @@ impl VectorStore {
             Self::new(dimension)
         };
 
-        // Replay any WAL records on top of base store:
-        // 1. Replay .wal.compacting first if present from a crashed prior save.
-        let wal_compacting = wal_compacting_path(path);
-        if wal_compacting.exists() {
-            let _ = store.replay_wal(&wal_compacting);
-        }
-        // 2. Replay current .wal.
-        let wal = wal_path(path);
-        if wal.exists() {
-            let _ = store.replay_wal(&wal);
-        }
+        store.replay_wal_files(path);
 
         store.sync_bm25_all();
         store.set_db_path(path.to_path_buf());
@@ -3013,5 +3090,60 @@ mod tests {
         assert!(!res_bracketed.is_empty());
         assert_eq!(res_bracketed[0].id, "aops_8a2448c0", "Bracketed ID query must rank matching document #1 in hybrid search");
         assert!(res_bracketed[0].score >= crate::ranking::EXACT_ID_HYBRID_BOOST);
+    }
+
+    #[test]
+    fn test_load_read_only_fails_fast_and_never_writes() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing_path = dir.path().join("does_not_exist.bin");
+        assert!(
+            VectorStore::load_read_only(&missing_path, 3).is_err(),
+            "load_read_only must fail fast when snapshot does not exist"
+        );
+        assert!(!missing_path.exists());
+
+        let db_path = dir.path().join("ro_test.bin");
+        let mut store = VectorStore::new(3);
+        store.documents.insert(
+            "doc_1".to_string(),
+            make_entry(
+                "notes/doc_1.md",
+                "Doc 1",
+                Some("note"),
+                Some("active"),
+                &[],
+                Some("doc_1"),
+                None,
+                vec![1.0, 0.0, 0.0],
+            ),
+        );
+        store.save(&db_path).unwrap();
+
+        let wal = wal_path(&db_path);
+        let wal_entry = make_entry(
+            "notes/doc_wal.md",
+            "Doc WAL",
+            Some("note"),
+            Some("active"),
+            &[],
+            Some("doc_wal"),
+            None,
+            vec![0.0, 1.0, 0.0],
+        );
+        VectorStore::append_wal_record(&wal, &WalRecord::Upsert(Box::new(wal_entry))).unwrap();
+
+        // Dimension mismatch must fail fast.
+        assert!(VectorStore::load_read_only(&db_path, 1024).is_err());
+
+        // Read-only load replays WAL in memory without altering snapshot or WAL on disk.
+        let snap_mtime_before = std::fs::metadata(&db_path).unwrap().modified().unwrap();
+        let loaded = VectorStore::load_read_only(&db_path, 3).unwrap();
+        assert_eq!(loaded.len(), 2);
+        assert!(loaded.get_entry("doc_wal").is_some());
+        assert!(wal.exists(), "WAL file must not be removed or compacted by load_read_only");
+        assert_eq!(
+            std::fs::metadata(&db_path).unwrap().modified().unwrap(),
+            snap_mtime_before
+        );
     }
 }

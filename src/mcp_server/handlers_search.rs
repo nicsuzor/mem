@@ -192,7 +192,9 @@ impl PkbSearchServer {
             let score = if is_exact {
                 1.0f32
             } else {
-                crate::salience::soft_knee_ceiling(Self::task_search_score(query, r) as f64) as f32
+                crate::salience::soft_knee_ceiling(
+                    crate::ranking::task_search_score(query, r) as f64,
+                ) as f32
             };
             candidates.push((r, score));
         }
@@ -263,96 +265,26 @@ impl PkbSearchServer {
         ))]))
     }
 
-    /// Weight applied to the overlap-coefficient ratio in [`Self::title_match_boost`].
-    /// Calibrated so a near-exact title match (overlap coefficient ~0.3-0.45
-    /// against a realistic multi-word query with title boilerplate) outscores
-    /// the existing 0.15 `type_boost` even when the type-boosted competitor has
-    /// a higher raw similarity score (see task_1542e818 for the motivating case
-    /// and derivation).
-    const TITLE_BOOST_WEIGHT: f32 = 2.0;
+    #[cfg(test)]
+    const TITLE_BOOST_WEIGHT: f32 = crate::ranking::TITLE_BOOST_WEIGHT;
 
-    /// Minimal stopword list for title/query token overlap. Deliberately short —
-    /// this only needs to strip the connective words common in both task titles
-    /// and search queries, not do full NLP.
-    const TITLE_BOOST_STOPWORDS: &'static [&'static str] = &[
-        "a", "an", "and", "at", "for", "in", "is", "of", "on", "or", "the", "to", "with",
-    ];
-
-    /// Token-overlap boost rewarding queries that are a near-exact match to a
-    /// document's title. Without this, a title-level match sits in the same
-    /// score band as tangentially-related body hits (see task_1542e818) — there
-    /// was previously no title-match term in the ranking formula at all.
-    ///
-    /// Returns a boost in `[0.0, TITLE_BOOST_WEIGHT]`: the overlap coefficient
-    /// (`|query_tokens ∩ title_tokens| / min(|query_tokens|, |title_tokens|)`)
-    /// of lowercased, stopword-filtered word tokens between `query` and `title`,
-    /// scaled by `TITLE_BOOST_WEIGHT`. Composes as an additive term alongside
-    /// `boost`/`type_boost` in the existing
-    /// `score * (1.0 + boost + type_boost + title_boost)` formula.
-    ///
-    /// Overlap coefficient (not Jaccard) deliberately: task/document titles
-    /// routinely carry boilerplate irrelevant to the query — due-dates,
-    /// parenthetical codes, IDs — that inflates a Jaccard union and dilutes the
-    /// signal without being wrong. Dividing by the *smaller* token set instead
-    /// asks "is (most of) the query's content contained in the title?", which
-    /// survives that boilerplate. See task_1542e818 for the motivating case
-    /// where Jaccard proved too weak to overcome PR #406's `type_boost`.
+    #[cfg(test)]
     pub(crate) fn title_match_boost(query: &str, title: &str) -> f32 {
-        fn tokens(s: &str) -> HashSet<String> {
-            s.to_ascii_lowercase()
-                .split(|c: char| !c.is_alphanumeric())
-                .filter(|w| w.len() > 1 && !PkbSearchServer::TITLE_BOOST_STOPWORDS.contains(w))
-                .map(|w| w.to_string())
-                .collect()
-        }
-
-        let q = tokens(query);
-        let t = tokens(title);
-        if q.is_empty() || t.is_empty() {
-            return 0.0;
-        }
-
-        let intersection = q.intersection(&t).count() as f32;
-        let smaller = q.len().min(t.len()) as f32;
-
-        (intersection / smaller) * Self::TITLE_BOOST_WEIGHT
+        crate::ranking::title_match_boost(query, title)
     }
 
-    /// `type_boost` for `search`'s type-based ranking bump (PR #406): surfaces
-    /// knowledge/memory/note/insight/observation docs over transient tasks,
-    /// absent a title match. Deliberately does not fire for tasks — see
-    /// [`Self::ranked_score`] for how it composes with `title_match_boost`.
-    pub(crate) fn type_boost_for(doc_type: Option<&str>) -> f32 {
-        match doc_type.map(|s| s.to_ascii_lowercase()).as_deref() {
-            Some("knowledge") | Some("memory") | Some("note") | Some("insight")
-            | Some("observation") => 0.15,
-            _ => 0.0,
-        }
-    }
-
-    /// The `search` tool's per-result ranking score: raw semantic `r.score`,
-    /// rescaled by graph-proximity `boost`, `type_boost` (knowledge/memory
-    /// surfacing, PR #406) and `title_boost` (near-exact title match,
-    /// task_1542e818). Pulled out as a pure
-    /// function so both the handler and its tests share one formula.
+    #[cfg(test)]
     pub(crate) fn ranked_score(
         query: &str,
         r: &crate::vectordb::SearchResult,
         boost: f32,
     ) -> f32 {
-        let type_boost = Self::type_boost_for(r.doc_type.as_deref());
-        let title_boost = Self::title_match_boost(query, &r.title);
-        r.score * (1.0 + boost + type_boost + title_boost)
+        crate::ranking::ranked_score(query, r, boost)
     }
 
-    /// The `task_search` tool's per-result ranking score. Simpler than
-    /// [`Self::ranked_score`]: `task_search` only ever surfaces actionable types
-    /// (tasks/epics/learn), so `type_boost` never applies here — but it shares
-    /// the same `title_boost` fix (task_1542e818), since `task_search` previously
-    /// had no title-match term either and relied entirely on `store.search`'s
-    /// pre-sort order.
+    #[cfg(test)]
     pub(crate) fn task_search_score(query: &str, r: &crate::vectordb::SearchResult) -> f32 {
-        r.score * (1.0 + Self::title_match_boost(query, &r.title))
+        crate::ranking::task_search_score(query, r)
     }
 
     pub(crate) fn handle_pkb_search(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
@@ -493,7 +425,6 @@ impl PkbSearchServer {
         let graph = self.graph.read();
         let now = self.salience_store.read().clock().now();
         let salience_store = self.salience_store.read();
-        let salience_config = salience_store.config().clone();
         let floor = args
             .get("floor")
             .and_then(|v| v.as_f64())
@@ -503,35 +434,22 @@ impl PkbSearchServer {
         let mut scored: Vec<_> = results
             .iter()
             .map(|r| {
-                let node = graph.get_node(&r.id).or_else(|| graph.resolve(&r.id));
-                let node_id = node.as_ref().map(|n| n.id.clone()).unwrap_or_else(|| r.id.clone());
-
-                let boost = boost_map.get(&node_id).copied().unwrap_or(0.0);
-                let base_score = Self::ranked_score(query, r, boost);
-
-                let doc_type = r.doc_type.as_deref().or_else(|| node.as_ref().and_then(|n| n.node_type.as_deref()));
-                let date = r.date.as_deref();
-                let modified = node.as_ref().and_then(|n| n.modified.as_deref());
-
-                let recency_decay = crate::salience::document_recency_decay(doc_type, date, modified, now);
-                let salience_score = salience_store.get_salience(&node_id);
-                let read_boost = crate::salience::recent_read_boost(salience_score, &salience_config);
-
-                let aliases = graph.aliases(&r.id);
-                let is_exact = crate::ranking::is_exact_id_match(query, &r.id, &r.path, &aliases);
-
-                let final_score = if is_exact {
-                    1.0f32
-                } else {
-                    crate::salience::apply_priors_with_floor(
-                        base_score as f64,
-                        floor,
-                        recency_decay,
-                        read_boost,
-                    ) as f32
-                };
-
-                (r, final_score, recency_decay, read_boost, salience_score)
+                let s = crate::ranking::score_post_hybrid_candidate(
+                    query,
+                    r,
+                    Some(&*graph),
+                    Some(&boost_map),
+                    Some(&*salience_store),
+                    now,
+                    floor,
+                );
+                (
+                    r,
+                    s.final_score,
+                    s.recency_decay,
+                    s.read_boost,
+                    s.salience_score,
+                )
             })
             .collect();
 
