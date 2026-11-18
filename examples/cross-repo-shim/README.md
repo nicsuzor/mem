@@ -6,7 +6,7 @@ This repository uses the reusable PR pipeline from `academicOps`.
 
 The pipeline consists of four shim workflows:
 
-1. **`pr-pipeline.yml`**: The project-specific CI orchestrator. It initializes the `merge-prep-status` and runs the local test suite.
+1. **`pr-pipeline.yml`**: The project-specific CI orchestrator. It runs the local test suite.
 2. **`agent-merge-prep.yml`**: A shim that calls the reusable Merge Prep Agent from `academicOps`.
 3. **`merge-prep-cron.yml`**: A shim that calls the reusable Dispatcher from `academicOps`. It runs on a cron and on completion of the CI pipeline.
 4. **`agent-enforcer.yml`**: A shim that calls the reusable Axiom Compliance Reviewer (Enforcer) from `academicOps`.

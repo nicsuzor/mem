@@ -5,26 +5,9 @@ on:
     types: [opened, synchronize, ready_for_review, reopened]
 
 jobs:
-  # ─── Step 0: Initialize ──────────────────────────────────────────
-  # Set merge-prep-status to pending immediately. This ensures the PR
-  # stays "yellow" until the Merge-Prep Agent triages reviews.
-  initialize:
-    name: Initialize
-    runs-on: ubuntu-latest
-    steps:
-      - name: Set pending status
-        run: |
-          gh api "repos/${{ github.repository }}/statuses/${{ github.event.pull_request.head.sha }}" \
-            -f state="pending" \
-            -f context="merge-prep-status" \
-            -f description="Waiting for bazaar window and triage..."
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
   # ─── Step 1: Detect Changes ───────────────────────────────────────
   detect-changes:
     name: Detect Changes
-    needs: [initialize]
     runs-on: ubuntu-latest
     outputs:
       rust: ${{ steps.filter.outputs.rust }}
@@ -50,7 +33,7 @@ jobs:
   # This project uses Rust, so we run cargo checks here when Rust/core files change.
   check:
     name: Rust CI
-    needs: [initialize, detect-changes]
+    needs: [detect-changes]
     if: needs.detect-changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
     steps:
@@ -78,7 +61,7 @@ jobs:
   # Automatically builds and tests the VS Code extension when changes occur to editors/vscode/**
   extension:
     name: Extension CI
-    needs: [initialize, detect-changes]
+    needs: [detect-changes]
     if: needs.detect-changes.outputs.extension == 'true'
     runs-on: ubuntu-latest
     steps:
