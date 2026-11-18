@@ -457,7 +457,12 @@ fn download_onnx_runtime() -> Result<PathBuf> {
     {
         let mut tmp_file = std::fs::File::create(&tmp_zip)?;
         let mut reader = resp.into_reader();
-        std::io::copy(&mut reader, &mut tmp_file)?;
+        std::io::copy(&mut reader, &mut tmp_file).with_context(|| {
+            format!(
+                "Failed to write downloaded ONNX Runtime archive to {}",
+                tmp_zip.display()
+            )
+        })?;
     }
     let zip_file = std::fs::File::open(&tmp_zip)?;
     extract_ort_from_zip(zip_file, spec.rid, spec.lib_name, &cache)?;

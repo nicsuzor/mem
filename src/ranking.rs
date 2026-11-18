@@ -1087,7 +1087,7 @@ mod tests {
         // (a) Multi-word prose containing plain alphabetic words matching doc_id/stem/alias must NOT pin
         assert_eq!(
             compute_m_id(
-                "prohibit long titles mobile import rename notes",
+                "organize folder hierarchy and archive stale notes",
                 "notes",
                 &notes_path,
                 &aliases
@@ -1095,7 +1095,7 @@ mod tests {
             1.0
         );
         assert!(!is_exact_id_match(
-            "prohibit long titles mobile import rename notes",
+            "organize folder hierarchy and archive stale notes",
             "notes",
             &notes_path,
             &aliases
@@ -1112,26 +1112,16 @@ mod tests {
 
         // In hybrid fusion, a plain-word stem match in multi-word prose must NOT receive score 1.000
         let incidental = make_result("notes", "General Notes Index", 0.45, Some("active"));
-        let semantic = make_result(
-            "mobile_import_guide",
-            "Mobile Import Title Rules",
-            0.95,
-            Some("active"),
-        );
+        let semantic = make_result("draft_guide", "Draft Archive Rules", 0.95, Some("active"));
         let vec_res = vec![semantic.clone(), incidental.clone()];
         let bm25_res = vec![
             make_result("notes", incidental.title.as_str(), 12.0, Some("active")),
-            make_result(
-                "mobile_import_guide",
-                semantic.title.as_str(),
-                10.0,
-                Some("active"),
-            ),
+            make_result("draft_guide", semantic.title.as_str(), 10.0, Some("active")),
         ];
         let fused = fuse_tm2c2(
             vec_res,
             bm25_res,
-            "prohibit long titles mobile import rename notes",
+            "organize folder hierarchy and archive stale notes",
             &config,
             None,
             &(),
@@ -1144,7 +1134,7 @@ mod tests {
             "Plain prose word matching doc stem must not pin to 1.0; got {}",
             notes_hit.score
         );
-        assert_eq!(fused[0].id, "mobile_import_guide");
+        assert_eq!(fused[0].id, "draft_guide");
 
         // (b) Single-token exact IDs, multi-word exact aliases, [[wikilink]] tokens,
         // and structured ID tokens inside multi-word queries MUST still get m_id = 2.0

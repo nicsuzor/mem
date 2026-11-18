@@ -38,9 +38,9 @@ struct Args {
     #[arg(long, env = "PKB_DB_PATH")]
     db: PathBuf,
 
-    /// Path to PKB markdown root for GraphStore (defaults to ACA_DATA env var).
-    #[arg(long, env = "ACA_DATA")]
-    brain: Option<PathBuf>,
+    /// Path to PKB markdown root for GraphStore (defaults to PKB_ROOT or ACA_DATA env var).
+    #[arg(long, env = "PKB_ROOT")]
+    pkb_root: Option<PathBuf>,
 
     /// Pinned timestamp (UNIX seconds or RFC3339) for deterministic recency decay.
     #[arg(long)]
@@ -143,6 +143,7 @@ struct QueryDiagnostic {
     id: String,
     bucket: String,
     archetype: String,
+    query: String,
     type_filter: Option<String>,
     fetch_limit: usize,
     is_identifier_query: bool,
@@ -508,7 +509,7 @@ fn evaluate_query(
     let fused_all = mem::ranking::try_fuse_tm2c2(
         p_dense_pool,
         p_lex_pool,
-        &clean_query,
+        &q.query,
         &config,
         Some(reranker),
         &(),
@@ -581,19 +582,19 @@ fn evaluate_query(
         let outdegree = graph_node.map(|n| n.outdegree).unwrap_or(0);
         let aliases = graph.map(|g| g.aliases(&canonical_id)).unwrap_or_default();
 
-        let m_id = compute_m_id(&clean_query, &canonical_id, doc_path, &aliases);
-        let m_id_prod = compute_m_id(&clean_query, &canonical_id, doc_path, &[]);
+        let m_id = compute_m_id(&q.query, &canonical_id, doc_path, &aliases);
+        let m_id_prod = compute_m_id(&q.query, &canonical_id, doc_path, &[]);
         let m_status = compute_m_status(status);
         let m_graph = compute_m_graph(outdegree);
         let m_struct = compute_m_struct(
-            &clean_query,
+            &q.query,
             &canonical_id,
             doc_path,
             &aliases,
             status,
             outdegree,
         );
-        let m_struct_prod = compute_m_struct(&clean_query, &canonical_id, doc_path, &[], status, 0);
+        let m_struct_prod = compute_m_struct(&q.query, &canonical_id, doc_path, &[], status, 0);
 
         let fused_hit = fused_pos
             .get(&canonical_id)
@@ -672,6 +673,7 @@ fn evaluate_query(
         id: q.id.clone(),
         bucket: q.bucket.clone(),
         archetype: q.archetype.clone(),
+        query: q.query.clone(),
         type_filter: q.type_filter.clone(),
         fetch_limit,
         is_identifier_query: is_id_q,
@@ -738,14 +740,28 @@ fn main() -> Result<()> {
         bail!("Expected reranker_loaded == false for baseline production configuration");
     }
 
-    let (graph, pkb_root): (Option<GraphStore>, PathBuf) = match &args.brain {
-        Some(brain_path) => {
-            if !brain_path.is_dir() {
-                bail!("--brain directory does not exist: {}", brain_path.display());
+    let resolved_pkb_root = args
+        .pkb_root
+        .clone()
+        .filter(|p| !p.as_os_str().is_empty())
+        .or_else(|| {
+            ["PKB_ROOT", "ACA_DATA"].into_iter().find_map(|key| {
+                std::env::var_os(key)
+                    .filter(|v| !v.is_empty())
+                    .map(PathBuf::from)
+            })
+        });
+    let (graph, pkb_root): (Option<GraphStore>, PathBuf) = match resolved_pkb_root {
+        Some(root_path) => {
+            if !root_path.is_dir() {
+                bail!(
+                    "--pkb-root directory does not exist: {}",
+                    root_path.display()
+                );
             }
             (
-                Some(GraphStore::build_from_directory(brain_path)),
-                brain_path.clone(),
+                Some(GraphStore::build_from_directory(&root_path)),
+                root_path,
             )
         }
         None => (None, PathBuf::from(".")),
@@ -804,10 +820,14 @@ fn main() -> Result<()> {
         by_archetype.insert(a, aggregate_metrics(&ms));
     }
 
+    let graph_nodes_display = graph
+        .as_ref()
+        .map(|g| g.node_count().to_string())
+        .unwrap_or_else(|| "none".to_string());
     println!(
-        "rank_eval: store_docs={} graph_nodes={:?} reranker_loaded={} now={} limit={}",
+        "rank_eval: store_docs={} graph_nodes={} reranker_loaded={} now={} limit={}",
         store.len(),
-        graph.as_ref().map(|g| g.node_count()),
+        graph_nodes_display,
         reranker_loaded,
         now.to_rfc3339(),
         args.limit
@@ -821,9 +841,11 @@ fn main() -> Result<()> {
             .expected_docs
             .iter()
             .filter_map(|e| e.final_rank.map(|r| (r, e.grade)))
-            .min_by_key(|x| x.0);
+            .min_by_key(|x| x.0)
+            .map(|(r, g)| format!("{r} (g={g})"))
+            .unwrap_or_else(|| "-".to_string());
         println!(
-            "  {:<32} [{:<5} | {:<22}] id_q={:<5} alpha={:.2} hit@5={:.0} MRR={:.3} nDCG={:.3} J@10={:.2} best_rank={:?}",
+            "  {:<32} [{:<5} | {:<22}] id_q={:<5} alpha={:.2} hit@5={:.0} MRR={:.3} nDCG={:.3} J@10={:.2} best_rank={}",
             d.id,
             d.bucket,
             d.archetype,

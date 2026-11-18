@@ -1350,7 +1350,7 @@ fn upsert_entry_to_bm25(bm25: &mut crate::bm25::Bm25Index, entry: &DocumentEntry
         let fused = crate::ranking::try_fuse_tm2c2(
             vector_results,
             bm25_results,
-            &clean_query,
+            query,
             &config,
             reranker,
             graph_lookup,
@@ -3090,6 +3090,110 @@ mod tests {
         assert!(!res_bracketed.is_empty());
         assert_eq!(res_bracketed[0].id, "aops_8a2448c0", "Bracketed ID query must rank matching document #1 in hybrid search");
         assert!(res_bracketed[0].score >= crate::ranking::EXACT_ID_HYBRID_BOOST);
+    }
+
+    #[test]
+    fn test_vectordb_hybrid_search_with_context_wikilink_vs_plain_multiword() {
+        let mut store = VectorStore::new(3);
+        store.documents.insert(
+            "notes".to_string(),
+            make_entry(
+                "docs/notes.md",
+                "General Notes Index",
+                Some("note"),
+                Some("active"),
+                &[],
+                Some("notes"),
+                None,
+                vec![0.0, 1.0, 0.0],
+            ),
+        );
+        store.documents.insert(
+            "draft_guide".to_string(),
+            make_entry(
+                "docs/draft_guide.md",
+                "Draft Archive Rules",
+                Some("note"),
+                Some("active"),
+                &[],
+                Some("draft_guide"),
+                None,
+                vec![1.0, 0.0, 0.0],
+            ),
+        );
+        store.bm25.write().upsert(
+            "notes",
+            PathBuf::from("docs/notes.md"),
+            "General Notes Index",
+            Some("note".to_string()),
+            Some("active".to_string()),
+            vec![],
+            None,
+            None,
+            None,
+            "".to_string(),
+            "".to_string(),
+            "Reference index for notes",
+        );
+        store.bm25.write().upsert(
+            "draft_guide",
+            PathBuf::from("docs/draft_guide.md"),
+            "Draft Archive Rules",
+            Some("note".to_string()),
+            Some("active".to_string()),
+            vec![],
+            None,
+            None,
+            None,
+            "".to_string(),
+            "".to_string(),
+            "Archive hierarchy guidance",
+        );
+
+        let query_emb = vec![1.0, 0.0, 0.0];
+        let res_wikilink = store
+            .try_search_hybrid_with_context(
+                "see [[notes]] here",
+                &query_emb,
+                5,
+                Path::new("/pkb"),
+                None,
+                None,
+                None,
+                None,
+                None,
+                &(),
+                None,
+            )
+            .unwrap();
+        assert!(!res_wikilink.is_empty());
+        assert_eq!(res_wikilink[0].id, "notes");
+        assert_eq!(res_wikilink[0].score, crate::ranking::EXACT_ID_HYBRID_BOOST);
+
+        let res_plain = store
+            .try_search_hybrid_with_context(
+                "see notes here",
+                &query_emb,
+                5,
+                Path::new("/pkb"),
+                None,
+                None,
+                None,
+                None,
+                None,
+                &(),
+                None,
+            )
+            .unwrap();
+        assert!(!res_plain.is_empty());
+        assert_eq!(res_plain[0].id, "draft_guide");
+        if let Some(notes_hit) = res_plain.iter().find(|r| r.id == "notes") {
+            assert!(
+                notes_hit.score <= 0.990,
+                "Plain prose word matching doc stem must not pin to 1.0; got {}",
+                notes_hit.score
+            );
+        }
     }
 
     #[test]
