@@ -6,24 +6,31 @@ pub struct OtelConfig {
     pub protocol: String,
     pub task_id: Option<String>,
     pub project_name: Option<String>,
-    /// Request headers for the OTLP exporter, from `GENAI_ENGINE_API_KEY` in
-    /// `k1=v1,k2=v2` form (e.g. Cloudflare Access service-token headers).
+    /// Request headers for the OTLP exporter: the Cloudflare Access service-token
+    /// headers built from `CF_ACCESS_CLIENT_ID` / `CF_ACCESS_CLIENT_SECRET`.
     pub headers: std::collections::HashMap<String, String>,
 }
 
-/// Parse `k1=v1,k2=v2` into headers. Each pair splits on its first `=`, so a
-/// value may itself contain `=`. Pairs without `=` or with an empty key are skipped.
-pub fn parse_headers(raw: &str) -> std::collections::HashMap<String, String> {
-    raw.split(',')
-        .filter_map(|pair| {
-            let (k, v) = pair.split_once('=')?;
-            let k = k.trim();
-            if k.is_empty() {
-                return None;
-            }
-            Some((k.to_string(), v.trim().to_string()))
-        })
-        .collect()
+/// Build the Cloudflare Access service-token headers (`CF-Access-Client-Id`,
+/// `CF-Access-Client-Secret`) from the client id and secret. Values are trimmed;
+/// empty counts as unset. Both must be present: with neither, no headers are sent;
+/// with only one, no headers are sent and an `Err` names the missing variable.
+pub fn access_headers(
+    id: Option<String>,
+    secret: Option<String>,
+) -> Result<std::collections::HashMap<String, String>, String> {
+    let clean = |v: Option<String>| v.map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+    match (clean(id), clean(secret)) {
+        (Some(id), Some(secret)) => Ok([
+            ("CF-Access-Client-Id".to_string(), id),
+            ("CF-Access-Client-Secret".to_string(), secret),
+        ]
+        .into_iter()
+        .collect()),
+        (None, None) => Ok(Default::default()),
+        (Some(_), None) => Err("CF_ACCESS_CLIENT_ID is set but CF_ACCESS_CLIENT_SECRET is not".into()),
+        (None, Some(_)) => Err("CF_ACCESS_CLIENT_SECRET is set but CF_ACCESS_CLIENT_ID is not".into()),
+    }
 }
 
 impl OtelConfig {
@@ -82,9 +89,15 @@ impl OtelConfig {
 
         let project_name = Some(Self::resolve_project_name());
 
-        let headers = env::var("GENAI_ENGINE_API_KEY")
-            .map(|raw| parse_headers(&raw))
-            .unwrap_or_default();
+        let headers = access_headers(
+            env::var("CF_ACCESS_CLIENT_ID").ok(),
+            env::var("CF_ACCESS_CLIENT_SECRET").ok(),
+        )
+        .unwrap_or_else(|e| {
+            // stderr only: stdout is the MCP stdio transport.
+            eprintln!("mem otel: {e}; exporting traces without Cloudflare Access headers");
+            Default::default()
+        });
 
         Some(Self {
             endpoint,
@@ -128,17 +141,25 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_headers_access_token_form() {
-        let h = parse_headers("CF-Access-Client-Id=abc.access, CF-Access-Client-Secret=x=y");
+    fn test_access_headers_from_pair() {
+        let h = access_headers(Some("abc.access".into()), Some(" x=y ".into())).unwrap();
         assert_eq!(h.get("CF-Access-Client-Id").map(String::as_str), Some("abc.access"));
         assert_eq!(h.get("CF-Access-Client-Secret").map(String::as_str), Some("x=y"));
         assert_eq!(h.len(), 2);
     }
 
     #[test]
-    fn test_parse_headers_skips_malformed_pairs() {
-        assert!(parse_headers("").is_empty());
-        assert!(parse_headers("noequals,=novalue").is_empty());
+    fn test_access_headers_unset_is_empty() {
+        assert!(access_headers(None, None).unwrap().is_empty());
+        assert!(access_headers(Some("".into()), Some("  ".into())).unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_access_headers_half_pair_errors() {
+        let e = access_headers(Some("abc.access".into()), None).unwrap_err();
+        assert!(e.contains("CF_ACCESS_CLIENT_SECRET"));
+        let e = access_headers(None, Some("s".into())).unwrap_err();
+        assert!(e.contains("CF_ACCESS_CLIENT_ID"));
     }
 
     static ENV_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
