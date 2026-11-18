@@ -105,6 +105,7 @@ fd-lock = "4"
 ureq = { version = "2", features = ["json"] }
 flate2 = "1"
 tar = "0.4"
+zip = { version = "2", default-features = false, features = ["deflate"] }
 
 # Schemars for MCP tool params
 schemars = "0.8"

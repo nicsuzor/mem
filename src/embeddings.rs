@@ -293,12 +293,141 @@ fn download_models() -> Result<PathBuf> {
     Ok(models_dir)
 }
 
+const ORT_NUGET_CPU_URL: &str = "https://api.nuget.org/v3-flatcontainer/microsoft.ml.onnxruntime/1.23.2/microsoft.ml.onnxruntime.1.23.2.nupkg";
+const ORT_NUGET_GPU_LINUX_URL: &str = "https://api.nuget.org/v3-flatcontainer/microsoft.ml.onnxruntime.gpu.linux/1.23.2/microsoft.ml.onnxruntime.gpu.linux.1.23.2.nupkg";
+const ORT_NUGET_GPU_WINDOWS_URL: &str = "https://api.nuget.org/v3-flatcontainer/microsoft.ml.onnxruntime.gpu.windows/1.23.2/microsoft.ml.onnxruntime.gpu.windows.1.23.2.nupkg";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct OrtNugetSpec {
+    url: &'static str,
+    rid: &'static str,
+    lib_name: &'static str,
+}
+
+/// Resolve the authoritative NuGet `.nupkg` URL, runtime identifier (RID), and main library
+/// filename for the given `(os, arch, use_gpu)` combination. Fails fast on unsupported targets
+/// or GPU variants without a published NuGet package.
+fn ort_nuget_spec(os: &str, arch: &str, use_gpu: bool) -> Result<OrtNugetSpec> {
+    match (os, arch, use_gpu) {
+        ("linux", "x86_64", false) => Ok(OrtNugetSpec {
+            url: ORT_NUGET_CPU_URL,
+            rid: "linux-x64",
+            lib_name: "libonnxruntime.so",
+        }),
+        ("linux", "aarch64", false) => Ok(OrtNugetSpec {
+            url: ORT_NUGET_CPU_URL,
+            rid: "linux-arm64",
+            lib_name: "libonnxruntime.so",
+        }),
+        ("macos", "aarch64", false) => Ok(OrtNugetSpec {
+            url: ORT_NUGET_CPU_URL,
+            rid: "osx-arm64",
+            lib_name: "libonnxruntime.dylib",
+        }),
+        ("macos", "x86_64", false) => Ok(OrtNugetSpec {
+            url: ORT_NUGET_CPU_URL,
+            rid: "osx-x64",
+            lib_name: "libonnxruntime.dylib",
+        }),
+        ("windows", "x86_64", false) => Ok(OrtNugetSpec {
+            url: ORT_NUGET_CPU_URL,
+            rid: "win-x64",
+            lib_name: "onnxruntime.dll",
+        }),
+        ("windows", "aarch64", false) => Ok(OrtNugetSpec {
+            url: ORT_NUGET_CPU_URL,
+            rid: "win-arm64",
+            lib_name: "onnxruntime.dll",
+        }),
+        ("linux", "x86_64", true) => Ok(OrtNugetSpec {
+            url: ORT_NUGET_GPU_LINUX_URL,
+            rid: "linux-x64",
+            lib_name: "libonnxruntime.so",
+        }),
+        ("windows", "x86_64", true) => Ok(OrtNugetSpec {
+            url: ORT_NUGET_GPU_WINDOWS_URL,
+            rid: "win-x64",
+            lib_name: "onnxruntime.dll",
+        }),
+        (_, _, true) => bail!("ONNX Runtime GPU/CUDA is not supported on {os}/{arch}"),
+        (_, _, false) => bail!("Unsupported OS/architecture for ONNX Runtime: {os}/{arch}"),
+    }
+}
+
+fn is_native_shared_lib(filename: &str) -> bool {
+    filename.ends_with(".so")
+        || filename.split_once(".so.").is_some_and(|(_, ver)| {
+            !ver.is_empty() && ver.chars().all(|c| c.is_ascii_digit() || c == '.')
+        })
+        || filename.ends_with(".dylib")
+        || filename.ends_with(".dll")
+}
+
+/// Extract native shared libraries matching `runtimes/<rid>/native/` from a NuGet `.nupkg` ZIP
+/// archive directly into `dest_dir` (flattened, preserving filename, guarded against traversal).
+fn extract_ort_from_zip<R: std::io::Read + std::io::Seek>(
+    reader: R,
+    rid: &str,
+    lib_name: &str,
+    dest_dir: &std::path::Path,
+) -> Result<()> {
+    std::fs::create_dir_all(dest_dir)?;
+    let mut archive =
+        zip::ZipArchive::new(reader).context("Failed to read ONNX Runtime NuGet ZIP archive")?;
+    let prefix = format!("runtimes/{rid}/native/");
+    let mut found_main = false;
+
+    for i in 0..archive.len() {
+        let mut entry = archive.by_index(i)?;
+        if entry.is_dir() {
+            continue;
+        }
+        let Some(fname) = entry.name().strip_prefix(&prefix).map(str::to_string) else {
+            continue;
+        };
+        if fname.is_empty()
+            || fname.contains('/')
+            || fname.contains('\\')
+            || fname == "."
+            || fname == ".."
+            || entry.enclosed_name().is_none()
+        {
+            continue;
+        }
+        if !is_native_shared_lib(&fname) {
+            continue;
+        }
+
+        let dest = dest_dir.join(&fname);
+        let mut out = std::fs::File::create(&dest)?;
+        let bytes = std::io::copy(&mut entry, &mut out)?;
+        if fname == lib_name {
+            found_main = true;
+        }
+        eprintln!("  + {fname} ({:.1} MB)", bytes as f64 / 1_048_576.0);
+    }
+
+    if !found_main {
+        bail!("Could not find {lib_name} under {prefix} in ONNX Runtime NuGet archive");
+    }
+    Ok(())
+}
+
+struct TempFileGuard<'a>(&'a std::path::Path);
+
+impl Drop for TempFileGuard<'_> {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(self.0);
+    }
+}
+
 /// Download ONNX Runtime shared library if not present.
 /// Downloads the GPU (CUDA) build when CUDA is detected, otherwise CPU-only.
 /// For GPU builds, extracts all shared libraries (CUDA EP providers must be
 /// co-located with libonnxruntime.so for runtime discovery).
 fn download_onnx_runtime() -> Result<PathBuf> {
     let use_gpu = gpu_available();
+    let spec = ort_nuget_spec(std::env::consts::OS, std::env::consts::ARCH, use_gpu)?;
     let cache = get_cache_dir().join("onnxruntime");
     std::fs::create_dir_all(&cache)?;
 
@@ -308,46 +437,7 @@ fn download_onnx_runtime() -> Result<PathBuf> {
     let cached_variant = std::fs::read_to_string(&variant_marker).unwrap_or_default();
     let wanted_variant = if use_gpu { "gpu" } else { "cpu" };
 
-    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-    let (cpu_url, gpu_url, lib_name) = (
-        "https://github.com/microsoft/onnxruntime/releases/download/v1.23.2/onnxruntime-linux-x64-1.23.2.tgz",
-        "https://github.com/microsoft/onnxruntime/releases/download/v1.23.2/onnxruntime-linux-x64-gpu-1.23.2.tgz",
-        "libonnxruntime.so",
-    );
-
-    #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
-    let (cpu_url, gpu_url, lib_name) = (
-        "https://github.com/microsoft/onnxruntime/releases/download/v1.23.2/onnxruntime-linux-aarch64-1.23.2.tgz",
-        // No GPU build for aarch64 — fall back to CPU
-        "https://github.com/microsoft/onnxruntime/releases/download/v1.23.2/onnxruntime-linux-aarch64-1.23.2.tgz",
-        "libonnxruntime.so",
-    );
-
-    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-    let (cpu_url, gpu_url, lib_name) = (
-        "https://github.com/microsoft/onnxruntime/releases/download/v1.23.2/onnxruntime-osx-arm64-1.23.2.tgz",
-        // No CUDA on macOS — always CPU
-        "https://github.com/microsoft/onnxruntime/releases/download/v1.23.2/onnxruntime-osx-arm64-1.23.2.tgz",
-        "libonnxruntime.dylib",
-    );
-
-    #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
-    let (cpu_url, gpu_url, lib_name) = (
-        "https://github.com/microsoft/onnxruntime/releases/download/v1.23.2/onnxruntime-osx-x86_64-1.23.2.tgz",
-        "https://github.com/microsoft/onnxruntime/releases/download/v1.23.2/onnxruntime-osx-x86_64-1.23.2.tgz",
-        "libonnxruntime.dylib",
-    );
-
-    #[cfg(target_os = "windows")]
-    let (cpu_url, gpu_url, lib_name) = (
-        "https://github.com/microsoft/onnxruntime/releases/download/v1.23.2/onnxruntime-win-x64-1.23.2.zip",
-        "https://github.com/microsoft/onnxruntime/releases/download/v1.23.2/onnxruntime-win-x64-gpu-1.23.2.zip",
-        "onnxruntime.dll",
-    );
-
-    let url = if use_gpu { gpu_url } else { cpu_url };
-
-    let lib_path = cache.join(lib_name);
+    let lib_path = cache.join(spec.lib_name);
     if lib_path.exists() && cached_variant.trim() == wanted_variant {
         return Ok(lib_path);
     }
@@ -358,108 +448,19 @@ fn download_onnx_runtime() -> Result<PathBuf> {
         "ONNX Runtime"
     };
     eprintln!("  Downloading {variant_label}...");
-    let resp = ureq::get(url)
+    let resp = ureq::get(spec.url)
         .call()
-        .with_context(|| format!("Failed to download {variant_label} from {url}"))?;
-    #[allow(unused_mut)]
-    let mut reader = resp.into_reader();
+        .with_context(|| format!("Failed to download {variant_label} from {}", spec.url))?;
 
-    let mut found_main = false;
-
-    #[cfg(target_os = "windows")]
+    let tmp_zip = cache.join(".onnxruntime.nupkg.tmp");
+    let _cleanup = TempFileGuard(&tmp_zip);
     {
-        let zip_file = cache.join("onnxruntime.zip");
-        let mut file = std::fs::File::create(&zip_file)?;
-        std::io::copy(&mut reader, &mut file)?;
-
-        // Extract using tar.exe under bounded timeout
-        let status = crate::cmd::BoundedCommand::new("tar.exe")
-            .args(&[
-                "-xf",
-                zip_file.to_str().unwrap(),
-                "-C",
-                cache.to_str().unwrap(),
-            ])
-            .status()?;
-        if !status.success() {
-            bail!("Failed to extract zip file using tar.exe");
-        }
-
-        // Find all DLL files in the extracted directory and move them to cache
-        for entry in glob::glob(&format!("{}/**/*.dll", cache.display()))? {
-            let path = entry?;
-            let filename = path.file_name().unwrap();
-            let dest = cache.join(filename);
-            std::fs::rename(&path, &dest).or_else(|_| std::fs::copy(&path, &dest).map(|_| ()))?;
-            if filename.to_string_lossy() == lib_name {
-                found_main = true;
-            }
-        }
-
-        // Clean up zip file and extracted folders
-        let _ = std::fs::remove_file(&zip_file);
-        for entry in std::fs::read_dir(&cache)? {
-            let entry = entry?;
-            let path = entry.path();
-            if path.is_dir() {
-                let _ = std::fs::remove_dir_all(&path);
-            }
-        }
+        let mut tmp_file = std::fs::File::create(&tmp_zip)?;
+        let mut reader = resp.into_reader();
+        std::io::copy(&mut reader, &mut tmp_file)?;
     }
-
-    #[cfg(not(target_os = "windows"))]
-    {
-        let decoder = flate2::read::GzDecoder::new(reader);
-        let mut archive = tar::Archive::new(decoder);
-
-        for entry in archive.entries()? {
-            let mut entry = entry?;
-            if entry.header().entry_type().is_symlink() {
-                continue;
-            }
-            let path = entry.path()?.to_string_lossy().to_string();
-
-            // For GPU builds, extract ALL shared libraries from the lib/ directory.
-            // CUDA EP requires libonnxruntime_providers_shared.so and
-            // libonnxruntime_providers_cuda.so to be next to libonnxruntime.so.
-            let is_shared_lib = if cfg!(target_os = "linux") {
-                path.contains(".so") && entry.size() > 0
-            } else {
-                path.contains(".dylib") && entry.size() > 0
-            };
-
-            if is_shared_lib {
-                // Extract filename from archive path (e.g. "onnxruntime-linux-x64-gpu-1.23.2/lib/libfoo.so")
-                let filename = std::path::Path::new(&path)
-                    .file_name()
-                    .map(|f| f.to_string_lossy().to_string());
-
-                if let Some(fname) = filename {
-                    // Normalize the main library name (strip version suffix)
-                    let is_main_lib = fname.starts_with("libonnxruntime.") || fname == "onnxruntime.dll";
-                    let dest_name = if is_main_lib {
-                        lib_name.to_string()
-                    } else {
-                        fname
-                    };
-                    let dest = cache.join(&dest_name);
-                    let mut file = std::fs::File::create(&dest)?;
-                    let bytes = std::io::copy(&mut entry, &mut file)?;
-
-                    if dest_name == lib_name {
-                        found_main = true;
-                        eprintln!("  + {dest_name} ({:.1} MB)", bytes as f64 / 1_048_576.0);
-                    } else {
-                        eprintln!("  + {dest_name} ({:.1} MB)", bytes as f64 / 1_048_576.0);
-                    }
-                }
-            }
-        }
-    }
-
-    if !found_main {
-        bail!("Could not find {lib_name} in ONNX Runtime archive");
-    }
+    let zip_file = std::fs::File::open(&tmp_zip)?;
+    extract_ort_from_zip(zip_file, spec.rid, spec.lib_name, &cache)?;
 
     // Write variant marker so we know which build is cached
     let _ = std::fs::write(&variant_marker, wanted_variant);
@@ -2443,6 +2444,180 @@ After the code.";
 
         let avg_ms = total_duration.as_secs_f64() * 1000.0 / (iters as f64);
         eprintln!("POST_FIX_AVG_LATENCY_MS: {avg_ms:.2} ms");
+    }
+
+    fn build_synthetic_nupkg(entries: &[(&str, &[u8])]) -> std::io::Cursor<Vec<u8>> {
+        use std::io::Write;
+        let buf = Vec::new();
+        let mut writer = zip::ZipWriter::new(std::io::Cursor::new(buf));
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated);
+        for (name, content) in entries {
+            writer.start_file(*name, options).unwrap();
+            writer.write_all(content).unwrap();
+        }
+        writer.finish().unwrap()
+    }
+
+    #[test]
+    fn ort_nuget_spec_maps_supported_targets_and_rejects_unsupported() {
+        let cpu_cases = [
+            ("linux", "x86_64", "linux-x64", "libonnxruntime.so"),
+            ("linux", "aarch64", "linux-arm64", "libonnxruntime.so"),
+            ("macos", "aarch64", "osx-arm64", "libonnxruntime.dylib"),
+            ("macos", "x86_64", "osx-x64", "libonnxruntime.dylib"),
+            ("windows", "x86_64", "win-x64", "onnxruntime.dll"),
+            ("windows", "aarch64", "win-arm64", "onnxruntime.dll"),
+        ];
+        for (os, arch, expected_rid, expected_lib) in cpu_cases {
+            let spec = ort_nuget_spec(os, arch, false).expect("CPU target should resolve");
+            assert_eq!(spec.url, ORT_NUGET_CPU_URL);
+            assert_eq!(spec.rid, expected_rid);
+            assert_eq!(spec.lib_name, expected_lib);
+        }
+
+        let gpu_linux = ort_nuget_spec("linux", "x86_64", true).expect("linux GPU should resolve");
+        assert_eq!(gpu_linux.url, ORT_NUGET_GPU_LINUX_URL);
+        assert_eq!(gpu_linux.rid, "linux-x64");
+        assert_eq!(gpu_linux.lib_name, "libonnxruntime.so");
+
+        let gpu_win = ort_nuget_spec("windows", "x86_64", true).expect("win GPU should resolve");
+        assert_eq!(gpu_win.url, ORT_NUGET_GPU_WINDOWS_URL);
+        assert_eq!(gpu_win.rid, "win-x64");
+        assert_eq!(gpu_win.lib_name, "onnxruntime.dll");
+
+        for (os, arch) in [
+            ("linux", "aarch64"),
+            ("macos", "aarch64"),
+            ("macos", "x86_64"),
+            ("windows", "aarch64"),
+        ] {
+            assert!(
+                ort_nuget_spec(os, arch, true).is_err(),
+                "GPU variant on {os}/{arch} must fail fast"
+            );
+        }
+
+        assert!(ort_nuget_spec("freebsd", "x86_64", false).is_err());
+        assert!(ort_nuget_spec("linux", "riscv64", false).is_err());
+    }
+
+    #[test]
+    fn extract_ort_from_zip_filters_rid_and_shared_libs() {
+        let cursor = build_synthetic_nupkg(&[
+            (
+                "runtimes/linux-x64/native/libonnxruntime.so",
+                b"main-linux-so",
+            ),
+            (
+                "runtimes/linux-x64/native/libonnxruntime_providers_shared.so",
+                b"shared-so",
+            ),
+            (
+                "runtimes/linux-x64/native/libonnxruntime_providers_cuda.so.1.23.2",
+                b"cuda-versioned-so",
+            ),
+            ("runtimes/linux-x64/native/README.txt", b"ignore-txt"),
+            (
+                "runtimes/linux-x64/native/nested/libignored.so",
+                b"ignore-nested",
+            ),
+            (
+                "runtimes/linux-arm64/native/libonnxruntime.so",
+                b"wrong-rid-arm64",
+            ),
+            ("runtimes/win-x64/native/onnxruntime.dll", b"wrong-rid-win"),
+            ("[Content_Types].xml", b"<Types/>"),
+            (
+                "runtimes/linux-x64/native/../../traversal.so",
+                b"ignore-traversal",
+            ),
+        ]);
+
+        let out_dir = tempfile::tempdir().unwrap();
+        extract_ort_from_zip(cursor, "linux-x64", "libonnxruntime.so", out_dir.path())
+            .expect("extract should succeed");
+
+        assert_eq!(
+            std::fs::read(out_dir.path().join("libonnxruntime.so")).unwrap(),
+            b"main-linux-so"
+        );
+        assert_eq!(
+            std::fs::read(out_dir.path().join("libonnxruntime_providers_shared.so")).unwrap(),
+            b"shared-so"
+        );
+        assert_eq!(
+            std::fs::read(
+                out_dir
+                    .path()
+                    .join("libonnxruntime_providers_cuda.so.1.23.2")
+            )
+            .unwrap(),
+            b"cuda-versioned-so"
+        );
+
+        let mut extracted: Vec<String> = std::fs::read_dir(out_dir.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        extracted.sort();
+        assert_eq!(
+            extracted,
+            vec![
+                "libonnxruntime.so",
+                "libonnxruntime_providers_cuda.so.1.23.2",
+                "libonnxruntime_providers_shared.so",
+            ]
+        );
+    }
+
+    #[test]
+    fn extract_ort_from_zip_windows_ignores_lib_files() {
+        let cursor = build_synthetic_nupkg(&[
+            ("runtimes/win-x64/native/onnxruntime.dll", b"main-win-dll"),
+            (
+                "runtimes/win-x64/native/onnxruntime_providers_shared.dll",
+                b"shared-win-dll",
+            ),
+            ("runtimes/win-x64/native/onnxruntime.lib", b"import-lib"),
+            (
+                "runtimes/win-arm64/native/onnxruntime.dll",
+                b"wrong-rid-arm64",
+            ),
+        ]);
+
+        let out_dir = tempfile::tempdir().unwrap();
+        extract_ort_from_zip(cursor, "win-x64", "onnxruntime.dll", out_dir.path())
+            .expect("windows extract should succeed");
+
+        let mut extracted: Vec<String> = std::fs::read_dir(out_dir.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        extracted.sort();
+        assert_eq!(
+            extracted,
+            vec!["onnxruntime.dll", "onnxruntime_providers_shared.dll"]
+        );
+    }
+
+    #[test]
+    fn extract_ort_from_zip_fails_when_main_lib_missing() {
+        let cursor = build_synthetic_nupkg(&[
+            (
+                "runtimes/linux-x64/native/libonnxruntime_providers_shared.so",
+                b"shared-only",
+            ),
+            (
+                "runtimes/linux-arm64/native/libonnxruntime.so",
+                b"other-rid",
+            ),
+        ]);
+
+        let out_dir = tempfile::tempdir().unwrap();
+        let err = extract_ort_from_zip(cursor, "linux-x64", "libonnxruntime.so", out_dir.path())
+            .expect_err("missing main lib must fail fast");
+        assert!(err.to_string().contains("libonnxruntime.so"));
     }
 }
 
