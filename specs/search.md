@@ -212,7 +212,11 @@ $$m_{\text{id}}(q, d) = \begin{cases}
 1.0 & \text{otherwise}
 \end{cases}$$
 
-Exact identifier lookups are strongly boosted to guarantee pinpoint navigation when querying known IDs or stems.
+Matching rules:
+- **Whole-query exact match**: Trimmed query (after stripping wikilink brackets) matching `doc_id`, filename, filename stem, or alias case-insensitively always yields $m_{\text{id}} = 2.0$ (covering single-token lookups and multi-word exact titles/aliases).
+- **Multi-token sub-token match**: When a query contains multiple tokens, a sub-token matches `doc_id`, filename stem, or alias only if it is explicitly wrapped as a `[[wikilink]]` in the raw query or is identifier-shaped (contains `_`, `-`, or an ASCII digit, e.g. `task_1234` or `kb-abcd`). Plain alphabetic words inside multi-word prose queries do not trigger $m_{\text{id}} = 2.0$ or the $1.000$ exact-identity pin.
+
+Exact identifier lookups are strongly boosted to guarantee pinpoint navigation when querying known IDs, wikilinks, or stems.
 
 ### 5.2. Lifecycle Status Prior ($m_{\text{status}}$)
 

@@ -147,7 +147,56 @@ pub fn compute_alpha(query: &str, config: &RankingConfig) -> f32 {
     }
 }
 
+/// Returns true if a sub-token is identifier-shaped (`_`, `-`, or an ASCII digit).
+fn is_identifier_token(token: &str) -> bool {
+    token.contains('_') || token.contains('-') || token.chars().any(|c| c.is_ascii_digit())
+}
+
+/// Extract explicit wikilink targets (`[[target]]`, `[[target#heading]]`, `[[target|alias]]`) from a raw query.
+fn extract_wikilink_targets(query: &str) -> Vec<&str> {
+    let mut targets = Vec::new();
+    let mut rest = query;
+    while let Some(start) = rest.find("[[") {
+        let after_open = &rest[start + 2..];
+        let Some(end) = after_open.find("]]") else {
+            break;
+        };
+        let inner = &after_open[..end];
+        let target = inner.split(['|', '#']).next().unwrap_or("").trim();
+        if !target.is_empty() {
+            targets.push(target);
+        }
+        rest = &after_open[end + 2..];
+    }
+    targets
+}
+
+/// Returns true if `candidate` case-insensitively matches `doc_id`, optional `file_stem`, or any alias.
+fn matches_doc_identity(
+    candidate: &str,
+    doc_id: &str,
+    file_stem: Option<&str>,
+    aliases: &[String],
+) -> bool {
+    if candidate.eq_ignore_ascii_case(doc_id) {
+        return true;
+    }
+    if let Some(stem) = file_stem {
+        if candidate.eq_ignore_ascii_case(stem) {
+            return true;
+        }
+    }
+    aliases
+        .iter()
+        .any(|alias| candidate.eq_ignore_ascii_case(alias.trim()))
+}
+
 /// Compute m_id(q, d): 2.0 on exact ID, filename, or alias match; otherwise 1.0.
+///
+/// Whole-query exact matches (against `doc_id`, `file_name`, `file_stem`, or `alias`)
+/// always return `M_ID_EXACT_MATCH`. When the query contains multiple tokens, individual
+/// sub-tokens only match `doc_id`, `file_stem`, or `alias` if explicitly wrapped as a
+/// `[[wikilink]]` in the raw query or if identifier-shaped (containing `_`, `-`, or an ASCII digit).
 pub fn compute_m_id(query: &str, doc_id: &str, path: &Path, aliases: &[String]) -> f32 {
     let clean = crate::bm25::strip_wikilink_brackets(query);
     let q = clean.trim();
@@ -155,57 +204,52 @@ pub fn compute_m_id(query: &str, doc_id: &str, path: &Path, aliases: &[String]) 
         return M_ID_DEFAULT;
     }
 
-    if q.eq_ignore_ascii_case(doc_id) {
+    let file_name = path.file_name().and_then(|n| n.to_str());
+    let file_stem = path.file_stem().and_then(|s| s.to_str());
+
+    if matches_doc_identity(q, doc_id, file_stem, aliases)
+        || file_name.is_some_and(|name| q.eq_ignore_ascii_case(name))
+    {
         return M_ID_EXACT_MATCH;
     }
 
-    if let Some(file_name) = path.file_name().and_then(|n| n.to_str()) {
-        if q.eq_ignore_ascii_case(file_name) {
+    for target in extract_wikilink_targets(query) {
+        if matches_doc_identity(target, doc_id, file_stem, aliases)
+            || file_name.is_some_and(|name| target.eq_ignore_ascii_case(name))
+        {
             return M_ID_EXACT_MATCH;
         }
     }
 
-    if let Some(file_stem) = path.file_stem().and_then(|s| s.to_str()) {
-        if q.eq_ignore_ascii_case(file_stem) {
-            return M_ID_EXACT_MATCH;
-        }
-    }
+    // Check individual tokens; in multi-token queries, restrict sub-token identity
+    // matching to identifier-shaped tokens so plain prose words cannot pin documents.
+    let tokens: Vec<&str> = q
+        .split(|c: char| {
+            c.is_whitespace()
+                || c == '['
+                || c == ']'
+                || c == '('
+                || c == ')'
+                || c == '{'
+                || c == '}'
+                || c == '<'
+                || c == '>'
+        })
+        .map(|t| {
+            t.trim_matches(|c: char| {
+                c == '.' || c == ':' || c == ',' || c == ';' || c == '`' || c == '"' || c == '\''
+            })
+        })
+        .filter(|t| !t.is_empty())
+        .collect();
 
-    for alias in aliases {
-        if q.eq_ignore_ascii_case(alias.trim()) {
-            return M_ID_EXACT_MATCH;
+    let is_multi_token = tokens.len() > 1;
+    for trimmed_tok in tokens {
+        if is_multi_token && !is_identifier_token(trimmed_tok) {
+            continue;
         }
-    }
-
-    // Also check individual tokens if the query contains multiple terms
-    for token in q.split(|c: char| {
-        c.is_whitespace()
-            || c == '['
-            || c == ']'
-            || c == '('
-            || c == ')'
-            || c == '{'
-            || c == '}'
-            || c == '<'
-            || c == '>'
-    }) {
-        let trimmed_tok = token.trim_matches(|c: char| {
-            c == '.' || c == ':' || c == ',' || c == ';' || c == '`' || c == '"' || c == '\''
-        });
-        if !trimmed_tok.is_empty() {
-            if trimmed_tok.eq_ignore_ascii_case(doc_id) {
-                return M_ID_EXACT_MATCH;
-            }
-            if let Some(file_stem) = path.file_stem().and_then(|s| s.to_str()) {
-                if trimmed_tok.eq_ignore_ascii_case(file_stem) {
-                    return M_ID_EXACT_MATCH;
-                }
-            }
-            for alias in aliases {
-                if trimmed_tok.eq_ignore_ascii_case(alias.trim()) {
-                    return M_ID_EXACT_MATCH;
-                }
-            }
+        if matches_doc_identity(trimmed_tok, doc_id, file_stem, aliases) {
+            return M_ID_EXACT_MATCH;
         }
     }
 
@@ -430,7 +474,7 @@ pub fn try_fuse_tm2c2<G: GraphStructuralLookup>(
         let outdegree = graph_lookup.outdegree(&r.id);
         let aliases = graph_lookup.aliases(&r.id);
         let m_struct = compute_m_struct(
-            &clean_query,
+            query,
             &r.id,
             &r.path,
             &aliases,
@@ -441,7 +485,7 @@ pub fn try_fuse_tm2c2<G: GraphStructuralLookup>(
             Some(hook) => hook(r),
             None => 1.0,
         };
-        let is_exact = is_exact_id_match(&clean_query, &r.id, &r.path, &aliases);
+        let is_exact = is_exact_id_match(query, &r.id, &r.path, &aliases);
         if is_exact {
             r.score = EXACT_ID_HYBRID_BOOST;
         } else {
@@ -1011,9 +1055,149 @@ mod tests {
     fn test_token_exact_id_match_in_multiword_query() {
         let path = PathBuf::from("tasks/aops_8a2448c0.md");
         let aliases: Vec<String> = vec![];
-        assert_eq!(compute_m_id("check task aops_8a2448c0 please", "aops_8a2448c0", &path, &aliases), 2.0);
-        assert!(is_exact_id_match("check task aops_8a2448c0 please", "aops_8a2448c0", &path, &aliases));
-        assert!(is_exact_id_match("see [[kb_295732fd]] here", "kb_295732fd", &path, &aliases));
+        assert_eq!(
+            compute_m_id(
+                "check task aops_8a2448c0 please",
+                "aops_8a2448c0",
+                &path,
+                &aliases
+            ),
+            2.0
+        );
+        assert!(is_exact_id_match(
+            "check task aops_8a2448c0 please",
+            "aops_8a2448c0",
+            &path,
+            &aliases
+        ));
+        assert!(is_exact_id_match(
+            "see [[kb_295732fd]] here",
+            "kb_295732fd",
+            &path,
+            &aliases
+        ));
+    }
+
+    #[test]
+    fn test_multiword_prose_plain_word_does_not_pin_id() {
+        let config = RankingConfig::default();
+        let notes_path = PathBuf::from("docs/notes.md");
+        let aliases = vec!["notes".to_string(), "my multi word alias".to_string()];
+
+        // (a) Multi-word prose containing plain alphabetic words matching doc_id/stem/alias must NOT pin
+        assert_eq!(
+            compute_m_id(
+                "prohibit long titles mobile import rename notes",
+                "notes",
+                &notes_path,
+                &aliases
+            ),
+            1.0
+        );
+        assert!(!is_exact_id_match(
+            "prohibit long titles mobile import rename notes",
+            "notes",
+            &notes_path,
+            &aliases
+        ));
+        assert_eq!(
+            compute_m_id(
+                "check project research details",
+                "research_doc_1",
+                &PathBuf::from("docs/research.md"),
+                &[]
+            ),
+            1.0
+        );
+
+        // In hybrid fusion, a plain-word stem match in multi-word prose must NOT receive score 1.000
+        let incidental = make_result("notes", "General Notes Index", 0.45, Some("active"));
+        let semantic = make_result(
+            "mobile_import_guide",
+            "Mobile Import Title Rules",
+            0.95,
+            Some("active"),
+        );
+        let vec_res = vec![semantic.clone(), incidental.clone()];
+        let bm25_res = vec![
+            make_result("notes", incidental.title.as_str(), 12.0, Some("active")),
+            make_result(
+                "mobile_import_guide",
+                semantic.title.as_str(),
+                10.0,
+                Some("active"),
+            ),
+        ];
+        let fused = fuse_tm2c2(
+            vec_res,
+            bm25_res,
+            "prohibit long titles mobile import rename notes",
+            &config,
+            None,
+            &(),
+            None,
+            10,
+        );
+        let notes_hit = fused.iter().find(|r| r.id == "notes").unwrap();
+        assert!(
+            notes_hit.score <= 0.990,
+            "Plain prose word matching doc stem must not pin to 1.0; got {}",
+            notes_hit.score
+        );
+        assert_eq!(fused[0].id, "mobile_import_guide");
+
+        // (b) Single-token exact IDs, multi-word exact aliases, [[wikilink]] tokens,
+        // and structured ID tokens inside multi-word queries MUST still get m_id = 2.0
+        assert_eq!(compute_m_id("notes", "notes", &notes_path, &[]), 2.0);
+        assert_eq!(
+            compute_m_id("my multi word alias", "other_id", &notes_path, &aliases),
+            2.0
+        );
+        assert_eq!(
+            compute_m_id("see [[notes]] here", "notes", &notes_path, &[]),
+            2.0
+        );
+        assert_eq!(
+            compute_m_id("see [[notes|custom]] here", "notes", &notes_path, &[]),
+            2.0
+        );
+        assert_eq!(
+            compute_m_id(
+                "inspect task_1234 and kb-abcd please",
+                "task_1234",
+                &PathBuf::from("tasks/task_1234.md"),
+                &[]
+            ),
+            2.0
+        );
+        assert_eq!(
+            compute_m_id(
+                "inspect task_1234 and kb-abcd please",
+                "kb-abcd",
+                &PathBuf::from("docs/kb-abcd.md"),
+                &[]
+            ),
+            2.0
+        );
+
+        // Bracketed wikilink on a plain word inside multi-word fuse_tm2c2 still pins to 1.0
+        let fused_wikilink = fuse_tm2c2(
+            vec![semantic, incidental.clone()],
+            vec![make_result(
+                "notes",
+                incidental.title.as_str(),
+                12.0,
+                Some("active"),
+            )],
+            "see [[notes]] here",
+            &config,
+            None,
+            &(),
+            None,
+            10,
+        );
+        assert_eq!(fused_wikilink[0].id, "notes");
+        assert_eq!(fused_wikilink[0].score, 1.0);
     }
 
     #[test]
