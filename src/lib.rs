@@ -32,6 +32,7 @@ pub mod path_lint;
 pub mod pkb;
 pub mod polecat_config;
 pub mod ranking;
+pub mod remote;
 pub mod rerank;
 pub mod rrf;
 pub mod salience;

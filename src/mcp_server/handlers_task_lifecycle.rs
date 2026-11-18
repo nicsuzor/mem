@@ -98,16 +98,10 @@ impl PkbSearchServer {
     pub(crate) fn claim_template_instance(&self, id: &str) -> Result<CallToolResult, McpError> {
         // Resolve the node and validate it is a template.
         //
-        // Deliberately NOT reading `node.tags` here: `GraphNode.tags` is the
-        // union of frontmatter `tags` AND inline `#hashtag`-shaped tokens
-        // scraped from the body (`extract_tags` in pkb.rs), which exists to
-        // support ad-hoc `#tag` note-taking. A recurring template's body
-        // routinely contains `#NNNN` GitHub issue references (e.g. "fixes
-        // #1847"); scraping those into the instantiated node's frontmatter
-        // `tags` produced a different, growing tag set on every claim
-        // (aops_ad8d9e07). The instance's tags are read straight from the
-        // template's own frontmatter `tags` field below (see
-        // `template_tags`), after `fm` is parsed.
+        // The instance's tags are read straight from the template's own
+        // frontmatter `tags` field below (see `template_tags`), after `fm` is
+        // parsed, so the instance carries exactly the template's declared tags
+        // (aops_ad8d9e07).
         let (template_id, template_path, template_label, template_intent, template_assignee) = {
             let graph = self.graph.read();
             let node = graph.resolve(id).ok_or_else(|| McpError {
@@ -157,8 +151,7 @@ impl PkbSearchServer {
         let template_project = fm.get("project").and_then(|v| v.as_str()).map(String::from);
         let template_parent = fm.get("parent").and_then(|v| v.as_str()).map(String::from);
 
-        // Frontmatter tags only — no inline-hashtag scrape. See the comment
-        // on the destructure above for why (aops_ad8d9e07).
+        // Frontmatter tags only (aops_ad8d9e07).
         let template_tags = crate::graph::parse_string_array(&fm, "tags");
 
         let consequence = fm
@@ -574,10 +567,10 @@ impl PkbSearchServer {
         };
 
         // Fetch extra candidates so type-filtering has enough to choose from.
-        let candidates = self
-            .store
-            .read()
-            .search(&embedding, 50, &self.pkb_root, None, None, None, None);
+        let candidates =
+            self.store
+                .read()
+                .search(&embedding, 50, &self.pkb_root, None, None, None, None);
 
         for candidate in &candidates {
             if candidate.score < CONFIDENCE_THRESHOLD {
@@ -855,13 +848,7 @@ impl PkbSearchServer {
             })?;
 
         // Validate status enum with helpful suggestions
-        let valid_statuses = [
-            "done",
-            "review",
-            "cancelled",
-            "partial",
-            "failed",
-        ];
+        let valid_statuses = ["done", "review", "cancelled", "partial", "failed"];
         if !valid_statuses.contains(&status) {
             let suggestion = match status {
                 "complete" | "completed" | "merge_ready" | "merge-ready" => {
@@ -1146,7 +1133,6 @@ impl PkbSearchServer {
                 serde_json::Value::String(url.to_string()),
             );
         }
-
 
         if let Some(rs) = release_summary {
             updates.insert(

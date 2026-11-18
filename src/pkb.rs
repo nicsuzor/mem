@@ -6,7 +6,6 @@
 use gray_matter::engine::YAML;
 use gray_matter::Matter;
 use ignore::WalkBuilder;
-use regex::Regex;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
@@ -17,7 +16,7 @@ pub struct PkbDocument {
     pub path: PathBuf,
     /// Document title (from frontmatter or filename)
     pub title: String,
-    /// Tags extracted from frontmatter and inline hashtags
+    /// Tags from the frontmatter `tags` field only (body text is never scraped)
     pub tags: Vec<String>,
     /// Document type (from frontmatter "type" field)
     pub doc_type: Option<String>,
@@ -94,8 +93,13 @@ fn compute_content_hash(content: &[u8]) -> String {
     blake3::hash(content).to_hex().to_string()
 }
 
-/// Extract tags from frontmatter and inline hashtags in content
-fn extract_tags(frontmatter: &Option<serde_json::Value>, content: &str) -> Vec<String> {
+/// Extract tags from the frontmatter `tags` field.
+///
+/// Tags come only from frontmatter metadata. Inline `#token`s in the body are
+/// deliberately ignored: bodies routinely contain GitHub issue references
+/// (`#3477`), numbered items (`#1`) and pasted transcripts, and scraping them
+/// filled search results and graph nodes with junk tags.
+fn extract_tags(frontmatter: &Option<serde_json::Value>) -> Vec<String> {
     let mut tags = HashSet::new();
 
     // Frontmatter tags
@@ -112,14 +116,6 @@ fn extract_tags(frontmatter: &Option<serde_json::Value>, content: &str) -> Vec<S
                     tags.insert(part.trim().to_string());
                 }
             }
-        }
-    }
-
-    // Inline hashtags
-    let re = Regex::new(r"(?:^|\s)#([a-zA-Z0-9_\-]+)").unwrap();
-    for cap in re.captures_iter(content) {
-        if let Some(m) = cap.get(1) {
-            tags.insert(m.as_str().to_string());
         }
     }
 
@@ -154,7 +150,7 @@ pub fn parse_file(path: &Path) -> Option<PkbDocument> {
         }
     }
 
-    let tags = extract_tags(&fm_data, &result.content);
+    let tags = extract_tags(&fm_data);
 
     let doc_type = fm_data
         .as_ref()
@@ -168,13 +164,17 @@ pub fn parse_file(path: &Path) -> Option<PkbDocument> {
         .as_ref()
         .and_then(|fm| fm.get("consolidated").and_then(|v| v.as_bool()));
 
-    let consolidated_at = fm_data
-        .as_ref()
-        .and_then(|fm| fm.get("consolidated_at").and_then(|v| v.as_str()).map(String::from));
+    let consolidated_at = fm_data.as_ref().and_then(|fm| {
+        fm.get("consolidated_at")
+            .and_then(|v| v.as_str())
+            .map(String::from)
+    });
 
-    let modified = fm_data
-        .as_ref()
-        .and_then(|fm| fm.get("modified").and_then(|v| v.as_str()).map(String::from));
+    let modified = fm_data.as_ref().and_then(|fm| {
+        fm.get("modified")
+            .and_then(|v| v.as_str())
+            .map(String::from)
+    });
 
     let body = result.content.trim().to_string();
     let content_hash = compute_content_hash(body.as_bytes());
@@ -290,9 +290,13 @@ pub fn scan_generation(root: &Path) -> GenerationStamp {
     let mut max_mtime = std::time::SystemTime::UNIX_EPOCH;
 
     fn walk(dir: &Path, file_count: &mut usize, max_mtime: &mut std::time::SystemTime) {
-        let Ok(entries) = std::fs::read_dir(dir) else { return; };
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
         for entry in entries.flatten() {
-            let Ok(file_type) = entry.file_type() else { continue; };
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
             let file_name = entry.file_name();
             let bytes = file_name.as_encoded_bytes();
 
@@ -317,17 +321,16 @@ pub fn scan_generation(root: &Path) -> GenerationStamp {
                     continue;
                 }
                 walk(&entry.path(), file_count, max_mtime);
-            } else if (file_type.is_file() || file_type.is_symlink())
-                && bytes.ends_with(b".md") {
-                    *file_count += 1;
-                    if let Ok(meta) = entry.metadata() {
-                        if let Ok(mtime) = meta.modified() {
-                            if mtime > *max_mtime {
-                                *max_mtime = mtime;
-                            }
+            } else if (file_type.is_file() || file_type.is_symlink()) && bytes.ends_with(b".md") {
+                *file_count += 1;
+                if let Ok(meta) = entry.metadata() {
+                    if let Ok(mtime) = meta.modified() {
+                        if mtime > *max_mtime {
+                            *max_mtime = mtime;
                         }
                     }
                 }
+            }
         }
     }
 
@@ -352,6 +355,21 @@ pub fn fallback_id(path: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tags_come_only_from_frontmatter() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("note.md");
+        std::fs::write(
+            &path,
+            "---\nid: n1\ntags: [laptop, disk]\n---\n\nFixes #3477, see PR #107.\n\n#1 step\n#inline-tag here\n",
+        )
+        .unwrap();
+        let doc = parse_file(&path).unwrap();
+        let mut tags = doc.tags.clone();
+        tags.sort();
+        assert_eq!(tags, vec!["disk", "laptop"]);
+    }
 
     #[test]
     fn content_hash_is_line_ending_independent() {
@@ -454,7 +472,10 @@ mod tests {
 
         let matter = gray_matter::Matter::<gray_matter::engine::YAML>::new();
         let parsed = matter.parse(content);
-        assert!(parsed.data.is_none(), "gray_matter returns None for frontmatter data when closing delimiter is glued to body");
+        assert!(
+            parsed.data.is_none(),
+            "gray_matter returns None for frontmatter data when closing delimiter is glued to body"
+        );
         assert_eq!(
             parsed.content.trim(),
             "id: x\ntitle: Real Title\ntype: task\nstatus: ready\n---# Title\nSome body text"
@@ -503,5 +524,3 @@ mod tests {
         assert!(stamp3.max_mtime > stamp2.max_mtime);
     }
 }
-
-

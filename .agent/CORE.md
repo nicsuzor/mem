@@ -42,6 +42,7 @@ src/
   lint.rs           — PKB linting/validation
   path_lint.rs      — rejects new machine-specific paths to PKB files (`~/brain/...`) in bodies written via MCP
   lsp.rs            — PKB Language Server Protocol (LSP) server (hover preview & goto-def/links)
+  remote.rs         — HTTP client for a running PKB MCP server (used by CLI `pkb search`; URL from `--server` or `PKB_MCP_URL`, no fallback)
   reproduction.rs   — Reproduction/test helpers
   lib.rs            — Library root
 editors/
@@ -141,6 +142,9 @@ Read paths automatically validate the cached in-memory graph against on-disk sta
 
 ### Status filters in list_tasks
 `status=<S>` matches the node's stored frontmatter `status` field exactly (case-insensitive) — never a computed set. `status="ready"` matches only nodes literally stored `status: ready`; `status="blocked"` matches only nodes literally stored `status: blocked` (the computed unmet-deps view is exposed separately as the top-level `blocked` boolean on each row). An unsupported status value is rejected rather than silently aliased to a different set (e.g. `status="archived"` no longer returns `done`).
+
+### Tags come from frontmatter only
+`pkb::extract_tags` reads only the frontmatter `tags` field. Body `#tokens` (issue refs, numbered items, pasted transcripts) are never tags.
 
 ### String safety (Rust)
 Always use `str.floor_char_boundary(n)` before byte-slicing strings for display truncation. Direct `&str[..n]` panics on multi-byte UTF-8.

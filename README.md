@@ -58,8 +58,14 @@ pkb reindex
 ### 3. Search
 
 ```bash
+export PKB_MCP_URL=http://localhost:8026/mcp   # a running `pkb mcp --http` server
 pkb search "how does authentication work"
 ```
+
+`pkb search` queries the PKB server over HTTP by default, so it reuses the
+server's loaded models and indexes. It needs `--server <URL>` or `PKB_MCP_URL`
+and fails if neither is set. Pass `--local` to search the local index
+in-process instead (this loads the models on every run, so it is slow).
 
 ### 4. Connect to an AI assistant
 
@@ -205,7 +211,7 @@ Non-linearity defeats the spacing and centring biases that corrupt linear scales
 
 | Command | Description |
 |---------|-------------|
-| `pkb search <query> [-n limit] [--full]` | Semantic search across the knowledge base |
+| `pkb search <query> [-n limit] [--full] [--server URL \| --local]` | Hybrid search via the PKB server (`PKB_MCP_URL`), or in-process with `--local` |
 | `pkb add <files...>` | Add markdown files to the index |
 | `pkb reindex [--force] [-b batch]` | Re-scan and re-index all PKB files |
 | `pkb status` | Show index statistics (document count, DB size) |
