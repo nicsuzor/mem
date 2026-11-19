@@ -138,7 +138,7 @@ fn test_links_entry_errors_are_isolated() {
 /// - Map entries `{to, quantum, set_by}` inside `depends_on`, `soft_depends_on`, `contributes_to`, and `parent`.
 /// - Explicit `links` entry wins over mapped old key with ParseWarning.
 /// - Status to FlowState mapping table (cancelled -> gone, retired/done/missing -> done, active -> open).
-/// - `worth` anchor words (10 words), float in [-1.0, 1.0], invalid -> unpriced with warning.
+/// - `worth` anchor words (10 words), finite float on open-ended log scale, invalid -> unpriced with warning.
 /// - `standing_weight` fallback and precedence warning when both `worth` and `standing_weight` present.
 /// - Unclassed `due` is fake; node without `due` has `deadline_class: None`.
 /// - `needs` link with no quantum carries 1.0.
@@ -305,9 +305,17 @@ fn test_links_schema_mapping() {
         "targ_loss",
         json!({ "id": "targ_loss", "worth": "catastrophic loss" }),
     );
+    let doc_w_unbounded = make_doc(
+        "targ_unbounded",
+        json!({ "id": "targ_unbounded", "worth": 3.5 }),
+    );
+    let doc_w_neg_unbounded = make_doc(
+        "targ_neg_unbounded",
+        json!({ "id": "targ_neg_unbounded", "worth": -2.0 }),
+    );
     let doc_w_invalid = make_doc(
         "targ_invalid",
-        json!({ "id": "targ_invalid", "worth": 1.5 }),
+        json!({ "id": "targ_invalid", "worth": "not_a_worth" }),
     );
     let doc_w_sw_both = make_doc(
         "targ_both",
@@ -366,6 +374,8 @@ fn test_links_schema_mapping() {
         doc_review,
         doc_w_anchor,
         doc_w_loss,
+        doc_w_unbounded,
+        doc_w_neg_unbounded,
         doc_w_invalid,
         doc_w_sw_both,
         doc_w_sw_only,
@@ -566,8 +576,21 @@ fn test_links_schema_mapping() {
     // Verify 7: Worth
     assert_eq!(store.get_node("targ_anchor").unwrap().worth, Some(1.00));
     assert_eq!(store.get_node("targ_loss").unwrap().worth, Some(-1.00));
+    assert_eq!(
+        store.get_node("targ_unbounded").unwrap().worth,
+        Some(3.5),
+        "3.5 worth must be read unchanged on open-ended scale"
+    );
+    assert_eq!(
+        store.get_node("targ_neg_unbounded").unwrap().worth,
+        Some(-2.0),
+        "-2.0 worth must be read unchanged on open-ended scale"
+    );
     let n_inv = store.get_node("targ_invalid").unwrap();
-    assert_eq!(n_inv.worth, None, "1.5 worth must be read as unpriced None");
+    assert_eq!(
+        n_inv.worth, None,
+        "invalid worth string must be read as unpriced None"
+    );
     assert!(n_inv.parse_warnings.iter().any(|w| w.field == "worth"));
 
     let n_both = store.get_node("targ_both").unwrap();
@@ -712,20 +735,20 @@ fn test_write_tools_reject_invalid_links() {
         "Error message must describe out of range: {err2}"
     );
 
-    // 3. create_task with worth: 2
+    // 3. create_task with invalid worth fails (open-ended worth 3.5 tested after failed-creation check)
     let res3 = create_task(
         root,
         TaskFields {
             title: "Bad Worth Task".to_string(),
-            worth: Some(json!(2)),
+            worth: Some(json!("not_a_worth")),
             ..Default::default()
         },
     );
-    assert!(res3.is_err(), "create_task with worth: 2 must fail");
+    assert!(res3.is_err(), "create_task with invalid worth must fail");
     let err3 = res3.unwrap_err().to_string();
     assert!(
-        err3.contains("out of range"),
-        "Error message must describe worth out of range: {err3}"
+        err3.contains("unrecognized worth"),
+        "Error message must describe invalid worth: {err3}"
     );
 
     // 4. create_task with deadline_class: maybe
@@ -762,12 +785,13 @@ fn test_write_tools_reject_invalid_links() {
         }
     }
 
-    // Now create a valid task so we can test update_document / update_task rejections
+    // Now create a valid task (with open-ended worth 3.5) so we can test update_document / update_task
     let valid_path = create_task(
         root,
         TaskFields {
             title: "Valid Task For Update".to_string(),
             id: Some("task_valid_01".to_string()),
+            worth: Some(json!(3.5)),
             ..Default::default()
         },
     )
@@ -810,14 +834,28 @@ fn test_write_tools_reject_invalid_links() {
         "File content must not change on error"
     );
 
-    // 7. update_document with worth: 2
+    // 7. update_document with worth: -2 succeeds; invalid worth fails
+    let mut updates_ok_w = HashMap::new();
+    updates_ok_w.insert("worth".to_string(), json!(-2.0));
+    let res7_ok = update_document(&valid_path, updates_ok_w);
+    assert!(
+        res7_ok.is_ok(),
+        "update_document with worth -2.0 must succeed: {:?}",
+        res7_ok.err()
+    );
+    let updated_content = fs::read_to_string(&valid_path).unwrap();
+    assert!(
+        updated_content.contains("worth: -2.0"),
+        "Updated file must contain worth: -2.0, got:\n{updated_content}"
+    );
+
     let mut updates_bad_w = HashMap::new();
-    updates_bad_w.insert("worth".to_string(), json!(2));
+    updates_bad_w.insert("worth".to_string(), json!("not_a_worth"));
     let res7 = update_document(&valid_path, updates_bad_w);
-    assert!(res7.is_err(), "update_document with worth 2 must fail");
+    assert!(res7.is_err(), "update_document with invalid worth must fail");
     assert_eq!(
         fs::read_to_string(&valid_path).unwrap(),
-        initial_content,
+        updated_content,
         "File content must not change on error"
     );
 
@@ -831,7 +869,7 @@ fn test_write_tools_reject_invalid_links() {
     );
     assert_eq!(
         fs::read_to_string(&valid_path).unwrap(),
-        initial_content,
+        updated_content,
         "File content must not change on error"
     );
 }

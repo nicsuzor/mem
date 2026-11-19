@@ -3838,3 +3838,69 @@ fn test_output_schema_for_update_body_and_edit_body_declares_diff() {
         "edit alias output schema must declare diff property as string: {edit_val:?}"
     );
 }
+
+#[test]
+fn test_open_ended_worth_roundtrip_through_pkb_server() {
+    let (_tmp, server) = build_disk_backed_server(&[(
+        "tasks/task-root.md",
+        "---\nid: task-root\ntitle: Root\ntype: task\nstatus: ready\n---\n\n# Root\n",
+    )]);
+
+    // 1. Create a target with worth 3.5 (outside [-1, 1]) via PKB server
+    let create_res = server
+        .handle_create_task(&json!({
+            "title": "Moonshot Target",
+            "slug": "moonshot-target",
+            "type": "target",
+            "status": "ready",
+            "worth": 3.5
+        }))
+        .expect("create_task with worth 3.5 must succeed");
+    let create_text = create_res
+        .content
+        .iter()
+        .filter_map(|c| c.as_text().map(|t| t.text.as_str()))
+        .collect::<String>();
+    let created: serde_json::Value = serde_json::from_str(&create_text).unwrap();
+    let target_id = created["id"].as_str().unwrap().to_string();
+
+    // 2. Read back via get_task and verify worth is 3.5 unchanged
+    let get_res = server
+        .handle_get_task(&json!({ "id": target_id }))
+        .expect("get_task must succeed");
+    let get_text = get_res
+        .content
+        .iter()
+        .filter_map(|c| c.as_text().map(|t| t.text.as_str()))
+        .collect::<String>();
+    let fetched: serde_json::Value = serde_json::from_str(&get_text).unwrap();
+    assert_eq!(
+        fetched["frontmatter"]["worth"].as_f64(),
+        Some(3.5),
+        "worth 3.5 must read back unchanged via get_task: {fetched:?}"
+    );
+
+    // 3. Update target worth to -2.0 (outside [-1, 1]) via update_task
+    server
+        .handle_update_task(&json!({
+            "id": target_id,
+            "updates": { "worth": -2.0 }
+        }))
+        .expect("update_task with worth -2.0 must succeed");
+
+    // 4. Read back via get_task and verify worth is -2.0 unchanged
+    let get_updated_res = server
+        .handle_get_task(&json!({ "id": target_id }))
+        .expect("get_task after update must succeed");
+    let get_updated_text = get_updated_res
+        .content
+        .iter()
+        .filter_map(|c| c.as_text().map(|t| t.text.as_str()))
+        .collect::<String>();
+    let fetched_updated: serde_json::Value = serde_json::from_str(&get_updated_text).unwrap();
+    assert_eq!(
+        fetched_updated["frontmatter"]["worth"].as_f64(),
+        Some(-2.0),
+        "worth -2.0 must read back unchanged via get_task: {fetched_updated:?}"
+    );
+}
