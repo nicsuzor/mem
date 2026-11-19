@@ -1208,11 +1208,11 @@ fn check_frontmatter(
         });
         match worth_num {
             Some(w) => {
-                if !w.is_finite() || !(-1.0..=1.0).contains(&w) {
+                if !w.is_finite() {
                     diags.push(Diagnostic::node(
                         Severity::Error,
                         "flow-worth-invalid",
-                        format!("worth {} out of range -1.0..=1.0", w),
+                        format!("worth {} must be a finite number", w),
                         node_id,
                         AgentFix::No,
                     ));
@@ -1222,7 +1222,7 @@ fn check_frontmatter(
                 diags.push(Diagnostic::node(
                     Severity::Error,
                     "flow-worth-invalid",
-                    format!("Invalid worth '{}': must be a number in -1.0..=1.0", worth_val),
+                    format!("Invalid worth '{}': must be a finite number", worth_val),
                     node_id,
                     AgentFix::No,
                 ));
@@ -4486,8 +4486,8 @@ Body.\n",
 
     #[test]
     fn lint_flow_worth_invalid() {
-        // G2: worth of high, 6 or -1.5 yields flow-worth-invalid (error, exit 1); -1.0 and 1.0 pass
-        for invalid in &["high", "6", "-1.5"] {
+        // G2: worth of NaN or unrecognised string yields flow-worth-invalid (error, exit 1); -10.0, 1.0, 50.0 pass
+        for invalid in &["high", "NaN", "inf", "unknown"] {
             let content = format!("---\nid: targ_test\ntitle: Target\ntype: target\nworth: {}\n---\n\nBody\n", invalid);
             let diags = lint_str(&content);
             let d = diags.iter().find(|d| d.rule == "flow-worth-invalid");
@@ -4495,7 +4495,7 @@ Body.\n",
             assert_eq!(d.unwrap().severity, Severity::Error);
             assert_eq!(d.unwrap().agent_fix, AgentFix::No);
         }
-        for valid in &["-1.0", "1.0", "0.0", "0.5"] {
+        for valid in &["-10.0", "-2.0", "-1.5", "-1.0", "0.0", "0.5", "1.0", "3.5", "50.0"] {
             let content = format!("---\nid: targ_test\ntitle: Target\ntype: target\nworth: {}\n---\n\nBody\n", valid);
             let diags = lint_str(&content);
             assert!(!diags.iter().any(|d| d.rule == "flow-worth-invalid"), "Expected valid for {}, got: {:?}", valid, diags);
