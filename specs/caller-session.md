@@ -28,6 +28,7 @@ Every PKB call is stamped with the caller's session ID and exported on the serve
   1. `x-session-id` (or `session-id`) HTTP header (`source = "header"`).
   2. Request `_meta.session_id` / `_meta.sessionId` (`source = "meta"`).
   3. Top-level `arguments["session_id"]` non-empty trimmed string (`source = "argument"`), preserved in `args` so handlers like `release_task` can read it.
+  4. Legacy `arguments["_session"]` (object or string), stripped from `args` before tool validation and used as fallback if `arguments["session_id"]` is absent.
 - **AC-1.2** Every tool schema in `src/mcp_server/schemas.rs` declares `session_id` (`type: "string"`, `minLength: 1`) as a required parameter describing the calling agent's own active session/conversation ID (e.g., `CLAUDE_CODE_SESSION_ID` or `ANTIGRAVITY_CONVERSATION_ID`) or client identifier.
 - **AC-1.3** Given `x-agent-id` / `_meta.agent_id` or `x-prompt-id` / `_meta.prompt_id`, the server span exports `agent.id` and `prompt.id`.
 - **AC-1.4** Any W3C `traceparent` in HTTP headers or request `_meta` parents the server span under the caller's span.

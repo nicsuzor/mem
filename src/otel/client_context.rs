@@ -91,7 +91,7 @@ impl ClientContext {
     pub fn extract(
         parts: Option<&Parts>,
         meta: Option<&rmcp::model::RequestMetaObject>,
-        args: &serde_json::Value,
+        args: &mut serde_json::Value,
     ) -> Self {
         let mut parent_context = None;
         let mut header_session = None;
@@ -190,16 +190,45 @@ impl ClientContext {
             .and_then(|v| v.as_str())
             .and_then(non_empty_trimmed);
 
-        let agent_id = meta_agent.or(header_agent);
-        let prompt_id = meta_prompt.or(header_prompt);
+        // Strip legacy `_session` argument before tool validation (e.g. `create_task`
+        // KNOWN_KEYS) and use it as a fallback if top-level `session_id` is absent.
+        let mut legacy_session = None;
+        let mut legacy_agent = None;
+        let mut legacy_prompt = None;
+        if let Some(obj) = args.as_object_mut() {
+            if let Some(session_val) = obj.remove("_session") {
+                if let Some(map) = session_val.as_object() {
+                    legacy_session = map
+                        .get("session_id")
+                        .or_else(|| map.get("sessionId"))
+                        .and_then(|v| v.as_str())
+                        .and_then(non_empty_trimmed);
+                    legacy_agent = map
+                        .get("agent_id")
+                        .or_else(|| map.get("agentId"))
+                        .and_then(|v| v.as_str())
+                        .and_then(non_empty_trimmed);
+                    legacy_prompt = map
+                        .get("prompt_id")
+                        .or_else(|| map.get("promptId"))
+                        .and_then(|v| v.as_str())
+                        .and_then(non_empty_trimmed);
+                } else if let Some(s) = session_val.as_str() {
+                    legacy_session = non_empty_trimmed(s);
+                }
+            }
+        }
+
+        let agent_id = meta_agent.or(header_agent).or(legacy_agent);
+        let prompt_id = meta_prompt.or(header_prompt).or(legacy_prompt);
         let client_name = meta_client.or(header_client);
 
-        // Precedence: 1. Header (x-session-id / session-id), 2. _meta, 3. Top-level args["session_id"]
+        // Precedence: 1. Header (x-session-id / session-id), 2. _meta, 3. Top-level args["session_id"], 4. Legacy args["_session"]
         let (session_id, session_source) = if let Some(s) = header_session {
             (Some(s), SessionSource::Header)
         } else if let Some(s) = meta_session {
             (Some(s), SessionSource::Meta)
-        } else if let Some(s) = arg_session {
+        } else if let Some(s) = arg_session.or(legacy_session) {
             (Some(s), SessionSource::Argument)
         } else {
             (None, SessionSource::None)
@@ -240,14 +269,14 @@ mod tests {
             "session_id": "meta-session",
             "io.modelcontextprotocol/clientInfo": { "name": "overwhelm-dashboard", "version": "1.0.0" }
         });
-        let args = json!({ "session_id": "arg-session" });
+        let mut args = json!({ "session_id": "arg-session" });
 
         let cx = ClientContext::extract(
             Some(&parts),
             Some(&rmcp::model::RequestMetaObject(rmcp::model::MetaObject(
                 meta.as_object().unwrap().clone(),
             ))),
-            &args,
+            &mut args,
         );
         assert_eq!(cx.session_id.as_deref(), Some("header-session"));
         assert_eq!(cx.session_source, SessionSource::Header);
@@ -262,21 +291,49 @@ mod tests {
             Some(&rmcp::model::RequestMetaObject(rmcp::model::MetaObject(
                 meta.as_object().unwrap().clone(),
             ))),
-            &args,
+            &mut args,
         );
         assert_eq!(cx.session_id.as_deref(), Some("meta-session"));
         assert_eq!(cx.session_source, SessionSource::Meta);
 
         // 3. Top-level session_id argument
-        let cx = ClientContext::extract(Some(&parts), None, &args);
+        let cx = ClientContext::extract(Some(&parts), None, &mut args);
         assert_eq!(cx.session_id.as_deref(), Some("arg-session"));
         assert_eq!(cx.session_source, SessionSource::Argument);
 
         // 4. Blank / whitespace-only session_id resolves to None
-        let blank_args = json!({ "session_id": "   " });
-        let cx = ClientContext::extract(Some(&parts), None, &blank_args);
+        let mut blank_args = json!({ "session_id": "   " });
+        let cx = ClientContext::extract(Some(&parts), None, &mut blank_args);
         assert_eq!(cx.session_id, None);
         assert_eq!(cx.session_source, SessionSource::None);
+    }
+
+    #[test]
+    fn test_legacy_session_stripped_and_fallback() {
+        let mut args = json!({
+            "session_id": "top-sess",
+            "_session": {
+                "session_id": "legacy-sess",
+                "agent_id": "agent-1",
+                "prompt_id": "prompt-1"
+            }
+        });
+        let cx = ClientContext::extract(None, None, &mut args);
+        assert_eq!(cx.session_id.as_deref(), Some("top-sess"));
+        assert_eq!(cx.session_source, SessionSource::Argument);
+        assert_eq!(cx.agent_id.as_deref(), Some("agent-1"));
+        assert_eq!(cx.prompt_id.as_deref(), Some("prompt-1"));
+        assert!(args.get("_session").is_none(), "_session must be stripped");
+        assert_eq!(args.get("session_id").and_then(|v| v.as_str()), Some("top-sess"));
+
+        // Fallback when top-level session_id is absent
+        let mut legacy_only = json!({
+            "_session": { "session_id": "legacy-only-sess" }
+        });
+        let cx = ClientContext::extract(None, None, &mut legacy_only);
+        assert_eq!(cx.session_id.as_deref(), Some("legacy-only-sess"));
+        assert_eq!(cx.session_source, SessionSource::Argument);
+        assert!(legacy_only.get("_session").is_none(), "_session must be stripped");
     }
 
     #[test]
@@ -289,7 +346,7 @@ mod tests {
             .body(())
             .unwrap();
         let (parts, _) = req.into_parts();
-        let args = json!({ "session_id": "s1" });
+        let mut args = json!({ "session_id": "s1" });
 
         // _meta clientInfo takes precedence over header fallback
         let cx = ClientContext::extract(
@@ -297,12 +354,12 @@ mod tests {
             Some(&rmcp::model::RequestMetaObject(rmcp::model::MetaObject(
                 meta.as_object().unwrap().clone(),
             ))),
-            &args,
+            &mut args,
         );
         assert_eq!(cx.client_name.as_deref(), Some("overwhelm-dashboard"));
 
         // Header fallback when _meta clientInfo is absent
-        let cx = ClientContext::extract(Some(&parts), None, &args);
+        let cx = ClientContext::extract(Some(&parts), None, &mut args);
         assert_eq!(cx.client_name.as_deref(), Some("other-client"));
     }
 
@@ -319,8 +376,8 @@ mod tests {
             .body(())
             .unwrap();
         let (parts, _) = req.into_parts();
-        let args = json!({});
-        let cx = ClientContext::extract(Some(&parts), None, &args);
+        let mut args = json!({});
+        let cx = ClientContext::extract(Some(&parts), None, &mut args);
 
         assert!(
             cx.parent_context.is_some(),

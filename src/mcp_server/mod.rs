@@ -1743,7 +1743,7 @@ impl PkbSearchServer {
         let mut args = args.clone();
 
         let client_context =
-            crate::otel::client_context::ClientContext::extract(parts, meta, &args);
+            crate::otel::client_context::ClientContext::extract(parts, meta, &mut args);
 
         let canonical_name = match tool_name.as_str() {
             "pkb_trace" | "pkb_orphans" => tool_name.clone(),
