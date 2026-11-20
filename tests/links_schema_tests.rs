@@ -299,15 +299,19 @@ fn test_links_schema_mapping() {
     // 7. Worth cases (anchor words, floats, invalid, standing_weight precedence)
     let doc_w_anchor = make_doc(
         "targ_anchor",
-        json!({ "id": "targ_anchor", "worth": "critical" }),
+        json!({ "id": "targ_anchor", "worth": "moonshot" }),
     );
     let doc_w_loss = make_doc(
         "targ_loss",
-        json!({ "id": "targ_loss", "worth": "catastrophic loss" }),
+        json!({ "id": "targ_loss", "worth": "catastrophic ruin" }),
+    );
+    let doc_w_uncapped = make_doc(
+        "targ_uncapped",
+        json!({ "id": "targ_uncapped", "worth": 45.0 }),
     );
     let doc_w_invalid = make_doc(
         "targ_invalid",
-        json!({ "id": "targ_invalid", "worth": 1.5 }),
+        json!({ "id": "targ_invalid", "worth": "not_a_worth" }),
     );
     let doc_w_sw_both = make_doc(
         "targ_both",
@@ -366,6 +370,7 @@ fn test_links_schema_mapping() {
         doc_review,
         doc_w_anchor,
         doc_w_loss,
+        doc_w_uncapped,
         doc_w_invalid,
         doc_w_sw_both,
         doc_w_sw_only,
@@ -563,11 +568,12 @@ fn test_links_schema_mapping() {
         FlowState::Open
     );
 
-    // Verify 7: Worth
-    assert_eq!(store.get_node("targ_anchor").unwrap().worth, Some(1.00));
-    assert_eq!(store.get_node("targ_loss").unwrap().worth, Some(-1.00));
+    // Verify 7: Worth (uncapped finite floats + 12 R9 anchors; invalid words -> unpriced warning)
+    assert_eq!(store.get_node("targ_anchor").unwrap().worth, Some(10.0));
+    assert_eq!(store.get_node("targ_loss").unwrap().worth, Some(-10.0));
+    assert_eq!(store.get_node("targ_uncapped").unwrap().worth, Some(45.0));
     let n_inv = store.get_node("targ_invalid").unwrap();
-    assert_eq!(n_inv.worth, None, "1.5 worth must be read as unpriced None");
+    assert_eq!(n_inv.worth, None, "invalid worth string must be read as unpriced None");
     assert!(n_inv.parse_warnings.iter().any(|w| w.field == "worth"));
 
     let n_both = store.get_node("targ_both").unwrap();
@@ -712,21 +718,30 @@ fn test_write_tools_reject_invalid_links() {
         "Error message must describe out of range: {err2}"
     );
 
-    // 3. create_task with worth: 2
+    // 3. create_task with invalid worth string ("not_a_number") vs valid uncapped worth (45.0 / "moonshot")
     let res3 = create_task(
         root,
         TaskFields {
             title: "Bad Worth Task".to_string(),
-            worth: Some(json!(2)),
+            worth: Some(json!("not_a_number")),
             ..Default::default()
         },
     );
-    assert!(res3.is_err(), "create_task with worth: 2 must fail");
+    assert!(res3.is_err(), "create_task with invalid worth must fail");
     let err3 = res3.unwrap_err().to_string();
     assert!(
-        err3.contains("out of range"),
-        "Error message must describe worth out of range: {err3}"
+        err3.contains("unrecognized") || err3.contains("finite"),
+        "Error message must describe invalid worth: {err3}"
     );
+    let res3_nan = create_task(
+        root,
+        TaskFields {
+            title: "NaN Worth Task".to_string(),
+            worth: Some(json!("NaN")),
+            ..Default::default()
+        },
+    );
+    assert!(res3_nan.is_err(), "create_task with worth: \"NaN\" must fail");
 
     // 4. create_task with deadline_class: maybe
     let res4 = create_task(
@@ -810,11 +825,11 @@ fn test_write_tools_reject_invalid_links() {
         "File content must not change on error"
     );
 
-    // 7. update_document with worth: 2
+    // 7. update_document with invalid worth string ("catastrophic loss") vs valid uncapped worth (10.0)
     let mut updates_bad_w = HashMap::new();
-    updates_bad_w.insert("worth".to_string(), json!(2));
+    updates_bad_w.insert("worth".to_string(), json!("catastrophic loss"));
     let res7 = update_document(&valid_path, updates_bad_w);
-    assert!(res7.is_err(), "update_document with worth 2 must fail");
+    assert!(res7.is_err(), "update_document with retired worth anchor must fail");
     assert_eq!(
         fs::read_to_string(&valid_path).unwrap(),
         initial_content,
@@ -833,6 +848,34 @@ fn test_write_tools_reject_invalid_links() {
         fs::read_to_string(&valid_path).unwrap(),
         initial_content,
         "File content must not change on error"
+    );
+
+    // 9. Valid uncapped float (45.0) and R9 anchor ("moonshot") succeed on create_task
+    let res3_ok = create_task(
+        root,
+        TaskFields {
+            title: "Uncapped Worth Task".to_string(),
+            worth: Some(json!(45.0)),
+            ..Default::default()
+        },
+    );
+    assert!(
+        res3_ok.is_ok(),
+        "create_task with uncapped worth 45.0 must succeed: {:?}",
+        res3_ok.err()
+    );
+    let res3_anchor = create_task(
+        root,
+        TaskFields {
+            title: "Anchor Worth Task".to_string(),
+            worth: Some(json!("moonshot")),
+            ..Default::default()
+        },
+    );
+    assert!(
+        res3_anchor.is_ok(),
+        "create_task with worth \"moonshot\" must succeed: {:?}",
+        res3_anchor.err()
     );
 }
 

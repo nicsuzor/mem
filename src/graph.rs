@@ -544,18 +544,16 @@ pub fn parse_probability_word_or_float(val: &serde_json::Value) -> Result<Option
     }
 }
 
-/// Parse target worth: either a float in -1.0..=1.0 or an anchor word (§5.6, R9).
+/// Parse target worth: either a finite float or one of the twelve canonical anchor words (§5.6, R9).
 pub fn parse_worth(val: &serde_json::Value) -> Result<Option<f64>, String> {
     if val.is_null() {
         return Ok(None);
     }
     if let Some(n) = val.as_f64() {
-        if n.is_finite() && (-1.0..=1.0).contains(&n) {
+        if n.is_finite() {
             return Ok(Some(n));
         } else {
-            return Err(format!(
-                "worth {n} out of range; expected float in -1.0..=1.0"
-            ));
+            return Err(format!("worth {n} must be a finite number"));
         }
     }
     if let Some(s) = val.as_str() {
@@ -564,24 +562,24 @@ pub fn parse_worth(val: &serde_json::Value) -> Result<Option<f64>, String> {
             return Ok(None);
         }
         match trimmed.as_str() {
+            "moonshot" => Ok(Some(10.0)),
             "critical" => Ok(Some(1.00)),
             "high" => Ok(Some(0.60)),
             "substantial" => Ok(Some(0.35)),
             "moderate" => Ok(Some(0.15)),
             "low" => Ok(Some(0.05)),
-            "catastrophic loss" => Ok(Some(-1.00)),
-            "severe loss" => Ok(Some(-0.60)),
+            "catastrophic ruin" => Ok(Some(-10.0)),
+            "severe loss" => Ok(Some(-1.00)),
+            "major loss" => Ok(Some(-0.60)),
             "substantial loss" => Ok(Some(-0.35)),
             "moderate loss" => Ok(Some(-0.15)),
             "minor loss" => Ok(Some(-0.05)),
             other => {
                 if let Ok(n) = other.parse::<f64>() {
-                    if n.is_finite() && (-1.0..=1.0).contains(&n) {
+                    if n.is_finite() {
                         Ok(Some(n))
                     } else {
-                        Err(format!(
-                            "worth {n} out of range; expected float in -1.0..=1.0"
-                        ))
+                        Err(format!("worth {n} must be a finite number"))
                     }
                 } else {
                     Err(format!("unrecognized worth anchor word \"{s}\""))
@@ -589,7 +587,7 @@ pub fn parse_worth(val: &serde_json::Value) -> Result<Option<f64>, String> {
             }
         }
     } else {
-        Err(format!("worth must be a number or string; got {val}"))
+        Err(format!("worth must be a finite number or anchor string; got {val}"))
     }
 }
 
@@ -1176,7 +1174,7 @@ pub struct GraphNode {
     /// Consolidated flow links (spec pkb-flow-engine §3.1).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub links: Vec<Link>,
-    /// Target worth in [-1.0, 1.0] (spec pkb-flow-engine §3.2).
+    /// Open-ended cardinal target worth (spec pkb-flow-engine §3.2, R9).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worth: Option<f64>,
     /// Deadline class for dated nodes: fake | soft | hard (spec pkb-flow-engine §3.3).
@@ -2211,8 +2209,8 @@ impl GraphNode {
             None => None,
         };
 
-        // worth: float in -1.0..=1.0 or anchor word (pkb-flow-engine §3.2, R9).
-        // Out-of-range or unknown words emit a ParseWarning and are read as unpriced.
+        // worth: finite float or canonical anchor word (pkb-flow-engine §3.2, R9).
+        // Non-finite values or unknown words emit a ParseWarning and are read as unpriced.
         // standing_weight is read as worth until retired. If both are present, worth wins with a warning.
         let parsed_worth = match fm.as_ref().and_then(|f| f.get("worth")) {
             Some(v) => match parse_worth(v) {
@@ -3615,6 +3613,10 @@ mod flow_schema_tests {
     #[test]
     fn test_parse_worth_anchors_and_floats() {
         assert_eq!(
+            parse_worth(&serde_json::json!("moonshot")).unwrap(),
+            Some(10.0)
+        );
+        assert_eq!(
             parse_worth(&serde_json::json!("critical")).unwrap(),
             Some(1.00)
         );
@@ -3629,11 +3631,15 @@ mod flow_schema_tests {
         );
         assert_eq!(parse_worth(&serde_json::json!("low")).unwrap(), Some(0.05));
         assert_eq!(
-            parse_worth(&serde_json::json!("catastrophic loss")).unwrap(),
-            Some(-1.00)
+            parse_worth(&serde_json::json!("catastrophic ruin")).unwrap(),
+            Some(-10.0)
         );
         assert_eq!(
             parse_worth(&serde_json::json!("severe loss")).unwrap(),
+            Some(-1.00)
+        );
+        assert_eq!(
+            parse_worth(&serde_json::json!("major loss")).unwrap(),
             Some(-0.60)
         );
         assert_eq!(
@@ -3650,8 +3656,15 @@ mod flow_schema_tests {
         );
         assert_eq!(parse_worth(&serde_json::json!(0.8)).unwrap(), Some(0.8));
         assert_eq!(parse_worth(&serde_json::json!(-0.5)).unwrap(), Some(-0.5));
-        assert!(parse_worth(&serde_json::json!(1.5)).is_err());
-        assert!(parse_worth(&serde_json::json!(-1.5)).is_err());
+        assert_eq!(parse_worth(&serde_json::json!(1.5)).unwrap(), Some(1.5));
+        assert_eq!(parse_worth(&serde_json::json!(10.0)).unwrap(), Some(10.0));
+        assert_eq!(parse_worth(&serde_json::json!(45.0)).unwrap(), Some(45.0));
+        assert_eq!(parse_worth(&serde_json::json!(-10.0)).unwrap(), Some(-10.0));
+        assert_eq!(parse_worth(&serde_json::json!(-1.5)).unwrap(), Some(-1.5));
+        assert!(parse_worth(&serde_json::json!("catastrophic loss")).is_err());
+        assert!(parse_worth(&serde_json::json!("NaN")).is_err());
+        assert!(parse_worth(&serde_json::json!("inf")).is_err());
+        assert!(parse_worth(&serde_json::json!("-inf")).is_err());
         assert!(parse_worth(&serde_json::json!("unknown")).is_err());
     }
 

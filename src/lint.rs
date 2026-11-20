@@ -1190,7 +1190,47 @@ fn check_frontmatter(
 
     // 5.1: Targets and worth
     let is_target_type = graph::STRATEGIC_TARGET_TYPES.contains(&node_type);
-    if let Some(worth_val) = fm.get("worth") {
+    // Check raw YAML via serde_yaml because gray_matter silently coerces `.nan` / `.inf` to Float(0.0).
+    let raw_nonfinite_worth = content
+        .strip_prefix("---\n")
+        .and_then(|rest| rest.find("\n---").map(|end| &rest[..end]))
+        .and_then(|fm_text| serde_yaml::from_str::<serde_yaml::Mapping>(fm_text).ok())
+        .and_then(|m| {
+            m.get(serde_yaml::Value::String("worth".to_string()))
+                .and_then(|v| match v {
+                    serde_yaml::Value::Number(n) if n.as_f64().is_none_or(|f| !f.is_finite()) => {
+                        Some(format!("{n}"))
+                    }
+                    _ => None,
+                })
+        });
+    let worth_error = if let Some(ref bad_yaml) = raw_nonfinite_worth {
+        Some(format!(
+            "Invalid worth '{}': expected a finite float or anchor word",
+            bad_yaml
+        ))
+    } else if let Some(worth_val) = fm.get("worth") {
+        match crate::graph::parse_worth(worth_val) {
+            Ok(Some(_)) => None,
+            Ok(None) => Some(format!(
+                "Invalid worth '{}': expected a finite float or anchor word",
+                worth_val
+            )),
+            Err(err) => Some(format!("Invalid worth '{}': {}", worth_val, err)),
+        }
+    } else {
+        if is_target_type && is_open_node {
+            diags.push(Diagnostic::node(
+                Severity::Warning,
+                "flow-target-unpriced",
+                format!("Open target '{}' has no worth", node_id),
+                node_id,
+                AgentFix::Propose,
+            ));
+        }
+        None
+    };
+    if raw_nonfinite_worth.is_some() || fm.contains_key("worth") {
         if !is_target_type {
             diags.push(Diagnostic::node(
                 Severity::Error,
@@ -1203,39 +1243,15 @@ fn check_frontmatter(
                 AgentFix::No,
             ));
         }
-        let worth_num = worth_val.as_f64().or_else(|| {
-            worth_val.as_str().and_then(|s| s.trim().parse::<f64>().ok())
-        });
-        match worth_num {
-            Some(w) => {
-                if !w.is_finite() || !(-1.0..=1.0).contains(&w) {
-                    diags.push(Diagnostic::node(
-                        Severity::Error,
-                        "flow-worth-invalid",
-                        format!("worth {} out of range -1.0..=1.0", w),
-                        node_id,
-                        AgentFix::No,
-                    ));
-                }
-            }
-            None => {
-                diags.push(Diagnostic::node(
-                    Severity::Error,
-                    "flow-worth-invalid",
-                    format!("Invalid worth '{}': must be a number in -1.0..=1.0", worth_val),
-                    node_id,
-                    AgentFix::No,
-                ));
-            }
+        if let Some(msg) = worth_error {
+            diags.push(Diagnostic::node(
+                Severity::Error,
+                "flow-worth-invalid",
+                msg,
+                node_id,
+                AgentFix::No,
+            ));
         }
-    } else if is_target_type && is_open_node {
-        diags.push(Diagnostic::node(
-            Severity::Warning,
-            "flow-target-unpriced",
-            format!("Open target '{}' has no worth", node_id),
-            node_id,
-            AgentFix::Propose,
-        ));
     }
 
     // 5.7: Deadlines
@@ -4486,8 +4502,17 @@ Body.\n",
 
     #[test]
     fn lint_flow_worth_invalid() {
-        // G2: worth of high, 6 or -1.5 yields flow-worth-invalid (error, exit 1); -1.0 and 1.0 pass
-        for invalid in &["high", "6", "-1.5"] {
+        // G2: worth of NaN, inf, or unrecognised string (incl. retired catastrophic loss) yields flow-worth-invalid;
+        // valid finite floats (-10.0, 1.0, 50.0) and R9 anchor words pass.
+        for invalid in &[
+            "NaN",
+            "\"NaN\"",
+            ".nan",
+            "inf",
+            ".inf",
+            "invalid_string",
+            "catastrophic loss",
+        ] {
             let content = format!("---\nid: targ_test\ntitle: Target\ntype: target\nworth: {}\n---\n\nBody\n", invalid);
             let diags = lint_str(&content);
             let d = diags.iter().find(|d| d.rule == "flow-worth-invalid");
@@ -4495,7 +4520,17 @@ Body.\n",
             assert_eq!(d.unwrap().severity, Severity::Error);
             assert_eq!(d.unwrap().agent_fix, AgentFix::No);
         }
-        for valid in &["-1.0", "1.0", "0.0", "0.5"] {
+        for valid in &[
+            "-10.0",
+            "-1.5",
+            "1.0",
+            "6",
+            "50.0",
+            "high",
+            "moonshot",
+            "\"catastrophic ruin\"",
+            "\"major loss\"",
+        ] {
             let content = format!("---\nid: targ_test\ntitle: Target\ntype: target\nworth: {}\n---\n\nBody\n", valid);
             let diags = lint_str(&content);
             assert!(!diags.iter().any(|d| d.rule == "flow-worth-invalid"), "Expected valid for {}, got: {:?}", valid, diags);
