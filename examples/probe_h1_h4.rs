@@ -75,7 +75,7 @@ fn fmt_dur(d: Duration) -> String {
 fn extract_text(res: &rmcp::model::CallToolResult) -> String {
     res.content
         .iter()
-        .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+        .filter_map(|c| c.as_text().map(|t| t.text.as_str()))
         .collect()
 }
 

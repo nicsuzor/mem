@@ -85,7 +85,7 @@ fn test_export_graph_dispatch_dot_and_json() {
     let text_default: String = res_default
         .content
         .iter()
-        .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+        .filter_map(|c| c.as_text().map(|t| t.text.as_str()))
         .collect();
     assert!(text_default.starts_with("digraph PKB {"));
 
@@ -96,7 +96,7 @@ fn test_export_graph_dispatch_dot_and_json() {
     let text_dot: String = res_dot
         .content
         .iter()
-        .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+        .filter_map(|c| c.as_text().map(|t| t.text.as_str()))
         .collect();
     assert!(text_dot.starts_with("digraph PKB {"));
 
@@ -107,7 +107,7 @@ fn test_export_graph_dispatch_dot_and_json() {
     let text_json: String = res_json
         .content
         .iter()
-        .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+        .filter_map(|c| c.as_text().map(|t| t.text.as_str()))
         .collect();
     let parsed: Value = serde_json::from_str(&text_json).unwrap();
     // Default include_done: false excludes done tasks
@@ -124,7 +124,7 @@ fn test_export_graph_dispatch_dot_and_json() {
     let text_json_all: String = res_json_all
         .content
         .iter()
-        .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+        .filter_map(|c| c.as_text().map(|t| t.text.as_str()))
         .collect();
     let parsed_all: Value = serde_json::from_str(&text_json_all).unwrap();
     assert_eq!(parsed_all["nodes"].as_array().unwrap().len(), 2);
@@ -186,7 +186,7 @@ fn test_export_graph_json_emits_display_rank_and_no_retired_ranking_fields() {
     let text: String = res
         .content
         .iter()
-        .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+        .filter_map(|c| c.as_text().map(|t| t.text.as_str()))
         .collect();
     let parsed: Value = serde_json::from_str(&text).unwrap();
     assert!(parsed.get("focus").is_none(), "retired `focus` list must not be emitted");

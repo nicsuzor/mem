@@ -38,7 +38,7 @@ impl PkbSearchServer {
         match m {
             Some(metrics) => {
                 let json = serde_json::to_string_pretty(&metrics).unwrap_or_default();
-                Ok(CallToolResult::success(vec![Content::text(format!(
+                Ok(CallToolResult::success(vec![ContentBlock::text(format!(
                     "## Network metrics for {id}\n\n```json\n{json}\n```"
                 ))]))
             }
@@ -72,7 +72,7 @@ impl PkbSearchServer {
             return match m {
                 Some(metrics) => {
                     let json = serde_json::to_string_pretty(&metrics).unwrap_or_default();
-                    Ok(CallToolResult::success(vec![Content::text(format!(
+                    Ok(CallToolResult::success(vec![ContentBlock::text(format!(
                         "## Network metrics for {id}\n\n```json\n{json}\n```"
                     ))]))
                 }
@@ -219,7 +219,7 @@ impl PkbSearchServer {
             .collect();
 
         let json = serde_json::to_string_pretty(&results).unwrap_or_default();
-        Ok(CallToolResult::success(vec![Content::text(json)]))
+        Ok(CallToolResult::success(vec![ContentBlock::text(json)]))
     }
 
     pub(crate) fn handle_batch_update(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
@@ -302,9 +302,9 @@ impl PkbSearchServer {
         let json = serde_json::to_string_pretty(&summary).unwrap_or_default();
         if dry_run {
             let msg = format!("{}{}", DRY_RUN_WARNING, json);
-            Ok(CallToolResult::success(vec![Content::text(msg)]))
+            Ok(CallToolResult::success(vec![ContentBlock::text(msg)]))
         } else {
-            Ok(CallToolResult::success(vec![Content::text(json)]))
+            Ok(CallToolResult::success(vec![ContentBlock::text(json)]))
         }
     }
 
@@ -346,9 +346,9 @@ impl PkbSearchServer {
         let json = serde_json::to_string_pretty(&summary).unwrap_or_default();
         if dry_run {
             let msg = format!("{}{}", DRY_RUN_WARNING, json);
-            Ok(CallToolResult::success(vec![Content::text(msg)]))
+            Ok(CallToolResult::success(vec![ContentBlock::text(msg)]))
         } else {
-            Ok(CallToolResult::success(vec![Content::text(json)]))
+            Ok(CallToolResult::success(vec![ContentBlock::text(json)]))
         }
     }
 
@@ -388,9 +388,9 @@ impl PkbSearchServer {
         let json = serde_json::to_string_pretty(&summary).unwrap_or_default();
         if dry_run {
             let msg = format!("{}{}", DRY_RUN_WARNING, json);
-            Ok(CallToolResult::success(vec![Content::text(msg)]))
+            Ok(CallToolResult::success(vec![ContentBlock::text(msg)]))
         } else {
-            Ok(CallToolResult::success(vec![Content::text(json)]))
+            Ok(CallToolResult::success(vec![ContentBlock::text(json)]))
         }
     }
 
@@ -460,7 +460,7 @@ impl PkbSearchServer {
         if dry_run {
             msg = format!("{}{}", DRY_RUN_WARNING, msg);
         }
-        Ok(CallToolResult::success(vec![Content::text(msg)]))
+        Ok(CallToolResult::success(vec![ContentBlock::text(msg)]))
     }
 
     pub fn handle_graph_excalidraw(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
@@ -477,7 +477,7 @@ impl PkbSearchServer {
                 data: None,
             })?;
 
-        Ok(CallToolResult::success(vec![Content::text(json)]))
+        Ok(CallToolResult::success(vec![ContentBlock::text(json)]))
     }
 
     pub fn handle_export_graph(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
@@ -495,7 +495,7 @@ impl PkbSearchServer {
         match format {
             "dot" => {
                 let dot = graph.output_dot(focus, max_depth, project, include_done);
-                Ok(CallToolResult::success(vec![Content::text(dot)]))
+                Ok(CallToolResult::success(vec![ContentBlock::text(dot)]))
             }
             "json" => {
                 let json = graph
@@ -505,7 +505,7 @@ impl PkbSearchServer {
                         message: Cow::from(format!("Failed to generate graph JSON: {e}")),
                         data: None,
                     })?;
-                Ok(CallToolResult::success(vec![Content::text(json)]))
+                Ok(CallToolResult::success(vec![ContentBlock::text(json)]))
             }
             other => Err(McpError {
                 code: ErrorCode::INVALID_PARAMS,
@@ -561,7 +561,7 @@ impl PkbSearchServer {
             data: None,
         })?;
 
-        Ok(CallToolResult::success(vec![Content::text(json)]))
+        Ok(CallToolResult::success(vec![ContentBlock::text(json)]))
     }
 
     pub fn handle_sync_excalidraw(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
@@ -630,7 +630,7 @@ impl PkbSearchServer {
                 ),
             });
             let json = serde_json::to_string_pretty(&res).unwrap_or_default();
-            return Ok(CallToolResult::success(vec![Content::text(json)]));
+            return Ok(CallToolResult::success(vec![ContentBlock::text(json)]));
         }
 
         let report = {
@@ -672,7 +672,7 @@ impl PkbSearchServer {
         });
 
         let json = serde_json::to_string_pretty(&res).unwrap_or_default();
-        Ok(CallToolResult::success(vec![Content::text(json)]))
+        Ok(CallToolResult::success(vec![ContentBlock::text(json)]))
     }
 
     pub(crate) fn handle_graph_stats(&self, _args: &JsonValue) -> Result<CallToolResult, McpError> {
@@ -682,7 +682,7 @@ impl PkbSearchServer {
         drop(graph);
 
         let json = serde_json::to_string_pretty(&stats).unwrap_or_default();
-        Ok(CallToolResult::success(vec![Content::text(json)]))
+        Ok(CallToolResult::success(vec![ContentBlock::text(json)]))
     }
 
     pub(crate) fn handle_detect_weight_divergence(
@@ -702,7 +702,7 @@ impl PkbSearchServer {
         let total = divergences.len();
 
         if total == 0 {
-            return Ok(CallToolResult::success(vec![Content::text(
+            return Ok(CallToolResult::success(vec![ContentBlock::text(
                 "No weight divergences detected (high stated weight with revealed inactivity).",
             )]));
         }
@@ -746,7 +746,7 @@ impl PkbSearchServer {
 
         out.push_str("\n\n**Resolution surface:** For each divergence, consider if the contribution weight is still accurate given the lack of recent activity on the source task.");
 
-        Ok(CallToolResult::success(vec![Content::text(out)]))
+        Ok(CallToolResult::success(vec![ContentBlock::text(out)]))
     }
 
     pub(crate) fn handle_batch_merge(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
@@ -803,9 +803,9 @@ impl PkbSearchServer {
         let json = serde_json::to_string_pretty(&summary).unwrap_or_default();
         if dry_run {
             let msg = format!("{}{}", DRY_RUN_WARNING, json);
-            Ok(CallToolResult::success(vec![Content::text(msg)]))
+            Ok(CallToolResult::success(vec![ContentBlock::text(msg)]))
         } else {
-            Ok(CallToolResult::success(vec![Content::text(json)]))
+            Ok(CallToolResult::success(vec![ContentBlock::text(json)]))
         }
     }
 
@@ -855,16 +855,16 @@ impl PkbSearchServer {
         let json = serde_json::to_string_pretty(&summary).unwrap_or_default();
         if dry_run {
             let msg = format!("{}{}", DRY_RUN_WARNING, json);
-            Ok(CallToolResult::success(vec![Content::text(msg)]))
+            Ok(CallToolResult::success(vec![ContentBlock::text(msg)]))
         } else {
-            Ok(CallToolResult::success(vec![Content::text(json)]))
+            Ok(CallToolResult::success(vec![ContentBlock::text(json)]))
         }
     }
 
     pub(crate) fn handle_get_stats(&self, _args: &JsonValue) -> Result<CallToolResult, McpError> {
         let stats = crate::telemetry::get_stats();
         let json = serde_json::to_string_pretty(&stats).unwrap_or_default();
-        Ok(CallToolResult::success(vec![Content::text(json)]))
+        Ok(CallToolResult::success(vec![ContentBlock::text(json)]))
     }
 
     pub(crate) fn handle_status(&self, _args: &JsonValue) -> Result<CallToolResult, McpError> {
@@ -925,7 +925,7 @@ impl PkbSearchServer {
             }
         });
         let json = serde_json::to_string_pretty(&info).unwrap_or_default();
-        Ok(CallToolResult::success(vec![Content::text(json)]))
+        Ok(CallToolResult::success(vec![ContentBlock::text(json)]))
     }
 
     pub(crate) fn handle_batch_reclassify(
@@ -970,7 +970,7 @@ impl PkbSearchServer {
         }
 
         let json = serde_json::to_string_pretty(&summary).unwrap_or_default();
-        Ok(CallToolResult::success(vec![Content::text(json)]))
+        Ok(CallToolResult::success(vec![ContentBlock::text(json)]))
     }
 
     pub(crate) fn handle_refresh_graph(
@@ -991,7 +991,7 @@ impl PkbSearchServer {
                 format!("Graph index rebuilt from disk. {node_count} nodes loaded.")
             }
         });
-        Ok(CallToolResult::success(vec![Content::text(
+        Ok(CallToolResult::success(vec![ContentBlock::text(
             serde_json::to_string_pretty(&json)
                 .expect("infallible: static JSON value with primitive types"),
         )]))
@@ -1027,7 +1027,7 @@ impl PkbSearchServer {
                 "orphans": [],
                 "message": "No orphaned index entries found — every index entry resolves to a file on disk.",
             });
-            return Ok(CallToolResult::success(vec![Content::text(
+            return Ok(CallToolResult::success(vec![ContentBlock::text(
                 serde_json::to_string_pretty(&json).unwrap_or_default(),
             )]));
         }
@@ -1046,7 +1046,7 @@ impl PkbSearchServer {
                     orphans.len(),
                 ),
             });
-            return Ok(CallToolResult::success(vec![Content::text(
+            return Ok(CallToolResult::success(vec![ContentBlock::text(
                 serde_json::to_string_pretty(&json).unwrap_or_default(),
             )]));
         }
@@ -1078,7 +1078,7 @@ impl PkbSearchServer {
             "purged": orphans,
             "message": format!("Purged {} orphaned index entr{plural}.", orphans.len()),
         });
-        Ok(CallToolResult::success(vec![Content::text(
+        Ok(CallToolResult::success(vec![ContentBlock::text(
             serde_json::to_string_pretty(&json).unwrap_or_default(),
         )]))
     }
@@ -1154,9 +1154,9 @@ impl PkbSearchServer {
         let json = serde_json::to_string_pretty(&summary).unwrap_or_default();
         if dry_run {
             let msg = format!("{}{}", DRY_RUN_WARNING, json);
-            Ok(CallToolResult::success(vec![Content::text(msg)]))
+            Ok(CallToolResult::success(vec![ContentBlock::text(msg)]))
         } else {
-            Ok(CallToolResult::success(vec![Content::text(json)]))
+            Ok(CallToolResult::success(vec![ContentBlock::text(json)]))
         }
     }
 
@@ -1189,7 +1189,7 @@ impl PkbSearchServer {
             data: None,
         })?;
 
-        Ok(CallToolResult::success(vec![Content::text(
+        Ok(CallToolResult::success(vec![ContentBlock::text(
             serde_json::to_string_pretty(&cluster).unwrap_or_default(),
         )]))
     }
@@ -1298,7 +1298,7 @@ mod batch_finalize_tests {
         let text = result
             .content
             .iter()
-            .filter_map(|c| c.raw.as_text().map(|t| t.text.clone()))
+            .filter_map(|c| c.as_text().map(|t| t.text.clone()))
             .collect::<String>();
         assert!(
             text.contains("\"changed\": 3"),
@@ -1377,7 +1377,7 @@ mod batch_finalize_tests {
         result
             .content
             .iter()
-            .filter_map(|c| c.raw.as_text().map(|t| t.text.clone()))
+            .filter_map(|c| c.as_text().map(|t| t.text.clone()))
             .collect::<String>()
     }
 
@@ -1439,7 +1439,7 @@ mod batch_finalize_tests {
         let text = result
             .content
             .iter()
-            .filter_map(|c| c.raw.as_text().map(|t| t.text.clone()))
+            .filter_map(|c| c.as_text().map(|t| t.text.clone()))
             .collect::<String>();
         assert!(
             text.contains("Pass dry_run=false to execute"),
@@ -1465,7 +1465,7 @@ mod batch_finalize_tests {
         let merge_text = merge_result
             .content
             .iter()
-            .filter_map(|c| c.raw.as_text().map(|t| t.text.clone()))
+            .filter_map(|c| c.as_text().map(|t| t.text.clone()))
             .collect::<String>();
         assert!(
             merge_text.contains("Pass dry_run=false to execute"),
@@ -1671,7 +1671,7 @@ mod batch_finalize_tests {
                 "dry_run": false,
             }))
             .unwrap_or_else(|e| panic!("second batch_merge failed: {e:?}"));
-        let res_text = res.content[0].raw.as_text().unwrap().text.clone();
+        let res_text = res.content[0].as_text().unwrap().text.clone();
         assert!(
             res_text.contains("\"skipped\": 1"),
             "re-running merge should skip already-merged source: {res_text}"

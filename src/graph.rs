@@ -1022,14 +1022,24 @@ pub struct GraphNode {
     pub needs: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub depends_on: Vec<String>,
+    #[serde(skip)]
+    pub depends_on_raw: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub soft_depends_on: Vec<String>,
+    #[serde(skip)]
+    pub soft_depends_on_raw: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub blocks: Vec<String>,
+    #[serde(skip)]
+    pub blocks_raw: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub soft_blocks: Vec<String>,
+    #[serde(skip)]
+    pub soft_blocks_raw: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub children: Vec<String>,
+    #[serde(skip)]
+    pub children_raw: Vec<String>,
     /// Sub-tasks (type=subtask) — travel with the parent and render as checkboxes.
     /// Computed from edges; not stored in frontmatter.
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -1481,27 +1491,7 @@ pub fn parse_effort_days(effort: &str) -> Option<i64> {
 // ── Canonical status and type values ────────────────────────────────────
 
 /// All recognized canonical status values (post-alias resolution).
-/// See `aops-core/TAXONOMY.md` for semantic definitions.
-///
-/// Lifecycle: `inbox → ready → queued → in_progress → done`
-/// with branches to `review`, `blocked`, `paused`, `someday`, `cancelled`, `partial`.
-///
-/// - **inbox**: default for new nodes — captured but not triaged
-/// - **ready**: decomposed with dependencies resolved (auto-computed)
-/// - **queued**: human-gated — available for agent dispatch (manual promotion)
-/// - **in_progress**: claimed and actively being worked
-/// - **review**: worker asking for help from the agent that next picks it up
-/// - **done**: completed successfully
-/// - **blocked**: waiting on an unresolved external dependency
-/// - **paused**: intentionally stopped mid-flight with intent to resume
-/// - **someday**: explicitly deferred idea — differs from inbox by intent
-/// - **cancelled**: will not be done
-/// - **partial**: worker legitimately stopped at a scope seam — a draft PR plus a
-///   live follow-up task. Not merge-ready (excluded from Nic's merge queue) and not
-///   done (the follow-up child carries the remainder). Surfaced by the §6
-///   partial-orphan backstop via `list_tasks(status="partial")`.
-/// - **failed**: attempted and will not be completed
-/// - **archived**: retired note or historical record marked for removal to sessions repo
+/// Single source of truth is `references/TAXONOMY.md` § "Status Values and Transitions".
 pub const VALID_STATUSES: &[&str] = &[
     "inbox",
     "ready",
@@ -3220,10 +3210,15 @@ impl GraphNode {
             contributes_to,
             contributed_by: Vec::new(),
             needs,
+            depends_on_raw: depends_on.clone(),
             depends_on,
+            soft_depends_on_raw: soft_depends_on.clone(),
             soft_depends_on,
+            blocks_raw: blocks.clone(),
             blocks,
+            soft_blocks_raw: soft_blocks.clone(),
             soft_blocks,
+            children_raw: children.clone(),
             children,
             subtasks: Vec::new(),
             due,

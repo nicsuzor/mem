@@ -67,7 +67,7 @@ impl PkbSearchServer {
                         if let Some(val) = res.structured_content {
                             items.push(val);
                         } else if let Some(first) =
-                            res.content.first().and_then(|c| c.raw.as_text())
+                            res.content.first().and_then(|c| c.as_text())
                         {
                             if let Ok(v) = serde_json::from_str::<serde_json::Value>(&first.text) {
                                 items.push(v);
@@ -86,7 +86,7 @@ impl PkbSearchServer {
             if budget_ms.is_some() || !timed_out.is_empty() {
                 res_obj["timed_out"] = serde_json::json!(timed_out);
             }
-            let text = serde_json::to_string_pretty(&res_obj).unwrap_or_default();
+            let text = serde_json::to_string(&res_obj).unwrap_or_default();
             return Ok(Self::structured_result(text, res_obj));
         }
 
@@ -259,7 +259,7 @@ impl PkbSearchServer {
         Self::prune_null_and_empty(&mut structured);
 
         if format.eq_ignore_ascii_case("json") {
-            let json_str = serde_json::to_string_pretty(&structured).unwrap_or_default();
+            let json_str = serde_json::to_string(&structured).unwrap_or_default();
             return Ok(Self::structured_result(json_str, structured));
         }
 
@@ -461,7 +461,7 @@ impl PkbSearchServer {
             if budget_ms.is_some() || !timed_out.is_empty() {
                 payload["timed_out"] = serde_json::json!(timed_out);
             }
-            let json_str = serde_json::to_string_pretty(&payload).unwrap_or_default();
+            let json_str = serde_json::to_string(&payload).unwrap_or_default();
             return Ok(Self::structured_result(json_str, payload));
         }
 
@@ -650,7 +650,7 @@ impl PkbSearchServer {
 
         tracing::debug!(target: "perf::create_memory", phase = "TOTAL", elapsed_ms = t_total.elapsed().as_secs_f64() * 1000.0);
 
-        Ok(CallToolResult::success(vec![Content::text(format!(
+        Ok(CallToolResult::success(vec![ContentBlock::text(format!(
             "Memory created: `{filename}` (`{mem_id}`)"
         ))]))
     }
@@ -1174,7 +1174,8 @@ impl PkbSearchServer {
             "body_chars_before": result.body_chars_before,
             "body_chars_after": result.body_chars_after,
             "preserve_frontmatter": preserve_frontmatter,
-            "modified": result.modified
+            "modified": result.modified,
+            "diff": result.diff
         });
         let response_text = serde_json::to_string(&response_payload).map_err(|e| McpError {
             code: ErrorCode::INTERNAL_ERROR,
@@ -1268,7 +1269,8 @@ impl PkbSearchServer {
             "body_chars_after": result.body_chars_after,
             "hunks_applied": result.hunks_applied,
             "preserve_frontmatter": preserve_frontmatter,
-            "modified": result.modified
+            "modified": result.modified,
+            "diff": result.diff
         });
         let response_text = serde_json::to_string(&response_payload).map_err(|e| McpError {
             code: ErrorCode::INTERNAL_ERROR,
@@ -1378,7 +1380,7 @@ impl PkbSearchServer {
             message: Cow::from(format!("Failed to serialize response: {e}")),
             data: None,
         })?;
-        Ok(CallToolResult::success(vec![Content::text(response_text)]))
+        Ok(CallToolResult::success(vec![ContentBlock::text(response_text)]))
     }
 
     pub(crate) fn handle_delete_observations(
@@ -1469,7 +1471,7 @@ impl PkbSearchServer {
             message: Cow::from(format!("Failed to serialize response: {e}")),
             data: None,
         })?;
-        Ok(CallToolResult::success(vec![Content::text(response_text)]))
+        Ok(CallToolResult::success(vec![ContentBlock::text(response_text)]))
     }
 
     pub(crate) fn handle_delete_document(
@@ -1913,7 +1915,7 @@ impl PkbSearchServer {
             ));
         }
 
-        Ok(CallToolResult::success(vec![Content::text(format!(
+        Ok(CallToolResult::success(vec![ContentBlock::text(format!(
             "**Found {count} memories for:** \"{query}\"\n\n{output}"
         ))]))
     }
@@ -1980,6 +1982,6 @@ impl PkbSearchServer {
             output.push_str(&format!(" — `{id}`\n"));
         }
 
-        Ok(CallToolResult::success(vec![Content::text(output)]))
+        Ok(CallToolResult::success(vec![ContentBlock::text(output)]))
     }
 }

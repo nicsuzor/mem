@@ -37,13 +37,13 @@ impl PkbSearchServer {
         let dir = args.get("dir").and_then(|v| v.as_str());
         let canvases = files::list_canvases(&self.pkb_root, dir).map_err(to_mcp)?;
         let out = serde_json::json!({ "count": canvases.len(), "canvases": canvases });
-        Ok(CallToolResult::success(vec![Content::text(out.to_string())]))
+        Ok(CallToolResult::success(vec![ContentBlock::text(out.to_string())]))
     }
 
     pub(crate) fn handle_get_excalidraw(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
         let path = required_str(args, "path")?;
         let content = files::read_canvas(&self.pkb_root, path).map_err(to_mcp)?;
-        Ok(CallToolResult::success(vec![Content::text(content)]))
+        Ok(CallToolResult::success(vec![ContentBlock::text(content)]))
     }
 
     pub(crate) fn handle_write_excalidraw(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
@@ -55,6 +55,6 @@ impl PkbSearchServer {
             message: Cow::from(format!("Failed to serialize result: {e}")),
             data: None,
         })?;
-        Ok(CallToolResult::success(vec![Content::text(out)]))
+        Ok(CallToolResult::success(vec![ContentBlock::text(out)]))
     }
 }

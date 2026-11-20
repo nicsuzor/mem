@@ -138,7 +138,7 @@ Target: 18 tools across 6 groups. Each tool has one clear purpose.
 | 2  | `task_search`         | Search     | Semantic search filtered to task/project/goal types                                                                                                                                                                                                                                             |
 | 3  | `get_document`        | Search     | Read full contents of a document by path                                                                                                                                                                                                                                                        |
 | 4  | `list_documents`      | Search     | Browse/filter documents by tag, type, status, project                                                                                                                                                                                                                                           |
-| 5  | `list_tasks`          | Task read  | List tasks with filters (project, status, priority, assignee). Status filter supports `ready` (no unmet deps) and `blocked` (has unmet deps, includes blocker info).                                                                                                                            |
+| 5  | `list_tasks`          | Task read  | List tasks with filters (project, status, priority, assignee). Status filter supports `ready` (no unmet deps) and `blocked` (computed query filter for tasks with unmet deps; not a stored status; includes blocker info; see `references/TAXONOMY.md`).                                                                     |
 | 6  | `get_task`            | Task read  | Single task detail + all relationships (parent, children, depends_on, blocks). Always includes relationship context.                                                                                                                                                                            |
 | 7  | `get_network_metrics` | Task read  | Centrality metrics for a node: PageRank, betweenness, degree                                                                                                                                                                                                                                    |
 | 8  | `create_task`         | Task write | Create a new task. Params: title (required), id, parent, priority, project, tags, depends_on, assignee, complexity, body. **body** is markdown content (context, AC, rationale) — not frontmatter. Avoid `- [ ]` checklists in body when items will be tracked as subtasks (causes divergence). |
@@ -308,14 +308,7 @@ Track work across sessions. "What needs doing? What's blocked?"
 - `fields` (string or array of strings, optional): Specific fields to retain in output.
 - `include_routes` (boolean, optional, default true): Whether to compute flow routes.
 
-**Task lifecycle**:
-
-```
-queued -> in_progress -> done
-            |              |
-         blocked         review
-```
-**Statuses**: canonical set per [[aops-core/skills/remember/references/TAXONOMY.md#status-values-and-transitions]] — `inbox`, `ready`, `queued`, `in_progress`, `review`, `done`, `blocked`, `paused`, `someday`, `cancelled`, `partial`, `failed`, `archived`.
+**Task lifecycle and statuses**: Single source of truth is `references/TAXONOMY.md` §Status Values and Transitions. The 12 canonical statuses are `inbox`, `ready`, `queued`, `in_progress`, `done`, `partial`, `failed`, `cancelled`, `review`, `paused`, `someday`, and `archived`. `blocked` is a computed graph condition (`is_blocked: true`) rather than a stored status.
 
 **Archived notes**: `archived` is accepted as a status on any note (both tasks and non-task documents). An archive script moves every PKB note with status `archived` into the sessions repository (`archived/`) and removes it from the PKB.
 
@@ -414,28 +407,21 @@ The CLI and MCP server share the same core engine but have different affordances
 
 **Principle**: CLI optimises for human scanning (tree views, colour, truncation). MCP optimises for machine parsing (full data, structured output).
 
-## HTTP Routes
+## HTTP Route
 
 When the MCP server runs over Streamable HTTP (`pkb mcp --http`):
 
-| Route | Mode | Session Requirement | Response Format | Purpose |
-| ----- | ---- | ------------------- | --------------- | ------- |
-| `/mcp` | Stateful | Required (`Mcp-Session-Id` header after `initialize`) | SSE (`text/event-stream`) | Stateful MCP transport used by Claude Code, the portal, and the dashboard. Enforces `initialize` handshake and session lifecycle. |
-| `/mcp/stateless` | Stateless | None (sessionless) | Direct JSON (`application/json`) | Stateless one-shot route for prompt hydration and short-lived queries. Bypasses `initialize` and `Mcp-Session-Id`. Binds nothing; attributes caller via `x-session-id` and W3C `traceparent`. Alias: `/mcp/sessionless`. |
+| Route | Protocol | Session Management | Response Format | Purpose |
+| ----- | -------- | ------------------ | --------------- | ------- |
+| `/mcp` | MCP `2026-07-28` | Stateless (`NeverSessionManager`) | Direct JSON (`application/json`) | Single stateless MCP endpoint serving `server/discover`, `tools/list`, `tools/call`, `prompts/list`, and `prompts/get` with per-request metadata and `session_id` enforcement. |
 
-### Route Semantics
+### Route Semantics (`/mcp`)
 
-1. **/mcp (Stateful)**:
-   - Initial request must be an `initialize` request, returning an `Mcp-Session-Id` header.
-   - Subsequent calls (like `tools/call`) must provide `Mcp-Session-Id`. Calls omitting `Mcp-Session-Id` are rejected with HTTP 400 Bad Request. Stale/unknown session IDs are rejected with HTTP 404 Not Found.
-   - Connections and session bindings persist across requests per [[caller-session]].
-
-2. **/mcp/stateless (Stateless / Sessionless)**:
-   - Accepts single-shot JSON-RPC `tools/call` POST requests without requiring an `initialize` handshake or `Mcp-Session-Id` header.
-   - Returns responses directly formatted as `application/json`, eliminating Server-Sent Events framing overhead.
-   - Caller attribution resolves per-request from `x-session-id`, `_meta.session_id`, or `_session` argument; trace context is parented under any supplied W3C `traceparent`.
-   - Never creates or updates connection bindings.
-   - `/mcp/sessionless` is supported as an identical route alias.
+- Every request carries MCP `2026-07-28` protocol metadata (`MCP-Protocol-Version: 2026-07-28`, `Mcp-Method`, and `Mcp-Name` for `tools/call`/`prompts/get`, plus `params._meta` client protocol/capabilities/clientInfo fields).
+- Clients discover server capabilities and instructions via `server/discover` (cached `ttl_ms = 300_000`, `cache_scope = "public"`) and tool definitions via `tools/list` (`ttl_ms = 86_400_000`, `cache_scope = "public"`).
+- Responses return directly as `application/json` with no SSE streaming or transport session headers.
+- Every `tools/call` (reads and writes) requires a non-empty `session_id` (via `x-session-id` header, `_meta.session_id`, or `arguments["session_id"]`), and rejects missing/empty `session_id` with JSON-RPC `INVALID_PARAMS` (`-32602`) per [[caller-session]].
+- Trace context is parented under any supplied W3C `traceparent`, and `allowed_hosts` / HTTP/2 `Host` normalization guard against DNS rebinding.
 
 ## Data Format
 
@@ -497,8 +483,6 @@ In-memory graph built from frontmatter relationships and wikilinks on each start
 | `AOPS_DUMMY_EMBEDDER` | `false`   | Use zero-vector dummy embedder (for tests/offline)  |
 | `AOPS_POLECAT_CONFIG` | unset     | Explicit path to polecat.yaml (project registry)    |
 | `AOPS_SESSIONS`       | unset     | Sessions repo; fallback home of polecat.yaml        |
-| `PKB_SESSION_MODE`    | `warn`    | `warn` or `enforce` for unattributed writes ([[caller-session]]) |
-| `PKB_GATEWAY_CLIENTS` | unset     | Comma-separated `initialize` client names that multiplex agents; never bound ([[caller-session]]) |
 
 ### Logging
 
@@ -509,9 +493,9 @@ and each MCP tool call emits exactly one INFO line on target `pkb::tool_call`:
 INFO pkb::tool_call: tool call tool=create_task status=ok latency_ms=54 response_bytes=1800 session=<id>
 ```
 
-Per-request and per-write detail is DEBUG: rmcp session handshakes,
-`create_task invocation` key dumps, `adhoc_grouping` routing, `git commit
-succeeded`, `Saved vector store`, and cross-process index-lock deferrals.
+Per-request and per-write detail is DEBUG: `create_task invocation` key dumps,
+`adhoc_grouping` routing, `git commit succeeded`, `Saved vector store`, and
+cross-process index-lock deferrals.
 Startup, reload, and drain events stay INFO; failures stay WARN/ERROR.
 `RUST_LOG=info,mem=debug,pkb=debug,adhoc_grouping=debug` restores the detail.
 Covered by `tests/server_log_levels.rs`.

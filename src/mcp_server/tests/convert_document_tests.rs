@@ -40,7 +40,7 @@ fn json_of(res: &CallToolResult) -> serde_json::Value {
     let text: String = res
         .content
         .iter()
-        .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+        .filter_map(|c| c.as_text().map(|t| t.text.as_str()))
         .collect();
     serde_json::from_str(&text).unwrap_or_else(|_| panic!("expected JSON, got: {text}"))
 }
@@ -324,7 +324,7 @@ async fn mcp_catalog_lists_convert_document_and_dispatches_mobile_capture_conver
     let res = server
         .dispatch_tool_sync(
             "convert_document",
-            &json!({ "id": CAPTURE_STEM, "type": "task" }),
+            &json!({ "id": CAPTURE_STEM, "type": "task", "session_id": "test-session" }),
         )
         .expect("dispatch_tool_sync(convert_document) must succeed");
 
@@ -363,7 +363,7 @@ async fn mcp_catalog_lists_convert_document_and_dispatches_mobile_capture_conver
     let exec_res = server
         .execute_tool_call(
             "pkb_convert_document",
-            &json!({ "id": CAPTURE_STEM, "type": "task" }),
+            &json!({ "id": CAPTURE_STEM, "type": "task", "session_id": "test-session" }),
             None,
             None,
         )

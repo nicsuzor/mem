@@ -208,7 +208,7 @@ impl PkbSearchServer {
         content_text: String,
         structured: JsonValue,
     ) -> CallToolResult {
-        let mut res = CallToolResult::success(vec![Content::text(content_text)]);
+        let mut res = CallToolResult::success(vec![ContentBlock::text(content_text)]);
         res.structured_content = Some(structured);
         res
     }

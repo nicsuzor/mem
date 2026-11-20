@@ -63,24 +63,32 @@ fn jsonrpc_request(id: u64, method: &str, params: Value) -> String {
     json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params}).to_string()
 }
 
-fn jsonrpc_notification(method: &str) -> String {
-    json!({"jsonrpc": "2.0", "method": method}).to_string()
+fn protocol_meta() -> Value {
+    json!({
+        "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+        "io.modelcontextprotocol/clientCapabilities": {},
+        "io.modelcontextprotocol/clientInfo": {"name": "integration-test", "version": "0.1"}
+    })
 }
 
-fn initialize_request(id: u64) -> String {
+fn discover_request(id: u64) -> String {
     jsonrpc_request(
         id,
-        "initialize",
-        json!({
-            "protocolVersion": "2024-11-05",
-            "capabilities": {},
-            "clientInfo": {"name": "integration-test", "version": "0.1"}
-        }),
+        "server/discover",
+        json!({ "_meta": protocol_meta() }),
     )
 }
 
-fn tool_call_request(id: u64, name: &str, args: Value) -> String {
-    jsonrpc_request(id, "tools/call", json!({"name": name, "arguments": args}))
+fn tool_call_request(id: u64, name: &str, mut args: Value) -> String {
+    if let Some(obj) = args.as_object_mut() {
+        obj.entry("session_id".to_string())
+            .or_insert_with(|| json!("test-decompose-session"));
+    }
+    jsonrpc_request(
+        id,
+        "tools/call",
+        json!({"name": name, "arguments": args, "_meta": protocol_meta()}),
+    )
 }
 
 /// Drive the `pkb mcp` server over stdio, one request/response at a time.
@@ -212,8 +220,7 @@ fn test_decompose_task_indexing() {
     let pkb = seed_pkb();
 
     let messages = vec![
-        initialize_request(1),
-        jsonrpc_notification("notifications/initialized"),
+        discover_request(1),
         tool_call_request(
             2,
             "decompose_task",

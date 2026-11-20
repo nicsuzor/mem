@@ -207,7 +207,7 @@ Non-linearity defeats the spacing and centring biases that corrupt linear scales
 |---------|-------------|
 | `pkb search <query> [-n limit] [--full]` | Semantic search across the knowledge base |
 | `pkb add <files...>` | Add markdown files to the index |
-| `pkb reindex [--force]` | Re-scan and re-index all PKB files |
+| `pkb reindex [--force] [-b batch]` | Re-scan and re-index all PKB files |
 | `pkb status` | Show index statistics (document count, DB size) |
 
 ### Task Management
@@ -337,10 +337,13 @@ It also provides **MCP prompts** to guide AI assistants through common search an
 
 | Prompt | Description | Guidance |
 |--------|-------------|----------|
-| `find-task` | "How do I find a task about X?" | Demonstrates `task_search` then `get_task` |
-| `explore-topic` | "What do we know about X?" | Demonstrates `search` then `get_document` |
-| `navigate-graph` | "What's connected to X?" | Demonstrates `get_task` / `get_document` for relationships |
-| `find-by-tag` | "Show me everything tagged X" | Demonstrates `search_by_tag` usage |
+| `find-task` | Find tasks matching a query with optional status filter | `search` (`type: "task"`) with snippet default, `list_tasks`, then compact `get_task` or `get_task_status` |
+| `explore-topic` | Explore knowledge base content and notes on a topic | `search` with compact snippets, then `get_document` |
+| `navigate-graph` | Inspect connections, dependencies, and neighbourhood of a node | `get_task` / `get_document` with summary detail |
+| `find-by-tag` | Show all documents and tasks associated with a specific tag | `list_documents` and `list_tasks` with `tags` array, then summary `get_document` / `get_task` |
+| `task-status` | Fastpath status, readiness, blocker, and assignee check | Ultra-compact `get_task_status` (< 150 bytes) or `get_task(detail: "metadata")` |
+| `ready-tasks` | List unblocked tasks ready for work in priority flow order | `list_tasks` with `status: ["ready", "queued"]` |
+| `task-dependencies` | Inspect upstream blockers and downstream unblocked tasks | `get_task(detail: "metadata")` inspecting `depends_on`, `blocks`, and `blocked` |
 
 ### Tools
 
@@ -408,6 +411,7 @@ MCP Client <--stdio--> pkb (MCP server)
 | `AOPS_OFFLINE` | `false` | Disable model/runtime auto-download |
 | `AOPS_DUMMY_EMBEDDER` | `false` | Use zero-vector dummy embedder (for tests/offline) |
 | `AOPS_MODEL_PATH` | (auto) | Override model directory path |
+| `AOPS_MODEL_VARIANT` | `auto` | Embedding weights: `auto` (int8 if present), `quantized`, or `fp32`; same as the global `--model` flag. Use `fp32` for GPU reindexing (int8 runs ~10x slower under CUDA),; the variants' vectors are compatible, so an index built with `fp32` on GPU can be served with `quantized` on CPU |
 | `ORT_DYLIB_PATH` | (auto) | Override ONNX Runtime library path |
 
 ## Acknowledgments

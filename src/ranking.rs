@@ -134,11 +134,7 @@ pub fn is_identifier_query(query: &str) -> bool {
         }
     }
 
-    if tokens.len() <= 3 && clean.chars().any(|c| c.is_ascii_uppercase() || c == '/' || c == '\\') {
-        return true;
-    }
-
-    false
+    tokens.len() <= 3 && clean.chars().any(|c| c.is_ascii_uppercase() || c == '/' || c == '\\')
 }
 
 /// Compute adaptive convex combination alpha(q).

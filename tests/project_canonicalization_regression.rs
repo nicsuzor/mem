@@ -69,7 +69,7 @@ fn test_create_task_canonicalizes_project_on_write() {
         }))
         .unwrap();
 
-    let text = res.content[0].raw.as_text().unwrap().text.as_str();
+    let text = res.content[0].as_text().unwrap().text.as_str();
     let val: serde_json::Value = serde_json::from_str(text).unwrap();
     let id = val.get("id").unwrap().as_str().unwrap();
 
@@ -81,7 +81,7 @@ fn test_create_task_canonicalizes_project_on_write() {
 
     // Stored task frontmatter must have canonical `project: aops`
     let task_res = server.bench_get_task(&json!({"id": id})).unwrap();
-    let task_text = task_res.content[0].raw.as_text().unwrap().text.as_str();
+    let task_text = task_res.content[0].as_text().unwrap().text.as_str();
     let task_val: serde_json::Value = serde_json::from_str(task_text).unwrap();
     assert_eq!(
         task_val.get("project").and_then(|v| v.as_str()),
@@ -99,13 +99,13 @@ fn test_create_task_canonicalizes_project_on_write() {
         }))
         .unwrap();
 
-    let text2 = res2.content[0].raw.as_text().unwrap().text.as_str();
+    let text2 = res2.content[0].as_text().unwrap().text.as_str();
     let val2: serde_json::Value = serde_json::from_str(text2).unwrap();
     let id2 = val2.get("id").unwrap().as_str().unwrap();
     assert!(id2.starts_with("aops_") || id2.starts_with("aops-"));
 
     let task_res2 = server.bench_get_task(&json!({"id": id2})).unwrap();
-    let task_text2 = task_res2.content[0].raw.as_text().unwrap().text.as_str();
+    let task_text2 = task_res2.content[0].as_text().unwrap().text.as_str();
     let task_val2: serde_json::Value = serde_json::from_str(task_text2).unwrap();
     assert_eq!(
         task_val2.get("project").and_then(|v| v.as_str()),
@@ -128,7 +128,7 @@ fn test_update_task_canonicalizes_project_on_write() {
         }))
         .unwrap();
 
-    let text = res.content[0].raw.as_text().unwrap().text.as_str();
+    let text = res.content[0].as_text().unwrap().text.as_str();
     let val: serde_json::Value = serde_json::from_str(text).unwrap();
     let id = val.get("id").unwrap().as_str().unwrap();
 
@@ -141,7 +141,7 @@ fn test_update_task_canonicalizes_project_on_write() {
         .unwrap();
 
     let task_res = server.bench_get_task(&json!({"id": id})).unwrap();
-    let task_text = task_res.content[0].raw.as_text().unwrap().text.as_str();
+    let task_text = task_res.content[0].as_text().unwrap().text.as_str();
     let task_val: serde_json::Value = serde_json::from_str(task_text).unwrap();
     assert_eq!(
         task_val.get("project").and_then(|v| v.as_str()),
@@ -164,7 +164,7 @@ fn test_list_tasks_returns_identical_sets_for_alias_and_canonical() {
         }))
         .unwrap();
     let id1 = serde_json::from_str::<serde_json::Value>(
-        res1.content[0].raw.as_text().unwrap().text.as_str(),
+        res1.content[0].as_text().unwrap().text.as_str(),
     )
     .unwrap()["id"]
         .as_str()
@@ -180,7 +180,7 @@ fn test_list_tasks_returns_identical_sets_for_alias_and_canonical() {
         }))
         .unwrap();
     let id2 = serde_json::from_str::<serde_json::Value>(
-        res2.content[0].raw.as_text().unwrap().text.as_str(),
+        res2.content[0].as_text().unwrap().text.as_str(),
     )
     .unwrap()["id"]
         .as_str()
@@ -196,7 +196,7 @@ fn test_list_tasks_returns_identical_sets_for_alias_and_canonical() {
         }))
         .unwrap();
     let id3 = serde_json::from_str::<serde_json::Value>(
-        res3.content[0].raw.as_text().unwrap().text.as_str(),
+        res3.content[0].as_text().unwrap().text.as_str(),
     )
     .unwrap()["id"]
         .as_str()
@@ -212,7 +212,6 @@ fn test_list_tasks_returns_identical_sets_for_alias_and_canonical() {
         .unwrap();
     let canonical_val: serde_json::Value = serde_json::from_str(
         list_canonical.content[0]
-            .raw
             .as_text()
             .unwrap()
             .text
@@ -234,7 +233,7 @@ fn test_list_tasks_returns_identical_sets_for_alias_and_canonical() {
         }))
         .unwrap();
     let alias1_val: serde_json::Value =
-        serde_json::from_str(list_alias1.content[0].raw.as_text().unwrap().text.as_str()).unwrap();
+        serde_json::from_str(list_alias1.content[0].as_text().unwrap().text.as_str()).unwrap();
     let alias1_ids: Vec<String> = alias1_val["tasks"]
         .as_array()
         .unwrap()
@@ -250,7 +249,7 @@ fn test_list_tasks_returns_identical_sets_for_alias_and_canonical() {
         }))
         .unwrap();
     let alias2_val: serde_json::Value =
-        serde_json::from_str(list_alias2.content[0].raw.as_text().unwrap().text.as_str()).unwrap();
+        serde_json::from_str(list_alias2.content[0].as_text().unwrap().text.as_str()).unwrap();
     let alias2_ids: Vec<String> = alias2_val["tasks"]
         .as_array()
         .unwrap()
@@ -359,12 +358,11 @@ fn test_regression_reproduce_split_from_hand_written_variant_and_lint_fix() {
         .unwrap();
 
     let text_c = list_canonical.content[0]
-        .raw
         .as_text()
         .unwrap()
         .text
         .as_str();
-    let text_a = list_alias.content[0].raw.as_text().unwrap().text.as_str();
+    let text_a = list_alias.content[0].as_text().unwrap().text.as_str();
     assert_eq!(
         text_c, text_a,
         "after repair, both queries return identical task sets"

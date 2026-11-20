@@ -80,7 +80,7 @@ mod tier_rebuild_tests {
             let text = result
                 .content
                 .iter()
-                .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+                .filter_map(|c| c.as_text().map(|t| t.text.as_str()))
                 .collect::<String>();
             serde_json::from_str::<serde_json::Value>(&text)
                 .ok()
@@ -683,7 +683,7 @@ mod tier_rebuild_tests {
             let text: String = res
                 .content
                 .iter()
-                .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+                .filter_map(|c| c.as_text().map(|t| t.text.as_str()))
                 .collect();
             let val: serde_json::Value = serde_json::from_str(&text).unwrap();
             let flow = val.get("flow").expect("initial get_task must have flow");
@@ -700,7 +700,7 @@ mod tier_rebuild_tests {
             let exp_text: String = exp_res
                 .content
                 .iter()
-                .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+                .filter_map(|c| c.as_text().map(|t| t.text.as_str()))
                 .collect();
             let exp_val: serde_json::Value = serde_json::from_str(&exp_text).unwrap();
             let nodes = exp_val.get("nodes").and_then(|n| n.as_array()).unwrap();
@@ -743,7 +743,7 @@ mod tier_rebuild_tests {
             let text: String = res
                 .content
                 .iter()
-                .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+                .filter_map(|c| c.as_text().map(|t| t.text.as_str()))
                 .collect();
             let val: serde_json::Value = serde_json::from_str(&text).unwrap();
             let flow = val
@@ -771,7 +771,7 @@ mod tier_rebuild_tests {
             let text_c: String = res_c
                 .content
                 .iter()
-                .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+                .filter_map(|c| c.as_text().map(|t| t.text.as_str()))
                 .collect();
             let val_c: serde_json::Value = serde_json::from_str(&text_c).unwrap();
             let flow_c = val_c
@@ -801,7 +801,7 @@ mod tier_rebuild_tests {
             let text: String = res
                 .content
                 .iter()
-                .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+                .filter_map(|c| c.as_text().map(|t| t.text.as_str()))
                 .collect();
             let val: serde_json::Value = serde_json::from_str(&text).unwrap();
             let tasks = val.get("tasks").and_then(|t| t.as_array()).unwrap();
@@ -834,7 +834,7 @@ mod tier_rebuild_tests {
             let exp_text: String = exp_res
                 .content
                 .iter()
-                .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+                .filter_map(|c| c.as_text().map(|t| t.text.as_str()))
                 .collect();
             let exp_val: serde_json::Value = serde_json::from_str(&exp_text).unwrap();
             let nodes = exp_val.get("nodes").and_then(|n| n.as_array()).unwrap();
@@ -874,7 +874,7 @@ mod tier_rebuild_tests {
             let text: String = res
                 .content
                 .iter()
-                .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+                .filter_map(|c| c.as_text().map(|t| t.text.as_str()))
                 .collect();
             let val: serde_json::Value = serde_json::from_str(&text).unwrap();
             let flow = val
@@ -895,7 +895,7 @@ mod tier_rebuild_tests {
             let text: String = res
                 .content
                 .iter()
-                .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+                .filter_map(|c| c.as_text().map(|t| t.text.as_str()))
                 .collect();
             let val: serde_json::Value = serde_json::from_str(&text).unwrap();
             let tasks = val.get("tasks").and_then(|t| t.as_array()).unwrap();
@@ -918,7 +918,7 @@ mod tier_rebuild_tests {
             let exp_text: String = exp_res
                 .content
                 .iter()
-                .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+                .filter_map(|c| c.as_text().map(|t| t.text.as_str()))
                 .collect();
             let exp_val: serde_json::Value = serde_json::from_str(&exp_text).unwrap();
             let nodes = exp_val.get("nodes").and_then(|n| n.as_array()).unwrap();

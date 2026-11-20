@@ -63,7 +63,7 @@ fn test_ac2_stale_or_disagreeing_input_makes_flow_status_non_ok() {
     let text: String = res
         .content
         .iter()
-        .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+        .filter_map(|c| c.as_text().map(|t| t.text.as_str()))
         .collect();
     let parsed: Value = serde_json::from_str(&text).expect("valid json output");
 
@@ -121,7 +121,7 @@ fn test_ac2_disagreeing_inputs_makes_flow_status_disagreeing_inputs() {
     let text: String = res
         .content
         .iter()
-        .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+        .filter_map(|c| c.as_text().map(|t| t.text.as_str()))
         .collect();
     let parsed: Value = serde_json::from_str(&text).expect("valid json output");
 
@@ -167,7 +167,7 @@ fn test_ac3_status_lists_stale_documents_when_not_fresh() {
     let text: String = res
         .content
         .iter()
-        .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+        .filter_map(|c| c.as_text().map(|t| t.text.as_str()))
         .collect();
     let parsed: Value = serde_json::from_str(&text).expect("valid json output");
 
@@ -224,7 +224,7 @@ fn test_ac3_reindex_leaves_is_fresh_true() {
     let text0: String = res0
         .content
         .iter()
-        .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+        .filter_map(|c| c.as_text().map(|t| t.text.as_str()))
         .collect();
     let s0: Value = serde_json::from_str(&text0).unwrap();
     assert_eq!(s0["freshness"]["is_fresh"], false);
@@ -239,7 +239,7 @@ fn test_ac3_reindex_leaves_is_fresh_true() {
     let text1: String = res1
         .content
         .iter()
-        .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+        .filter_map(|c| c.as_text().map(|t| t.text.as_str()))
         .collect();
     let s1: Value = serde_json::from_str(&text1).unwrap();
     assert_eq!(
@@ -304,7 +304,7 @@ fn test_ac4_status_counts_match_stores_they_describe() {
     let text: String = res
         .content
         .iter()
-        .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+        .filter_map(|c| c.as_text().map(|t| t.text.as_str()))
         .collect();
     let s: Value = serde_json::from_str(&text).unwrap();
     let idx = &s["index"];

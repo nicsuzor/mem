@@ -210,7 +210,6 @@ impl PkbSearchServer {
                 "allow_missing_parent",
                 "force",
                 "_client",
-                "_session",
                 "_meta",
             ];
             let received: Vec<&str> = obj.keys().map(|s| s.as_str()).collect();
@@ -627,7 +626,7 @@ impl PkbSearchServer {
         })?;
         if severity_warning {
             res.content
-                .push(Content::text("severity ignored: not a target node\n"));
+                .push(ContentBlock::text("severity ignored: not a target node\n"));
         }
         Ok(res)
     }
@@ -702,7 +701,7 @@ impl PkbSearchServer {
                         if let Some(val) = res.structured_content {
                             items.push(val);
                         } else if let Some(first) =
-                            res.content.first().and_then(|c| c.raw.as_text())
+                            res.content.first().and_then(|c| c.as_text())
                         {
                             if let Ok(v) = serde_json::from_str::<serde_json::Value>(&first.text) {
                                 items.push(v);
@@ -721,11 +720,51 @@ impl PkbSearchServer {
             if budget_ms.is_some() || !timed_out.is_empty() {
                 res_obj["timed_out"] = serde_json::json!(timed_out);
             }
-            let text = serde_json::to_string_pretty(&res_obj).unwrap_or_default();
+            let text = serde_json::to_string(&res_obj).unwrap_or_default();
             return Ok(Self::structured_result(text, res_obj));
         }
 
         self.handle_get_task_single(args)
+    }
+
+    pub(crate) fn handle_get_task_status(
+        &self,
+        args: &JsonValue,
+    ) -> Result<CallToolResult, McpError> {
+        self.ensure_graph_fresh();
+        let id = args
+            .get("id")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.trim().is_empty())
+            .ok_or_else(|| McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from("Missing required parameter: id"),
+                data: None,
+            })?;
+
+        let graph = self.graph.read();
+        let node = graph.resolve(id).ok_or_else(|| McpError {
+            code: ErrorCode::INVALID_PARAMS,
+            message: Cow::from(format!("Task not found: {id}")),
+            data: None,
+        })?;
+
+        let status_str = node.status.as_deref().unwrap_or("unknown");
+        let ready = graph.is_ready(&node.id);
+        let blocked = graph.is_blocked(&node.id);
+
+        let mut res = serde_json::json!({
+            "id": node.id,
+            "status": status_str,
+            "ready": ready,
+            "blocked": blocked,
+        });
+        if let Some(ref a) = node.assignee {
+            res["assignee"] = serde_json::json!(a);
+        }
+
+        let text = serde_json::to_string(&res).unwrap_or_default();
+        Ok(Self::structured_result(text, res))
     }
 
     pub(crate) fn handle_get_task_single(
@@ -1005,10 +1044,13 @@ impl PkbSearchServer {
                 })
             }
         });
+        if fields_filter.is_some() {
+            crate::otel::call_metrics::CallMetrics::record_fields_projected(true);
+        }
         let include_routes = args
             .get("include_routes")
             .and_then(|v| v.as_bool())
-            .unwrap_or(true);
+            .unwrap_or(false);
         let metadata_only = args
             .get("metadata_only")
             .and_then(|v| v.as_bool())
@@ -1173,7 +1215,7 @@ impl PkbSearchServer {
 
         Self::prune_null_and_empty(&mut result);
 
-        let json = serde_json::to_string_pretty(&result).unwrap_or_default();
+        let json = serde_json::to_string(&result).unwrap_or_default();
         Ok(Self::structured_result(json, result))
     }
 
@@ -1286,8 +1328,8 @@ impl PkbSearchServer {
                 "direction": direction,
                 "tree": tree_json,
             });
-            let json_str = serde_json::to_string_pretty(&payload).unwrap_or_default();
-            return Ok(CallToolResult::success(vec![Content::text(json_str)]));
+            let json_str = serde_json::to_string(&payload).unwrap_or_default();
+            return Ok(CallToolResult::success(vec![ContentBlock::text(json_str)]));
         }
 
         if tree.is_empty() {
@@ -1298,7 +1340,7 @@ impl PkbSearchServer {
             } else {
                 "upstream"
             };
-            return Ok(CallToolResult::success(vec![Content::text(format!(
+            return Ok(CallToolResult::success(vec![ContentBlock::text(format!(
                 "No {dir_label} dependencies for `{id}` ({node_label})."
             ))]));
         }
@@ -1320,7 +1362,7 @@ impl PkbSearchServer {
             output.push_str(&format!("{indent}- `{dep_id}` [{status}] {label}\n"));
         }
 
-        Ok(CallToolResult::success(vec![Content::text(output)]))
+        Ok(CallToolResult::success(vec![ContentBlock::text(output)]))
     }
 
     pub(crate) fn handle_get_task_children(
@@ -1358,7 +1400,7 @@ impl PkbSearchServer {
         let node_label = node.label.clone();
 
         if node.children.is_empty() {
-            return Ok(CallToolResult::success(vec![Content::text(format!(
+            return Ok(CallToolResult::success(vec![ContentBlock::text(format!(
                 "No children for `{id}` ({node_label})."
             ))]));
         }
@@ -1442,7 +1484,7 @@ impl PkbSearchServer {
         }
         output.push_str(&format!("\n**Summary:** {done_count}/{total} complete\n"));
 
-        Ok(CallToolResult::success(vec![Content::text(output)]))
+        Ok(CallToolResult::success(vec![ContentBlock::text(output)]))
     }
 
     pub(crate) fn handle_nested_tasks(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
@@ -1785,8 +1827,8 @@ impl PkbSearchServer {
                 "showing": tasks.len(),
                 "tasks": tasks_val,
             });
-            return Ok(CallToolResult::success(vec![Content::text(
-                serde_json::to_string_pretty(&result).unwrap_or_default(),
+            return Ok(CallToolResult::success(vec![ContentBlock::text(
+                serde_json::to_string(&result).unwrap_or_default(),
             )]));
         }
 
@@ -1800,7 +1842,7 @@ impl PkbSearchServer {
                 format!("\n\n  {} tasks", total)
             };
             out.push_str(&count_label);
-            return Ok(CallToolResult::success(vec![Content::text(out)]));
+            return Ok(CallToolResult::success(vec![ContentBlock::text(out)]));
         }
 
         // JSON output mode
@@ -1961,7 +2003,7 @@ impl PkbSearchServer {
             if budget_ms.is_some() || !timed_out.is_empty() {
                 result["timed_out"] = serde_json::json!(timed_out);
             }
-            let text = serde_json::to_string_pretty(&result).unwrap_or_default();
+            let text = serde_json::to_string(&result).unwrap_or_default();
             return Ok(Self::structured_result(text, result));
         }
 
@@ -2221,8 +2263,8 @@ impl PkbSearchServer {
             "unparent",
             "force",
             "allow_missing_parent",
+            "session_id",
             "_client",
-            "_session",
             "_meta",
         ];
         let top_level_fields: serde_json::Map<String, serde_json::Value> = args
@@ -2797,7 +2839,7 @@ impl PkbSearchServer {
         if let Some(obj) = args.as_object() {
             let unsupported: Vec<&str> = obj
                 .keys()
-                .filter(|k| k.as_str() != "project")
+                .filter(|k| !matches!(k.as_str(), "project" | "session_id"))
                 .map(|k| k.as_str())
                 .collect();
             if !unsupported.is_empty() {
@@ -2983,8 +3025,8 @@ impl PkbSearchServer {
             }
         });
 
-        Ok(CallToolResult::success(vec![Content::text(
-            serde_json::to_string_pretty(&summary).unwrap_or_default(),
+        Ok(CallToolResult::success(vec![ContentBlock::text(
+            serde_json::to_string(&summary).unwrap_or_default(),
         )]))
     }
 }

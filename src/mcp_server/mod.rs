@@ -133,7 +133,6 @@ pub struct PkbSearchServer {
     pub(crate) pkb_root: PathBuf,
     pub(crate) db_path: PathBuf,
     pub(crate) graph: InstrumentedGraphStore,
-    pub(crate) session_registry: Arc<crate::otel::session_registry::SessionRegistry>,
     pub(crate) salience_store: Arc<RwLock<crate::salience::SalienceStore>>,
     pub(crate) stale_count: usize,
     /// True when a background vector-store save is already scheduled. Used
@@ -291,7 +290,6 @@ impl PkbSearchServer {
             pkb_root,
             db_path,
             graph: InstrumentedGraphStore::new(graph),
-            session_registry: crate::otel::session_registry::SessionRegistry::new(),
             salience_store: Arc::new(RwLock::new(crate::salience::SalienceStore::new(
                 crate::salience::SalienceConfig::default(),
             ))),
@@ -375,14 +373,6 @@ impl PkbSearchServer {
     pub fn set_pre_epoch_bump_delay_ms(&self, ms: u64) {
         self.pre_epoch_bump_delay_ms
             .store(ms, std::sync::atomic::Ordering::Relaxed);
-    }
-
-    pub fn with_session_registry(
-        mut self,
-        reg: Arc<crate::otel::session_registry::SessionRegistry>,
-    ) -> Self {
-        self.session_registry = reg;
-        self
     }
 
     pub fn with_stale_count(mut self, count: usize) -> Self {
@@ -622,13 +612,17 @@ impl PkbSearchServer {
         let _t = std::time::Instant::now();
         {
             let mut g = self.graph.write();
-            g.upsert_node_in_place(node, &self.pkb_root);
+            let affected = g.upsert_node_in_place(node, &self.pkb_root);
             g.reclassify();
             // Insert inside the write lock so the ID is visible to any
             // concurrent Tier-2 phase-2 swap before the write lock is released.
             // If inserted after the lock, a Tier-2 that already holds the
             // write lock for its swap will miss this ID and drop the node.
-            self.patched_during_rebuild.lock().insert(patched_id);
+            let mut patched = self.patched_during_rebuild.lock();
+            patched.insert(patched_id);
+            for a in affected {
+                patched.insert(a);
+            }
         }
         tracing::debug!(target: "perf::graph_rebuild", phase = "inplace_patch", elapsed_ms = _t.elapsed().as_secs_f64() * 1000.0);
 
@@ -650,8 +644,11 @@ impl PkbSearchServer {
             for doc in &docs {
                 let node = crate::graph::GraphNode::from_pkb_document(doc);
                 let patched_id = node.id.clone();
-                g.upsert_node_in_place(node, &self.pkb_root);
+                let affected = g.upsert_node_in_place(node, &self.pkb_root);
                 patched.insert(patched_id);
+                for a in affected {
+                    patched.insert(a);
+                }
             }
             g.reclassify();
         }
@@ -1634,13 +1631,9 @@ impl PkbSearchServer {
     }
 
     pub fn list_tools_result(&self) -> rmcp::model::ListToolsResult {
-        let tools = Self::get_published_tools();
-        let mut meta = rmcp::model::Meta::new();
-        meta.0
-            .insert("ttlMs".to_string(), serde_json::json!(86_400_000));
-        let mut result = rmcp::model::ListToolsResult::with_all_items(tools);
-        result.meta = Some(meta);
-        result
+        rmcp::model::ListToolsResult::with_all_items(Self::get_published_tools())
+            .with_ttl_ms(86_400_000)
+            .with_cache_scope(rmcp::model::CacheScope::Public)
     }
 
     // =========================================================================
@@ -1675,6 +1668,7 @@ impl PkbSearchServer {
             "list_tasks" => self.handle_list_tasks(args),
             "nested_tasks" => self.handle_nested_tasks(args),
             "get_task" => self.handle_get_task(args),
+            "get_task_status" => self.handle_get_task_status(args),
             "update_task" => self.handle_update_task(args),
             "retrieve_memory" => self.handle_retrieve_memory(args),
             "detect_weight_divergence" => self.handle_detect_weight_divergence(args),
@@ -1721,7 +1715,7 @@ impl PkbSearchServer {
                 let text = result
                     .content
                     .iter()
-                    .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+                    .filter_map(|c| c.as_text().map(|t| t.text.as_str()))
                     .collect::<String>();
                 if let Ok(val) = serde_json::from_str::<serde_json::Value>(&text) {
                     result.structured_content = Some(val);
@@ -1737,51 +1731,26 @@ impl PkbSearchServer {
         res
     }
 
-    pub fn is_read_only_tool(name: &str) -> bool {
-        static READ_ONLY_TOOLS: std::sync::OnceLock<std::collections::HashSet<String>> =
-            std::sync::OnceLock::new();
-        let set = READ_ONLY_TOOLS.get_or_init(|| {
-            Self::get_all_tools()
-                .into_iter()
-                .filter(|t| t.annotations.as_ref().and_then(|a| a.read_only_hint) == Some(true))
-                .map(|t| t.name.to_string())
-                .collect()
-        });
-        set.contains(name)
-    }
-
     pub async fn execute_tool_call(
         &self,
         tool_name: &str,
         args: &JsonValue,
         parts: Option<&http::request::Parts>,
-        meta: Option<&rmcp::model::Meta>,
+        meta: Option<&rmcp::model::RequestMetaObject>,
     ) -> Result<CallToolResult, McpError> {
         let start = std::time::Instant::now();
         let tool_name = tool_name.to_string();
         let mut args = args.clone();
 
-        let client_context = crate::otel::client_context::ClientContext::extract(
-            parts,
-            meta,
-            &mut args,
-            &self.session_registry,
-        );
-
-        if let Some(ref mcp_id) = client_context.mcp_session_id {
-            self.session_registry.update_activity(mcp_id);
-        }
+        let client_context =
+            crate::otel::client_context::ClientContext::extract(parts, meta, &args);
 
         let canonical_name = match tool_name.as_str() {
             "pkb_trace" | "pkb_orphans" => tool_name.clone(),
             other => other.strip_prefix("pkb_").unwrap_or(other).to_string(),
         };
 
-        let is_read_only = Self::is_read_only_tool(&canonical_name);
-        let is_mutating = !is_read_only;
-        let is_unattributed =
-            client_context.session_source == crate::otel::client_context::SessionSource::None;
-        let session_mode = crate::otel::config::SessionMode::from_env();
+        let is_unattributed = client_context.session_id.is_none();
         let log_session_id = client_context.session_id.clone();
 
         let (tx, rx) = tokio::sync::oneshot::channel();
@@ -1817,34 +1786,19 @@ impl PkbSearchServer {
             if let Some(ref sid) = client_context.session_id {
                 attrs.push(opentelemetry::KeyValue::new("session.id", sid.clone()));
             }
-            if let Some(ref rebound) = client_context.rebound_from {
-                attrs.push(opentelemetry::KeyValue::new(
-                    "aops.session.rebound_from",
-                    rebound.clone(),
-                ));
-            }
             if let Some(ref aid) = client_context.agent_id {
                 attrs.push(opentelemetry::KeyValue::new("agent.id", aid.clone()));
             }
             if let Some(ref pid) = client_context.prompt_id {
                 attrs.push(opentelemetry::KeyValue::new("prompt.id", pid.clone()));
             }
-            if is_mutating
-                && is_unattributed
-                && session_mode == crate::otel::config::SessionMode::Warn
-            {
+            if is_unattributed {
                 attrs.push(opentelemetry::KeyValue::new("aops.session.missing", true));
             }
             if let Some(ref tid) = client_context.task_id {
                 attrs.push(opentelemetry::KeyValue::new(
                     "tag.tags",
                     format!("[\"task:{}\"]", tid),
-                ));
-            }
-            if let Some(ref mcp_id) = client_context.mcp_session_id {
-                attrs.push(opentelemetry::KeyValue::new(
-                    "mcp.session_id",
-                    mcp_id.clone(),
                 ));
             }
 
@@ -1862,26 +1816,17 @@ impl PkbSearchServer {
             let cx = parent_cx.with_span(span);
             let _guard = cx.clone().attach();
 
-            let res = if is_mutating
-                && is_unattributed
-                && session_mode == crate::otel::config::SessionMode::Enforce
-            {
+            let res = if is_unattributed {
                 Err(McpError {
                     code: ErrorCode::INVALID_PARAMS,
                     message: Cow::from(format!(
-                        "Unattributed write refused: tool '{canonical_name_task}' requires a caller session ID when PKB_SESSION_MODE=enforce. \
-                         Supply your session ID via the `_session` argument (e.g. `{{\"_session\": {{\"session_id\": \"<your-session-id>\"}}}}`). \
-                         You can find your session ID in the environment variable AOPS_SESSION_ID or your agent session context."
+                        "Missing required 'session_id' for tool '{canonical_name_task}'. \
+                         Supply your own active session or conversation ID (e.g. CLAUDE_CODE_SESSION_ID or ANTIGRAVITY_CONVERSATION_ID) \
+                         or client identifier via `session_id` in tool arguments, `_meta.session_id`, or `x-session-id` header."
                     )),
                     data: None,
                 })
             } else {
-                if is_mutating && is_unattributed {
-                    tracing::warn!(
-                        "Unattributed write to tool '{}' in warning mode (missing session id)",
-                        canonical_name_task
-                    );
-                }
                 apply_client_identity(&mut args, client_context.client_name.as_deref());
                 this_task.dispatch_tool_sync(&canonical_name_task, &args)
             };
@@ -1919,6 +1864,37 @@ impl PkbSearchServer {
                 "result-bytes",
                 response_bytes as i64,
             ));
+            current_span.set_attribute(opentelemetry::KeyValue::new(
+                "mcp.response_bytes",
+                response_bytes as i64,
+            ));
+            let estimated_tokens = (response_bytes / 4) as i64;
+            current_span.set_attribute(opentelemetry::KeyValue::new(
+                "mcp.estimated_prompt_tokens",
+                estimated_tokens,
+            ));
+            current_span.set_attribute(opentelemetry::KeyValue::new(
+                "estimated_prompt_tokens",
+                estimated_tokens,
+            ));
+
+            if let Some(detail) = args.get("detail").and_then(|v| v.as_str()) {
+                current_span.set_attribute(opentelemetry::KeyValue::new(
+                    "mcp.detail_level",
+                    detail.to_string(),
+                ));
+            }
+
+            let has_fields = args.get("fields").is_some_and(|f| {
+                f.as_array().is_some_and(|a| !a.is_empty())
+                    || f.as_str().is_some_and(|s| !s.trim().is_empty())
+            }) || metrics.fields_projected;
+            if has_fields {
+                current_span.set_attribute(opentelemetry::KeyValue::new(
+                    "mcp.projected",
+                    true,
+                ));
+            }
 
             let graph_read_wait_ms = (metrics.graph_read_wait_us as f64) / 1000.0;
             current_span.set_attribute(opentelemetry::KeyValue::new(
@@ -1985,6 +1961,7 @@ impl PkbSearchServer {
 
         let latency = start.elapsed().as_millis();
         crate::telemetry::record_call(&tool_name, response_bytes, latency, is_error);
+        let estimated_tokens = (response_bytes / 4) as u64;
 
         match &log_session_id {
             None => {
@@ -1994,6 +1971,7 @@ impl PkbSearchServer {
                     status = %if is_error { "error" } else { "ok" },
                     latency_ms = latency as u64,
                     response_bytes,
+                    estimated_tokens,
                     "tool call"
                 );
             }
@@ -2004,6 +1982,7 @@ impl PkbSearchServer {
                     status = %if is_error { "error" } else { "ok" },
                     latency_ms = latency as u64,
                     response_bytes,
+                    estimated_tokens,
                     session = %sid,
                     "tool call"
                 );
@@ -2015,51 +1994,54 @@ impl PkbSearchServer {
 }
 
 impl ServerHandler for PkbSearchServer {
-    fn initialize(
+    fn supported_protocol_versions(&self) -> Cow<'static, [ProtocolVersion]> {
+        Cow::Borrowed(&[ProtocolVersion::V_2026_07_28])
+    }
+
+    fn discover(
         &self,
-        request: rmcp::model::InitializeRequestParams,
-        context: rmcp::service::RequestContext<rmcp::service::RoleServer>,
-    ) -> impl std::future::Future<Output = Result<rmcp::model::InitializeResult, McpError>> + Send + '_
+        _context: rmcp::service::RequestContext<rmcp::service::RoleServer>,
+    ) -> impl std::future::Future<Output = Result<rmcp::model::DiscoverResult, McpError>> + Send + '_
     {
-        let client_name = request.client_info.name.clone();
-        let mcp_session_id = context
-            .extensions
-            .get::<http::request::Parts>()
-            .and_then(|parts| parts.headers.get("mcp-session-id"))
-            .and_then(|v| v.to_str().ok())
-            .map(|s| s.to_string());
+        std::future::ready(Ok(rmcp::model::DiscoverResult::from_server_info(
+            self.supported_protocol_versions().into_owned(),
+            self.get_info(),
+        )
+        .with_ttl_ms(300_000)
+        .with_cache_scope(rmcp::model::CacheScope::Public)))
+    }
 
-        if let Some(mcp_id) = mcp_session_id {
-            self.session_registry
-                .register_handshake(&mcp_id, Some(client_name));
-        }
-
-        if context.peer.peer_info().is_none() {
-            context.peer.set_peer_info(request);
-        }
-        std::future::ready(Ok(self.get_info()))
+    fn get_tool(&self, name: &str) -> Option<rmcp::model::Tool> {
+        Self::lookup_tool(name)
     }
 
     fn call_tool(
         &self,
         request: CallToolRequestParams,
         context: rmcp::service::RequestContext<rmcp::service::RoleServer>,
-    ) -> impl std::future::Future<Output = Result<CallToolResult, McpError>> + Send + '_ {
+    ) -> impl std::future::Future<Output = Result<rmcp::model::CallToolResponse, McpError>> + Send + '_
+    {
         let args = Self::args_to_value(request.arguments);
         let name = request.name.clone();
         let parts = context.extensions.get::<http::request::Parts>().cloned();
-        let meta = request.meta.clone();
+        let meta = if !context.meta.0.is_empty() {
+            Some(context.meta.clone())
+        } else {
+            request.meta.clone()
+        };
         let ct = context.ct.clone();
         let this = self.clone();
 
         async move {
             tokio::select! {
-                res = this.execute_tool_call(&name, &args, parts.as_ref(), meta.as_ref()) => res,
+                res = this.execute_tool_call(&name, &args, parts.as_ref(), meta.as_ref()) => {
+                    res.map(rmcp::model::CallToolResponse::from)
+                }
                 _ = ct.cancelled() => {
-                    tracing::warn!("Session terminated while tool '{}' was in flight", name);
+                    tracing::warn!("Request cancelled while tool '{}' was in flight", name);
                     Err(McpError {
                         code: ErrorCode::INTERNAL_ERROR,
-                        message: Cow::from("Session terminated"),
+                        message: Cow::from("Request cancelled"),
                         data: None,
                     })
                 }
@@ -2087,40 +2069,49 @@ impl ServerHandler for PkbSearchServer {
         &self,
         request: GetPromptRequestParams,
         _context: rmcp::service::RequestContext<rmcp::service::RoleServer>,
-    ) -> impl std::future::Future<Output = Result<GetPromptResult, McpError>> + Send + '_ {
-        std::future::ready(self.handle_get_prompt(request))
+    ) -> impl std::future::Future<Output = Result<rmcp::model::GetPromptResponse, McpError>>
+        + Send
+        + '_ {
+        std::future::ready(
+            self.handle_get_prompt(request)
+                .map(rmcp::model::GetPromptResponse::from),
+        )
     }
 
-    fn get_info(&self) -> ServerInfo {
-        let mut info = ServerInfo::new(
+    fn get_info(&self) -> rmcp::model::ServerConfig {
+        let mut instructions = String::from(
+            "Every PKB tool call (both reads and writes) MUST include a non-empty `session_id` \
+             identifying the calling agent's own active session or conversation ID \
+             (e.g. CLAUDE_CODE_SESSION_ID or ANTIGRAVITY_CONVERSATION_ID) or client identifier.",
+        );
+        if self.stale_count > 0 {
+            instructions.push_str(&format!(
+                "\n\nWARNING: Index is stale — {} document(s) need re-indexing. \
+                 Search results may be incomplete or outdated.",
+                self.stale_count
+            ));
+        }
+
+        rmcp::model::ServerConfig::new(
             ServerCapabilities::builder()
                 .enable_tools()
                 .enable_prompts()
                 .build(),
         )
-        .with_protocol_version(ProtocolVersion::V_2024_11_05)
-        .with_server_info(Implementation::new("pkb", env!("CARGO_PKG_VERSION")));
-
-        if self.stale_count > 0 {
-            info = info.with_instructions(format!(
-                "WARNING: Index is stale — {} document(s) need re-indexing. \
-                 Search results may be incomplete or outdated.",
-                self.stale_count
-            ));
-        }
-        info
+        .with_protocol_version(ProtocolVersion::V_2026_07_28)
+        .with_server_info(Implementation::new("pkb", env!("CARGO_PKG_VERSION")))
+        .with_instructions(instructions)
     }
 }
 
 impl FactsProvider for PkbSearchServer {}
 
-/// MCP `initialize` client name of the dashboard (R27 Route 1).
+/// Client name identifying the dashboard in stateless `_meta["io.modelcontextprotocol/clientInfo"]["name"]` (or `x-client-name`).
 pub(crate) const DASHBOARD_CLIENT: &str = "overwhelm-dashboard";
 
-/// Set the server-owned `_client` marker from the session's MCP `initialize`
-/// client identity (R27 Route 1). Any caller-supplied `_client` is dropped
-/// first, so an agent cannot claim dashboard identity through tool arguments
-/// and attribute links to Nic.
+/// Set the server-owned `_client` marker from the request's client identity.
+/// Any caller-supplied `_client` is dropped first, so an agent cannot claim
+/// dashboard identity through tool arguments and attribute links to Nic.
 pub(crate) fn apply_client_identity(args: &mut JsonValue, client_name: Option<&str>) {
     if let Some(obj) = args.as_object_mut() {
         obj.remove("_client");

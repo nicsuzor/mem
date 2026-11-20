@@ -34,6 +34,9 @@ mod read_body_truncation_tests;
 mod alias_and_links_in_tests;
 mod document_tools_enhancements_tests;
 mod write_reply_type_tests;
+mod dependency_removal_tests;
+mod tool_efficiency_tests;
+mod prompt_tests;
 
 
 pub(crate) fn make_doc(
@@ -325,7 +328,7 @@ pub(crate) fn extract_task_ids(result: &CallToolResult) -> Vec<String> {
         let text = result
             .content
             .iter()
-            .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+            .filter_map(|c| c.as_text().map(|t| t.text.as_str()))
             .collect::<String>();
         // Parse the JSON output
         if let Ok(val) = serde_json::from_str::<serde_json::Value>(&text) {
@@ -344,7 +347,7 @@ pub(crate) fn extract_task_objects(result: &CallToolResult) -> Vec<serde_json::V
         let text = result
             .content
             .iter()
-            .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+            .filter_map(|c| c.as_text().map(|t| t.text.as_str()))
             .collect::<String>();
         serde_json::from_str::<serde_json::Value>(&text)
             .ok()

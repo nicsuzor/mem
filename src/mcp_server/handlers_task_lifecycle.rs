@@ -551,7 +551,7 @@ impl PkbSearchServer {
             "message": format!("Completed {node_type}: {} (`{}`)", title_to_use, id),
             "neighborhood": neighborhood,
         });
-        let text = serde_json::to_string_pretty(&response).unwrap_or_default();
+        let text = serde_json::to_string(&response).unwrap_or_default();
         Ok(Self::structured_result(text, response))
     }
 
@@ -849,7 +849,7 @@ impl PkbSearchServer {
             .ok_or_else(|| McpError {
                 code: ErrorCode::INVALID_PARAMS,
                 message: Cow::from(
-                    "Missing required parameter: status. Must be one of: done, review, blocked, cancelled, partial, failed.",
+                    "Missing required parameter: status. Must be one of: done, review, cancelled, partial, failed.",
                 ),
                 data: None,
             })?;
@@ -858,7 +858,6 @@ impl PkbSearchServer {
         let valid_statuses = [
             "done",
             "review",
-            "blocked",
             "cancelled",
             "partial",
             "failed",
@@ -870,12 +869,15 @@ impl PkbSearchServer {
                 }
                 "cancel" => " Did you mean \"cancelled\"?",
                 "fail" | "failure" => " Did you mean \"failed\"?",
+                "blocked" => {
+                    " \"blocked\" is a computed dependency state, not a task status. To express a blocker, add a depends_on edge to the prerequisite task."
+                }
                 _ => "",
             };
             return Err(McpError {
                 code: ErrorCode::INVALID_PARAMS,
                 message: Cow::from(format!(
-                    "Invalid status \"{status}\". Must be one of: done, review, blocked, cancelled, partial, failed.{suggestion}\n\
+                    "Invalid status \"{status}\". Must be one of: done, review, cancelled, partial, failed.{suggestion}\n\
                      For non-terminal updates (intent, tags, assignee), use update_task instead."
                 )),
                 data: None,
@@ -1295,7 +1297,7 @@ impl PkbSearchServer {
         if let Some(nid) = created_id {
             json["created_id"] = serde_json::json!(nid);
         }
-        let text = serde_json::to_string_pretty(&json).unwrap_or_default();
+        let text = serde_json::to_string(&json).unwrap_or_default();
         Ok(Self::structured_result(text, json))
     }
 
@@ -1705,6 +1707,6 @@ impl PkbSearchServer {
             output.push_str("\nWarning: severity ignored for one or more non-target nodes.\n");
         }
 
-        Ok(CallToolResult::success(vec![Content::text(output)]))
+        Ok(CallToolResult::success(vec![ContentBlock::text(output)]))
     }
 }

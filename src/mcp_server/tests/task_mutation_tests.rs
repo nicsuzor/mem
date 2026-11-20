@@ -24,7 +24,7 @@ fn test_partial_status_release_and_list_roundtrip() {
         let text = res
             .content
             .iter()
-            .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+            .filter_map(|c| c.as_text().map(|t| t.text.as_str()))
             .collect::<String>();
         let val: serde_json::Value = serde_json::from_str(&text)
             .unwrap_or_else(|_| panic!("create_task should return JSON, got: {text}"));
@@ -71,7 +71,7 @@ fn test_partial_status_release_and_list_roundtrip() {
     let released_text = released
         .content
         .iter()
-        .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+        .filter_map(|c| c.as_text().map(|t| t.text.as_str()))
         .collect::<String>();
     assert!(
         released_text.contains("partial"),
@@ -116,7 +116,7 @@ fn test_create_task_severity_coercion() {
     let target_text = res_target
         .content
         .iter()
-        .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+        .filter_map(|c| c.as_text().map(|t| t.text.as_str()))
         .collect::<String>();
     let target_val: serde_json::Value = serde_json::from_str(&target_text).unwrap();
     let target_id = target_val.get("id").unwrap().as_str().unwrap().to_string();
@@ -125,10 +125,10 @@ fn test_create_task_severity_coercion() {
     let get_target_text = get_target
         .content
         .iter()
-        .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+        .filter_map(|c| c.as_text().map(|t| t.text.as_str()))
         .collect::<String>();
     assert!(
-        get_target_text.contains("\"severity\": 3"),
+        get_target_text.contains("\"severity\": 3") || get_target_text.contains("\"severity\":3"),
         "Target node should retain severity. text: {}",
         get_target_text
     );
@@ -148,7 +148,7 @@ fn test_create_task_severity_coercion() {
     let mut has_warning = false;
     let mut task_json_text = String::new();
     for c in &res_task.content {
-        if let Some(t) = c.raw.as_text() {
+        if let Some(t) = c.as_text() {
             if t.text.contains("severity ignored: not a target node") {
                 has_warning = true;
             } else if t.text.trim().starts_with('{') {
@@ -167,10 +167,10 @@ fn test_create_task_severity_coercion() {
     let get_task_text = get_task
         .content
         .iter()
-        .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+        .filter_map(|c| c.as_text().map(|t| t.text.as_str()))
         .collect::<String>();
     assert!(
-        !get_task_text.contains("\"severity\": 3"),
+        !get_task_text.contains("\"severity\": 3") && !get_task_text.contains("\"severity\":3"),
         "Standard task should coerce severity to 0 or null"
     );
 }
@@ -193,7 +193,7 @@ fn test_decompose_task_severity_coercion() {
 
     let mut parent_id = String::new();
     for c in &parent_res.content {
-        if let Some(t) = c.raw.as_text() {
+        if let Some(t) = c.as_text() {
             if t.text.trim().starts_with('{') {
                 let parent_val: serde_json::Value = serde_json::from_str(&t.text).unwrap();
                 parent_id = parent_val.get("id").unwrap().as_str().unwrap().to_string();
@@ -224,7 +224,7 @@ fn test_decompose_task_severity_coercion() {
     let res_text = res
         .content
         .iter()
-        .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+        .filter_map(|c| c.as_text().map(|t| t.text.as_str()))
         .collect::<String>();
     assert!(
         res_text.contains("severity ignored for one or more non-target nodes"),
@@ -259,7 +259,7 @@ fn test_decompose_task_accepts_agent_intent() {
 
     let mut parent_id = String::new();
     for c in &parent_res.content {
-        if let Some(t) = c.raw.as_text() {
+        if let Some(t) = c.as_text() {
             if t.text.trim().starts_with('{') {
                 let parent_val: serde_json::Value = serde_json::from_str(&t.text).unwrap();
                 parent_id = parent_val.get("id").unwrap().as_str().unwrap().to_string();
@@ -307,7 +307,7 @@ fn test_subtask_identity_visible_on_get_task_and_children() {
         .unwrap();
     let mut parent_id = String::new();
     for c in &parent_res.content {
-        if let Some(t) = c.raw.as_text() {
+        if let Some(t) = c.as_text() {
             if t.text.trim().starts_with('{') {
                 let v: serde_json::Value = serde_json::from_str(&t.text).unwrap();
                 parent_id = v.get("id").unwrap().as_str().unwrap().to_string();
@@ -339,7 +339,7 @@ fn test_subtask_identity_visible_on_get_task_and_children() {
     let get_text = get_res
         .content
         .iter()
-        .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+        .filter_map(|c| c.as_text().map(|t| t.text.as_str()))
         .collect::<String>();
     let get_val: serde_json::Value = serde_json::from_str(&get_text).unwrap();
     let subtask_list = get_val
@@ -367,7 +367,7 @@ fn test_subtask_identity_visible_on_get_task_and_children() {
     let children_text = children_res
         .content
         .iter()
-        .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+        .filter_map(|c| c.as_text().map(|t| t.text.as_str()))
         .collect::<String>();
     assert!(
         children_text.contains("(@session-executor-A)"),
@@ -1006,7 +1006,7 @@ fn test_complete_task_returns_neighborhood_end_to_end() {
     let text = res
         .content
         .iter()
-        .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+        .filter_map(|c| c.as_text().map(|t| t.text.as_str()))
         .collect::<String>();
     let v: serde_json::Value = serde_json::from_str(&text)
         .unwrap_or_else(|e| panic!("response must be JSON: {e}\n{text}"));
@@ -1479,7 +1479,7 @@ fn test_refresh_graph_reflects_disk_changes() {
     let text: String = result
         .content
         .iter()
-        .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+        .filter_map(|c| c.as_text().map(|t| t.text.as_str()))
         .collect();
 
     // After refresh, new-task must be in the graph.
@@ -1522,7 +1522,7 @@ fn test_mcp_add_and_delete_observations() {
     let add_text: String = add_res
         .content
         .iter()
-        .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+        .filter_map(|c| c.as_text().map(|t| t.text.as_str()))
         .collect();
     let add_json: serde_json::Value = serde_json::from_str(&add_text).unwrap();
     assert_eq!(add_json["ok"], true);
@@ -1547,7 +1547,7 @@ fn test_mcp_add_and_delete_observations() {
     let del_text: String = del_res
         .content
         .iter()
-        .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+        .filter_map(|c| c.as_text().map(|t| t.text.as_str()))
         .collect();
     let del_json: serde_json::Value = serde_json::from_str(&del_text).unwrap();
     assert_eq!(del_json["ok"], true);
@@ -1646,7 +1646,7 @@ fn test_edit_body_mcp_flow() {
     let dry_text: String = dry_res
         .content
         .iter()
-        .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+        .filter_map(|c| c.as_text().map(|t| t.text.as_str()))
         .collect();
     assert!(dry_text.contains("\"dry_run\":true"));
     let disk_text = std::fs::read_to_string(&task_file).unwrap();
@@ -1667,7 +1667,7 @@ fn test_edit_body_mcp_flow() {
     let res_text: String = res
         .content
         .iter()
-        .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+        .filter_map(|c| c.as_text().map(|t| t.text.as_str()))
         .collect();
     assert!(res_text.contains("\"ok\":true"));
     let updated_disk = std::fs::read_to_string(&task_file).unwrap();
@@ -1752,7 +1752,7 @@ fn test_release_task_reported_status_matches_persisted_status() {
         let res_text: String = res
             .content
             .iter()
-            .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+            .filter_map(|c| c.as_text().map(|t| t.text.as_str()))
             .collect();
         let reported: serde_json::Value = serde_json::from_str(&res_text)
             .unwrap_or_else(|_| panic!("release_task should return JSON, got: {res_text}"));
@@ -1774,7 +1774,7 @@ fn test_release_task_reported_status_matches_persisted_status() {
         let get_text: String = get_res
             .content
             .iter()
-            .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+            .filter_map(|c| c.as_text().map(|t| t.text.as_str()))
             .collect();
         let get_json: serde_json::Value = serde_json::from_str(&get_text).unwrap();
         assert_eq!(
@@ -1969,7 +1969,7 @@ fn test_list_tasks_status_ready_includes_unblocked_non_leaf_node() {
     let md_text = res_md
         .content
         .iter()
-        .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+        .filter_map(|c| c.as_text().map(|t| t.text.as_str()))
         .collect::<String>();
     assert!(
             md_text.contains("task-parent-ready"),
@@ -2359,7 +2359,7 @@ fn test_concurrent_field_and_body_writes_to_same_node_both_survive() {
         let task_res = server
             .handle_get_task(&json!({"id": "task-concurrent-fb"}))
             .unwrap();
-        let task_text = &task_res.content[0].raw.as_text().unwrap().text;
+        let task_text = &task_res.content[0].as_text().unwrap().text;
         let task_json: serde_json::Value = serde_json::from_str(task_text).unwrap();
         assert_eq!(task_json["status"], "in_progress");
         assert_eq!(task_json["frontmatter"]["repo"], repo_val);
@@ -2368,7 +2368,7 @@ fn test_concurrent_field_and_body_writes_to_same_node_both_survive() {
         let doc_res = server
             .handle_get_document(&json!({"id": "task-concurrent-fb"}))
             .unwrap();
-        let doc_text = &doc_res.content[0].raw.as_text().unwrap().text;
+        let doc_text = &doc_res.content[0].as_text().unwrap().text;
         assert!(
             doc_text.contains(&format!("## Updated Body {iter}")),
             "get_document must reflect updated body in iteration {iter}"
@@ -2607,7 +2607,7 @@ fn test_mcp_endpoints_never_disclose_server_paths() {
     let doc_text: String = create_doc_res
         .content
         .iter()
-        .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+        .filter_map(|c| c.as_text().map(|t| t.text.as_str()))
         .collect();
     assert!(doc_text.starts_with("Note created: "));
     assert!(!doc_text.contains(root_str), "Must not leak root path");
@@ -2627,7 +2627,7 @@ fn test_mcp_endpoints_never_disclose_server_paths() {
     let mem_text: String = create_mem_res
         .content
         .iter()
-        .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+        .filter_map(|c| c.as_text().map(|t| t.text.as_str()))
         .collect();
     assert!(mem_text.starts_with("Memory created: "));
     assert!(!mem_text.contains(root_str), "Must not leak root path");
@@ -2654,7 +2654,7 @@ fn test_mcp_endpoints_never_disclose_server_paths() {
     let del_text: String = del_res
         .content
         .iter()
-        .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+        .filter_map(|c| c.as_text().map(|t| t.text.as_str()))
         .collect();
     assert_eq!(del_text, "Deleted note: Doc To Delete (`note-todelete`)");
     assert!(!del_text.contains(root_str), "Must not leak root path");
@@ -2673,7 +2673,7 @@ fn test_mcp_endpoints_never_disclose_server_paths() {
     let parent_text: String = parent_res
         .content
         .iter()
-        .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+        .filter_map(|c| c.as_text().map(|t| t.text.as_str()))
         .collect();
     let parent_val: serde_json::Value = serde_json::from_str(&parent_text).unwrap();
     let parent_id = parent_val.get("id").unwrap().as_str().unwrap();
@@ -2690,7 +2690,7 @@ fn test_mcp_endpoints_never_disclose_server_paths() {
     let decomp_text: String = decomp_res
         .content
         .iter()
-        .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+        .filter_map(|c| c.as_text().map(|t| t.text.as_str()))
         .collect();
     assert!(!decomp_text.contains(root_str), "Must not leak root path");
     assert!(!decomp_text.contains(".md"), "Must not leak .md extension");
@@ -2713,7 +2713,7 @@ fn test_mcp_endpoints_never_disclose_server_paths() {
     let sync_text: String = sync_res
         .content
         .iter()
-        .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+        .filter_map(|c| c.as_text().map(|t| t.text.as_str()))
         .collect();
     assert!(!sync_text.contains(root_str), "Must not leak root path");
     assert!(
@@ -2757,7 +2757,7 @@ fn test_update_task_empty_updates_returns_unchanged_and_does_not_modify_file() {
     let text = res
         .content
         .iter()
-        .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+        .filter_map(|c| c.as_text().map(|t| t.text.as_str()))
         .collect::<String>();
     assert!(
         text.contains("unchanged"),
@@ -2800,7 +2800,7 @@ fn test_update_task_noop_evaluated_against_disk_not_stale_index() {
     let text = res
         .content
         .iter()
-        .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+        .filter_map(|c| c.as_text().map(|t| t.text.as_str()))
         .collect::<String>();
     assert!(text.contains("updated"), "must report updated, got: {text}");
 
@@ -2919,14 +2919,14 @@ fn test_classification_field_create_get_list_update_roundtrip() {
         }))
         .unwrap();
 
-    let create_text = create_res.content[0].raw.as_text().unwrap().text.clone();
+    let create_text = create_res.content[0].as_text().unwrap().text.clone();
     assert!(create_text.contains("task-bug-1"));
 
     // 2. get_task must return classification
     let get_res = server
         .handle_get_task(&json!({ "id": "task-bug-1" }))
         .unwrap();
-    let get_text = get_res.content[0].raw.as_text().unwrap().text.clone();
+    let get_text = get_res.content[0].as_text().unwrap().text.clone();
     let get_json: serde_json::Value = serde_json::from_str(&get_text).unwrap();
     assert_eq!(get_json["classification"], "bug");
 
@@ -2934,7 +2934,7 @@ fn test_classification_field_create_get_list_update_roundtrip() {
     let list_res = server
         .handle_list_tasks(&json!({ "format": "json" }))
         .unwrap();
-    let list_text = list_res.content[0].raw.as_text().unwrap().text.clone();
+    let list_text = list_res.content[0].as_text().unwrap().text.clone();
     let list_json: serde_json::Value = serde_json::from_str(&list_text).unwrap();
     let found = list_json["tasks"]
         .as_array()
@@ -2955,7 +2955,7 @@ fn test_classification_field_create_get_list_update_roundtrip() {
     let get_res2 = server
         .handle_get_task(&json!({ "id": "task-bug-1" }))
         .unwrap();
-    let get_text2 = get_res2.content[0].raw.as_text().unwrap().text.clone();
+    let get_text2 = get_res2.content[0].as_text().unwrap().text.clone();
     let get_json2: serde_json::Value = serde_json::from_str(&get_text2).unwrap();
     assert_eq!(get_json2["classification"], "spike");
 }
@@ -3341,7 +3341,7 @@ fn test_create_task_reports_actual_written_id_on_hex_title() {
     let text = ok_res
         .content
         .iter()
-        .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+        .filter_map(|c| c.as_text().map(|t| t.text.as_str()))
         .collect::<String>();
     let val: serde_json::Value = serde_json::from_str(&text).unwrap();
     let returned_id = val.get("id").and_then(|v| v.as_str()).unwrap();
@@ -3378,7 +3378,7 @@ fn test_decompose_subtasks_report_actual_written_id_on_hex_title() {
         }))
         .unwrap();
 
-    let text = res.content[0].raw.as_text().unwrap().text.clone();
+    let text = res.content[0].as_text().unwrap().text.clone();
     let files = crate::pkb::scan_directory(&server.pkb_root);
     let subtask_file = files
         .iter()
@@ -3442,7 +3442,7 @@ fn test_create_task_link_quantum_word_and_float_stored_and_indexed() {
     let text = res
         .content
         .iter()
-        .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+        .filter_map(|c| c.as_text().map(|t| t.text.as_str()))
         .collect::<String>();
     let created: serde_json::Value = serde_json::from_str(&text).unwrap();
     let task_id = created.get("id").and_then(|v| v.as_str()).unwrap();
@@ -3451,7 +3451,7 @@ fn test_create_task_link_quantum_word_and_float_stored_and_indexed() {
     let get_text = get_res
         .content
         .iter()
-        .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+        .filter_map(|c| c.as_text().map(|t| t.text.as_str()))
         .collect::<String>();
     let task: serde_json::Value = serde_json::from_str(&get_text).unwrap();
 
@@ -3528,7 +3528,7 @@ fn test_update_task_link_quantum_reflected_without_restart() {
     let get_updated_text = get_updated
         .content
         .iter()
-        .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+        .filter_map(|c| c.as_text().map(|t| t.text.as_str()))
         .collect::<String>();
     let task_updated: serde_json::Value = serde_json::from_str(&get_updated_text).unwrap();
     let links_updated = task_updated
@@ -3667,5 +3667,174 @@ fn test_schemas_do_not_expose_follow_up_tasks() {
     assert!(
         !get_task_schema.contains("follow_up_tasks"),
         "get_task output schema must not expose follow_up_tasks"
+    );
+}
+
+// ── mem_bca03c3d: Include diff in PKB write responses for edit_body and update_body ──
+
+#[test]
+fn test_update_body_response_includes_diff() {
+    let (_tmp, server) = build_disk_backed_server(&[(
+        "tasks/task-diff1.md",
+        "---\nid: task-diff1\ntitle: Diff Test\ntype: task\nstatus: ready\ncreated: 2026-07-23T10:00:00+00:00\n---\n\nLine 1\nLine 2\n",
+    )]);
+
+    let res = server
+        .handle_update_body(&json!({
+            "id": "task-diff1",
+            "new_body": "Line 1\nLine 2 updated\nLine 3\n",
+        }))
+        .expect("update_body must succeed");
+
+    let text = res
+        .content
+        .iter()
+        .filter_map(|c| c.as_text().map(|t| t.text.as_str()))
+        .collect::<String>();
+    let j: serde_json::Value = serde_json::from_str(&text).expect("response must be JSON");
+    let diff = j
+        .get("diff")
+        .and_then(|v| v.as_str())
+        .expect("diff field must be present in response");
+    assert!(diff.contains("--- a/task-diff1"));
+    assert!(diff.contains("+++ b/task-diff1"));
+    assert!(diff.contains("-Line 2"));
+    assert!(diff.contains("+Line 2 updated"));
+    assert!(diff.contains("+Line 3"));
+
+    // Also verify structured_content carries diff
+    let structured = res.structured_content.expect("structured_content must exist");
+    assert_eq!(
+        structured.get("diff").and_then(|v| v.as_str()),
+        Some(diff)
+    );
+}
+
+#[test]
+fn test_edit_body_response_includes_diff() {
+    let (_tmp, server) = build_disk_backed_server(&[(
+        "tasks/task-diff2.md",
+        "---\nid: task-diff2\ntitle: Diff Test 2\ntype: task\nstatus: ready\ncreated: 2026-07-23T10:00:00+00:00\n---\n\nInitial line.\nSecond line.\n",
+    )]);
+
+    let diff_input = "@@ ... @@\n-Second line.\n+Updated second line.\n";
+    let res = server
+        .handle_edit_body(&json!({
+            "id": "task-diff2",
+            "diff": diff_input,
+        }))
+        .expect("edit_body must succeed");
+
+    let text = res
+        .content
+        .iter()
+        .filter_map(|c| c.as_text().map(|t| t.text.as_str()))
+        .collect::<String>();
+    let j: serde_json::Value = serde_json::from_str(&text).expect("response must be JSON");
+    let diff = j
+        .get("diff")
+        .and_then(|v| v.as_str())
+        .expect("diff field must be present in response");
+    assert!(diff.contains("--- a/task-diff2"));
+    assert!(diff.contains("+++ b/task-diff2"));
+    assert!(diff.contains("-Second line."));
+    assert!(diff.contains("+Updated second line."));
+}
+
+#[test]
+fn test_edit_body_dry_run_response_includes_diff() {
+    let (tmp, server) = build_disk_backed_server(&[(
+        "tasks/task-diff3.md",
+        "---\nid: task-diff3\ntitle: Diff Test 3\ntype: task\nstatus: ready\ncreated: 2026-07-23T10:00:00+00:00\n---\n\nInitial line.\nSecond line.\n",
+    )]);
+
+    let diff_input = "@@ ... @@\n-Second line.\n+Mutated second line.\n";
+    let res = server
+        .handle_edit_body(&json!({
+            "id": "task-diff3",
+            "diff": diff_input,
+            "dry_run": true,
+        }))
+        .expect("edit_body dry_run must succeed");
+
+    let text = res
+        .content
+        .iter()
+        .filter_map(|c| c.as_text().map(|t| t.text.as_str()))
+        .collect::<String>();
+    let j: serde_json::Value = serde_json::from_str(&text).expect("response must be JSON");
+    let diff = j
+        .get("diff")
+        .and_then(|v| v.as_str())
+        .expect("diff field must be present in dry_run response");
+    assert!(diff.contains("--- a/task-diff3"));
+    assert!(diff.contains("+++ b/task-diff3"));
+    assert!(diff.contains("-Second line."));
+    assert!(diff.contains("+Mutated second line."));
+
+    // Ensure disk was untouched in dry_run
+    let disk_content = std::fs::read_to_string(tmp.path().join("tasks/task-diff3.md")).unwrap();
+    assert!(disk_content.contains("Second line."));
+    assert!(!disk_content.contains("Mutated second line."));
+}
+
+#[test]
+fn test_edit_alias_tool_dispatch_includes_diff() {
+    let (_tmp, server) = build_disk_backed_server(&[(
+        "tasks/task-diff4.md",
+        "---\nid: task-diff4\ntitle: Diff Test 4\ntype: task\nstatus: ready\ncreated: 2026-07-23T10:00:00+00:00\n---\n\nInitial line.\nSecond line.\n",
+    )]);
+
+    let diff_input = "@@ ... @@\n-Second line.\n+Dispatched second line.\n";
+    let res = server
+        .dispatch_tool_sync(
+            "edit",
+            &json!({
+                "id": "task-diff4",
+                "diff": diff_input,
+            }),
+        )
+        .expect("dispatch_tool_sync('edit') must succeed");
+
+    let text = res
+        .content
+        .iter()
+        .filter_map(|c| c.as_text().map(|t| t.text.as_str()))
+        .collect::<String>();
+    let j: serde_json::Value = serde_json::from_str(&text).expect("response must be JSON");
+    let diff = j
+        .get("diff")
+        .and_then(|v| v.as_str())
+        .expect("diff field must be present in edit dispatch response");
+    assert!(diff.contains("--- a/task-diff4"));
+    assert!(diff.contains("+++ b/task-diff4"));
+    assert!(diff.contains("-Second line."));
+    assert!(diff.contains("+Dispatched second line."));
+}
+
+#[test]
+fn test_output_schema_for_update_body_and_edit_body_declares_diff() {
+    let update_schema = PkbSearchServer::output_schema_for_tool("update_body");
+    let update_val = serde_json::to_value(&update_schema).unwrap();
+    assert_eq!(
+        update_val.pointer("/properties/diff/type").and_then(|v| v.as_str()),
+        Some("string"),
+        "update_body output schema must declare diff property as string: {update_val:?}"
+    );
+
+    let edit_body_schema = PkbSearchServer::output_schema_for_tool("edit_body");
+    let edit_body_val = serde_json::to_value(&edit_body_schema).unwrap();
+    assert_eq!(
+        edit_body_val.pointer("/properties/diff/type").and_then(|v| v.as_str()),
+        Some("string"),
+        "edit_body output schema must declare diff property as string: {edit_body_val:?}"
+    );
+
+    let edit_schema = PkbSearchServer::output_schema_for_tool("edit");
+    let edit_val = serde_json::to_value(&edit_schema).unwrap();
+    assert_eq!(
+        edit_val.pointer("/properties/diff/type").and_then(|v| v.as_str()),
+        Some("string"),
+        "edit alias output schema must declare diff property as string: {edit_val:?}"
     );
 }

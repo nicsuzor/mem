@@ -1937,6 +1937,7 @@ pub struct RewriteBodyResult {
     /// protection on a follow-up write should pass this back as
     /// `expected_modified`.
     pub modified: String,
+    pub diff: String,
 }
 
 /// A write was rejected because the on-disk `modified` timestamp no longer
@@ -2829,6 +2830,7 @@ pub struct EditBodyResult {
     pub body_chars_after: usize,
     pub modified: String,
     pub hunks_applied: usize,
+    pub diff: String,
 }
 
 /// Apply unified-diff hunks to the body of an existing document (Aider-compatible).
@@ -2868,12 +2870,15 @@ fn edit_body_inner(
         let new_content = diff_res.new_content;
         let body_chars_after = new_content.len();
 
+        let doc_id = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("document");
+        let diff_output =
+            crate::udiff::generate_unified_diff(&file_content, &new_content, Some(doc_id));
+
         if !dry_run {
             atomic_write_file(path, &new_content, "edit_body")?;
-            let doc_id = path
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .unwrap_or("document");
             let commit_msg = format!("edit({}): body", doc_id);
             let _ = git_commit_file(path, &commit_msg);
         }
@@ -2883,6 +2888,7 @@ fn edit_body_inner(
             body_chars_after,
             modified: String::new(),
             hunks_applied: diff_res.hunks_applied,
+            diff: diff_output,
         });
     }
 
@@ -2950,6 +2956,38 @@ fn edit_body_inner(
     let trimmed_body = diff_res.new_content.trim_end_matches('\n');
     let body_chars_after = trimmed_body.len();
 
+    let doc_id = fm
+        .get("id")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| {
+            path.file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("document")
+                .to_string()
+        });
+
+    let old_body = parsed
+        .content
+        .trim_start_matches(['\r', '\n'])
+        .trim_end_matches('\n');
+    let old_body_str = if old_body.is_empty() {
+        String::new()
+    } else {
+        format!("{}\n", old_body)
+    };
+    let new_body = diff_res
+        .new_content
+        .trim_start_matches(['\r', '\n'])
+        .trim_end_matches('\n');
+    let new_body_str = if new_body.is_empty() {
+        String::new()
+    } else {
+        format!("{}\n", new_body)
+    };
+    let diff_output =
+        crate::udiff::generate_unified_diff(&old_body_str, &new_body_str, Some(&doc_id));
+
     if dry_run {
         let current_modified = fm
             .get("modified")
@@ -2961,6 +2999,7 @@ fn edit_body_inner(
             body_chars_after,
             modified: current_modified,
             hunks_applied: diff_res.hunks_applied,
+            diff: diff_output,
         });
     }
 
@@ -2980,16 +3019,6 @@ fn edit_body_inner(
 
     atomic_write_file(path, &new_content, "edit_body")?;
 
-    let doc_id = fm
-        .get("id")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string())
-        .unwrap_or_else(|| {
-            path.file_stem()
-                .and_then(|s| s.to_str())
-                .unwrap_or("document")
-                .to_string()
-        });
     let commit_msg = format!("edit({}): body", doc_id);
     let _ = git_commit_file(path, &commit_msg);
 
@@ -2998,6 +3027,7 @@ fn edit_body_inner(
         body_chars_after,
         modified: new_modified,
         hunks_applied: diff_res.hunks_applied,
+        diff: diff_output,
     })
 }
 
@@ -3053,17 +3083,25 @@ fn rewrite_body_inner(
         );
     }
 
-    let (new_content, body_chars_before, body_chars_after, modified) = if !preserve_frontmatter {
+    let (new_content, body_chars_before, body_chars_after, modified, diff, doc_id) = if !preserve_frontmatter {
         // No frontmatter to key a precondition off in this mode — CAS is
         // meaningless here, same as today's behaviour.
         let body_chars_before = file_content.len();
         let new_content = format!("{}\n", trimmed_body);
         let body_chars_after = new_content.len();
+        let doc_id = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("document")
+            .to_string();
+        let diff = crate::udiff::generate_unified_diff(&file_content, &new_content, Some(&doc_id));
         (
             new_content,
             body_chars_before,
             body_chars_after,
             String::new(),
+            diff,
+            doc_id,
         )
     } else {
         let matter = Matter::<YAML>::new();
@@ -3132,6 +3170,37 @@ fn rewrite_body_inner(
         );
         fm.remove("last_modified");
 
+        let doc_id = fm
+            .get("id")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| {
+                path.file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("document")
+                    .to_string()
+            });
+
+        let old_body = parsed
+            .content
+            .trim_start_matches(['\r', '\n'])
+            .trim_end_matches('\n');
+        let old_body_str = if old_body.is_empty() {
+            String::new()
+        } else {
+            format!("{}\n", old_body)
+        };
+        let new_body = trimmed_body
+            .trim_start_matches(['\r', '\n'])
+            .trim_end_matches('\n');
+        let new_body_str = if new_body.is_empty() {
+            String::new()
+        } else {
+            format!("{}\n", new_body)
+        };
+        let diff =
+            crate::udiff::generate_unified_diff(&old_body_str, &new_body_str, Some(&doc_id));
+
         let yaml = serde_yaml::to_string(&fm).context("Failed to serialize frontmatter")?;
         let body_chars_after = trimmed_body.len();
         let new_content = format!("---\n{}---\n\n{}\n", yaml, trimmed_body);
@@ -3140,34 +3209,13 @@ fn rewrite_body_inner(
             body_chars_before,
             body_chars_after,
             new_modified,
+            diff,
+            doc_id,
         )
     };
 
     atomic_write_file(path, &new_content, "rewrite_body")?;
 
-    let doc_id = if preserve_frontmatter {
-        let matter = Matter::<YAML>::new();
-        matter
-            .parse(&file_content)
-            .data
-            .and_then(|d| d.deserialize::<serde_json::Value>().ok())
-            .and_then(|v| {
-                v.get("id")
-                    .and_then(|id| id.as_str())
-                    .map(|s| s.to_string())
-            })
-            .unwrap_or_else(|| {
-                path.file_stem()
-                    .and_then(|s| s.to_str())
-                    .unwrap_or("document")
-                    .to_string()
-            })
-    } else {
-        path.file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("document")
-            .to_string()
-    };
     let commit_msg = format!("rewrite({}): body", doc_id);
     let _ = git_commit_file(path, &commit_msg);
 
@@ -3175,6 +3223,7 @@ fn rewrite_body_inner(
         body_chars_before,
         body_chars_after,
         modified,
+        diff,
     })
 }
 
@@ -4145,6 +4194,10 @@ mod tests {
         let res = edit_body(&path, diff, true, Some("2026-01-01T00:00:00Z"), false).unwrap();
         assert_eq!(res.hunks_applied, 1);
         assert_ne!(res.modified, "2026-01-01T00:00:00Z");
+        assert!(res.diff.contains("--- a/test-doc"));
+        assert!(res.diff.contains("+++ b/test-doc"));
+        assert!(res.diff.contains("-Second line."));
+        assert!(res.diff.contains("+Updated second line."));
 
         let disk_content = fs::read_to_string(&path).unwrap();
         assert!(disk_content.contains("Updated second line."));
@@ -4164,6 +4217,10 @@ mod tests {
         let res = edit_body(&path, diff, true, Some("2026-01-01T00:00:00Z"), true).unwrap();
         assert_eq!(res.hunks_applied, 1);
         assert_eq!(res.modified, "2026-01-01T00:00:00Z");
+        assert!(res.diff.contains("--- a/test-doc"));
+        assert!(res.diff.contains("+++ b/test-doc"));
+        assert!(res.diff.contains("-Initial body text."));
+        assert!(res.diff.contains("+Mutated body text."));
 
         let disk_content = fs::read_to_string(&path).unwrap();
         assert_eq!(disk_content, initial);
@@ -5400,7 +5457,13 @@ mod tests {
         let path = create_task(root, fields).unwrap();
 
         let new_body = "## Rewritten\n\nNew content here.\n";
-        rewrite_body(&path, new_body, true, None).unwrap();
+        let res = rewrite_body(&path, new_body, true, None).unwrap();
+        assert!(res.diff.contains("--- a/mem_"));
+        assert!(res.diff.contains("+++ b/mem_"));
+        assert!(res.diff.contains("-## Original"));
+        assert!(res.diff.contains("+## Rewritten"));
+        assert!(res.diff.contains("-Old content here."));
+        assert!(res.diff.contains("+New content here."));
 
         let content = fs::read_to_string(&path).unwrap();
         let after_fm = content.split("---\n\n").nth(1).unwrap_or("");
@@ -5408,6 +5471,19 @@ mod tests {
             after_fm.trim_end_matches('\n') == new_body.trim_end_matches('\n'),
             "body should match new_body verbatim after rewrite; got:\n{after_fm}"
         );
+    }
+
+    #[test]
+    fn rewrite_body_preserve_false_includes_diff() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("scratch.md");
+        fs::write(&path, "old whole file\n").unwrap();
+
+        let res = rewrite_body(&path, "new whole file\n", false, None).unwrap();
+        assert!(res.diff.contains("--- a/scratch"));
+        assert!(res.diff.contains("+++ b/scratch"));
+        assert!(res.diff.contains("-old whole file"));
+        assert!(res.diff.contains("+new whole file"));
     }
 
     #[test]

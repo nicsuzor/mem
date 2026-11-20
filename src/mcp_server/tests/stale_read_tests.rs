@@ -9,7 +9,7 @@ fn task_json(result: &CallToolResult) -> serde_json::Value {
     let text = result
         .content
         .iter()
-        .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+        .filter_map(|c| c.as_text().map(|t| t.text.as_str()))
         .collect::<String>();
     serde_json::from_str(&text).unwrap_or_else(|_| panic!("expected JSON, got: {text}"))
 }
@@ -203,7 +203,7 @@ fn test_list_tasks_self_invalidates_and_returns_untracked_file() {
     let clean_text = clean
         .content
         .iter()
-        .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+        .filter_map(|c| c.as_text().map(|t| t.text.as_str()))
         .collect::<String>();
     assert!(
         clean_text.contains("Tracked task"),
@@ -227,7 +227,7 @@ fn test_list_tasks_self_invalidates_and_returns_untracked_file() {
     let after_text = after
         .content
         .iter()
-        .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+        .filter_map(|c| c.as_text().map(|t| t.text.as_str()))
         .collect::<String>();
     assert!(
         after_text.contains("untracked-task") && after_text.contains("Untracked"),
@@ -241,7 +241,7 @@ fn test_list_tasks_self_invalidates_and_returns_untracked_file() {
     let after_md_text = after_md
         .content
         .iter()
-        .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+        .filter_map(|c| c.as_text().map(|t| t.text.as_str()))
         .collect::<String>();
     assert!(
         after_md_text.contains("Untracked") && after_md_text.contains("untracked-task"),
@@ -282,7 +282,7 @@ fn test_list_tasks_self_invalidates_on_same_count_node_swap() {
     let list1_text = list1
         .content
         .iter()
-        .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+        .filter_map(|c| c.as_text().map(|t| t.text.as_str()))
         .collect::<String>();
     assert!(list1_text.contains("task-one"));
 
@@ -304,7 +304,7 @@ fn test_list_tasks_self_invalidates_on_same_count_node_swap() {
     let list2_text = list2
         .content
         .iter()
-        .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+        .filter_map(|c| c.as_text().map(|t| t.text.as_str()))
         .collect::<String>();
 
     assert!(
@@ -386,7 +386,7 @@ fn test_read_after_write_synchronous_visibility_for_update_body_and_update_task(
     let get_doc_text = get_doc_res
         .content
         .iter()
-        .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+        .filter_map(|c| c.as_text().map(|t| t.text.as_str()))
         .collect::<String>();
     assert!(
         get_doc_text.contains("Synchronous flush confirmed."),
@@ -398,7 +398,7 @@ fn test_read_after_write_synchronous_visibility_for_update_body_and_update_task(
     let get_task_text = get_task_res
         .content
         .iter()
-        .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+        .filter_map(|c| c.as_text().map(|t| t.text.as_str()))
         .collect::<String>();
     assert!(
         get_task_text.contains("Synchronous flush confirmed."),
@@ -523,7 +523,7 @@ fn test_refresh_graph_closes_disk_gap_and_reports_unparseable_files() {
     let list_text = list_res
         .content
         .iter()
-        .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+        .filter_map(|c| c.as_text().map(|t| t.text.as_str()))
         .collect::<String>();
     assert!(
         !list_text.contains("index_warning"),
@@ -560,7 +560,7 @@ fn list_tasks_tag_ids(server: &PkbSearchServer, tag: &str) -> Vec<String> {
     let text: String = result
         .content
         .iter()
-        .filter_map(|c| c.raw.as_text().map(|t| t.text.clone()))
+        .filter_map(|c| c.as_text().map(|t| t.text.clone()))
         .collect();
     match serde_json::from_str::<serde_json::Value>(&text) {
         Ok(json) => json

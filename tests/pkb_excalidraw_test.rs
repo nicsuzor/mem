@@ -88,7 +88,7 @@ fn test_man_page_help_structure_and_coverage() {
 
     // Verify every subcommand appears in the help
     let all_subcommands = [
-        "summary", "map", "style", "check", "diff", "struct-diff", "lib", "item",
+        "summary", "map", "style", "check", "reindex", "diff", "struct-diff", "lib", "item",
         "nodes", "edges", "arrows", "inspect", "get", "add-node", "update-node", "add-text",
         "connect", "set-text", "fit", "move-elem", "delete-elem", "batch",
         "theme", "overlap", "arrows-check",
@@ -102,7 +102,7 @@ fn test_man_page_help_structure_and_coverage() {
 
     // Verify every flag appears in the help
     let all_flags = [
-        "--type", "--text", "--at", "--size", "--role", "--color", "--id",
+        "--fix", "--type", "--text", "--at", "--size", "--role", "--color", "--id",
         "--angle", "--roughness", "--fill-style", "--preset", "--font-size",
         "--from", "--to", "--label", "--curved", "--stroke-style", "--by",
         "--cascade-arrows", "--set", "--bbox", "--filter", "--filter-json",
@@ -3373,7 +3373,8 @@ fn assert_indices_valid_and_compact(path: &str, max_len: usize) {
 fn test_add_node_and_connect_mint_compact_valid_indices() {
     let file = write_scene(serde_json::json!([]));
     let path = file.path().to_str().unwrap();
-    for i in 0..20 {
+    // 26 add-node + 25 connect = 51 successive mutating CLI calls (> 50 required).
+    for i in 0..26 {
         let id = format!("n{i}");
         let at = format!("{},0", i * 200);
         let (code, _, stderr) =
@@ -3386,8 +3387,8 @@ fn test_add_node_and_connect_mint_compact_valid_indices() {
             assert_eq!(code, 0, "stderr: {stderr}");
         }
     }
-    // 20 nodes x 2 + 19 labelled arrows x 2 = 78 keys: a1..az, b00..b0G.
-    assert_eq!(read_elements(path).len(), 78);
+    // 26 nodes x 2 + 25 labelled arrows x 2 = 102 elements, keys stay bounded (<= 3 chars).
+    assert_eq!(read_elements(path).len(), 102);
     assert_indices_valid_and_compact(path, 3);
     let (code, stdout, _) = run_bin(&[path, "check"]);
     assert_eq!(code, 0, "check: {stdout}");
@@ -3425,6 +3426,36 @@ fn test_check_reports_invalid_and_non_monotonic_index_keys() {
 }
 
 #[test]
+fn test_atomic_save_refuses_invalid_fractional_index_keys_aops_2c406ade() {
+    // Valid initial scene
+    let file = write_scene(serde_json::json!([
+        shape("r1", "rectangle", 0.0, 0.0, 100.0, 50.0, "a0"),
+        shape("r2", "rectangle", 200.0, 0.0, 100.0, 50.0, "a1"),
+    ]));
+    let path = file.path().to_str().unwrap();
+    let original = fs::read_to_string(path).unwrap();
+
+    // Attempting to write an invalid trailing-zero key via `update` must be refused by atomic_save.
+    let (code, _, stderr) = run_bin(&[path, "update", "r2", "--set", r#"{"index": "a0010100"}"#]);
+    assert_eq!(code, 1, "atomic_save must refuse invalid index key; stderr: {stderr}");
+    assert!(stderr.contains("invalid fractional index"), "stderr: {stderr}");
+    assert_eq!(fs::read_to_string(path).unwrap(), original, "file must remain untouched");
+
+    // Mutating a scene that already has invalid legacy index keys without running reindex/check --fix
+    // must also refuse to save.
+    let legacy = write_scene(serde_json::json!([
+        shape("r1", "rectangle", 0.0, 0.0, 100.0, 50.0, "a0"),
+        shape("r2", "rectangle", 200.0, 0.0, 100.0, 50.0, "a000"),
+    ]));
+    let legacy_path = legacy.path().to_str().unwrap();
+    let legacy_before = fs::read_to_string(legacy_path).unwrap();
+    let (code, _, stderr) = run_bin(&[legacy_path, "add-node", "--text", "New", "--id", "n3", "--at", "400,0"]);
+    assert_eq!(code, 1, "atomic_save must refuse scene with invalid keys; stderr: {stderr}");
+    assert!(stderr.contains("invalid fractional index"), "stderr: {stderr}");
+    assert_eq!(fs::read_to_string(legacy_path).unwrap(), legacy_before, "legacy file must remain untouched");
+}
+
+#[test]
 fn test_mutation_repairs_legacy_invalid_index_keys() {
     let file = write_scene(serde_json::json!([
         shape("r1", "rectangle", 0.0, 0.0, 100.0, 50.0, "a0"),
@@ -3433,14 +3464,212 @@ fn test_mutation_repairs_legacy_invalid_index_keys() {
         shape("r4", "rectangle", 600.0, 0.0, 100.0, 50.0, "a0010100"),
     ]));
     let path = file.path().to_str().unwrap();
-    let (code, _, stderr) = run_bin(&[path, "add-node", "--text", "New", "--id", "n5", "--at", "800,0"]);
-    assert_eq!(code, 0, "stderr: {stderr}");
+    let (code, stdout, stderr) = run_bin(&[path, "reindex"]);
+    assert_eq!(code, 0, "reindex stderr: {stderr}\nstdout: {stdout}");
+    assert!(stdout.contains("OK: reindexed 3 elements"), "stdout: {stdout}");
+
     let ids: Vec<String> =
         read_elements(path).iter().map(|e| e["id"].as_str().unwrap().to_string()).collect();
     assert_eq!(&ids[..4], &["r1", "r2", "r3", "r4"], "z-order preserved");
     assert_indices_valid_and_compact(path, 4);
     let (code, stdout, _) = run_bin(&[path, "check"]);
     assert_eq!(code, 0, "check: {stdout}");
+
+    // Also verify `check --fix` repairs malformed, duplicate, and out-of-order keys in place.
+    let file2 = write_scene(serde_json::json!([
+        shape("r1", "rectangle", 0.0, 0.0, 100.0, 50.0, "a0"),
+        shape("r2", "rectangle", 200.0, 0.0, 100.0, 50.0, "a00"),
+        shape("r3", "rectangle", 400.0, 0.0, 100.0, 50.0, "a0"),
+        shape("r4", "rectangle", 600.0, 0.0, 100.0, 50.0, "b0"),
+    ]));
+    let path2 = file2.path().to_str().unwrap();
+    let (code2, stdout2, stderr2) = run_bin(&[path2, "check", "--fix"]);
+    assert_eq!(code2, 0, "check --fix stderr: {stderr2}\nstdout: {stdout2}");
+    assert!(stdout2.contains("OK: repaired 3 index key(s)"), "stdout: {stdout2}");
+    let ids2: Vec<String> =
+        read_elements(path2).iter().map(|e| e["id"].as_str().unwrap().to_string()).collect();
+    assert_eq!(&ids2, &["r1", "r2", "r3", "r4"], "z-order preserved under check --fix");
+    assert_indices_valid_and_compact(path2, 4);
+}
+
+#[test]
+fn test_connect_curved_differs_from_straight_aops_ae441dcc() {
+    let file = write_scene(serde_json::json!([
+        shape("n1", "rectangle", 0.0, 0.0, 100.0, 60.0, "a0"),
+        shape("n2", "rectangle", 300.0, 0.0, 100.0, 60.0, "a1"),
+    ]));
+    let path = file.path().to_str().unwrap();
+
+    // 1. Straight connect
+    let (code1, _, stderr1) = run_bin(&[path, "connect", "--from", "n1", "--to", "n2", "--label", "straight"]);
+    assert_eq!(code1, 0, "stderr: {stderr1}");
+
+    // 2. Curved connect
+    let (code2, _, stderr2) = run_bin(&[path, "connect", "--from", "n1", "--to", "n2", "--curved", "--label", "curved"]);
+    assert_eq!(code2, 0, "stderr: {stderr2}");
+
+    let (code_chk, stdout_chk, _) = run_bin(&[path, "check"]);
+    assert_eq!(code_chk, 0, "check: {stdout_chk}");
+
+    let els = read_elements(path);
+    let arrows: Vec<&serde_json::Value> = els.iter().filter(|e| e["type"] == "arrow").collect();
+    assert_eq!(arrows.len(), 2);
+
+    let straight_arr = arrows[0];
+    let curved_arr = arrows[1];
+
+    // Straight has 2 points; curved has 3 points with non-zero midpoint deflection.
+    let s_pts = straight_arr["points"].as_array().unwrap();
+    let c_pts = curved_arr["points"].as_array().unwrap();
+    assert_eq!(s_pts.len(), 2, "straight arrow should have 2 points");
+    assert_eq!(c_pts.len(), 3, "curved arrow should have 3 points");
+
+    let mid_x = c_pts[1][0].as_f64().unwrap();
+    let mid_y = c_pts[1][1].as_f64().unwrap();
+    assert!(mid_y.abs() > 10.0, "curved midpoint must deflect perpendicularly from horizontal chord: ({mid_x}, {mid_y})");
+    assert!(
+        curved_arr["height"].as_f64().unwrap() > 10.0,
+        "curved arrow height must match bowed points bounding box, got {}",
+        curved_arr["height"]
+    );
+    assert_eq!(curved_arr["roundness"]["type"], 3);
+
+    // SVG export must render straight as <line ...> and curved as quadratic <path d="M ... Q ...">
+    let (code_svg, svg, stderr_svg) = run_bin(&[path, "screenshot", "--format", "svg"]);
+    assert_eq!(code_svg, 0, "stderr: {stderr_svg}");
+    assert!(svg.contains("<line "), "straight arrow should render as <line>:\n{svg}");
+    assert!(svg.contains("<path d=\"M ") && svg.contains(" Q "), "curved arrow should render as quadratic Bezier <path>:\n{svg}");
+}
+
+#[test]
+fn test_update_set_points_recomputes_dimensions_and_check_flags_mismatch_aops_9f4fd19e() {
+    let file = write_scene(serde_json::json!([
+        shape("n1", "rectangle", 0.0, 0.0, 100.0, 60.0, "a0"),
+        shape("n2", "rectangle", 700.0, 600.0, 100.0, 60.0, "a1"),
+    ]));
+    let path = file.path().to_str().unwrap();
+
+    let (code_c, _, stderr_c) = run_bin(&[path, "connect", "--from", "n1", "--to", "n2"]);
+    assert_eq!(code_c, 0, "stderr: {stderr_c}");
+    let els_before = read_elements(path);
+    let arrow_id = els_before.iter().find(|e| e["type"] == "arrow").unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // Update points cleanly -> width and height must recompute to points bounding box extent.
+    let (code_u, _, stderr_u) = run_bin(&[
+        path,
+        "update",
+        &arrow_id,
+        "--set",
+        r#"{"points": [[0.0, 0.0], [-601.44, -515.36]]}"#,
+    ]);
+    assert_eq!(code_u, 0, "update failed: {stderr_u}");
+
+    let els_after = read_elements(path);
+    let arrow = els_after.iter().find(|e| e["id"] == arrow_id).unwrap();
+    assert!((arrow["width"].as_f64().unwrap() - 601.44).abs() < 1e-6);
+    assert!((arrow["height"].as_f64().unwrap() - 515.36).abs() < 1e-6);
+
+    let (code_chk, stdout_chk, _) = run_bin(&[path, "check"]);
+    assert_eq!(code_chk, 0, "check: {stdout_chk}");
+
+    // Now test fixture with stale centre-to-centre width/height (786x673.5 vs 601.44x515.36).
+    let stale_file = write_scene(serde_json::json!([
+        shape("n1", "rectangle", 0.0, 0.0, 100.0, 60.0, "a0"),
+        shape("n2", "rectangle", 700.0, 600.0, 100.0, 60.0, "a1"),
+        {
+            "id": "arr_stale",
+            "type": "arrow",
+            "x": 100.0,
+            "y": 60.0,
+            "width": 786.0,
+            "height": 673.5,
+            "index": "a2",
+            "points": [[0.0, 0.0], [-601.44, -515.36]],
+            "startBinding": { "elementId": "n1" },
+            "endBinding": { "elementId": "n2" },
+            "isDeleted": false
+        }
+    ]));
+    let (code_stale, stdout_stale, _) = run_bin(&[stale_file.path().to_str().unwrap(), "check"]);
+    assert_eq!(code_stale, 1, "check must fail on stale width/height: {stdout_stale}");
+    assert!(
+        stdout_stale.contains("arr_stale") && stdout_stale.contains("disagrees with points bounding box"),
+        "stdout: {stdout_stale}"
+    );
+}
+
+#[test]
+fn test_check_hyphen_wrap_passes_and_truncation_marked_aops_767dba63() {
+    let sadia_wrapped = "where we are able to develop a test\nset that accurately labels well-\nknown, clear examples: for example,\nif we can think of a prompt that is\nlikely to generate representations\nof people as cockroaches, we could\ntest whether it more frequently\ngenerates people as cockroaches\nfor Tutsis";
+    let sadia_orig = "where we are able to develop a test set that accurately labels well-known, clear examples: for example, if we can think of a prompt that is likely to generate representations of people as cockroaches, we could test whether it more frequently generates people as cockroaches for Tutsis";
+
+    let ok_scene = write_scene(serde_json::json!([
+        {
+            "id": "t_hyphen",
+            "type": "text",
+            "x": 0.0,
+            "y": 0.0,
+            "width": 200.0,
+            "height": 40.0,
+            "index": "a0",
+            "text": "well-\nknown example",
+            "originalText": "well-known example",
+            "isDeleted": false
+        },
+        {
+            "id": "3_QPZA7oNi1GRBXWMFGI6",
+            "type": "text",
+            "x": 0.0,
+            "y": 100.0,
+            "width": 300.0,
+            "height": 200.0,
+            "index": "a1",
+            "text": sadia_wrapped,
+            "originalText": sadia_orig,
+            "isDeleted": false
+        },
+        {
+            "id": "ElXU6MWW4f6b6RNMFUw7f",
+            "type": "text",
+            "x": 0.0,
+            "y": 320.0,
+            "width": 300.0,
+            "height": 120.0,
+            "index": "a2",
+            "text": "lots of industry sources on this -\nconsolidation and rationalisation",
+            "originalText": "lots of industry sources on this - consolidation and rationalisation",
+            "isDeleted": false
+        }
+    ]));
+    let (code_ok, stdout_ok, _) = run_bin(&[ok_scene.path().to_str().unwrap(), "check"]);
+    assert_eq!(code_ok, 0, "hyphen-wrapped text must pass check: {stdout_ok}");
+
+    // Genuine long mismatch must fail and explicitly mark truncation with ellipsis & total char length.
+    let long_a = "This is a deliberately long text string exceeding sixty characters so truncation applies cleanly here";
+    let long_b = "This is a deliberately different originalText string exceeding sixty characters for testing";
+    let bad_scene = write_scene(serde_json::json!([
+        {
+            "id": "t_mismatch",
+            "type": "text",
+            "x": 0.0,
+            "y": 0.0,
+            "width": 300.0,
+            "height": 40.0,
+            "index": "a0",
+            "text": long_a,
+            "originalText": long_b,
+            "isDeleted": false
+        }
+    ]));
+    let (code_bad, stdout_bad, _) = run_bin(&[bad_scene.path().to_str().unwrap(), "check"]);
+    assert_eq!(code_bad, 1, "genuine mismatch must fail: {stdout_bad}");
+    let expected_len_a = format!("... (truncated, {} chars total)", long_a.chars().count());
+    let expected_len_b = format!("... (truncated, {} chars total)", long_b.chars().count());
+    assert!(stdout_bad.contains(&expected_len_a), "missing truncation marker A in:\n{stdout_bad}");
+    assert!(stdout_bad.contains(&expected_len_b), "missing truncation marker B in:\n{stdout_bad}");
 }
 
 const LABEL_ONLY_SAMPLE: &str = r##"{

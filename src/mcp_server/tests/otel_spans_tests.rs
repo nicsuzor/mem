@@ -19,7 +19,7 @@ impl SpanExporter for InMemorySpanExporter {
     fn shutdown(&mut self) {}
 }
 
-static OTEL_TEST_MUTEX: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+pub(crate) static OTEL_TEST_MUTEX: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 #[tokio::test]
 async fn test_named_spans_emitted() {
@@ -138,7 +138,7 @@ async fn test_traceparent_parents_mcp_and_internal_spans() {
     let parts = req.into_parts().0;
 
     let res = server
-        .execute_tool_call("search", &json!({"query": "search query"}), Some(&parts), None)
+        .execute_tool_call("search", &json!({"query": "search query", "session_id": "test-session"}), Some(&parts), None)
         .await
         .unwrap();
     assert!(!res.content.is_empty());
@@ -233,7 +233,7 @@ async fn test_mcp_span_per_call_attributes() {
     .unwrap();
 
     let res = server
-        .execute_tool_call("search", &json!({"query": "search query"}), None, None)
+        .execute_tool_call("search", &json!({"query": "search query", "session_id": "test-session"}), None, None)
         .await
         .unwrap();
     assert!(!res.content.is_empty());
@@ -334,10 +334,10 @@ async fn test_meta_traceparent_parents_mcp_and_internal_spans() {
 
     let mut meta_map = serde_json::Map::new();
     meta_map.insert("traceparent".to_string(), serde_json::Value::String(traceparent_str));
-    let meta = rmcp::model::Meta(meta_map);
+    let meta = rmcp::model::RequestMetaObject(rmcp::model::MetaObject(meta_map));
 
     let res = server
-        .execute_tool_call("search", &json!({"query": "search query"}), None, Some(&meta))
+        .execute_tool_call("search", &json!({"query": "search query", "session_id": "test-session"}), None, Some(&meta))
         .await
         .unwrap();
     assert!(!res.content.is_empty());
@@ -399,7 +399,7 @@ async fn test_get_task_mcp_span_attributes() {
     );
 
     let res = server
-        .execute_tool_call("get_task", &json!({"id": "task1"}), None, None)
+        .execute_tool_call("get_task", &json!({"id": "task1", "session_id": "test-session"}), None, None)
         .await
         .unwrap();
     assert!(!res.content.is_empty());

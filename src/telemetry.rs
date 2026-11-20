@@ -12,6 +12,8 @@ pub struct ToolCallTelemetry {
     pub response_bytes: usize,
     pub latency_ms: u128,
     pub is_error: bool,
+    #[serde(default)]
+    pub estimated_tokens: usize,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -20,6 +22,8 @@ pub struct ToolStats {
     pub total_bytes: usize,
     pub total_latency_ms: u128,
     pub error_count: usize,
+    #[serde(default)]
+    pub total_estimated_tokens: usize,
 }
 
 /// Resolve the telemetry file path.
@@ -53,6 +57,7 @@ pub fn record_call(tool_name: &str, response_bytes: usize, latency_ms: u128, is_
         response_bytes,
         latency_ms,
         is_error,
+        estimated_tokens: response_bytes / 4,
     };
 
     if let Ok(json) = serde_json::to_string(&entry) {
@@ -83,6 +88,11 @@ pub fn get_stats() -> HashMap<String, ToolStats> {
                 s.count += 1;
                 s.total_bytes += entry.response_bytes;
                 s.total_latency_ms += entry.latency_ms;
+                s.total_estimated_tokens += if entry.estimated_tokens > 0 {
+                    entry.estimated_tokens
+                } else {
+                    entry.response_bytes / 4
+                };
                 if entry.is_error {
                     s.error_count += 1;
                 }
@@ -137,9 +147,11 @@ mod tests {
         let s = stats.get("search").expect("search recorded");
         assert_eq!(s.count, 2);
         assert_eq!(s.total_bytes, 579);
+        assert_eq!(s.total_estimated_tokens, 123 / 4 + 456 / 4);
         assert_eq!(s.error_count, 1);
         let g = stats.get("get_document").expect("get_document recorded");
         assert_eq!(g.count, 1);
+        assert_eq!(g.total_estimated_tokens, 10 / 4);
 
         std::env::remove_var("MEM_TELEMETRY_PATH");
         let _ = std::fs::remove_dir_all(&dir);

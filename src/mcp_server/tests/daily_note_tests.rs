@@ -19,7 +19,7 @@ fn daily_note_create_and_rewrite_leaves_exactly_one_file() {
     let create_text: String = create_res
         .content
         .iter()
-        .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+        .filter_map(|c| c.as_text().map(|t| t.text.as_str()))
         .collect();
     assert!(
         create_text.contains("Daily created:"),
@@ -58,7 +58,7 @@ fn daily_note_create_and_rewrite_leaves_exactly_one_file() {
     let update_text: String = update_res
         .content
         .iter()
-        .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+        .filter_map(|c| c.as_text().map(|t| t.text.as_str()))
         .collect();
     assert!(
         update_text.contains("\"ok\":true") || update_text.contains("\"ok\": true"),

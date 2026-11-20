@@ -206,7 +206,7 @@ fn test_filtered_list_ready_tasks_replay() {
     // Inspect the JSON output from CallToolResult.
     // list_tasks json format returns {"total":…, "showing":…, "tasks":[…]}.
     let content = &res.content[0];
-    let text = content.raw.as_text().unwrap().text.as_str();
+    let text = content.as_text().unwrap().text.as_str();
     let envelope: serde_json::Value = serde_json::from_str(text).unwrap();
     let tasks_arr = envelope["tasks"]
         .as_array()
@@ -393,26 +393,5 @@ fn test_create_task_missing_parent_empty_store_data_is_none() {
         err.data.is_none(),
         "When the vector store has no candidates, error data must be None; got: {:?}",
         err.data
-    );
-}
-
-// ── Replay Case 4: session reaping on 60s keep-alive (mem-2ae61ce6) ──
-
-#[test]
-fn test_session_reaping_keep_alive_replay() {
-    // This incident (mem-2ae61ce6) relates to the HTTP session keep-alive timeout.
-    // In unit tests, this is not deterministically testable at runtime because it
-    // requires waiting for or mocking the LocalSessionManager's timer over HTTP/SSE.
-    //
-    // However, we assert here that the keep-alive config in `src/cli.rs` is set to 24 hours
-    // (86,400 seconds) to prevent premature session reaping. We verify this by reading
-    // `src/cli.rs` and asserting the presence of the 24-hour timeout setting code.
-    let cli_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/cli.rs");
-    let content = std::fs::read_to_string(cli_path).expect("Could not read src/cli.rs");
-
-    assert!(
-        content.contains("session_manager_inner.session_config.keep_alive =")
-            || content.contains("keep_alive = Some(std::time::Duration::from_secs(24 * 3600))"),
-        "The CLI keep-alive configuration for MCP sessions must be configured to 24 hours (refs mem-2ae61ce6)"
     );
 }

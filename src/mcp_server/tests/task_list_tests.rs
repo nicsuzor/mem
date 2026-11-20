@@ -31,7 +31,7 @@ fn test_top_n_by_metric() {
             "n": 5
         }))
         .unwrap();
-    let pr_text = res_pr.content[0].raw.as_text().unwrap().text.as_str();
+    let pr_text = res_pr.content[0].as_text().unwrap().text.as_str();
     let pr_val: serde_json::Value = serde_json::from_str(pr_text).unwrap();
     let pr_arr = pr_val.as_array().unwrap();
     assert_eq!(pr_arr.len(), 5);
@@ -57,7 +57,7 @@ fn test_top_n_by_metric() {
             "n": 3
         }))
         .unwrap();
-    let bt_text = res_bt.content[0].raw.as_text().unwrap().text.as_str();
+    let bt_text = res_bt.content[0].as_text().unwrap().text.as_str();
     let bt_val: serde_json::Value = serde_json::from_str(bt_text).unwrap();
     let bt_arr = bt_val.as_array().unwrap();
     assert_eq!(bt_arr.len(), 3);
@@ -75,7 +75,7 @@ fn test_top_n_by_metric() {
             "n": 3
         }))
         .unwrap();
-    let deg_text = res_deg.content[0].raw.as_text().unwrap().text.as_str();
+    let deg_text = res_deg.content[0].as_text().unwrap().text.as_str();
     let deg_val: serde_json::Value = serde_json::from_str(deg_text).unwrap();
     let deg_arr = deg_val.as_array().unwrap();
     assert_eq!(deg_arr.len(), 3);
@@ -94,7 +94,7 @@ fn test_top_n_by_metric() {
             "n": 10
         }))
         .unwrap();
-    let proj_text = res_proj.content[0].raw.as_text().unwrap().text.as_str();
+    let proj_text = res_proj.content[0].as_text().unwrap().text.as_str();
     let proj_val: serde_json::Value = serde_json::from_str(proj_text).unwrap();
     let proj_arr = proj_val.as_array().unwrap();
     // build_project_test_graph has exactly 3 epic containers: proj-alpha, proj-beta, proj-gamma
@@ -192,7 +192,7 @@ fn test_list_tasks_explicit_markdown_format_honoured() {
     let text = result
         .content
         .iter()
-        .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+        .filter_map(|c| c.as_text().map(|t| t.text.as_str()))
         .collect::<String>();
     assert!(
         text.contains("| # | ID |"),
@@ -444,7 +444,7 @@ fn test_list_tasks_project_filter_nonexistent_returns_empty() {
     let text = result
         .content
         .iter()
-        .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+        .filter_map(|c| c.as_text().map(|t| t.text.as_str()))
         .collect::<String>();
     // Either empty JSON tasks array or "No tasks found" message
     let is_empty = text.contains("No tasks found")
@@ -620,7 +620,7 @@ fn test_get_task_carries_flow_and_display_not_retired_fields() {
     let text = result
         .content
         .iter()
-        .filter_map(|c| c.raw.as_text().map(|t| t.text.as_str()))
+        .filter_map(|c| c.as_text().map(|t| t.text.as_str()))
         .collect::<String>();
     let t: serde_json::Value =
         serde_json::from_str(&text).expect("get_task json output should parse");
@@ -856,7 +856,7 @@ fn test_list_tasks_has_superseded_by_filter() {
             &json!({"has_superseded_by": true, "project": "nonexistent", "format": "json"}),
         )
         .unwrap();
-    let text_empty = res_empty.content[0].raw.as_text().unwrap().text.as_str();
+    let text_empty = res_empty.content[0].as_text().unwrap().text.as_str();
     assert!(
         text_empty.contains("No tasks found matching filters.")
             || text_empty.contains("\"total\": 0"),
@@ -869,7 +869,6 @@ fn test_list_tasks_has_superseded_by_filter() {
         .handle_list_tasks(&json!({"has_superseded_by": true, "format": "markdown"}))
         .unwrap();
     let md_text = res_filtered_md.content[0]
-        .raw
         .as_text()
         .unwrap()
         .text
@@ -890,7 +889,6 @@ fn test_list_tasks_has_superseded_by_filter() {
         .handle_list_tasks(&json!({"format": "markdown"}))
         .unwrap();
     let unf_md_text = res_unfiltered_md.content[0]
-        .raw
         .as_text()
         .unwrap()
         .text
@@ -978,7 +976,7 @@ fn test_untyped_node_with_id_is_indexed_in_list_tasks_and_emits_parse_warning() 
     let res_get = server
         .handle_get_task(&json!({"id": "aops-untyped-test"}))
         .unwrap();
-    let get_text = res_get.content[0].raw.as_text().unwrap().text.as_str();
+    let get_text = res_get.content[0].as_text().unwrap().text.as_str();
     let get_val: serde_json::Value = serde_json::from_str(get_text).unwrap();
     let warnings = get_val
         .get("parse_warnings")
@@ -1077,7 +1075,7 @@ fn test_task_summary_global_and_project_scoping_regression() {
 
     // 1. Global summary (no project parameter)
     let global_res = server.handle_task_summary(&json!({})).unwrap();
-    let global_text = global_res.content[0].raw.as_text().unwrap().text.as_str();
+    let global_text = global_res.content[0].as_text().unwrap().text.as_str();
     let global_val: serde_json::Value = serde_json::from_str(global_text).unwrap();
 
     let global_ready = global_val.get("ready").unwrap().as_u64().unwrap();
@@ -1092,7 +1090,7 @@ fn test_task_summary_global_and_project_scoping_regression() {
     let p1_res = server
         .handle_task_summary(&json!({"project": "proj-one"}))
         .unwrap();
-    let p1_text = p1_res.content[0].raw.as_text().unwrap().text.as_str();
+    let p1_text = p1_res.content[0].as_text().unwrap().text.as_str();
     let p1_val: serde_json::Value = serde_json::from_str(p1_text).unwrap();
     let p1_ready = p1_val.get("ready").unwrap().as_u64().unwrap();
     let p1_blocked = p1_val.get("blocked").unwrap().as_u64().unwrap();
@@ -1103,7 +1101,7 @@ fn test_task_summary_global_and_project_scoping_regression() {
     let p1_list_res = server
         .handle_list_tasks(&json!({"project": "proj-one", "status": "ready", "format": "json"}))
         .unwrap();
-    let p1_list_text = p1_list_res.content[0].raw.as_text().unwrap().text.as_str();
+    let p1_list_text = p1_list_res.content[0].as_text().unwrap().text.as_str();
     let p1_list_val: serde_json::Value = serde_json::from_str(p1_list_text).unwrap();
     let p1_list_total = p1_list_val.get("total").unwrap().as_u64().unwrap();
     assert_eq!(
@@ -1115,7 +1113,7 @@ fn test_task_summary_global_and_project_scoping_regression() {
     let p1_alias_res = server
         .handle_task_summary(&json!({"project": "ProjectOne"}))
         .unwrap();
-    let p1_alias_text = p1_alias_res.content[0].raw.as_text().unwrap().text.as_str();
+    let p1_alias_text = p1_alias_res.content[0].as_text().unwrap().text.as_str();
     let p1_alias_val: serde_json::Value = serde_json::from_str(p1_alias_text).unwrap();
     assert_eq!(
         p1_alias_val.get("ready").unwrap().as_u64().unwrap(),
@@ -1127,7 +1125,7 @@ fn test_task_summary_global_and_project_scoping_regression() {
     let p2_res = server
         .handle_task_summary(&json!({"project": "proj-two"}))
         .unwrap();
-    let p2_text = p2_res.content[0].raw.as_text().unwrap().text.as_str();
+    let p2_text = p2_res.content[0].as_text().unwrap().text.as_str();
     let p2_val: serde_json::Value = serde_json::from_str(p2_text).unwrap();
     let p2_ready = p2_val.get("ready").unwrap().as_u64().unwrap();
     let p2_blocked = p2_val.get("blocked").unwrap().as_u64().unwrap();
@@ -1137,7 +1135,7 @@ fn test_task_summary_global_and_project_scoping_regression() {
     let p2_list_res = server
         .handle_list_tasks(&json!({"project": "proj-two", "status": "ready", "format": "json"}))
         .unwrap();
-    let p2_list_text = p2_list_res.content[0].raw.as_text().unwrap().text.as_str();
+    let p2_list_text = p2_list_res.content[0].as_text().unwrap().text.as_str();
     let p2_list_val: serde_json::Value = serde_json::from_str(p2_list_text).unwrap();
     let p2_list_total = p2_list_val.get("total").unwrap().as_u64().unwrap();
     assert_eq!(
@@ -1159,7 +1157,7 @@ fn test_task_summary_global_and_project_scoping_regression() {
     let nonexist_res = server
         .handle_task_summary(&json!({"project": "does-not-exist"}))
         .unwrap();
-    let nonexist_text = nonexist_res.content[0].raw.as_text().unwrap().text.as_str();
+    let nonexist_text = nonexist_res.content[0].as_text().unwrap().text.as_str();
     let nonexist_val: serde_json::Value = serde_json::from_str(nonexist_text).unwrap();
     assert_eq!(nonexist_val.get("ready").unwrap().as_u64().unwrap(), 0);
     assert_eq!(nonexist_val.get("blocked").unwrap().as_u64().unwrap(), 0);
@@ -1398,7 +1396,7 @@ fn test_list_tasks_format_ascii_tree_and_nested_flag() {
     let res_tree = server
         .handle_list_tasks(&json!({"format": "ascii_tree"}))
         .unwrap();
-    let text_tree = res_tree.content[0].raw.as_text().unwrap().text.as_str();
+    let text_tree = res_tree.content[0].as_text().unwrap().text.as_str();
 
     assert!(
         text_tree.contains("├── ") || text_tree.contains("└── "),
@@ -1421,18 +1419,18 @@ fn test_list_tasks_format_ascii_tree_and_nested_flag() {
     let res_tree2 = server
         .handle_list_tasks(&json!({"format": "tree"}))
         .unwrap();
-    let text_tree2 = res_tree2.content[0].raw.as_text().unwrap().text.as_str();
+    let text_tree2 = res_tree2.content[0].as_text().unwrap().text.as_str();
     assert!(text_tree2.contains("▌"));
 
     // 3. list_tasks with nested=true (default format -> ascii_tree)
     let res_nested = server.handle_list_tasks(&json!({"nested": true})).unwrap();
-    let text_nested = res_nested.content[0].raw.as_text().unwrap().text.as_str();
+    let text_nested = res_nested.content[0].as_text().unwrap().text.as_str();
     assert!(text_nested.contains("▌"));
     assert!(text_nested.contains("├── ") || text_nested.contains("└── "));
 
     // 4. list_tasks with view="tree"
     let res_view = server.handle_list_tasks(&json!({"view": "tree"})).unwrap();
-    let text_view = res_view.content[0].raw.as_text().unwrap().text.as_str();
+    let text_view = res_view.content[0].as_text().unwrap().text.as_str();
     assert!(text_view.contains("▌"));
 }
 
@@ -1444,7 +1442,7 @@ fn test_list_tasks_nested_json_brief_metadata() {
     let res = server
         .handle_list_tasks(&json!({"nested": true, "format": "json"}))
         .unwrap();
-    let text = res.content[0].raw.as_text().unwrap().text.as_str();
+    let text = res.content[0].as_text().unwrap().text.as_str();
     let val: serde_json::Value =
         serde_json::from_str(text).expect("nested json must be valid JSON");
 
@@ -1509,7 +1507,7 @@ fn test_list_tasks_nested_json_brief_metadata() {
         .handle_list_tasks(&json!({"format": "nested_json"}))
         .unwrap();
     let val_alias: serde_json::Value =
-        serde_json::from_str(res_alias.content[0].raw.as_text().unwrap().text.as_str())
+        serde_json::from_str(res_alias.content[0].as_text().unwrap().text.as_str())
             .expect("nested_json must be valid JSON");
 
     assert_eq!(val["total"], val_alias["total"]);
@@ -1522,7 +1520,7 @@ fn test_nested_tasks_tool_ascii_tree_and_json_options() {
 
     // 1. nested_tasks defaults to ascii_tree
     let res_default = server.handle_nested_tasks(&json!({})).unwrap();
-    let text_default = res_default.content[0].raw.as_text().unwrap().text.as_str();
+    let text_default = res_default.content[0].as_text().unwrap().text.as_str();
     assert!(
         text_default.contains("▌"),
         "nested_tasks default must be ascii tree with ▌ context indicators"
@@ -1537,7 +1535,7 @@ fn test_nested_tasks_tool_ascii_tree_and_json_options() {
     let res_json = server
         .handle_nested_tasks(&json!({"format": "json"}))
         .unwrap();
-    let text_json = res_json.content[0].raw.as_text().unwrap().text.as_str();
+    let text_json = res_json.content[0].as_text().unwrap().text.as_str();
     let val_json: serde_json::Value =
         serde_json::from_str(text_json).expect("nested_tasks json must be valid JSON");
     assert!(val_json.get("tasks").is_some());
@@ -1551,7 +1549,7 @@ fn test_nested_tasks_tool_ascii_tree_and_json_options() {
         }))
         .unwrap();
     let val_filtered: serde_json::Value =
-        serde_json::from_str(res_filtered.content[0].raw.as_text().unwrap().text.as_str()).unwrap();
+        serde_json::from_str(res_filtered.content[0].as_text().unwrap().text.as_str()).unwrap();
     let tasks_filtered = val_filtered["tasks"].as_array().unwrap();
     assert_eq!(
         tasks_filtered.len(),
@@ -1567,7 +1565,7 @@ fn test_nested_tasks_tool_ascii_tree_and_json_options() {
     let res_dispatch = server
         .dispatch_tool_sync("nested_tasks", &json!({"format": "tree"}))
         .expect("dispatch_tool_sync for nested_tasks must succeed");
-    let text_dispatch = res_dispatch.content[0].raw.as_text().unwrap().text.as_str();
+    let text_dispatch = res_dispatch.content[0].as_text().unwrap().text.as_str();
     assert!(text_dispatch.contains("▌"));
 }
 
@@ -1578,7 +1576,7 @@ fn test_nested_tasks_null_or_non_object_args_defaults_to_ascii_tree() {
     // Calling nested_tasks with null or non-object args must NOT fall back to flat markdown table.
     // It must enforce nested=true and default format="ascii_tree".
     let res_null = server.handle_nested_tasks(&json!(null)).unwrap();
-    let text_null = res_null.content[0].raw.as_text().unwrap().text.as_str();
+    let text_null = res_null.content[0].as_text().unwrap().text.as_str();
     assert!(
         text_null.contains("▌"),
         "nested_tasks with null args must output ascii tree with ▌ indicators: {text_null}"
@@ -1595,7 +1593,7 @@ fn test_nested_tasks_null_or_non_object_args_defaults_to_ascii_tree() {
     let res_str = server
         .handle_nested_tasks(&json!("invalid_scalar"))
         .unwrap();
-    let text_str = res_str.content[0].raw.as_text().unwrap().text.as_str();
+    let text_str = res_str.content[0].as_text().unwrap().text.as_str();
     assert!(text_str.contains("▌"));
 }
 
@@ -1607,7 +1605,7 @@ fn test_list_tasks_json_tree_alias_and_schema() {
     let res = server
         .handle_list_tasks(&json!({"format": "json_tree"}))
         .unwrap();
-    let text = res.content[0].raw.as_text().unwrap().text.as_str();
+    let text = res.content[0].as_text().unwrap().text.as_str();
     let val: serde_json::Value =
         serde_json::from_str(text).expect("json_tree must return valid JSON");
     assert!(val.get("tasks").is_some());
@@ -1673,7 +1671,7 @@ fn test_nested_tasks_fields_filtering() {
             "fields": ["id", "title"]
         }))
         .unwrap();
-    let text = res.content[0].raw.as_text().unwrap().text.as_str();
+    let text = res.content[0].as_text().unwrap().text.as_str();
     let val: serde_json::Value = serde_json::from_str(text).unwrap();
     let tasks = val.get("tasks").and_then(|v| v.as_array()).unwrap();
 

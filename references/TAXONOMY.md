@@ -185,20 +185,31 @@ The tree hierarchy is a **spanning tree** of the underlying dependency graph. It
 
 ## Status Values and Transitions
 
-| Status        | Meaning                                                                          |
-| ------------- | -------------------------------------------------------------------------------- |
-| `inbox`       | **Default.** Captured but not yet triaged — unknown priority, unknown readiness  |
-| `ready`       | Decomposed to leaf tasks with all hard dependencies resolved                     |
-| `queued`      | User has promoted this task for agent dispatch, by hand or by asking for the work |
-| `in_progress` | Claimed by an agent or human — actively being worked                             |
-| `review`      | Worker asking for help from the agent that next picks it up — mid-flight handback or escalation |
-| `partial`     | Worker legitimately stopped at a scope seam — draft PR plus a live follow-up task. Not merge-ready, not done; the follow-up child carries the remainder |
-| `done`        | Complete (with deliverable) — no further action required                         |
-| `paused`      | Intentionally stopped with intent to resume — work was in-flight but deferred    |
-| `someday`     | Parked idea — may never be worked; differs from `inbox` by explicit deferral     |
-| `cancelled`   | Complete (dropped or withdrawn) — will not be done; decision made to drop        |
-| `failed`      | Attempted and will not be completed — terminal failure, distinct from `cancelled` (no longer wanted) and `done` |
-| `archived`    | Retired note or historical record — retained in place in the PKB, hidden from default search and hydration |
+| Status | Meaning | Who May Set It |
+| :--- | :--- | :--- |
+| `inbox` | Untriaged intake capture; default initial state with unknown priority, scoping, and readiness. | PKB engine default on task creation (`create_task` / `/q`), or `/reconcile` (demoting stalled/invalidated tasks). |
+| `ready` | Decomposed leaf task with all hard blockers (`depends_on`) resolved, ready for reification and dispatch. | PKB engine (computed graduation when leaf + no unmet blockers + AC), or human/planner at creation. |
+| `queued` | Explicitly promoted and reified dispatch gate; bound to executor and workflow, awaiting immediate worker execution. | User (by requesting work or promoting via `/wf-dispatch-queue`), or `/reify` (Pauli) when binding a node next to run. Automated workers never set `queued` on un-asked work. |
+| `in_progress` | Actively claimed and being executed in an active human or agent session. | Executing worker or agent via `pkb_claim_task` (or `update_task(status="in_progress")`). |
+| `done` | Cleanly completed deliverable meeting all acceptance criteria with verifiable evidence (at worker level: PR filed; at epic/PR-tracking level: PR merged). | Executing worker on PR open / deliverable completion via `pkb_release_task` (`/dump`), or `/reconcile` on observed PR merge. |
+| `partial` | Legitimately stopped at a scope seam, missing tool, external blocker, or context boundary before all ACs were met. | Executing worker via `pkb_release_task` (`/dump`), with required non-empty `reason` documenting unfinished items. |
+| `failed` | Terminal failure or check failure (e.g. QA check or review lens rejected deliverable) that cannot be completed in this task. | Executing worker or QA/verifier via `pkb_release_task` (`/dump`), with required non-empty `reason` documenting failure evidence and root cause. |
+| `cancelled` | Explicitly dropped, withdrawn, or superseded; will not be done. | User, or supervisor / `/reconcile` on verified obsolescence / user instruction ("drop X"), with required non-empty `reason`. |
+| `review` | Manual human hold applied directly by the user for inspection, sign-off, or approval. | User only (`assignee: user`). Automated agents and workers are strictly prohibited from setting or releasing `review`. |
+| `paused` | Intentionally suspended mid-flight with explicit intent to resume later. | User or interactive supervisor during session hold or interruption. |
+| `someday` | Parked aspirational idea or backlog item; differs from `inbox` by explicit intentional deferral. | User or planner (`/strategize`). |
+| `archived` | Non-actionable historical record or retired knowledge document retained in place, hidden from default search and hydration. | Knowledge base custodian (`pauli`) or `/reconcile` under the archive-vs-delete test. (Not used for active task workflows). |
+
+### Computed and Deprecated States (Not Stored Task Statuses)
+
+- **`blocked`**: A computed graph condition (`is_blocked: true`), never a stored status. Expressed exclusively via `depends_on` edge to an uncompleted prerequisite task.
+- **`merge_ready`**: Deprecated/invalid legacy token, not in use. Replaced by the release-as-done lifecycle.
+
+### Disambiguating `done` Semantics: Worker Deliverable vs Reconcile PR Merge
+
+To permanently prevent ambiguity where a PR is open without merge and agents might question whether status should be `done` or `review`:
+1. **Worker Implementation Tasks**: The worker's deliverable is the opening of the pull request, local test passing, and recording `pr_url` and branch on the task record. Under `task-contract.md`, the worker releases `done` upon PR creation. This immediately satisfies `needs` dependencies on the graph, unblocking downstream QA and review tasks to run autonomously without waiting for human merge.
+2. **PR-Tracking Tasks and Parent Epics**: Where a task or epic represents the landing of the PR into the target base branch, the deliverable is the merged commit. `/reconcile` monitors open PRs and transitions the tracking task or parent epic to `done` upon observing the merged PR on GitHub. Reconcile never reverts an open-PR worker task to `review`.
 
 **Default is `inbox`**: Every new node starts as `inbox` regardless of how it was created.
 
@@ -310,8 +321,8 @@ Workflows define WHAT steps to take and in WHAT order. Skills define HOW to exec
 
 ```
 inbox → ready → queued → in_progress → done
-                                     ↘ review
-                                     ↘ partial   (draft PR + live follow-up task)
+                                     ↘ partial
+                                     ↘ failed
                                      ↘ cancelled
 ```
 
