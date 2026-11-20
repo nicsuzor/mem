@@ -17,7 +17,7 @@
 //!    m_graph(d) = 1 + 0.08 * min(1, ln(1 + deg+(d)) / ln(21)).
 //! 6. Modular temporal/access multiplier hook: M_recency_access(d) (8A composition point).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::Arc;
 
@@ -147,7 +147,56 @@ pub fn compute_alpha(query: &str, config: &RankingConfig) -> f32 {
     }
 }
 
+/// Returns true if a sub-token is identifier-shaped (`_`, `-`, or an ASCII digit).
+fn is_identifier_token(token: &str) -> bool {
+    token.contains('_') || token.contains('-') || token.chars().any(|c| c.is_ascii_digit())
+}
+
+/// Extract explicit wikilink targets (`[[target]]`, `[[target#heading]]`, `[[target|alias]]`) from a raw query.
+fn extract_wikilink_targets(query: &str) -> Vec<&str> {
+    let mut targets = Vec::new();
+    let mut rest = query;
+    while let Some(start) = rest.find("[[") {
+        let after_open = &rest[start + 2..];
+        let Some(end) = after_open.find("]]") else {
+            break;
+        };
+        let inner = &after_open[..end];
+        let target = inner.split(['|', '#']).next().unwrap_or("").trim();
+        if !target.is_empty() {
+            targets.push(target);
+        }
+        rest = &after_open[end + 2..];
+    }
+    targets
+}
+
+/// Returns true if `candidate` case-insensitively matches `doc_id`, optional `file_stem`, or any alias.
+fn matches_doc_identity(
+    candidate: &str,
+    doc_id: &str,
+    file_stem: Option<&str>,
+    aliases: &[String],
+) -> bool {
+    if candidate.eq_ignore_ascii_case(doc_id) {
+        return true;
+    }
+    if let Some(stem) = file_stem {
+        if candidate.eq_ignore_ascii_case(stem) {
+            return true;
+        }
+    }
+    aliases
+        .iter()
+        .any(|alias| candidate.eq_ignore_ascii_case(alias.trim()))
+}
+
 /// Compute m_id(q, d): 2.0 on exact ID, filename, or alias match; otherwise 1.0.
+///
+/// Whole-query exact matches (against `doc_id`, `file_name`, `file_stem`, or `alias`)
+/// always return `M_ID_EXACT_MATCH`. When the query contains multiple tokens, individual
+/// sub-tokens only match `doc_id`, `file_stem`, or `alias` if explicitly wrapped as a
+/// `[[wikilink]]` in the raw query or if identifier-shaped (containing `_`, `-`, or an ASCII digit).
 pub fn compute_m_id(query: &str, doc_id: &str, path: &Path, aliases: &[String]) -> f32 {
     let clean = crate::bm25::strip_wikilink_brackets(query);
     let q = clean.trim();
@@ -155,57 +204,52 @@ pub fn compute_m_id(query: &str, doc_id: &str, path: &Path, aliases: &[String]) 
         return M_ID_DEFAULT;
     }
 
-    if q.eq_ignore_ascii_case(doc_id) {
+    let file_name = path.file_name().and_then(|n| n.to_str());
+    let file_stem = path.file_stem().and_then(|s| s.to_str());
+
+    if matches_doc_identity(q, doc_id, file_stem, aliases)
+        || file_name.is_some_and(|name| q.eq_ignore_ascii_case(name))
+    {
         return M_ID_EXACT_MATCH;
     }
 
-    if let Some(file_name) = path.file_name().and_then(|n| n.to_str()) {
-        if q.eq_ignore_ascii_case(file_name) {
+    for target in extract_wikilink_targets(query) {
+        if matches_doc_identity(target, doc_id, file_stem, aliases)
+            || file_name.is_some_and(|name| target.eq_ignore_ascii_case(name))
+        {
             return M_ID_EXACT_MATCH;
         }
     }
 
-    if let Some(file_stem) = path.file_stem().and_then(|s| s.to_str()) {
-        if q.eq_ignore_ascii_case(file_stem) {
-            return M_ID_EXACT_MATCH;
-        }
-    }
+    // Check individual tokens; in multi-token queries, restrict sub-token identity
+    // matching to identifier-shaped tokens so plain prose words cannot pin documents.
+    let tokens: Vec<&str> = q
+        .split(|c: char| {
+            c.is_whitespace()
+                || c == '['
+                || c == ']'
+                || c == '('
+                || c == ')'
+                || c == '{'
+                || c == '}'
+                || c == '<'
+                || c == '>'
+        })
+        .map(|t| {
+            t.trim_matches(|c: char| {
+                c == '.' || c == ':' || c == ',' || c == ';' || c == '`' || c == '"' || c == '\''
+            })
+        })
+        .filter(|t| !t.is_empty())
+        .collect();
 
-    for alias in aliases {
-        if q.eq_ignore_ascii_case(alias.trim()) {
-            return M_ID_EXACT_MATCH;
+    let is_multi_token = tokens.len() > 1;
+    for trimmed_tok in tokens {
+        if is_multi_token && !is_identifier_token(trimmed_tok) {
+            continue;
         }
-    }
-
-    // Also check individual tokens if the query contains multiple terms
-    for token in q.split(|c: char| {
-        c.is_whitespace()
-            || c == '['
-            || c == ']'
-            || c == '('
-            || c == ')'
-            || c == '{'
-            || c == '}'
-            || c == '<'
-            || c == '>'
-    }) {
-        let trimmed_tok = token.trim_matches(|c: char| {
-            c == '.' || c == ':' || c == ',' || c == ';' || c == '`' || c == '"' || c == '\''
-        });
-        if !trimmed_tok.is_empty() {
-            if trimmed_tok.eq_ignore_ascii_case(doc_id) {
-                return M_ID_EXACT_MATCH;
-            }
-            if let Some(file_stem) = path.file_stem().and_then(|s| s.to_str()) {
-                if trimmed_tok.eq_ignore_ascii_case(file_stem) {
-                    return M_ID_EXACT_MATCH;
-                }
-            }
-            for alias in aliases {
-                if trimmed_tok.eq_ignore_ascii_case(alias.trim()) {
-                    return M_ID_EXACT_MATCH;
-                }
-            }
+        if matches_doc_identity(trimmed_tok, doc_id, file_stem, aliases) {
+            return M_ID_EXACT_MATCH;
         }
     }
 
@@ -430,7 +474,7 @@ pub fn try_fuse_tm2c2<G: GraphStructuralLookup>(
         let outdegree = graph_lookup.outdegree(&r.id);
         let aliases = graph_lookup.aliases(&r.id);
         let m_struct = compute_m_struct(
-            &clean_query,
+            query,
             &r.id,
             &r.path,
             &aliases,
@@ -441,7 +485,7 @@ pub fn try_fuse_tm2c2<G: GraphStructuralLookup>(
             Some(hook) => hook(r),
             None => 1.0,
         };
-        let is_exact = is_exact_id_match(&clean_query, &r.id, &r.path, &aliases);
+        let is_exact = is_exact_id_match(query, &r.id, &r.path, &aliases);
         if is_exact {
             r.score = EXACT_ID_HYBRID_BOOST;
         } else {
@@ -460,6 +504,149 @@ pub fn try_fuse_tm2c2<G: GraphStructuralLookup>(
 
     intermediate.truncate(limit);
     Ok(intermediate)
+}
+
+/// Weight applied to the overlap-coefficient ratio in [`title_match_boost`].
+pub const TITLE_BOOST_WEIGHT: f32 = 2.0;
+
+/// Minimal stopword list for title/query token overlap.
+const TITLE_BOOST_STOPWORDS: &[&str] = &[
+    "a", "an", "and", "at", "for", "in", "is", "of", "on", "or", "the", "to", "with",
+];
+
+/// Token-overlap boost rewarding queries that are a near-exact match to a
+/// document's title.
+pub fn title_match_boost(query: &str, title: &str) -> f32 {
+    fn tokens(s: &str) -> HashSet<String> {
+        s.to_ascii_lowercase()
+            .split(|c: char| !c.is_alphanumeric())
+            .filter(|w| w.len() > 1 && !TITLE_BOOST_STOPWORDS.contains(w))
+            .map(|w| w.to_string())
+            .collect()
+    }
+
+    let q = tokens(query);
+    let t = tokens(title);
+    if q.is_empty() || t.is_empty() {
+        return 0.0;
+    }
+
+    let intersection = q.intersection(&t).count() as f32;
+    let smaller = q.len().min(t.len()) as f32;
+
+    (intersection / smaller) * TITLE_BOOST_WEIGHT
+}
+
+/// `type_boost` for `search`'s type-based ranking bump: surfaces
+/// knowledge/memory/note/insight/observation docs over transient tasks,
+/// absent a title match.
+pub fn type_boost_for(doc_type: Option<&str>) -> f32 {
+    match doc_type.map(|s| s.to_ascii_lowercase()).as_deref() {
+        Some("knowledge") | Some("memory") | Some("note") | Some("insight")
+        | Some("observation") => 0.15,
+        _ => 0.0,
+    }
+}
+
+/// Per-result base ranking score for `search`: fused/semantic `r.score`
+/// rescaled by graph-proximity `boost`, `type_boost`, and `title_boost`.
+pub fn ranked_score(query: &str, r: &SearchResult, boost: f32) -> f32 {
+    let type_boost = type_boost_for(r.doc_type.as_deref());
+    let title_boost = title_match_boost(query, &r.title);
+    r.score * (1.0 + boost + type_boost + title_boost)
+}
+
+/// Per-result ranking score for `task_search` (no `type_boost`, shares `title_match_boost`).
+pub fn task_search_score(query: &str, r: &SearchResult) -> f32 {
+    r.score * (1.0 + title_match_boost(query, &r.title))
+}
+
+/// Full breakdown of post-hybrid scoring components for a candidate.
+#[derive(Debug, Clone)]
+pub struct PostHybridScore {
+    pub node_id: String,
+    pub type_boost: f32,
+    pub title_boost: f32,
+    pub proximity_boost: f32,
+    pub base_score: f32,
+    pub recency_decay: f64,
+    pub read_boost: f64,
+    pub salience_score: f64,
+    pub is_exact_id: bool,
+    pub final_score: f32,
+}
+
+/// Shared production post-hybrid scoring function used by both `handle_pkb_search`
+/// and offline evaluation (`examples/rank_eval.rs`).
+pub fn score_post_hybrid_candidate(
+    query: &str,
+    r: &SearchResult,
+    graph: Option<&crate::graph_store::GraphStore>,
+    boost_map: Option<&HashMap<String, f32>>,
+    salience_store: Option<&crate::salience::SalienceStore>,
+    now: chrono::DateTime<chrono::Utc>,
+    floor: f64,
+) -> PostHybridScore {
+    let node = graph.and_then(|g| g.get_node(&r.id).or_else(|| g.resolve(&r.id)));
+    let node_id = node
+        .as_ref()
+        .map(|n| n.id.clone())
+        .unwrap_or_else(|| r.id.clone());
+
+    let proximity_boost = boost_map
+        .and_then(|m| m.get(&node_id).copied())
+        .unwrap_or(0.0);
+    let type_boost = type_boost_for(r.doc_type.as_deref());
+    let title_boost = title_match_boost(query, &r.title);
+    let base_score = r.score * (1.0 + proximity_boost + type_boost + title_boost);
+
+    let doc_type = r
+        .doc_type
+        .as_deref()
+        .or_else(|| node.as_ref().and_then(|n| n.node_type.as_deref()));
+    let date = r.date.as_deref();
+    let modified = node.as_ref().and_then(|n| n.modified.as_deref());
+
+    let recency_decay = crate::salience::document_recency_decay(doc_type, date, modified, now);
+    let salience_score = salience_store
+        .map(|s| s.get_salience(&node_id))
+        .unwrap_or(0.0);
+    let default_config;
+    let salience_config = match salience_store {
+        Some(s) => s.config(),
+        None => {
+            default_config = crate::salience::SalienceConfig::default();
+            &default_config
+        }
+    };
+    let read_boost = crate::salience::recent_read_boost(salience_score, salience_config);
+
+    let aliases = graph.map(|g| g.aliases(&r.id)).unwrap_or_default();
+    let is_exact_id = is_exact_id_match(query, &r.id, &r.path, &aliases);
+
+    let final_score = if is_exact_id {
+        1.0f32
+    } else {
+        crate::salience::apply_priors_with_floor(
+            base_score as f64,
+            floor,
+            recency_decay,
+            read_boost,
+        ) as f32
+    };
+
+    PostHybridScore {
+        node_id,
+        type_boost,
+        title_boost,
+        proximity_boost,
+        base_score,
+        recency_decay,
+        read_boost,
+        salience_score,
+        is_exact_id,
+        final_score,
+    }
 }
 
 /// Fuse vector and BM25 search results using TM2C2 normalised convex combination,
@@ -868,8 +1055,201 @@ mod tests {
     fn test_token_exact_id_match_in_multiword_query() {
         let path = PathBuf::from("tasks/aops_8a2448c0.md");
         let aliases: Vec<String> = vec![];
-        assert_eq!(compute_m_id("check task aops_8a2448c0 please", "aops_8a2448c0", &path, &aliases), 2.0);
-        assert!(is_exact_id_match("check task aops_8a2448c0 please", "aops_8a2448c0", &path, &aliases));
-        assert!(is_exact_id_match("see [[kb_295732fd]] here", "kb_295732fd", &path, &aliases));
+        assert_eq!(
+            compute_m_id(
+                "check task aops_8a2448c0 please",
+                "aops_8a2448c0",
+                &path,
+                &aliases
+            ),
+            2.0
+        );
+        assert!(is_exact_id_match(
+            "check task aops_8a2448c0 please",
+            "aops_8a2448c0",
+            &path,
+            &aliases
+        ));
+        assert!(is_exact_id_match(
+            "see [[kb_295732fd]] here",
+            "kb_295732fd",
+            &path,
+            &aliases
+        ));
+    }
+
+    #[test]
+    fn test_multiword_prose_plain_word_does_not_pin_id() {
+        let config = RankingConfig::default();
+        let notes_path = PathBuf::from("docs/notes.md");
+        let aliases = vec!["notes".to_string(), "my multi word alias".to_string()];
+
+        // (a) Multi-word prose containing plain alphabetic words matching doc_id/stem/alias must NOT pin
+        assert_eq!(
+            compute_m_id(
+                "organize folder hierarchy and archive stale notes",
+                "notes",
+                &notes_path,
+                &aliases
+            ),
+            1.0
+        );
+        assert!(!is_exact_id_match(
+            "organize folder hierarchy and archive stale notes",
+            "notes",
+            &notes_path,
+            &aliases
+        ));
+        assert_eq!(
+            compute_m_id(
+                "check project research details",
+                "research_doc_1",
+                &PathBuf::from("docs/research.md"),
+                &[]
+            ),
+            1.0
+        );
+
+        // In hybrid fusion, a plain-word stem match in multi-word prose must NOT receive score 1.000
+        let incidental = make_result("notes", "General Notes Index", 0.45, Some("active"));
+        let semantic = make_result("draft_guide", "Draft Archive Rules", 0.95, Some("active"));
+        let vec_res = vec![semantic.clone(), incidental.clone()];
+        let bm25_res = vec![
+            make_result("notes", incidental.title.as_str(), 12.0, Some("active")),
+            make_result("draft_guide", semantic.title.as_str(), 10.0, Some("active")),
+        ];
+        let fused = fuse_tm2c2(
+            vec_res,
+            bm25_res,
+            "organize folder hierarchy and archive stale notes",
+            &config,
+            None,
+            &(),
+            None,
+            10,
+        );
+        let notes_hit = fused.iter().find(|r| r.id == "notes").unwrap();
+        assert!(
+            notes_hit.score <= 0.990,
+            "Plain prose word matching doc stem must not pin to 1.0; got {}",
+            notes_hit.score
+        );
+        assert_eq!(fused[0].id, "draft_guide");
+
+        // (b) Single-token exact IDs, multi-word exact aliases, [[wikilink]] tokens,
+        // and structured ID tokens inside multi-word queries MUST still get m_id = 2.0
+        assert_eq!(compute_m_id("notes", "notes", &notes_path, &[]), 2.0);
+        assert_eq!(
+            compute_m_id("my multi word alias", "other_id", &notes_path, &aliases),
+            2.0
+        );
+        assert_eq!(
+            compute_m_id("see [[notes]] here", "notes", &notes_path, &[]),
+            2.0
+        );
+        assert_eq!(
+            compute_m_id("see [[notes|custom]] here", "notes", &notes_path, &[]),
+            2.0
+        );
+        assert_eq!(
+            compute_m_id(
+                "inspect task_1234 and kb-abcd please",
+                "task_1234",
+                &PathBuf::from("tasks/task_1234.md"),
+                &[]
+            ),
+            2.0
+        );
+        assert_eq!(
+            compute_m_id(
+                "inspect task_1234 and kb-abcd please",
+                "kb-abcd",
+                &PathBuf::from("docs/kb-abcd.md"),
+                &[]
+            ),
+            2.0
+        );
+
+        // Bracketed wikilink on a plain word inside multi-word fuse_tm2c2 still pins to 1.0
+        let fused_wikilink = fuse_tm2c2(
+            vec![semantic, incidental.clone()],
+            vec![make_result(
+                "notes",
+                incidental.title.as_str(),
+                12.0,
+                Some("active"),
+            )],
+            "see [[notes]] here",
+            &config,
+            None,
+            &(),
+            None,
+            10,
+        );
+        assert_eq!(fused_wikilink[0].id, "notes");
+        assert_eq!(fused_wikilink[0].score, 1.0);
+    }
+
+    #[test]
+    fn test_score_post_hybrid_candidate_shared_logic() {
+        use chrono::{TimeZone, Utc};
+
+        let now = Utc.with_ymd_and_hms(2026, 11, 18, 12, 0, 0).unwrap();
+        let mut memory_doc = make_result("mem_alpha", "Synthetic Memory Note", 0.50, Some("active"));
+        memory_doc.doc_type = Some("memory".to_string());
+
+        let mut task_doc = make_result("task_beta", "Unrelated Synthetic Item", 0.50, Some("ready"));
+        task_doc.doc_type = Some("task".to_string());
+
+        // Without title overlap, memory doc receives 0.15 type_boost over task doc.
+        let s_mem = score_post_hybrid_candidate(
+            "quarterly audit plan",
+            &memory_doc,
+            None,
+            None,
+            None,
+            now,
+            0.0,
+        );
+        let s_task = score_post_hybrid_candidate(
+            "quarterly audit plan",
+            &task_doc,
+            None,
+            None,
+            None,
+            now,
+            0.0,
+        );
+        assert!((s_mem.type_boost - 0.15).abs() < 1e-6);
+        assert_eq!(s_task.type_boost, 0.0);
+        assert!(!s_mem.is_exact_id);
+        assert!(s_mem.final_score > s_task.final_score);
+
+        // Exact ID match pins final_score to 1.0 regardless of raw score.
+        let s_exact = score_post_hybrid_candidate(
+            "task_beta",
+            &task_doc,
+            None,
+            None,
+            None,
+            now,
+            0.0,
+        );
+        assert!(s_exact.is_exact_id);
+        assert_eq!(s_exact.final_score, 1.0);
+
+        // Title match boost applies on overlapping tokens.
+        let s_title = score_post_hybrid_candidate(
+            "synthetic memory note",
+            &memory_doc,
+            None,
+            None,
+            None,
+            now,
+            0.0,
+        );
+        assert!((s_title.title_boost - TITLE_BOOST_WEIGHT).abs() < 1e-6);
+        assert!(s_title.final_score <= 0.990);
+        assert!(s_title.final_score > s_mem.final_score);
     }
 }
