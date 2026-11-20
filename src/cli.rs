@@ -107,6 +107,16 @@ enum Commands {
         /// Only show documents with date <= YYYY-MM-DD
         #[arg(long)]
         before: Option<String>,
+
+        /// PKB MCP server to query (default: $PKB_MCP_URL). Searching the
+        /// server is the default; it is required unless --local is given.
+        #[arg(long, value_name = "URL", conflicts_with = "local")]
+        server: Option<String>,
+
+        /// Search the local index in-process instead of the PKB server
+        /// (loads the embedding and reranker models; slow)
+        #[arg(long)]
+        local: bool,
     },
 
     /// List documents with optional filters (type, tag, status)
@@ -1074,6 +1084,97 @@ fn print_staleness_warning(pkb_root: &std::path::Path, missing_id: &str) {
     }
 }
 
+/// Run `pkb search` against the PKB MCP server and print results in the
+/// same layout as the local search.
+fn remote_search(
+    server: Option<&str>,
+    query_text: &str,
+    limit: usize,
+    doc_type: Option<&str>,
+    full: bool,
+    since: Option<&str>,
+    before: Option<&str>,
+) -> Result<()> {
+    if query_text.trim().is_empty() {
+        eprintln!("Error: search query cannot be empty");
+        std::process::exit(1);
+    }
+    let url = mem::remote::resolve_server_url(server)?;
+
+    let mut args = serde_json::json!({
+        "query": query_text,
+        "limit": limit,
+        "format": "json",
+        "detail": if full { "chunk" } else { "snippet" },
+    });
+    for (key, val) in [("type", doc_type), ("since", since), ("before", before)] {
+        if let Some(v) = val {
+            args[key] = serde_json::Value::String(v.to_string());
+        }
+    }
+
+    let result = mem::remote::call_tool(&url, "search", args)?;
+    let results = result
+        .get("structuredContent")
+        .and_then(|s| s.get("results"))
+        .and_then(|r| r.as_array())
+        .cloned()
+        .unwrap_or_default();
+
+    if results.is_empty() {
+        println!("No results found for: {query_text}");
+        return Ok(());
+    }
+
+    println!();
+    let mut first_id = String::new();
+    for (i, r) in results.iter().enumerate() {
+        let get = |k: &str| r.get(k).and_then(|v| v.as_str()).unwrap_or("");
+        let id_str = get("id");
+        if i == 0 {
+            first_id = id_str.to_string();
+        }
+        let score = r.get("score").and_then(|v| v.as_f64()).unwrap_or(0.0) as f32;
+        let tags: Vec<&str> = r
+            .get("tags")
+            .and_then(|t| t.as_array())
+            .map(|a| a.iter().filter_map(|t| t.as_str()).collect())
+            .unwrap_or_default();
+        let tags = if tags.is_empty() {
+            String::new()
+        } else {
+            format!("  [{}]", tags.join(", "))
+        };
+        let type_badge = match get("type") {
+            "" | "untyped" => " \x1b[2m[untyped]\x1b[0m".to_string(),
+            t => format!(" \x1b[33m[{t}]\x1b[0m"),
+        };
+        println!(
+            "  \x1b[1;36m{}.\x1b[0m \x1b[1m{}\x1b[0m{type_badge} {}{tags}",
+            i + 1,
+            get("title"),
+            score_to_bar(score),
+        );
+        if !id_str.is_empty() {
+            println!("     \x1b[36m{id_str}\x1b[0m");
+        }
+        let extract = get("extract");
+        let snippet = if full {
+            extract.to_string()
+        } else {
+            truncate_snippet(extract, 120)
+        };
+        if !snippet.is_empty() {
+            println!("     {snippet}");
+        }
+        println!();
+    }
+    if !first_id.is_empty() {
+        println!("  \x1b[2mTip: pkb task {first_id}  — show full details\x1b[0m");
+    }
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -1122,6 +1223,30 @@ async fn main() -> Result<()> {
             .with(env_filter)
             .with(fmt_layer)
             .init();
+    }
+
+    // `pkb search` goes to the PKB server unless --local is given. The URL
+    // comes from --server or $PKB_MCP_URL; there is no fallback.
+    if let Commands::Search {
+        query,
+        limit,
+        doc_type,
+        full,
+        since,
+        before,
+        server,
+        local: false,
+    } = &command
+    {
+        return remote_search(
+            server.as_deref(),
+            &query.join(" "),
+            *limit,
+            doc_type.as_deref(),
+            *full,
+            since.as_deref(),
+            before.as_deref(),
+        );
     }
 
     let pkb_root = if !cli.root.is_empty() {
@@ -1289,6 +1414,7 @@ async fn main() -> Result<()> {
             full,
             since,
             before,
+            ..
         } => {
             let embedder = embedder.as_ref().unwrap();
             let store = store.as_ref().unwrap();
@@ -2654,10 +2780,15 @@ async fn main() -> Result<()> {
             }
 
             let query_embedding = embedder.encode(&query_text)?;
-            let results =
-                store
-                    .read()
-                    .search(&query_embedding, limit * 3, &pkb_root, None, None, None, None);
+            let results = store.read().search(
+                &query_embedding,
+                limit * 3,
+                &pkb_root,
+                None,
+                None,
+                None,
+                None,
+            );
 
             let memory_types = ["memory", "note", "insight", "observation"];
             let mut count = 0;
@@ -3011,7 +3142,9 @@ async fn main() -> Result<()> {
                 let json_results: Vec<serde_json::Value> = results
                     .iter()
                     .map(|r| {
-                        let filtered_diags: Vec<_> = r.diagnostics.iter()
+                        let filtered_diags: Vec<_> = r
+                            .diagnostics
+                            .iter()
                             .filter(|d| !errors_only || d.severity == lint::Severity::Error)
                             .filter(|d| !broken_links || d.rule == "ref-broken-wikilink")
                             .collect();
@@ -3110,11 +3243,20 @@ async fn main() -> Result<()> {
                 if broken_links {
                     let broken_count: usize = results
                         .iter()
-                        .map(|r| r.diagnostics.iter().filter(|d| d.rule == "ref-broken-wikilink").count())
+                        .map(|r| {
+                            r.diagnostics
+                                .iter()
+                                .filter(|d| d.rule == "ref-broken-wikilink")
+                                .count()
+                        })
                         .sum();
                     let broken_files = results
                         .iter()
-                        .filter(|r| r.diagnostics.iter().any(|d| d.rule == "ref-broken-wikilink"))
+                        .filter(|r| {
+                            r.diagnostics
+                                .iter()
+                                .any(|d| d.rule == "ref-broken-wikilink")
+                        })
                         .count();
                     eprintln!(
                         "Checked {} files in {:.1}s — {} broken wikilinks in {} files",
@@ -4340,14 +4482,11 @@ fn index_pkb(
     let parsed: Vec<_> = to_process
         .into_par_iter()
         .map(|doc| {
-            let chunks: Vec<String> = mem::chunker::chunk_document(
-                &doc.title,
-                doc.doc_type.as_deref(),
-                &doc.body,
-            )
-            .into_iter()
-            .map(|c| c.text)
-            .collect();
+            let chunks: Vec<String> =
+                mem::chunker::chunk_document(&doc.title, doc.doc_type.as_deref(), &doc.body)
+                    .into_iter()
+                    .map(|c| c.text)
+                    .collect();
             (doc, chunks)
         })
         .collect();
@@ -4521,14 +4660,11 @@ fn bench_reindex(
         .iter()
         .filter_map(|path| {
             pkb::parse_file_relative(path, pkb_root).map(|doc| {
-                let chunks: Vec<String> = mem::chunker::chunk_document(
-                    &doc.title,
-                    doc.doc_type.as_deref(),
-                    &doc.body,
-                )
-                .into_iter()
-                .map(|c| c.text)
-                .collect();
+                let chunks: Vec<String> =
+                    mem::chunker::chunk_document(&doc.title, doc.doc_type.as_deref(), &doc.body)
+                        .into_iter()
+                        .map(|c| c.text)
+                        .collect();
                 (doc, chunks)
             })
         })
