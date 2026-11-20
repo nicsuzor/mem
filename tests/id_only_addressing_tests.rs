@@ -361,3 +361,81 @@ fn test_bulk_operation_defers_miss_reindex_and_triggers_at_most_one() {
     // At most one reindex triggered when bulk op finishes
     assert_eq!(server.miss_reindex_count(), 1);
 }
+
+#[test]
+fn test_migrate_clean_aliases_strips_permalink_and_id_aliases_rewrites_refs() {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path();
+    fs::create_dir_all(root.join("notes")).unwrap();
+    fs::create_dir_all(root.join("tasks")).unwrap();
+
+    fs::write(
+        root.join("notes/note_a_old_slug.md"),
+        "---\nid: note_a\ntitle: \"Note A\"\ntype: note\npermalink: note_a\nalias:\n  - \"note_a_old_slug\"\n  - \"note_a\"\n  - \"note_a_another\"\n  - \"user-reorg-tag\"\n---\n\nBody A.\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("notes/note_b_auto.md"),
+        "---\nid: note_b\ntitle: \"Note B\"\ntype: note\npermalink: note_b\nalias:\n  - \"note_b_auto\"\n  - \"note_b\"\n---\n\nBody B.\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("tasks/task_c_ref.md"),
+        "---\nid: task_c\ntitle: \"Task C\"\ntype: task\nstatus: inbox\nparent: note_a_old_slug\ndepends_on:\n  - note_b_auto\n---\n\nSee [[note_a_another]] and [[note_b_auto|B]].\n",
+    )
+    .unwrap();
+
+    let dry = mem::migrations::migrate_clean_aliases(root, true).unwrap();
+    assert!(dry.dry_run);
+    assert_eq!(dry.files_changed, 3);
+
+    let report = mem::migrations::migrate_clean_aliases(root, false).unwrap();
+    assert!(!report.dry_run);
+    assert_eq!(report.files_changed, 3);
+
+    let note_a = fs::read_to_string(root.join("notes/note_a_old_slug.md")).unwrap();
+    assert!(
+        !note_a.contains("permalink:"),
+        "note_a must drop permalink: {note_a}"
+    );
+    assert!(
+        !note_a.contains("note_a_old_slug"),
+        "note_a must drop filename alias: {note_a}"
+    );
+    assert!(
+        !note_a.contains("note_a_another"),
+        "note_a must drop id-prefixed alias: {note_a}"
+    );
+    assert!(
+        note_a.contains("user-reorg-tag"),
+        "note_a must preserve user-reorg alias: {note_a}"
+    );
+
+    let note_b = fs::read_to_string(root.join("notes/note_b_auto.md")).unwrap();
+    assert!(
+        !note_b.contains("permalink:"),
+        "note_b must drop permalink: {note_b}"
+    );
+    assert!(
+        !note_b.contains("alias:"),
+        "note_b must drop empty alias: {note_b}"
+    );
+
+    let task_c = fs::read_to_string(root.join("tasks/task_c_ref.md")).unwrap();
+    assert!(
+        task_c.contains("parent: note_a\n") || task_c.contains("parent: \"note_a\""),
+        "task_c parent must be canonical id: {task_c}"
+    );
+    assert!(
+        task_c.contains("[[note_a]]"),
+        "task_c wikilink must be canonical id: {task_c}"
+    );
+    assert!(
+        task_c.contains("[[note_b|B]]"),
+        "task_c labeled wikilink must be canonical id: {task_c}"
+    );
+
+    // Idempotent on second run
+    let second = mem::migrations::migrate_clean_aliases(root, false).unwrap();
+    assert_eq!(second.files_changed, 0);
+}

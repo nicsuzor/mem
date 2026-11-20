@@ -898,6 +898,17 @@ enum MigrateCommands {
         #[arg(long)]
         confirm: bool,
     },
+    /// Remove `permalink`, strip ID/filename aliases, and rewrite incoming
+    /// references to canonical IDs. Idempotent and dry-runnable.
+    CleanAliases {
+        /// Preview changes without writing (default: applies changes)
+        #[arg(long)]
+        dry_run: bool,
+
+        /// Output format: text (default), json
+        #[arg(long, default_value = "text")]
+        format: String,
+    },
 }
 
 /// Shared filter arguments for batch commands.
@@ -2654,10 +2665,15 @@ async fn main() -> Result<()> {
             }
 
             let query_embedding = embedder.encode(&query_text)?;
-            let results =
-                store
-                    .read()
-                    .search(&query_embedding, limit * 3, &pkb_root, None, None, None, None);
+            let results = store.read().search(
+                &query_embedding,
+                limit * 3,
+                &pkb_root,
+                None,
+                None,
+                None,
+                None,
+            );
 
             let memory_types = ["memory", "note", "insight", "observation"];
             let mut count = 0;
@@ -3011,7 +3027,9 @@ async fn main() -> Result<()> {
                 let json_results: Vec<serde_json::Value> = results
                     .iter()
                     .map(|r| {
-                        let filtered_diags: Vec<_> = r.diagnostics.iter()
+                        let filtered_diags: Vec<_> = r
+                            .diagnostics
+                            .iter()
                             .filter(|d| !errors_only || d.severity == lint::Severity::Error)
                             .filter(|d| !broken_links || d.rule == "ref-broken-wikilink")
                             .collect();
@@ -3110,11 +3128,20 @@ async fn main() -> Result<()> {
                 if broken_links {
                     let broken_count: usize = results
                         .iter()
-                        .map(|r| r.diagnostics.iter().filter(|d| d.rule == "ref-broken-wikilink").count())
+                        .map(|r| {
+                            r.diagnostics
+                                .iter()
+                                .filter(|d| d.rule == "ref-broken-wikilink")
+                                .count()
+                        })
                         .sum();
                     let broken_files = results
                         .iter()
-                        .filter(|r| r.diagnostics.iter().any(|d| d.rule == "ref-broken-wikilink"))
+                        .filter(|r| {
+                            r.diagnostics
+                                .iter()
+                                .any(|d| d.rule == "ref-broken-wikilink")
+                        })
                         .count();
                     eprintln!(
                         "Checked {} files in {:.1}s — {} broken wikilinks in {} files",
@@ -3744,6 +3771,25 @@ fn handle_migrate_command(cmd: MigrateCommands, pkb_root: &std::path::Path) -> R
                 println!("\nRe-run without --dry-run to apply.");
             }
         }
+        MigrateCommands::CleanAliases { dry_run, format } => {
+            let report = mem::migrations::migrate_clean_aliases(pkb_root, dry_run)?;
+            if format == "json" {
+                println!("{}", serde_json::to_string_pretty(&report)?);
+                return Ok(());
+            }
+            let mode = if report.dry_run { "DRY RUN" } else { "APPLIED" };
+            println!(
+                "migrate clean-aliases [{}]: {} scanned, {} changed — {} permalinks removed, {} aliases stripped, {} refs rewritten, {} files with preserved user aliases",
+                mode,
+                report.files_scanned,
+                report.files_changed,
+                report.permalinks_removed,
+                report.aliases_stripped,
+                report.references_rewritten,
+                report.preserved_user_aliases.len(),
+            );
+            return Ok(());
+        }
         MigrateCommands::Flow {
             dry_run,
             apply,
@@ -4340,14 +4386,11 @@ fn index_pkb(
     let parsed: Vec<_> = to_process
         .into_par_iter()
         .map(|doc| {
-            let chunks: Vec<String> = mem::chunker::chunk_document(
-                &doc.title,
-                doc.doc_type.as_deref(),
-                &doc.body,
-            )
-            .into_iter()
-            .map(|c| c.text)
-            .collect();
+            let chunks: Vec<String> =
+                mem::chunker::chunk_document(&doc.title, doc.doc_type.as_deref(), &doc.body)
+                    .into_iter()
+                    .map(|c| c.text)
+                    .collect();
             (doc, chunks)
         })
         .collect();
@@ -4521,14 +4564,11 @@ fn bench_reindex(
         .iter()
         .filter_map(|path| {
             pkb::parse_file_relative(path, pkb_root).map(|doc| {
-                let chunks: Vec<String> = mem::chunker::chunk_document(
-                    &doc.title,
-                    doc.doc_type.as_deref(),
-                    &doc.body,
-                )
-                .into_iter()
-                .map(|c| c.text)
-                .collect();
+                let chunks: Vec<String> =
+                    mem::chunker::chunk_document(&doc.title, doc.doc_type.as_deref(), &doc.body)
+                        .into_iter()
+                        .map(|c| c.text)
+                        .collect();
                 (doc, chunks)
             })
         })
