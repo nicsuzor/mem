@@ -141,12 +141,14 @@ The tell: a downstream task whose premise is "this was rejected and shipped anyw
 
 ### 2.5. Node ids
 
-Resolution registers lookup keys in strict tiers: claimed identity (frontmatter `id:`, explicit `permalink:`) outranks derived keys (filename stem, id prefix), which outrank the title. Matching is exact at every tier; same-tier collisions break deterministically and are logged as ambiguous. Collision is visible, not impossible, so:
+Addressing in PKB CRUD operations is strictly by canonical node `id` (or an explicit `alias` set for user reorganisation), never by filesystem path, filename stem, or title. An `id` is by definition a permalink; documents carry no `permalink` frontmatter key and no auto-generated ID or filename entries in `alias`/`aliases`.
+
+Markdown wikilink resolution in note bodies registers lookup keys in strict tiers: claimed identity (frontmatter `id:`, explicit `alias:`/`aliases:`) outranks derived keys (filename stem, id prefix), which outrank the title. Matching is exact at every tier; same-tier collisions break deterministically and are logged as ambiguous. Collision is visible, not impossible, so:
 
 - Never mint a bare-word id that an existing file's name already produces. Where an existing id family needs a root, promote a member; do not mint a shorter id above it. Auto-generated `<slug>-<hex>` ids are safe.
 - Write a whole id in `parent:`, never a shorthand the resolver is expected to widen.
-- Never duplicate an explicit `permalink:` across nodes.
-- A filename stem is frozen at creation and is never evidence of a node's current title; frontmatter `id:` and `title:` are authoritative.
+- Reserve `alias`/`aliases` strictly for user-initiated reorganisation; never store canonical IDs or filenames in `alias`/`aliases`.
+- A filename stem is frozen at creation and is never evidence of a node's current title; frontmatter `id:` and `title:` are authoritative. Clients rely on automatic filing by default and only supply an explicit `filename` when the user wants a file in a specific location.
 
 ### 2.6. Linking
 

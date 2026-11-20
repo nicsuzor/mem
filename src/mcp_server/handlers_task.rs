@@ -145,7 +145,7 @@ impl PkbSearchServer {
             });
         }
 
-        let slug = super::parse_and_validate_slug(args)?;
+        let slug = super::parse_optional_slug(args)?;
 
         let filename = args
             .get("filename")
@@ -288,7 +288,7 @@ impl PkbSearchServer {
             title: title.to_string(),
             id: args.get("id").and_then(|v| v.as_str()).map(String::from),
             filename,
-            slug: Some(slug),
+            slug,
             parent: args
                 .get("parent")
                 .and_then(|v| v.as_str())
@@ -665,9 +665,7 @@ impl PkbSearchServer {
             } else {
                 return Err(McpError {
                     code: ErrorCode::INVALID_PARAMS,
-                    message: Cow::from(
-                        "Invalid detail. Valid values: metadata, summary, full",
-                    ),
+                    message: Cow::from("Invalid detail. Valid values: metadata, summary, full"),
                     data: None,
                 });
             }
@@ -700,9 +698,7 @@ impl PkbSearchServer {
                     Ok(res) => {
                         if let Some(val) = res.structured_content {
                             items.push(val);
-                        } else if let Some(first) =
-                            res.content.first().and_then(|c| c.as_text())
-                        {
+                        } else if let Some(first) = res.content.first().and_then(|c| c.as_text()) {
                             if let Ok(v) = serde_json::from_str::<serde_json::Value>(&first.text) {
                                 items.push(v);
                             }
@@ -786,9 +782,7 @@ impl PkbSearchServer {
             } else {
                 return Err(McpError {
                     code: ErrorCode::INVALID_PARAMS,
-                    message: Cow::from(
-                        "Invalid detail. Valid values: metadata, summary, full",
-                    ),
+                    message: Cow::from("Invalid detail. Valid values: metadata, summary, full"),
                     data: None,
                 });
             }
@@ -1106,8 +1100,7 @@ impl PkbSearchServer {
                             let Ok(meta) = abs_path.metadata() else {
                                 return false;
                             };
-                            let Some(disk_stamp) =
-                                crate::vectordb::FileStamp::from_metadata(&meta)
+                            let Some(disk_stamp) = crate::vectordb::FileStamp::from_metadata(&meta)
                             else {
                                 return false;
                             };

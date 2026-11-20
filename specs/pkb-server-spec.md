@@ -219,7 +219,7 @@ Each returned result item contains:
 #### Document Retrieval Schema (`get_document`)
 
 **Parameters**:
-- `id` (string, optional): Document ID, title, or filename stem.
+- `id` (string, optional): Document ID (or explicit user-reorganisation alias).
 - `ids` (array of strings, optional): Batch read of document IDs.
 - `detail` (string, optional, enum: `["metadata", "summary", "full"]`, default `"full"`): Content detail level. 'full' returns complete document body and metadata; 'summary' returns excerpted body up to 300 chars; 'metadata' returns frontmatter and document metadata without body. Unknown values return `INVALID_PARAMS`.
 - `fields` (string or array of strings, optional): Field projection in JSON mode. When specified, only named keys are retained in output.
@@ -300,7 +300,7 @@ Track work across sessions. "What needs doing? What's blocked?"
 #### Task Retrieval Schema (`get_task`)
 
 **Parameters**:
-- `id` (string, optional): Task ID, title, or filename stem.
+- `id` (string, optional): Task ID (or explicit user-reorganisation alias).
 - `ids` (array of strings, optional): Batch read of task IDs.
 - `detail` (string, optional, enum: `["metadata", "summary", "full"]`): Content detail level.
 - `metadata_only` (boolean, optional): Return only parsed frontmatter.
@@ -338,13 +338,13 @@ Create and maintain knowledge artifacts. Notes, memories, insights.
 
 **Batch Deletion** (`delete`): Accepts either a single `id` or a list of `ids`. When passed a list of `ids`, one call attempts to delete all specified documents, updating the graph and vector index for each. Missing or invalid IDs are reported with individual failure outcomes without aborting the deletion of valid IDs in the list.
 
-**Convert and Rename in place** (`convert_document`): given an existing document ID, optionally a new `type`, new `title`, and/or filename `slug`, the server updates frontmatter `title` and/or `type`, moves and renames the *same* file to `<dir>/<id>_<title_or_slug>.md` (`<dir>/<snake_case id>.md` for workflows), and reindexes it (graph patch, vector entry re-keyed to the new path). The canonical `id` is retained in frontmatter, and any differing previous filename stem or alias is recorded under `alias` so the note remains continuously reachable by its old ID and historical identifiers. When `type` is omitted, the document preserves its existing type. `dir` defaults to the routing directory for the document type (task/learn → `tasks/`, target → `targets/`, memory → `memories/`, otherwise `notes/`). Converting to a task type always leaves a valid task status: the `status` argument, else the existing status, else `inbox`. An existing status that is not a valid task status is rejected unless `status` replaces it. Every check runs before any write. The retype and the move are separate git commits, so git records the move as a rename. Re-running with the same arguments is a no-op, and finishes a conversion whose move step failed. Parent, project and other fields are set afterwards with `update_task`.
+**Convert and Rename in place** (`convert_document`): given an existing document ID, optionally a new `type`, new `title`, and/or filename `slug`, the server updates frontmatter `title` and/or `type`, moves and renames the *same* file to `<dir>/<id>_<title_or_slug>.md` (`<dir>/<snake_case id>.md` for workflows), and reindexes it (graph patch, vector entry path updated in place without discarding embeddings). The canonical `id` is retained in frontmatter; no `permalink` or old-stem/ID `alias` entries are written. When `type` is omitted, the document preserves its existing type. `dir` defaults to the routing directory for the document type (task/learn → `tasks/`, target → `targets/`, memory → `memories/`, otherwise `notes/`). Converting to a task type always leaves a valid task status: the `status` argument, else the existing status, else `inbox`. An existing status that is not a valid task status is rejected unless `status` replaces it. Every check runs before any write. The retype and the move are separate git commits, so git records the move as a rename. Re-running with the same arguments is a no-op, and finishes a conversion whose move step failed. Parent, project and other fields are set afterwards with `update_task`.
 
 **Success criteria**:
 
 - Frontmatter always valid YAML with required fields (id, title, type, created, modified)
 - Files human-readable without tools (US1)
-- Flexible ID resolution (by ID, filename stem, or title)
+- ID-only CRUD addressing (canonical ID, or explicit user-reorganisation alias; never filesystem path, filename stem, or title); automatic filing is the default and explicit `filename` is discouraged except when the user wants a file in a specific location
 - **AC1: Non-Task Write Replies**: Write tools (`create`, `update_task`, `append`, `update_body`, `edit_body`, `delete`, `release_task`, `complete_task`) label their reply with the written node's own type (e.g. `Note`, `Template`, `Memory`, `Target`) rather than generic "Document" or "Task", include `"type": "<node_type>"` in structured payloads, and suppress task-specific hints on non-task nodes.
   - Mapped tests:
     - `write_reply_type_tests::test_create_document_names_non_task_type`
@@ -437,9 +437,8 @@ title: Human-readable title
 type: task|note|knowledge|memory|insight|...
 created: 2026-02-22T10:00:00Z
 modified: 2026-02-22T10:00:00Z
-alias: [resolution-keys]
-permalink: same-as-id
 # Optional:
+alias: [user-reorg-alias]   # reserved for user reorganisation only; never IDs or filenames
 status: active
 priority: 0-4
 project: aops   # polecat.yaml-validated routing slug; inherited from nearest ancestor when omitted

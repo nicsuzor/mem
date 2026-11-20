@@ -1,0 +1,175 @@
+//! Integration tests for ID-only PKB addressing, no permalink/ID-alias emission,
+//! optional slug with discouraged filename, and convert_document / status round-trip (#847, #848).
+
+use mem::document_crud::{
+    convert_document, create_document, create_memory, create_task, ensure_adhoc_sessions_root,
+    DocumentFields, MemoryFields, TaskFields,
+};
+use std::collections::HashMap;
+use std::fs;
+use tempfile::TempDir;
+
+#[test]
+fn test_create_document_task_memory_adhoc_omit_permalink_and_id_aliases() {
+    let dir = TempDir::new().unwrap();
+    let root = dir.path();
+
+    let doc_path = create_document(
+        root,
+        DocumentFields {
+            title: "My Design Note".to_string(),
+            doc_type: "note".to_string(),
+            slug: None,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let doc_text = fs::read_to_string(&doc_path).unwrap();
+    assert!(
+        !doc_text.contains("permalink:"),
+        "create_document must not write permalink: {doc_text}"
+    );
+    assert!(
+        !doc_text.contains("alias:"),
+        "create_document must not write auto-generated alias: {doc_text}"
+    );
+
+    let task_path = create_task(
+        root,
+        TaskFields {
+            title: "My Test Task".to_string(),
+            slug: None,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let task_text = fs::read_to_string(&task_path).unwrap();
+    assert!(
+        !task_text.contains("permalink:"),
+        "create_task must not write permalink: {task_text}"
+    );
+    assert!(
+        !task_text.contains("alias:"),
+        "create_task must not write auto-generated alias: {task_text}"
+    );
+
+    let mem_path = create_memory(
+        root,
+        MemoryFields {
+            title: "Remembered Fact".to_string(),
+            slug: None,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let mem_text = fs::read_to_string(&mem_path).unwrap();
+    assert!(
+        !mem_text.contains("permalink:"),
+        "create_memory must not write permalink: {mem_text}"
+    );
+    assert!(
+        !mem_text.contains("alias:"),
+        "create_memory must not write auto-generated alias: {mem_text}"
+    );
+
+    ensure_adhoc_sessions_root(root).unwrap();
+    let adhoc_text = fs::read_to_string(root.join("projects/adhoc-sessions.md")).unwrap();
+    assert!(
+        !adhoc_text.contains("permalink:"),
+        "ensure_adhoc_sessions_root must not write permalink: {adhoc_text}"
+    );
+    assert!(
+        !adhoc_text.contains("alias:"),
+        "ensure_adhoc_sessions_root must not write auto-generated alias: {adhoc_text}"
+    );
+}
+
+#[test]
+fn test_convert_document_move_does_not_write_old_stem_alias() {
+    let dir = TempDir::new().unwrap();
+    let root = dir.path();
+
+    let doc_path = create_document(
+        root,
+        DocumentFields {
+            id: Some("note_conv1234".to_string()),
+            title: "Original Note".to_string(),
+            doc_type: "note".to_string(),
+            slug: Some("orig".to_string()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+
+    let res = convert_document(
+        root,
+        &doc_path,
+        "note_conv1234",
+        "Original Note",
+        None,
+        Some("Renamed Note"),
+        Some("renamed"),
+        Some("reviews/sub"),
+        None,
+    )
+    .unwrap();
+    assert!(res.moved);
+    let moved_text = fs::read_to_string(&res.new_path).unwrap();
+    assert!(
+        !moved_text.contains("alias:"),
+        "convert_document move must not write old_stem or id into alias: {moved_text}"
+    );
+    assert!(
+        !moved_text.contains("permalink:"),
+        "convert_document move must not write permalink: {moved_text}"
+    );
+}
+
+#[test]
+fn test_schemas_slug_optional_filename_discouraged_and_id_only_descriptions() {
+    let tools = mem::mcp_server::PkbSearchServer::published_tools();
+    let by_name: HashMap<&str, _> = tools.iter().map(|t| (t.name.as_ref(), t)).collect();
+
+    for name in ["create", "create_task"] {
+        let tool = by_name.get(name).unwrap();
+        let req = tool
+            .input_schema
+            .get("required")
+            .and_then(|v| v.as_array())
+            .unwrap();
+        assert!(
+            !req.iter().any(|v| v.as_str() == Some("slug")),
+            "{name} must not require slug: {req:?}"
+        );
+        let fn_desc = tool
+            .input_schema
+            .get("properties")
+            .and_then(|p| p.get("filename"))
+            .and_then(|f| f.get("description"))
+            .and_then(|d| d.as_str())
+            .unwrap_or("");
+        assert!(
+            fn_desc.to_lowercase().contains("discouraged")
+                || fn_desc.to_lowercase().contains("automatic"),
+            "{name}.filename description must discourage client-supplied filenames: {fn_desc:?}"
+        );
+    }
+
+    for name in [
+        "get_document",
+        "get_task_status",
+        "convert_document",
+        "release_task",
+        "pkb_trace",
+        "graph_excalidraw",
+        "export_graph",
+    ] {
+        let tool = mem::mcp_server::PkbSearchServer::lookup_tool(name)
+            .unwrap_or_else(|| panic!("missing tool in lookup_tool: {name}"));
+        let serialized = serde_json::to_string(&tool).unwrap().to_lowercase();
+        assert!(
+            !serialized.contains("filename stem"),
+            "{name} schema must not advertise filename stem resolution: {serialized}"
+        );
+    }
+}

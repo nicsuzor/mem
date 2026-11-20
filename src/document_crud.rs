@@ -365,17 +365,6 @@ pub fn create_document(root: &Path, fields: DocumentFields) -> Result<PathBuf> {
     fm.push_str(&format!("created: {}\n", now));
     fm.push_str(&format!("modified: {}\n", now));
 
-    // Alias and permalink
-    let slug = title_to_snake_case(&fields.title);
-    fm.push_str("alias:\n");
-    if is_daily || slug.is_empty() {
-        fm.push_str(&format!("  - \"{}\"\n", id));
-    } else {
-        fm.push_str(&format!("  - \"{}_{}\"\n", id, slug));
-        fm.push_str(&format!("  - \"{}\"\n", id));
-    }
-    fm.push_str(&format!("permalink: {}\n", id));
-
     if let Some(s) = &fields.status {
         fm.push_str(&format!("status: {}\n", s));
     }
@@ -624,13 +613,11 @@ pub fn ensure_adhoc_sessions_root(root: &Path) -> Result<()> {
     }
 
     // Write directly so the filename stays `adhoc-sessions.md` (human-readable)
-    // while the frontmatter id is the canonical ADHOC_SESSIONS_ROOT_ID. The file stem
-    // plus the alias entry both register "adhoc-sessions" in the id_map so
-    // tasks written with either form resolve to the same node.
+    // while the frontmatter id is the canonical ADHOC_SESSIONS_ROOT_ID.
     let now = chrono::Utc::now().to_rfc3339();
     let id = ADHOC_SESSIONS_ROOT_ID;
     let content = format!(
-        "---\nid: {id}\ntitle: \"Ad-hoc Sessions\"\ntype: task\nproject: adhoc-sessions\ncreated: {now}\nmodified: {now}\nalias:\n  - \"{id}-ad-hoc-sessions\"\n  - \"{id}\"\n  - \"adhoc-sessions\"\npermalink: adhoc-sessions\nstatus: in_progress\n---\n\n# Ad-hoc Sessions\n\nRoot node for tasks created during ad-hoc agent sessions.\n"
+        "---\nid: {id}\ntitle: \"Ad-hoc Sessions\"\ntype: task\nproject: adhoc-sessions\ncreated: {now}\nmodified: {now}\nstatus: in_progress\n---\n\n# Ad-hoc Sessions\n\nRoot node for tasks created during ad-hoc agent sessions.\n"
     );
     atomic_write_file(&adhoc_path, &content, "ensure_adhoc_sessions_root")?;
     let _ = git_commit_file(
@@ -826,17 +813,6 @@ pub fn create_task(root: &Path, fields: TaskFields) -> Result<PathBuf> {
     ));
     fm.push_str(&format!("created: {}\n", now));
     fm.push_str(&format!("modified: {}\n", now));
-
-    // Alias and permalink
-    let slug = title_to_snake_case(&fields.title);
-    fm.push_str("alias:\n");
-    if slug.is_empty() {
-        fm.push_str(&format!("  - \"{}\"\n", id));
-    } else {
-        fm.push_str(&format!("  - \"{}_{}\"\n", id, slug));
-        fm.push_str(&format!("  - \"{}\"\n", id));
-    }
-    fm.push_str(&format!("permalink: {}\n", id));
 
     fm.push_str(&format!(
         "status: {}\n",
@@ -1208,12 +1184,6 @@ pub fn claim_template_instance(root: &Path, fields: TemplateInstanceFields) -> R
     fm.push_str(&format!("created: {}\n", created_at));
     fm.push_str(&format!("modified: {}\n", created_at));
 
-    let slug = slugify(&instance_title);
-    fm.push_str("alias:\n");
-    fm.push_str(&format!("  - \"{}-{}\"\n", instance_id, slug));
-    fm.push_str(&format!("  - \"{}\"\n", instance_id));
-    fm.push_str(&format!("permalink: {}\n", instance_id));
-
     if !fields.tags.is_empty() {
         fm.push_str("tags:\n");
         for tag in &fields.tags {
@@ -1348,15 +1318,6 @@ pub fn create_memory(root: &Path, fields: MemoryFields) -> Result<PathBuf> {
     fm.push_str(&format!("created: {}\n", now));
     fm.push_str(&format!("modified: {}\n", now));
 
-    let slug = title_to_snake_case(&fields.title);
-    fm.push_str("alias:\n");
-    if slug.is_empty() {
-        fm.push_str(&format!("  - \"{}\"\n", id));
-    } else {
-        fm.push_str(&format!("  - \"{}_{}\"\n", id, slug));
-        fm.push_str(&format!("  - \"{}\"\n", id));
-    }
-    fm.push_str(&format!("permalink: {}\n", id));
     if !fields.tags.is_empty() {
         fm.push_str("tags:\n");
         for tag in &fields.tags {
@@ -3083,136 +3044,138 @@ fn rewrite_body_inner(
         );
     }
 
-    let (new_content, body_chars_before, body_chars_after, modified, diff, doc_id) = if !preserve_frontmatter {
-        // No frontmatter to key a precondition off in this mode — CAS is
-        // meaningless here, same as today's behaviour.
-        let body_chars_before = file_content.len();
-        let new_content = format!("{}\n", trimmed_body);
-        let body_chars_after = new_content.len();
-        let doc_id = path
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("document")
-            .to_string();
-        let diff = crate::udiff::generate_unified_diff(&file_content, &new_content, Some(&doc_id));
-        (
-            new_content,
-            body_chars_before,
-            body_chars_after,
-            String::new(),
-            diff,
-            doc_id,
-        )
-    } else {
-        let matter = Matter::<YAML>::new();
-        let parsed = matter.parse(&file_content);
+    let (new_content, body_chars_before, body_chars_after, modified, diff, doc_id) =
+        if !preserve_frontmatter {
+            // No frontmatter to key a precondition off in this mode — CAS is
+            // meaningless here, same as today's behaviour.
+            let body_chars_before = file_content.len();
+            let new_content = format!("{}\n", trimmed_body);
+            let body_chars_after = new_content.len();
+            let doc_id = path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("document")
+                .to_string();
+            let diff =
+                crate::udiff::generate_unified_diff(&file_content, &new_content, Some(&doc_id));
+            (
+                new_content,
+                body_chars_before,
+                body_chars_after,
+                String::new(),
+                diff,
+                doc_id,
+            )
+        } else {
+            let matter = Matter::<YAML>::new();
+            let parsed = matter.parse(&file_content);
 
-        let body_chars_before = parsed.content.len();
+            let body_chars_before = parsed.content.len();
 
-        let mut fm: serde_json::Map<String, serde_json::Value> = parsed
-            .data
-            .as_ref()
-            .and_then(|d| d.deserialize::<serde_json::Value>().ok())
-            .and_then(|v| v.as_object().cloned())
-            .unwrap_or_default();
+            let mut fm: serde_json::Map<String, serde_json::Value> = parsed
+                .data
+                .as_ref()
+                .and_then(|d| d.deserialize::<serde_json::Value>().ok())
+                .and_then(|v| v.as_object().cloned())
+                .unwrap_or_default();
 
-        if fm.is_empty() {
-            match extract_raw_frontmatter(&file_content) {
-                RawFrontmatter::Unterminated => {
-                    anyhow::bail!(
+            if fm.is_empty() {
+                match extract_raw_frontmatter(&file_content) {
+                    RawFrontmatter::Unterminated => {
+                        anyhow::bail!(
                         "Refusing to rewrite body of {}: frontmatter opens with '---' but has no valid closing '---' delimiter. \
                          Restore the frontmatter from server truth (or fix it by hand) before rewriting.",
                         path.display()
                     );
-                }
-                RawFrontmatter::Present(raw) if !raw.trim().is_empty() => {
-                    if let Some(dup) = first_duplicate_top_level_key(&raw) {
-                        anyhow::bail!(
+                    }
+                    RawFrontmatter::Present(raw) if !raw.trim().is_empty() => {
+                        if let Some(dup) = first_duplicate_top_level_key(&raw) {
+                            anyhow::bail!(
                             "Refusing to rewrite body of {}: frontmatter has a duplicate top-level key '{}'",
                             path.display(),
                             dup
                         );
-                    }
-                    match serde_yaml::from_str::<serde_json::Value>(&raw) {
-                        Ok(serde_json::Value::Object(map)) if !map.is_empty() => {
-                            fm = map;
                         }
-                        Ok(serde_json::Value::Null) | Ok(serde_json::Value::Object(_)) => {}
-                        _ => {
-                            anyhow::bail!(
+                        match serde_yaml::from_str::<serde_json::Value>(&raw) {
+                            Ok(serde_json::Value::Object(map)) if !map.is_empty() => {
+                                fm = map;
+                            }
+                            Ok(serde_json::Value::Null) | Ok(serde_json::Value::Object(_)) => {}
+                            _ => {
+                                anyhow::bail!(
                                 "Refusing to rewrite body of {}: existing frontmatter could not be parsed. \
                                  Restore the frontmatter from server truth (or fix it by hand) before rewriting.",
                                 path.display()
                             );
+                            }
                         }
                     }
+                    _ => {}
                 }
-                _ => {}
             }
-        }
 
-        if let Some(expected) = expected_modified {
-            let actual = fm.get("modified").and_then(|v| v.as_str()).unwrap_or("");
-            let actual_lm = fm.get("last_modified").and_then(|v| v.as_str());
-            if actual != expected && actual_lm != Some(expected) {
-                return Err(StaleWrite {
-                    expected_modified: expected.to_string(),
-                    actual_modified: actual.to_string(),
+            if let Some(expected) = expected_modified {
+                let actual = fm.get("modified").and_then(|v| v.as_str()).unwrap_or("");
+                let actual_lm = fm.get("last_modified").and_then(|v| v.as_str());
+                if actual != expected && actual_lm != Some(expected) {
+                    return Err(StaleWrite {
+                        expected_modified: expected.to_string(),
+                        actual_modified: actual.to_string(),
+                    }
+                    .into());
                 }
-                .into());
             }
-        }
 
-        let new_modified = chrono::Utc::now().to_rfc3339();
-        fm.insert(
-            "modified".to_string(),
-            serde_json::Value::String(new_modified.clone()),
-        );
-        fm.remove("last_modified");
+            let new_modified = chrono::Utc::now().to_rfc3339();
+            fm.insert(
+                "modified".to_string(),
+                serde_json::Value::String(new_modified.clone()),
+            );
+            fm.remove("last_modified");
 
-        let doc_id = fm
-            .get("id")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string())
-            .unwrap_or_else(|| {
-                path.file_stem()
-                    .and_then(|s| s.to_str())
-                    .unwrap_or("document")
-                    .to_string()
-            });
+            let doc_id = fm
+                .get("id")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| {
+                    path.file_stem()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or("document")
+                        .to_string()
+                });
 
-        let old_body = parsed
-            .content
-            .trim_start_matches(['\r', '\n'])
-            .trim_end_matches('\n');
-        let old_body_str = if old_body.is_empty() {
-            String::new()
-        } else {
-            format!("{}\n", old_body)
+            let old_body = parsed
+                .content
+                .trim_start_matches(['\r', '\n'])
+                .trim_end_matches('\n');
+            let old_body_str = if old_body.is_empty() {
+                String::new()
+            } else {
+                format!("{}\n", old_body)
+            };
+            let new_body = trimmed_body
+                .trim_start_matches(['\r', '\n'])
+                .trim_end_matches('\n');
+            let new_body_str = if new_body.is_empty() {
+                String::new()
+            } else {
+                format!("{}\n", new_body)
+            };
+            let diff =
+                crate::udiff::generate_unified_diff(&old_body_str, &new_body_str, Some(&doc_id));
+
+            let yaml = serde_yaml::to_string(&fm).context("Failed to serialize frontmatter")?;
+            let body_chars_after = trimmed_body.len();
+            let new_content = format!("---\n{}---\n\n{}\n", yaml, trimmed_body);
+            (
+                new_content,
+                body_chars_before,
+                body_chars_after,
+                new_modified,
+                diff,
+                doc_id,
+            )
         };
-        let new_body = trimmed_body
-            .trim_start_matches(['\r', '\n'])
-            .trim_end_matches('\n');
-        let new_body_str = if new_body.is_empty() {
-            String::new()
-        } else {
-            format!("{}\n", new_body)
-        };
-        let diff =
-            crate::udiff::generate_unified_diff(&old_body_str, &new_body_str, Some(&doc_id));
-
-        let yaml = serde_yaml::to_string(&fm).context("Failed to serialize frontmatter")?;
-        let body_chars_after = trimmed_body.len();
-        let new_content = format!("---\n{}---\n\n{}\n", yaml, trimmed_body);
-        (
-            new_content,
-            body_chars_before,
-            body_chars_after,
-            new_modified,
-            diff,
-            doc_id,
-        )
-    };
 
     atomic_write_file(path, &new_content, "rewrite_body")?;
 
@@ -3560,11 +3523,7 @@ pub fn convert_document(
         Some(t) => {
             if !crate::graph::is_valid_node_type(t) {
                 let valid_types = crate::graph::VALID_NODE_TYPES.join(", ");
-                anyhow::bail!(
-                    "Invalid node type: {}. Must be one of: {}",
-                    t,
-                    valid_types
-                );
+                anyhow::bail!("Invalid node type: {}. Must be one of: {}", t, valid_types);
             }
             t.to_string()
         }
@@ -3629,27 +3588,6 @@ pub fn convert_document(
     }
     if new_status != old_status {
         updates.insert("status".to_string(), serde_json::json!(new_status));
-    }
-    if moved {
-        if let Some(old_stem) = abs_path.file_stem().and_then(|s| s.to_str()) {
-            let mut aliases = Vec::new();
-            if let Some(arr) = fm.get("alias").and_then(|v| v.as_array()) {
-                for item in arr {
-                    if let Some(s) = item.as_str() {
-                        aliases.push(s.to_string());
-                    }
-                }
-            } else if let Some(s) = fm.get("alias").and_then(|v| v.as_str()) {
-                aliases.push(s.to_string());
-            }
-            if !aliases.iter().any(|a| a == old_stem) {
-                aliases.push(old_stem.to_string());
-            }
-            if !aliases.iter().any(|a| a == id) {
-                aliases.push(id.to_string());
-            }
-            updates.insert("alias".to_string(), serde_json::json!(aliases));
-        }
     }
     let retyped = updates.contains_key("type");
 

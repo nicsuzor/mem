@@ -24,9 +24,7 @@ impl PkbSearchServer {
             } else {
                 return Err(McpError {
                     code: ErrorCode::INVALID_PARAMS,
-                    message: Cow::from(
-                        "Invalid detail. Valid values: metadata, summary, full",
-                    ),
+                    message: Cow::from("Invalid detail. Valid values: metadata, summary, full"),
                     data: None,
                 });
             }
@@ -66,9 +64,7 @@ impl PkbSearchServer {
                     Ok(res) => {
                         if let Some(val) = res.structured_content {
                             items.push(val);
-                        } else if let Some(first) =
-                            res.content.first().and_then(|c| c.as_text())
-                        {
+                        } else if let Some(first) = res.content.first().and_then(|c| c.as_text()) {
                             if let Ok(v) = serde_json::from_str::<serde_json::Value>(&first.text) {
                                 items.push(v);
                             }
@@ -168,30 +164,29 @@ impl PkbSearchServer {
             } else {
                 return Err(McpError {
                     code: ErrorCode::INVALID_PARAMS,
-                    message: Cow::from(
-                        "Invalid detail. Valid values: metadata, summary, full",
-                    ),
+                    message: Cow::from("Invalid detail. Valid values: metadata, summary, full"),
                     data: None,
                 });
             }
         }
 
-        let fields_filter: Option<std::collections::HashSet<String>> = args.get("fields").and_then(|v| {
-            if let Some(arr) = v.as_array() {
-                Some(
-                    arr.iter()
-                        .filter_map(|s| s.as_str().map(|k| k.to_string()))
-                        .collect(),
-                )
-            } else {
-                v.as_str().map(|s| {
-                    s.split(',')
-                        .map(|k| k.trim().to_string())
-                        .filter(|k| !k.is_empty())
-                        .collect()
-                })
-            }
-        });
+        let fields_filter: Option<std::collections::HashSet<String>> =
+            args.get("fields").and_then(|v| {
+                if let Some(arr) = v.as_array() {
+                    Some(
+                        arr.iter()
+                            .filter_map(|s| s.as_str().map(|k| k.to_string()))
+                            .collect(),
+                    )
+                } else {
+                    v.as_str().map(|s| {
+                        s.split(',')
+                            .map(|k| k.trim().to_string())
+                            .filter(|k| !k.is_empty())
+                            .collect()
+                    })
+                }
+            });
 
         let max_bytes = args
             .get("max_bytes")
@@ -317,31 +312,33 @@ impl PkbSearchServer {
         let doc_type = args.get("type").and_then(|v| v.as_str());
         let status = args.get("status").and_then(|v| v.as_str());
         let title_contains = args.get("title_contains").and_then(|v| v.as_str());
-        let date_filter = crate::date_filter::DateFilter::from_args(args).map_err(|e| McpError {
-            code: ErrorCode::INVALID_PARAMS,
-            message: Cow::from(format!("Invalid date filter: {e}")),
-            data: None,
-        })?;
+        let date_filter =
+            crate::date_filter::DateFilter::from_args(args).map_err(|e| McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from(format!("Invalid date filter: {e}")),
+                data: None,
+            })?;
         let format = args
             .get("format")
             .and_then(|v| v.as_str())
             .unwrap_or("markdown");
-        let fields_filter: Option<std::collections::HashSet<String>> = args.get("fields").and_then(|v| {
-            if let Some(arr) = v.as_array() {
-                Some(
-                    arr.iter()
-                        .filter_map(|s| s.as_str().map(|k| k.to_string()))
-                        .collect(),
-                )
-            } else {
-                v.as_str().map(|s| {
-                    s.split(',')
-                        .map(|k| k.trim().to_string())
-                        .filter(|k| !k.is_empty())
-                        .collect()
-                })
-            }
-        });
+        let fields_filter: Option<std::collections::HashSet<String>> =
+            args.get("fields").and_then(|v| {
+                if let Some(arr) = v.as_array() {
+                    Some(
+                        arr.iter()
+                            .filter_map(|s| s.as_str().map(|k| k.to_string()))
+                            .collect(),
+                    )
+                } else {
+                    v.as_str().map(|s| {
+                        s.split(',')
+                            .map(|k| k.trim().to_string())
+                            .filter(|k| !k.is_empty())
+                            .collect()
+                    })
+                }
+            });
         let limit = args
             .get("limit")
             .and_then(|v| v.as_u64())
@@ -537,7 +534,7 @@ impl PkbSearchServer {
             });
         }
 
-        let slug = super::parse_and_validate_slug(args)?;
+        let slug = super::parse_optional_slug(args)?;
 
         let filename = args
             .get("filename")
@@ -564,7 +561,7 @@ impl PkbSearchServer {
             title: title.to_string(),
             id: args.get("id").and_then(|v| v.as_str()).map(String::from),
             filename,
-            slug: Some(slug),
+            slug,
             tags: args
                 .get("tags")
                 .and_then(|v| v.as_array())
@@ -669,7 +666,7 @@ impl PkbSearchServer {
             });
         }
 
-        let slug = super::parse_and_validate_slug(args)?;
+        let slug = super::parse_optional_slug(args)?;
 
         let filename = args
             .get("filename")
@@ -732,7 +729,7 @@ impl PkbSearchServer {
             doc_type: doc_type.to_string(),
             id: args.get("id").and_then(|v| v.as_str()).map(String::from),
             filename,
-            slug: Some(slug),
+            slug,
             tags: args
                 .get("tags")
                 .and_then(|v| v.as_array())
@@ -1380,7 +1377,9 @@ impl PkbSearchServer {
             message: Cow::from(format!("Failed to serialize response: {e}")),
             data: None,
         })?;
-        Ok(CallToolResult::success(vec![ContentBlock::text(response_text)]))
+        Ok(CallToolResult::success(vec![ContentBlock::text(
+            response_text,
+        )]))
     }
 
     pub(crate) fn handle_delete_observations(
@@ -1471,7 +1470,9 @@ impl PkbSearchServer {
             message: Cow::from(format!("Failed to serialize response: {e}")),
             data: None,
         })?;
-        Ok(CallToolResult::success(vec![ContentBlock::text(response_text)]))
+        Ok(CallToolResult::success(vec![ContentBlock::text(
+            response_text,
+        )]))
     }
 
     pub(crate) fn handle_delete_document(
@@ -1481,13 +1482,12 @@ impl PkbSearchServer {
         let type_guard = args.get("type").and_then(|v| v.as_str());
 
         // Check if batch deletion (`ids`) was passed:
-        let ids_opt: Option<Vec<String>> =
-            args.get("ids").and_then(|v| v.as_array()).map(|arr| {
-                arr.iter()
-                    .filter_map(|v| v.as_str().map(|s| s.trim().to_string()))
-                    .filter(|s| !s.is_empty())
-                    .collect()
-            });
+        let ids_opt: Option<Vec<String>> = args.get("ids").and_then(|v| v.as_array()).map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(|s| s.trim().to_string()))
+                .filter(|s| !s.is_empty())
+                .collect()
+        });
 
         if let Some(ids) = ids_opt {
             let mut deleted_count = 0;
@@ -1513,7 +1513,9 @@ impl PkbSearchServer {
                     let node_type = node.node_type.as_deref().unwrap_or("");
                     let matches = if guard.eq_ignore_ascii_case("memory") {
                         let memory_types = ["memory", "note", "insight", "observation"];
-                        memory_types.iter().any(|mt| node_type.eq_ignore_ascii_case(mt))
+                        memory_types
+                            .iter()
+                            .any(|mt| node_type.eq_ignore_ascii_case(mt))
                     } else {
                         node_type.eq_ignore_ascii_case(guard)
                     };
@@ -1656,10 +1658,7 @@ impl PkbSearchServer {
             "deleted": true,
             "message": msg,
         });
-        Ok(Self::structured_result(
-            msg,
-            payload,
-        ))
+        Ok(Self::structured_result(msg, payload))
     }
 
     pub(crate) fn handle_convert_document(
@@ -1677,9 +1676,18 @@ impl PkbSearchServer {
                 })
         };
         let id = required("id")?;
-        let new_type = args.get("type").and_then(|v| v.as_str()).filter(|s| !s.trim().is_empty());
-        let new_title = args.get("title").and_then(|v| v.as_str()).filter(|s| !s.trim().is_empty());
-        let slug = args.get("slug").and_then(|v| v.as_str()).filter(|s| !s.trim().is_empty());
+        let new_type = args
+            .get("type")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.trim().is_empty());
+        let new_title = args
+            .get("title")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.trim().is_empty());
+        let slug = args
+            .get("slug")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.trim().is_empty());
         let dir = args.get("dir").and_then(|v| v.as_str());
         let status = args.get("status").and_then(|v| v.as_str());
 
@@ -1748,10 +1756,7 @@ impl PkbSearchServer {
             "retyped": result.retyped,
             "moved": result.moved,
         });
-        Ok(Self::structured_result(
-            payload.to_string(),
-            payload,
-        ))
+        Ok(Self::structured_result(payload.to_string(), payload))
     }
 
     /// Build the compact "mutation neighborhood" returned by `complete_task` and

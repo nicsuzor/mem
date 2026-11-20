@@ -47,15 +47,14 @@ pub(crate) const GOAL_TYPE_ENUM: &[&str] = &["committed", "aspirational", "learn
 /// (e.g. `pkb_orphans`) are exempt for the unlimited case by design.
 pub(crate) const MAX_RESULTS: usize = 1000;
 
-/// Validate and extract required `slug` parameter from create action arguments.
-/// Must be present, non-empty, and at most 30 characters.
-pub(crate) fn parse_and_validate_slug(args: &JsonValue) -> Result<String, McpError> {
+/// Validate and extract optional `slug` parameter from create action arguments.
+/// When present and non-empty, must be a string of at most 30 characters.
+/// When omitted, null, or empty, returns `Ok(None)` so the filename slug is
+/// derived automatically from the title.
+pub(crate) fn parse_optional_slug(args: &JsonValue) -> Result<Option<String>, McpError> {
     match args.get("slug") {
-        Some(v) if v.is_null() => Err(McpError {
-            code: ErrorCode::INVALID_PARAMS,
-            message: Cow::from("Missing required parameter: slug (limit is 30 characters)"),
-            data: None,
-        }),
+        None => Ok(None),
+        Some(v) if v.is_null() => Ok(None),
         Some(v) => {
             let s = v.as_str().ok_or_else(|| McpError {
                 code: ErrorCode::INVALID_PARAMS,
@@ -64,11 +63,7 @@ pub(crate) fn parse_and_validate_slug(args: &JsonValue) -> Result<String, McpErr
             })?;
             let trimmed = s.trim();
             if trimmed.is_empty() {
-                return Err(McpError {
-                    code: ErrorCode::INVALID_PARAMS,
-                    message: Cow::from("Missing required parameter: slug (limit is 30 characters)"),
-                    data: None,
-                });
+                return Ok(None);
             }
             let len = trimmed.chars().count();
             if len > crate::document_crud::MAX_SLUG_LEN {
@@ -82,13 +77,8 @@ pub(crate) fn parse_and_validate_slug(args: &JsonValue) -> Result<String, McpErr
                     data: None,
                 });
             }
-            Ok(trimmed.to_string())
+            Ok(Some(trimmed.to_string()))
         }
-        None => Err(McpError {
-            code: ErrorCode::INVALID_PARAMS,
-            message: Cow::from("Missing required parameter: slug (limit is 30 characters)"),
-            data: None,
-        }),
     }
 }
 
@@ -1890,10 +1880,7 @@ impl PkbSearchServer {
                     || f.as_str().is_some_and(|s| !s.trim().is_empty())
             }) || metrics.fields_projected;
             if has_fields {
-                current_span.set_attribute(opentelemetry::KeyValue::new(
-                    "mcp.projected",
-                    true,
-                ));
+                current_span.set_attribute(opentelemetry::KeyValue::new("mcp.projected", true));
             }
 
             let graph_read_wait_ms = (metrics.graph_read_wait_us as f64) / 1000.0;
@@ -2069,9 +2056,8 @@ impl ServerHandler for PkbSearchServer {
         &self,
         request: GetPromptRequestParams,
         _context: rmcp::service::RequestContext<rmcp::service::RoleServer>,
-    ) -> impl std::future::Future<Output = Result<rmcp::model::GetPromptResponse, McpError>>
-        + Send
-        + '_ {
+    ) -> impl std::future::Future<Output = Result<rmcp::model::GetPromptResponse, McpError>> + Send + '_
+    {
         std::future::ready(
             self.handle_get_prompt(request)
                 .map(rmcp::model::GetPromptResponse::from),
@@ -2127,8 +2113,10 @@ pub(crate) fn is_dashboard_client(args: &JsonValue) -> bool {
     args.get("_client").and_then(|v| v.as_str()) == Some(DASHBOARD_CLIENT)
 }
 
-
-pub(crate) fn process_tool_links(links_val: &mut JsonValue, is_dashboard: bool) -> Result<(), McpError> {
+pub(crate) fn process_tool_links(
+    links_val: &mut JsonValue,
+    is_dashboard: bool,
+) -> Result<(), McpError> {
     if let Some(links_arr) = links_val.as_array_mut() {
         for link_val in links_arr.iter_mut() {
             if let Some(obj) = link_val.as_object_mut() {

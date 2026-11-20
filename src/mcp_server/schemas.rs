@@ -114,7 +114,7 @@ impl PkbSearchServer {
             .with_annotations(ToolAnnotations::new().read_only(true)),
             Tool::new(
                 "get_document",
-                "Read PKB document by ID, title, or filename stem. Supports batch reads (ids) and projection (fields). Returns full body by default. Detail levels: 'full' (complete body and metadata), 'summary' (excerpt up to 300 chars), 'metadata' (frontmatter and metadata without body).",
+                "Read PKB document by ID (or explicit user-reorganisation alias). Supports batch reads (ids) and projection (fields). Returns full body by default. Detail levels: 'full' (complete body and metadata), 'summary' (excerpt up to 300 chars), 'metadata' (frontmatter and metadata without body).",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -179,7 +179,7 @@ impl PkbSearchServer {
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
-                        "id": { "type": "string", "description": "Task ID, title, or filename stem" }
+                        "id": { "type": "string", "description": "Task ID (or explicit user-reorganisation alias)" }
                     },
                     "required": ["id"]
                 }))
@@ -276,7 +276,7 @@ impl PkbSearchServer {
             .with_annotations(ToolAnnotations::new().read_only(true)),
             Tool::new(
                 "create",
-                "Create a doc; dir defaults by type (template: `[<project>/]workflows/<snake_id>.md`). Requires a slug (<= 30 chars) used to construct the filename.",
+                "Create a doc; filed automatically by type (template: `[<project>/]workflows/<snake_id>.md`). Addressing is strictly by ID; filename and dir are automatic by default.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -285,7 +285,7 @@ impl PkbSearchServer {
                             "type": "string",
                             "enum": ["task", "learn", "pr", "template", "target", "note", "knowledge", "memory", "insight", "observation", "contact", "document", "reference", "review", "case", "spec", "prototype", "index", "daily"]
                         },
-                        "slug": { "type": "string", "maxLength": 30, "description": "Short filename slug (required, <= 30 characters). Used to construct the node filename." },
+                        "slug": { "type": "string", "maxLength": 30, "description": "Optional short filename slug (<= 30 characters); auto-derived from title when omitted." },
                         "id": { "type": "string" },
                         "tags": { "type": "array", "items": { "type": "string" } },
                         "body": { "type": "string", "description": "Markdown body (wikilinks supported; host paths rejected)" },
@@ -305,8 +305,8 @@ impl PkbSearchServer {
                         "supersedes": { "type": "string" },
                         "severity": { "type": "integer" },
                         "goal_type": { "type": "string", "enum": GOAL_TYPE_ENUM },
-                        "dir": { "type": "string" },
-                        "filename": { "type": "string" },
+                        "dir": { "type": "string", "description": "Optional target subdir; automatic filing by type is the default." },
+                        "filename": { "type": "string", "description": "Discouraged: automatic filing is the default. Only supply a filename when the user explicitly wants a file in a specific location." },
                         "project": { "type": "string" },
                         "stakeholder": { "type": "string" },
                         "waiting_since": { "type": "string" },
@@ -314,7 +314,7 @@ impl PkbSearchServer {
                         "worth": { "anyOf": [{ "type": "number" }, { "type": "string" }] },
                         "deadline_class": { "type": "string", "enum": ["fake", "soft", "hard"] }
                     },
-                    "required": ["title", "type", "slug"]
+                    "required": ["title", "type"]
                 }))
                 .unwrap(),
             )
@@ -322,12 +322,12 @@ impl PkbSearchServer {
             .with_annotations(ToolAnnotations::new().read_only(false)),
             Tool::new(
                 "create_task",
-                "Create a new task markdown file with YAML frontmatter. Requires a slug (<= 30 chars) used to construct the filename. Parent is optional (omitted tasks are root tasks). Project inherits from ancestor if omitted.",
+                "Create a new task markdown file with YAML frontmatter. Filed automatically; addressing is strictly by ID. Parent is optional (omitted tasks are root tasks). Project inherits from ancestor if omitted.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
                         "title": { "type": "string", "description": "Task title (required, alias task_title)" },
-                        "slug": { "type": "string", "maxLength": 30, "description": "Short filename slug (required, <= 30 characters). Used to construct the task filename." },
+                        "slug": { "type": "string", "maxLength": 30, "description": "Optional short filename slug (<= 30 characters); auto-derived from title when omitted." },
                         "task_title": { "type": "string" },
                         "id": { "type": "string" },
                         "parent": { "type": "string" },
@@ -347,7 +347,7 @@ impl PkbSearchServer {
                         "waiting_since": { "type": "string" },
                         "due": { "type": "string" },
                         "project": { "type": "string" },
-                        "filename": { "type": "string" },
+                        "filename": { "type": "string", "description": "Discouraged: automatic filing is the default. Only supply a filename when the user explicitly wants a task in a specific location." },
                         "type": { "type": "string", "enum": ["task", "learn", "pr", "target"] },
                         "status": { "type": "string", "enum": ["inbox", "ready", "failed"] },
                         "allow_missing_parent": { "type": "boolean" },
@@ -360,7 +360,7 @@ impl PkbSearchServer {
                         "worth": { "anyOf": [{ "type": "number" }, { "type": "string" }] },
                         "deadline_class": { "type": "string", "enum": ["fake", "soft", "hard"] }
                     },
-                    "required": ["title", "slug"]
+                    "required": ["title"]
                 }))
                 .unwrap(),
             )
@@ -511,11 +511,11 @@ impl PkbSearchServer {
             .with_annotations(ToolAnnotations::new().read_only(false).destructive(true).idempotent(true)),
             Tool::new(
                 "convert_document",
-                "Retype doc (keeps ID), rename title/slug, move to `<dir>/<id>_<slug>.md` (template: `[<project>/]workflows/<snake_id>.md`), reindex.",
+                "Retype doc (keeps ID), rename title/slug, move to `<dir>/<id>_<slug>.md` (template: `[<project>/]workflows/<snake_id>.md`), reindex. Addressing remains strictly by ID.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
-                        "id": { "type": "string", "description": "Document ID, stem, or title" },
+                        "id": { "type": "string", "description": "Document ID (or explicit user-reorganisation alias)" },
                         "type": { "type": "string", "description": "Target type (e.g. 'task'). If omitted, preserves existing type." },
                         "title": { "type": "string", "description": "New title for the document" },
                         "slug": { "type": "string", "description": "Explicit filename slug (defaults to title)" },
@@ -549,7 +549,7 @@ impl PkbSearchServer {
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
-                        "id": { "type": "string", "description": "Task ID (flexible resolution: ID, filename stem, or title). If omitted, an ad-hoc task is created." },
+                        "id": { "type": "string", "description": "Task ID (or explicit user-reorganisation alias). If omitted, an ad-hoc task is created." },
                         "project": { "type": "string", "description": "Project routing slug (required if id omitted)" },
                         "status": {
                             "type": "string",
@@ -762,8 +762,8 @@ impl PkbSearchServer {
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
-                        "from": { "type": "string", "description": "Source node (ID, filename, or title)" },
-                        "to": { "type": "string", "description": "Target node (ID, filename, or title)" },
+                        "from": { "type": "string", "description": "Source node ID (or explicit user-reorganisation alias)" },
+                        "to": { "type": "string", "description": "Target node ID (or explicit user-reorganisation alias)" },
                         "max_paths": { "type": "integer", "description": "Maximum paths to return (default: 3)" }
                     },
                     "required": ["from", "to"]
@@ -818,7 +818,7 @@ impl PkbSearchServer {
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
-                        "node_id": { "type": "string", "description": "Focus node ID, filename, or title (uses flexible resolution). If omitted, exports the union of the top-10 focus picks' ego neighborhoods." },
+                        "node_id": { "type": "string", "description": "Focus node ID (or explicit user-reorganisation alias). If omitted, exports the union of the top-10 focus picks' ego neighborhoods." },
                         "hops": { "type": "integer", "description": "Neighborhood depth in hops (1 to 5, default: 2)" }
                     }
                 }))
@@ -837,7 +837,7 @@ impl PkbSearchServer {
                             "enum": ["dot", "json"],
                             "description": "Output format: 'dot' (GraphViz DOT digraph syntax, default) or 'json' (structured graph JSON with nodes, edges, ready, blocked, roots, and cliff; each node carries its flow figures, display metadata and display_rank)."
                         },
-                        "focus": { "type": "string", "description": "Focus node ID, filename, or title (flexible resolution). If omitted, exports the full active graph." },
+                        "focus": { "type": "string", "description": "Focus node ID (or explicit user-reorganisation alias). If omitted, exports the full active graph." },
                         "max_depth": { "type": "integer", "description": "Traversal depth in hops from focus (1 to 5, default: 2). Ignored if focus is omitted." },
                         "project": { "type": "string", "description": "Filter to nodes whose project field matches exactly." },
                         "include_done": { "type": "boolean", "description": "Include done/cancelled nodes (default: false)." }
