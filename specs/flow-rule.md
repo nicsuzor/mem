@@ -165,7 +165,7 @@ This multiplicative chaining replaces calendar time discounting (S25; Kolmogorov
    When an open design or strategic choice carries high uncertainty, causal execution commits heavy resources prematurely. Effectual planning instead emits a cheap discriminating experiment—a **decomposition probe** (`pkb-effectual-planning`, `pkb-bayesian-voi-uncertainty`, `kb-9230ba76`).
    In the graph topology, an open decision node $D$ has competing `alternative` edges representing mutually exclusive options. The decomposition probe $u$ links to $D$ via a directed edge with label `settles`. The flow engine evaluates the Expected Value of Perfect Information (Howard 1966) at node $D$ (§6):
    $$\text{EVPI}(D) = \mathbb{E}\left[\max(0, \max_i X_i w_i)\right] - \max(0, \max_i p_i w_i)$$
-   The probe $u$ receives settle worth $\text{settle\_worth}(u) = \text{quantum}(u \to D) \times \text{EVPI}(D)$, surfaced in the `decision_value` column. Under Point 29 (the do-next draw), exploration in the sampling policy is explicitly weighted by uncertainty about an item's worth (Thompson-style sampling), ensuring decomposition probes are drawn for execution when the value of resolving uncertainty is high.
+   The probe $u$ receives settle worth $\text{settle\_worth}(u) = \text{quantum}(u \to D) \times \text{EVPI}(D)$, surfaced in the `decision_value` column. Under Point 29 (the do-next draw), the two-lane barbell sampling policy pairs uncertainty-weighted exploration in the Core lane with bounded moonshot lottery exposure (`gain / effort_days` per project/root bucket), ensuring high-leverage probes surface for execution.
 
 3. **The "opening futures" term:**
    In real options literature (Bardhan et al.; Dixit & Pindyck 1994) and Sarasvathy's effectual means, foundational investments (platforms, toolchains, core research infrastructure) create options that unlock multiple emergent futures. Prior scoring architectures attempted to model this through an ad-hoc "options multiplier" or artificial "opening futures" score bonus. In this redesign, **no ad-hoc "opening futures" term exists or is needed**. Foundational investments and capital stocks (reputation, funding base, collaborator network, shared tooling) are modeled as **hub targets** (Point 27, S27). Every downstream opportunity, project, or moonshot links back to these hub targets as prerequisites. Because worth flows backward from priced targets and moonshots through these hubs, foundational work naturally accumulates value proportionally across all the futures it unlocks.
@@ -323,16 +323,15 @@ Worth of `S`, the work that would settle `D`. The options are worth 0.6 (p 0.4) 
 - **Bird-in-Hand Effectuation** (Sarasvathy 2001, 2008): Non-predictive control prioritizing means under immediate control over distant probabilistic forecasts.
 - **Noisy-OR Path Reliability** (Pearl 1988, ch. 4): Path reliability modeling under independent failure inhibitors.
 
-### 4.7. Point 26: Open-ended log scale for target pricing and fat-tailed impact (S26)
+### 4.7. Point 26: Open-ended cardinal `1/p` gamble worth scale for fat-tailed impact (S26)
 
-**The decision.** Targets are priced on an open-ended logarithmic scale ($W_t \in \mathbb{R}$), replacing the five verbal anchors of `pkb-standing-weight-elicitation-instrument`.
+**The decision.** Targets are priced on an open-ended continuous cardinal von Neumann–Morgenstern gamble scale ($W_t \in \mathbb{R}$, any finite float) expressed via `1/p` indifference ratios against a `+1.0` core commitment, with log-spaced reference points (`1, 3, 10, 30, 100+`; never logarithmic compression $\log(W)$).
 
-**Rationale.** Academic research impact and entrepreneurial payoffs follow fat-tailed, power-law distributions (`kb_ede34981`), where top-tier contributions yield orders of magnitude more impact than median outputs. A bounded ordinal scale (such as 0.05 to 1.00) compresses the dynamic range: it cannot express a $100\times$ moonshot. Under compressed scales, high-probability incremental chores mathematically dominate low-probability transformational bets, systematically enforcing mediocrity. The open log scale serves as an explicit strategic dial: against a routine task at 90% odds, a moonshot at 10% odds competes rationally when priced at $\approx 9\times$, and at 2% odds when priced at $\approx 45\times$. Optimizing median per-task wins secures competence among peers; world-class ambition requires optimizing the tail.
+**Rationale.** Academic research impact and entrepreneurial payoffs follow fat-tailed, power-law distributions, where top-tier contributions yield orders of magnitude more impact than median outputs. A bounded ordinal scale (such as 0.05 to 1.00) compresses the dynamic range: it cannot express a $100\times$ moonshot. Under compressed scales, high-probability incremental chores mathematically dominate low-probability transformational bets, systematically enforcing mediocrity. Because flow propagation stays strictly linear in worth and probability, a `1/p` cardinal scale serves as an exact strategic dial: against a routine task at 90% odds ($W = 1.0$), a moonshot at 10% odds competes rationally when priced at $\ge 10\times$, and at 2% odds when priced at $\approx 45\times$. Optimizing median per-task wins secures competence among peers; world-class ambition requires optimizing the tail.
 
 **Named theory:**
 - **Power Laws in Scientific Discovery and Impact** (Lotka 1926; Price 1965; Clauset, Shalizi & Newman 2009): Empirical proof of heavy-tailed Pareto distributions in scholarly citations and breakthroughs.
-- **Logarithmic Utility and the Weber-Fechner Law** (Bernoulli 1738; Fechner 1860): Subjective perception of magnitude scales logarithmically with stimulus intensity.
-- **Multi-Attribute Utility Theory and Continuous Mapping** (Keeney & Raiffa 1976): Formal requirements for transforming ordinal preference categories into continuous cardinal utility functions.
+- **Von Neumann–Morgenstern Cardinal Utility** (von Neumann & Morgenstern 1944; Keeney & Raiffa 1976): Uncapped ratio-scale pricing via certainty-equivalent gamble probabilities (`1/p`), preserving linearity under expectation.
 
 ### 4.8. Point 27: Capital stocks are hub targets (S27)
 
@@ -345,27 +344,33 @@ Worth of `S`, the work that would settle `D`. The options are worth 0.6 (p 0.4) 
 - **Resource-Based View of the Firm** (Wernerfelt 1984; Barney 1991): Cumulative, imperfectly imitable capabilities as the foundation for sustainable strategic advantage.
 - **Effectual Means Accumulation** (Sarasvathy 2001): Leveraging existing identity, knowledge, and social networks as compounding inputs.
 
-### 4.9. Point 28: No separate impact distribution; log price axis carries the tail (S28)
+### 4.9. Point 28: No separate impact distribution; linear scalar worth carries the tail (S28)
 
-**The decision.** There is no separate task-level impact distribution, variance adjustment, or kurtosis penalty in the ranking engine. The open-ended logarithmic price axis carries the entire tail. Expected value is linear in probability ($E[W] = p \cdot W$), and independent bets add linearly.
+**The decision.** There is no separate task-level impact distribution, variance adjustment, quadratic penalty, Monte Carlo sampler, or kurtosis adjustment in the ranking engine. The open-ended cardinal `1/p` worth axis carries the entire tail, while expected value stays strictly linear in probability and scalar in worth ($E[W] = p \cdot W$).
 
-**Rationale.** Adding non-linear dispersion terms, variance-discount factors, or risk-premia to individual tasks violates the fundamental linearity of expectation ($E[X + Y] = E[X] + E[Y]$) and creates severe double-counting. In decision analysis, portfolio tail exposure belongs strictly in the valuation of the target itself ($W_t$), not in complex per-task variance adjustments.
+**Rationale.** Adding non-linear dispersion terms, variance-discount factors, Bayesian posteriors, or portfolio-sizing formulas to individual tasks violates the fundamental linearity of expectation ($E[X + Y] = E[X] + E[Y]$) and creates double-counting. Portfolio tail exposure belongs in the cardinal target price $W_t$ inside `flow` and the display-layer barbell allocation, never in non-linear task flow math.
 
 **Named theory:**
 - **Linearity of Mathematical Expectation** (Kolmogorov 1933): Expectation operator distributes linearly over sums of random variables regardless of independence.
 - **De Finetti's Coherence of Subjective Probability** (de Finetti 1937): Avoiding Dutch books by maintaining linear additivity across mutually exclusive or independent bets.
 - **State-Contingent Valuation** (Arrow 1964; Debreu 1959): Pricing contingent payoffs directly across states of the world without redundant task-level risk adjustments.
 
-### 4.10. Point 29: Do-next list is a draw, not an argmax (S29)
+### 4.10. Point 29: Do-next list is a two-lane barbell draw, not a single argmax (S29)
 
-**The decision.** The do-next list is generated as a draw (a sampling policy) rather than a deterministic argmax over scores. The sampling policy maintains a high exploitation base rate (focusing on proven high-value items) combined with non-zero exploration weighted by uncertainty about an item's worth (Thompson-style sampling). Value of Information enters here for every node across the graph.
+**The decision.** Interactive do-next recommendations use a two-lane **Barbell Do-Next Draw** strictly in the display layer after non-compensatory cliff triage:
 
-**Rationale.** Deterministic argmax selection over a memoryless score repeatedly selects the mode of the distribution. In personal knowledge work and ADHD-aware attention management, an argmax traps the user in a wall of highest-friction obligations or technical blockers, causing executive paralysis (U2). Furthermore, a deterministic sort cannot spread bets across time or explore high-uncertainty options. A high-exploitation draw protects focus on core commitments while providing continuous, controlled exposure to high-upside moonshots and exploratory probes.
+1. **Step 1 (Cliff lane, non-compensatory):** When `cliff_first` is enabled, hard-deadline items (`days_left <= effort_days + CLIFF_BUFFER_DAYS`) always surface first in ascending `due` order regardless of target worth or active-slot budget, and are excluded from the Step 2 lottery pool. Any `on_cliff` moonshot surfaced in Step 1 increments `drawn_moonshots` and marks its bucket drawn for that sample.
+2. **Step 2 (Core vs. Moonshot Lottery):** Over remaining ready `CLAIMABLE_TYPES` leaves with `flow_status = ok`:
+   - **Moonshot lane eligibility:** `nic_sum() > 0.0` (`gain + loss_averted > 0.0`, excluding net-harmful items; negative avoidance targets route through Cliff/Core) and `max_positive_target_worth >= K` (default $K = 10.0$).
+   - **Active human focus slot bound (1–2 concurrent moonshots):** Count unblocked `in_progress` `CLAIMABLE_TYPES` leaves with `flow_status = ok`, `nic_sum() > 0.0`, `max_positive_target_worth >= K` (including `on_cliff` moonshots), and non-personal assignee matching unassigned (`None`/empty), `"user"`, or caller-configured `human_assignees`. Step 2 draws additional lottery moonshots only while `active_moonshot_probes + drawn_moonshots < max_active_moonshot_probes` (default `2`).
+   - **One ticket per project/root bucket (`TicketBucket`):** Each moonshot candidate maps deterministically to `Project(slug)` (trimmed lowercase `project`), else `Root(root_id)` (highest cycle-guarded `part_of`/`parent` ancestor), else `SelfId(id)`. Each bucket enters at most one representative chosen by `moonshot_cmp` (`has_explicit_effort DESC`, `gain / effort_days DESC`, `gain DESC`, `loss_averted DESC`, `id ASC`).
+   - **Allocation & non-starvation:** When `remaining_slots > 0` and qualifying moonshot buckets exist, the Core lane receives $1 - \lambda$ (default $\lambda = 0.30$) over non-moonshot items using the exploitation/uncertainty blend, and the Moonshot Lottery receives $\lambda$ uniformly across qualifying un-probed buckets (falling back to qualifying ready buckets if every qualifying bucket already holds an active human probe). Multi-item draws never repeat a bucket within a sample, and allocate `0.0` to Moonshot once slots are exhausted.
+
+**Rationale.** Deterministic argmax over a memoryless score repeatedly stalls on high-friction obligations (U2), while an uncapped single-pool lottery allows $10\times$–$100\times$ moonshots to crush baseline Core commitments and over-commit attention across half-started gambles. Separating Core commitments ($70\%$) from a project-deduplicated, slot-bounded ($1\text{–}2$ active) Moonshot Lottery ($30\%$) ordered by `gain / effort_days` protects reliable execution while continuously sampling cheap, high-leverage probes across distinct bets.
 
 **Named theory:**
-- **Thompson Sampling / Posterior Sampling** (Thompson 1933; Agrawal & Goyal 2012): Optimal Bayesian exploration-exploitation balancing by sampling actions according to their posterior probability of being optimal.
-- **Multi-Armed Bandit Problem** (Gittins 1979; Berry & Fristedt 1985): Dynamic allocation of trials between learning and earning under uncertainty.
-- **Economics of Bounded Attention** (Simon 1971; Kahneman 1973): Allocation of scarce cognitive processing capacity in an information-rich environment.
+- **Barbell Portfolio Allocation & Convexity** (Taleb 2012): Combining robust core commitments with bounded asymmetric tail bets rather than middling risk-adjusted blends.
+- **Exploration–Exploitation under Bounded Attention** (Thompson 1933; Simon 1971; Kahneman 1973): Allocation of scarce cognitive execution slots across proven core commitments and high-upside exploratory probes.
 
 ### 4.11. Complexity-limiting simplifications and the strengths they buy
 
@@ -383,7 +388,7 @@ Every simplification in the flow redesign is stated as a concrete strength it bu
 | 8 | **Waiting carries no separate rule** (S21) | Arbitrary stakeholder waiting points and escalation ladders | Prevents squeaky-wheel distortion; external expectations are evaluated as standard strategic targets. | S21 ruling (2026-10-12). |
 | 9 | **Zero default quantum for unvalued links** (S7) | Automatic inference of edge weights on raw wikilinks | Keeps the graph sparse and stable; prevents 1,200+ untriaged ideas and weak notes from creating phantom loops (Invariant 7). | S7 ruling; Model fidelity before formula tuning. |
 | 10 | **Floor outside maths as lexicographic gate** (S24) | Blending existential survival into continuous utility scales | Zero interference between existential ruin constraints and normal work optimization; peacetime emptiness is healthy (S24). | Safety-first theory (Roy 1952). |
-| 11 | **Do-next draw replaces dynamic programming** (S29) | Multi-period dynamic optimization / Bellman recursion | Solves exploration/exploitation tractably via Thompson-style sampling without requiring an infinite-horizon DP model. | Thompson sampling (Agrawal & Goyal 2012). |
+| 11 | **Barbell do-next draw replaces dynamic programming** (S29) | Multi-period dynamic optimization, convex exponent weighting, or sibling satiation inside `flow` | Splits display selection across Cliff, Core (`1 - λ`), and a project-deduplicated, active-slot-bounded (`1–2`) Moonshot Lottery (`λ = 0.30`) ordered by `gain / effort_days`. | Barbell allocation (Taleb 2012); Thompson exploration (Agrawal & Goyal 2012). |
 | 12 | **Knockout counterfactual / Noisy-OR** (§3.2) | Combinatorial state-space simulation | Guarantees parallel prerequisites each carry full worth (S10, Invariant 1) and finishing steps carry full worth (S9, Invariant 8). | But-for causality (Pearl 2009; Birnbaum 1969). |
 
 ---
@@ -468,25 +473,27 @@ The default is 1.00 (S2).
 
 ### 5.6. Target worth scale, positive and negative (S12, S14, S26)
 
-**Open-ended log scale (Point 26).** Targets are priced on an open-ended continuous logarithmic scale ($W_t \in \mathbb{R}$), replacing the five capped verbal anchors of `pkb-standing-weight-elicitation-instrument` as required by `kb-9230ba76`'s ordinal-to-continuous principle. Because research payoffs and breakthrough opportunities follow heavy-tailed power-law distributions (`kb_ede34981`, Clauset et al. 2009), a capped scale (0.05–1.00) cannot represent 10x or 100x moonshots.
+**Cardinal `1/p` gamble scale (Point 26).** Targets are priced in open-ended cardinal vNM gamble units ($W_t \in \mathbb{R}$, any finite float) with log-spaced reference points (`1, 3, 10, 30, 100+`; never logarithmic compression $\log(W)$), ensuring $10\times$–$100\times$ moonshots compete linearly without saturating flow maths.
 
-Under the settled open log scale:
-- **Baseline unit:** 1.0 represents a foundational core commitment (e.g., maintaining employment and academic accreditation).
-- **Moonshots and transformative upside:** Strategic targets with outsized compounding leverage can be priced at 5.0, 10.0, or 100.0+. Against a routine sure thing ($p = 0.90, W = 1.0 \implies \text{expected } 0.90$), a high-risk moonshot at 10% odds competes rationally when priced at $\approx 9.0$, and a speculative 2% moonshot competes when priced at $\approx 45.0$ (S26).
-- **Negative targets:** Targets Nic wishes to avoid carry negative prices ($W_t < 0$), mirrored on the same scale:
+Numeric `1/p` gamble ratios are the primary authoring format (any finite float is valid without a `[-1.0, 1.0]` cap):
+- **Baseline unit (`1.0`):** A foundational core commitment.
+- **Moonshots and transformative upside (`10, 30, 100+`):** A `1/p` indifference ratio against `+1.0` for certain. Against a routine task ($p = 0.90, W = 1.0 \implies E[W] = 0.90$), a 10% moonshot priced at `>= 10.0` and a 2% moonshot priced at `>= 45.0` compete rationally inside linear propagation while display-layer barbell lanes keep them from crowding out Core work.
+- **Negative avoidance targets ($W_t < 0$):** Targets to avoid carry negative finite prices, feeding `loss_averted` and remaining in the Cliff/Core lanes rather than the positive-upside Moonshot Lottery lane.
 
-| Reference Anchor | Canonical Price $W_t$ | Negative Avoidance Anchor | Avoidance Price $W_t$ |
+Alongside numeric `1/p` floats, the parser accepts these exact twelve canonical anchor strings:
+
+| Positive Anchor Word | Canonical $W_t$ | Negative Anchor Word | Canonical $W_t$ |
 |---|---|---|---|
-| Moonshot / Generational | +10.00 to +100.00+ | Catastrophic Ruin | −10.00 to −100.00 |
-| Critical / Non-Negotiable | +1.00 | Severe Existential Loss | −1.00 |
-| High / Core Pillar | +0.60 | Major Operational Failure | −0.60 |
-| Substantial / Significant | +0.35 | Substantial Disruption | −0.35 |
-| Moderate / Standard | +0.15 | Moderate Operational Friction | −0.15 |
-| Low / Hygiene Maintenance | +0.05 | Minor Friction | −0.05 |
+| `moonshot` | `+10.00` | `catastrophic ruin` | `-10.00` |
+| `critical` | `+1.00` | `severe loss` | `-1.00` |
+| `high` | `+0.60` | `major loss` | `-0.60` |
+| `substantial` | `+0.35` | `substantial loss` | `-0.35` |
+| `moderate` | `+0.15` | `moderate loss` | `-0.15` |
+| `low` | `+0.05` | `minor loss` | `-0.05` |
 
-**Elicitation and review.** Agents make educated initial price estimates on target nodes marked as `agent-proposed`, and Nic reviews and corrects them by feel (S14). Unpriced targets carry worth 0.0 and are never inferred; the linter reports them (U20).
+**Elicitation and review.** Agents may propose initial target price estimates marked `set_by: agent-proposed`, which the user reviews and adjusts. Unpriced targets carry worth 0.0 and are never inferred; the linter reports them (U20).
 
-**Units.** Gain and loss averted are computed in the same units. One standard unit is the worth of a baseline Critical target (+1.00).
+**Units.** Gain and loss averted are computed in the same units. One standard unit is the worth of a baseline `critical` / `1.00` core target.
 
 ---
 
@@ -525,9 +532,9 @@ Each rule below reads the maths' output and nothing it writes feeds back (I6). T
 | Ripeness | An opportunity stops pulling when it is set `cancelled` or its target repriced; nothing infers it (S6, U19, Q13) | state, worth | — |
 | Ready-leaf filter | Hide work that is not an open, actionable leaf with no open `needs`; targets are never listed as work (S4) | labels, state, type | `display.py:35` |
 | Grouping and progress | Show `part_of` trees and the share of children done; never sum worths (§4.1, S19) | `part_of` edges | — |
-| Benefit per effort | `gain / effort_days` and `loss_averted / effort_days` shown side by side; the finish line stands out because the last step carries full worth (U16, I8). Ordered by their plain sum (settled Q3, S17); both figures stay shown separately (S16) | worth, `effort` | `display.py:55` |
-| Do-next draw | Sampling policy over open ready leaves with high exploitation base rate and non-zero exploration weighted by uncertainty (Thompson-style; S29). Trades minor attention protection for tail exposure. Good and bad in equal measure cancel for draw ordering; both figures remain displayed separately (S16, S17) | `gain`, `loss_averted`, uncertainty, EVPI | dashboard spec (`specs/flow-display.md`) |
-| Ordering | Cliff lane first, then by the plain sum of gain and loss averted (settled Q3, S17) or the do-next draw (S29) | — | `display.py:55` |
+| Benefit per effort | `gain / effort_days` and `loss_averted / effort_days` shown side by side; the finish line stands out because the last step carries full worth (U16, I8). Deterministic default ordering uses `gain + loss_averted` (Q3, S17), while `moonshots` sort and moonshot bucket representative selection rank `has_explicit_effort DESC` then `gain / effort_days DESC` (`moonshot_cmp`); both figures stay shown separately (S16) | worth, `effort` | `display.py:55` |
+| Do-next draw | Two-lane Barbell sampling policy over open ready claimable leaves (`flow_status = ok`): strictly non-compensatory Step 1 Cliff lane, followed by Core (`1 - λ`, `λ = 0.30`) exploit/uncertainty draw and Moonshot Lottery (`max_positive_target_worth >= 10.0`, `gain + loss_averted > 0.0`, one ticket per `TicketBucket` chosen by `moonshot_cmp`, capped at `max_active_moonshot_probes = 2` human active moonshot leaves). Single-bucket active fallback prevents slot starvation; multi-item draws deduplicate buckets (S29). | `gain`, `loss_averted`, `stake`, `effort`, `assignee`, uncertainty, EVPI | `pkb-flow-engine.md` R19 |
+| Ordering | Cliff lane first, then `display_cmp` (`gain + loss_averted`, S17) for deterministic inspection, `moonshot_cmp` for opt-in `moonshots` sort, or opt-in Barbell Do-Next Draw (S29) | — | `display.py:55` |
 | Treemap tile sharing | On the treemap view, tile area is shared between parallel prerequisites of the same target (S22). Each prerequisite still carries full worth in ordering and maths. As prerequisites finish, remaining tiles grow to full size | prerequisites, worth | dashboard spec (`specs/flow-display.md`) |
 | Treemap defaults | Target nodes and blocked nodes are disabled by default on first load in treemap view (S23); toggleable by viewer | node type, blocked status | dashboard spec (`specs/flow-display.md`) |
 | Must-not-miss floor | The floor is the cliff lane plus a list Nic keeps; obligations with a hard deadline reach it whatever their worth (U5, S24; Q19) | class, list | — |
@@ -803,11 +810,11 @@ All 31 architectural decisions are settled under points 1–30 of `spec_866ee53d
 
 1. **Q1. Parent links (gap 3). Settled (points 19–20):** `part_of` carries quantum 0.0 in the flow (S19; filing label; grouping/progress read it). Class-level worth comes from prototype nodes used as unpriced hubs (S20; instance→prototype 1.0, prototype serves priced targets; prototype stays unpriced and passes worth through). There is no tree, and a task may relate to several projects without diluting independent dependency chains.
 2. **Q2. Default quantum (gap 2). Settled (point 7):** Default quantum is exactly 0.0 (S7). Unvalued links carry zero quantum, keeping the graph sparse and stable. A recurring background job densifies the graph fifty tasks at a time.
-3. **Q3. Ordering. Settled (points 16–17; S17, S29):** Ordering is governed by the plain sum of gain and loss averted (`total = gain + loss_averted`) or the do-next draw (S29). Good and bad in equal measure cancel out for sampling/draw ordering; both figures remain displayed separately side by side (S16).
+3. **Q3. Ordering. Settled (points 16–17; S17, S29):** Deterministic inspection uses the plain sum of gain and loss averted (`display_cmp`); interactive recommendations use the two-lane Barbell Do-Next Draw (Cliff first, then Core `1 - λ` vs. project-bucketed active-slot-bounded Moonshot Lottery `λ = 0.30` ordered by `moonshot_cmp` / `gain / effort_days`, S29), with opt-in `moonshots` sort for moonshot review. Good and bad stay displayed separately side by side (S16).
 4. **Q4. Decision options. Settled (point 17, §6):** For the decision rule, an option's gain and loss averted are summed to compare alternatives when computing EVPI.
 5. **Q5. Hard blocks (gap 4). Settled (points 2, 10):** Hard blocks are represented by their own label `needs` with default quantum 1.0. Display reads `needs` for the ready-leaf filter; in the maths it acts as a necessary contribution at full quantum.
 6. **Q6. Quantum words. Settled (§5.4):** Five convex words map to numbers (`all`: 1.00, `most`: 0.60, `a good part`: 0.30, `some`: 0.10, `a little`: 0.03, `none`: 0.00).
-7. **Q7. Worth scale (gap 6). Settled (point 26):** Targets are priced on an open-ended continuous logarithmic scale ($W_t \in \mathbb{R}$), replacing the five capped verbal anchors of `pkb-standing-weight-elicitation-instrument`. Heavy-tailed power-law research impact (`kb_ede34981`) requires an open scale so moonshots can compete with routine tasks.
+7. **Q7. Worth scale (gap 6). Settled (point 26):** Targets are priced on an open-ended cardinal `1/p` gamble scale ($W_t \in \mathbb{R}$, finite floats, log-spaced reference points `1, 3, 10, 30, 100+`, never $\log(W)$ compression), replacing bounded ordinal weights so moonshots compete linearly with core work.
 8. **Q8. Decisions modelled as parents. Settled (point 10, §6):** Migration relabels decision children as `alternative`, each inheriting the decision's own outgoing edges.
 9. **Q9. Cliff buffer. Settled (§7):** Default buffer is 7 days: hard deadlines enter the cliff lane once `days_left <= effort_days + 7`.
 10. **Q10. Priority band (gap 7). Settled (§9):** Priority intent bands (P0–P4) are removed from the flow maths; preserved in display and agent logic as human intent filters.
@@ -828,7 +835,7 @@ All 31 architectural decisions are settled under points 1–30 of `spec_866ee53d
 25. **Q25. Retiring stakeholder waiting points. Settled (point 21, §9):** Stakeholder waiting bonuses are removed from the maths. Tasks receive worth through normal target edges representing classes of stakeholders.
 26. **Q26. Cliff trigger condition. Settled (§7):** Trigger is `days_left <= effort_days + buffer`.
 27. **Q27. Probability scale words. Settled (§5.5, point 25):** 7 Renooij–Witteman words (`certain` 1.0, `probable` 0.85, `expected` 0.75, `fifty-fifty` 0.50, `uncertain` 0.25, `improbable` 0.15, `impossible` 0.00), default 1.00.
-28. **Q28. Negative targets scale. Settled (§5.6, points 12, 26):** Mirrored open-ended continuous logarithmic scale for losses averted.
+28. **Q28. Negative targets scale. Settled (§5.6, points 12, 26):** Mirrored open-ended cardinal avoidance scale feeding `loss_averted`.
 29. **Q29. Blast radius (`downstream_weight`) removal. Settled (§9):** Dropped from the ranking engine; unblocking power is fully captured by worth passing to unblockers (S4).
 30. **Q30. Retiring `supersedes` from flow. Settled (§8):** `supersedes` belongs purely to agent lifecycle maintenance, not flow physics.
 31. **Q31. Actionable and claimable types in ready filter. Settled (§7):** Display preserves `CLAIMABLE_TYPES` (`["task"]`) and actionable types (`["task", "learn", "pr"]`).

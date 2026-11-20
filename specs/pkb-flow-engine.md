@@ -51,7 +51,7 @@ Traceability tags are as in `flow-rule.md`, plus two of this spec's own:
 **What the server will store.**
 
 - This spec owns the stored schema for edges and target worth (C1). Storage is additive in place on today's keys (`depends_on`, `soft_depends_on`, `contributes_to`, `parent`), which accept both bare IDs and map entries `{to, quantum, probability, effect, set_by, justification}`, or a consolidated single `links:` list (E1).
-- Each target gets a `worth:` on an open-ended continuous logarithmic scale $W_t \in \mathbb{R}$ (positive for aspirations, negative for anti-targets; baseline +1.0 for core targets, up to +10.0/+100.0+ for moonshots per S26). You set it.
+- Each target gets a `worth:` on an open-ended cardinal $1/p$ gamble scale ($W_t \in \mathbb{R}$, any finite float; reference ladder `1, 3, 10, 30, 100+` for aspirations and mirrored negative avoidance values, never $\log(W)$ compression; baseline `+1.0` for core targets and `>= +10.0` for moonshots per S26). You set it.
 - Each dated node gets a `deadline_class:` of fake, soft or hard.
 - Nothing else feeds the maths.
 
@@ -61,7 +61,7 @@ Traceability tags are as in `flow-rule.md`, plus two of this spec's own:
 - *loss averted*: what loss you would fail to avert. It is negative, shown as "loss caused", when the work harms something you want;
 - *decision value*: what finding out is worth, for work that settles an open decision.
 
-The three are never added together, with the one exception of the open decision option comparison (Q4 settled; plain sum). The server also records which priced targets each figure comes from, and through which routes. The maths sits in its own module, which cannot see dates, types, tags, severity, stakeholders or priority. Ready lists, the hard-deadline cliff lane, and the Do-Next Draw (Thompson / softmax sampling per S29) sit in a separate display layer.
+The three are never added together, with the one exception of the open decision option comparison (Q4 settled; plain sum). The server also records which priced targets each figure comes from, and through which routes. The maths sits in its own module, which cannot see dates, types, tags, severity, stakeholders or priority. Ready lists, the hard-deadline cliff lane, and the two-lane Barbell Do-Next Draw (Cliff first, then Core (`1 - λ`) vs. project-bucketed, active-slot-bounded Moonshot Lottery (`λ = 0.30`) per S29) sit in a separate display layer.
 
 **What each tool returns.**
 
@@ -78,7 +78,7 @@ The three are never added together, with the one exception of the open decision 
 
 - **E1.** Store links additively in place on today's keys, or in a single `links:` list (C1).
 - **E3.** When a loop is rejected or fails to settle, work feeding it shows `null`, with the loop named (adopted).
-- **Q3** (from flow-rule). Settled (§7, Points 17, 29): Do-next list is a draw (Thompson / softmax draw over surplus $S_u = \max(0, \text{gain} + \text{loss\_averted})$), or sorted by plain sum of gain and loss averted for deterministic inspection.
+- **Q3** (from flow-rule). Settled (§7, Points 17, 29): Interactive Do-Next recommendations use the two-lane Barbell Do-Next Draw (Cliff first, then Core vs. slot-bounded Moonshot Lottery ordered by `moonshot_cmp`), while deterministic inspection sorts by `display_cmp` (`gain + loss_averted` DESC) or explicit `--sort` options (`moonshots`, `gain_per_effort`, etc.).
 - **Q4** (from flow-rule). To compare the options of an open decision, options are compared by the plain sum of gain and loss averted (Q4 settled; §6).
 
 ---
@@ -227,12 +227,12 @@ They stay as today for search, `pkb_trace` and display.
 
 ### 3.2. Target worth (S12, S14, S26, S27)
 
-**R9. The `worth` field (S12, S14, S26, U20).** `worth:` is a frontmatter value, either:
+**R9. The `worth` field (S12, S14, S26, U20).** Numeric cardinal `1/p` gamble ratios (`1, 3, 10, 30, 100+` for positive bets and mirrored negative avoidance floats, never $\log(W)$) are primary. `worth:` in frontmatter is either:
 
-- a float in $(-\infty, +\infty)$ (canonically −100.0 to +100.0+); or
-- an anchor word from `flow-rule.md` §5.6: `moonshot`, `critical`, `high`, `substantial`, `moderate`, `low`, or the loss words `catastrophic ruin`, `severe loss`, `major loss`, `substantial loss`, `moderate loss`, `minor loss`.
+- any finite float in $(-\infty, +\infty)$ (no `[-1.0, 1.0]` clamp; positive for aspirations, negative for avoidance targets); or
+- one of the exact twelve canonical anchor words from `flow-rule.md` §5.6: `moonshot` (`10.0`), `critical` (`1.0`), `high` (`0.60`), `substantial` (`0.35`), `moderate` (`0.15`), `low` (`0.05`), `catastrophic ruin` (`-10.0`), `severe loss` (`-1.00`), `major loss` (`-0.60`), `substantial loss` (`-0.35`), `moderate loss` (`-0.15`), `minor loss` (`-0.05`).
 
-Non-numeric values, unknown words, NaN and infinity yield a `ParseWarning`, and the node is read as unpriced. An unpriced node has worth 0, which is never inferred (U20).
+Non-numeric values, unrecognized words, NaN, and infinity yield a `ParseWarning` on load (node read as unpriced `0.0`), an error on write tools (`create_task` / `update_task` / `create` / `batch_update`), and `flow-worth-invalid` on `pkb lint` (`src/lint.rs` delegates directly to `crate::graph::parse_worth`). An unpriced node has worth 0, which is never inferred (U20).
 
 - **Any node may carry it.** The maths reads `worth` on any node, because the maths never reads type (`flow-rule.md` §2). The linter, not the maths, flags `worth` on a node that is not a target (owned by `epic_fc1de9ec`). Targets can also function as capital stock hubs (S27).
 - **The old field.** `standing_weight` (`src/graph.rs:1480-1505`, `0.0..=1.0`) is read as `worth` until the migration spec retires it. If both are present, `worth` wins, with a `ParseWarning`.
@@ -280,6 +280,9 @@ The flow engine is the only ranking engine; there is no configuration setting th
 | `NEEDS_QUANTUM`, for `needs` | 1.0 | `flow-rule.md` §5.2; Q5 |
 | `SETTLES_QUANTUM`, for `settles` | 1.0 | `flow-rule.md` §5.2; Q4 |
 | `CLIFF_BUFFER_DAYS` | 7 | Q9 |
+| `DEFAULT_MOONSHOT_SHARE` ($\lambda$) | 0.30 | S29 Barbell Do-Next Draw |
+| `DEFAULT_MOONSHOT_WORTH_THRESHOLD` ($K$) | 10.0 | S26 / S29 Moonshot threshold |
+| `DEFAULT_MAX_ACTIVE_MOONSHOT_PROBES` | 2 (within 1–2 bound) | S29 Active human moonshot focus bound |
 | `ROUTE_CAP` | 5 per target | E8 |
 | `TOL` | 1e-12 | `flow.py:39` |
 | `ITERATION_CAP` | 20,000 sweeps per component | `flow.py:129`, `flow.py:162` |
@@ -412,10 +415,14 @@ Its form follows `flow-rule.md` §12. The cost is one maximum-product search per
 
 **R19. One comparator and Do-Next Draw (S1, S13, S16, S17, S29, I15, I17; Q3 settled).** `display_cmp` and the Do-Next Draw govern display and recommendation of work in the server. They replace all five orderings listed in §1:
 
-1. **The cliff lane first.** These are nodes with `deadline_class: hard` and `days_left ≤ effort_days + CLIFF_BUFFER_DAYS` (where `effort_days` defaults to `DEFAULT_EFFORT_DAYS` 3), ordered by `due` ascending (`flow-rule.md` §7; `display.py:47-52`; Q26). Fake and soft dates never enter it (I17).
-2. **The Do-Next Draw (Point 29, S29) or Nic key (Q3 settled per S17).**
-   - For interactive recommendations, candidate ready tasks are drawn from a probability distribution proportional to expected surplus (Thompson sampling / softmax over $S_u = \max(0, \text{gain} + \text{loss\_averted})$), avoiding decision fatigue and ossification.
-   - For deterministic table inspection, ordered by the plain sum of gain and loss averted: `gain + loss_averted` DESC (good and bad in equal measure cancel out for ordering; both figures stay shown separately, S16/S17). Ties are broken by `gain` DESC, then `loss_averted` DESC, then `decision_value` DESC.
+1. **The cliff lane first (non-compensatory).** These are nodes with `deadline_class: hard` and `days_left ≤ effort_days + CLIFF_BUFFER_DAYS` (where `effort_days` defaults to `DEFAULT_EFFORT_DAYS` 3), ordered by `due` ascending (`flow-rule.md` §7; `display.py:47-52`; Q26). Fake and soft dates never enter it (I17). When `cliff_first` is true, `on_cliff` items always surface first without slot capping and are excluded from Step 2 lottery splitting; any surfaced `on_cliff` moonshot increments `drawn_moonshots` and marks its bucket drawn for that sample.
+2. **The Barbell Do-Next Draw (Point 29, S29) or deterministic `display_cmp` (Q3 settled per S17).**
+   - **Deterministic table order (`display_cmp`, default):** Ordered by plain sum `gain + loss_averted` DESC, ties broken by `gain` DESC, then `loss_averted` DESC, then `decision_value` DESC (`loss_averted` and `gain` stay displayed separately, S16/S17).
+   - **Interactive Two-Lane Barbell Draw (`compute_draw_distribution`, `do_next_draw_one`, `do_next_draw_sample`):** Over remaining ready `CLAIMABLE_TYPES` leaves with `flow_status = ok`:
+     - *Moonshot eligibility:* `nic_sum() > 0.0` (`gain + loss_averted > 0.0`, excluding net-harmful items; negative avoidance targets route via Cliff/Core) and `max_positive_target_worth >= K` (derived from `FlowOutput.stake` positive target `worth`).
+     - *Active human slot bound (`1–2` concurrent):* Counts unblocked `CLAIMABLE_TYPES` leaves with canonical `status = in_progress`, `flow_status = ok`, `nic_sum() > 0.0`, `max_positive_target_worth >= K` (including `on_cliff` moonshots), and non-personal assignee matching unassigned (`None`/empty), `"user"`, or caller-configured `DrawConfig::human_assignees` (optionally read from `PKB_HUMAN_ASSIGNEES`). `remaining_slots = max_active_moonshot_probes.saturating_sub(active_moonshot_probes)`.
+     - *Project/Root deduplication (`TicketBucket`) & `moonshot_cmp`:* Each qualifying moonshot resolves strictly to `Project(trimmed_lowercase_project)`, else `Root(root_id)` (highest cycle-guarded `EdgeType::Parent` ancestor, ties by lowest ID `ASC`), else `SelfId(id)`. Each bucket gets one ticket: its top ready candidate under `moonshot_cmp` (`has_explicit_effort DESC` where `has_explicit_effort = effort.is_some()`, `gain_per_effort DESC`, `gain DESC`, `loss_averted DESC`, `id ASC`, using `f64::total_cmp`).
+     - *Two-lane probability split & sampling:* `DrawConfig::validate()` rejects non-finite or out-of-range parameters fail-fast. When `remaining_slots > 0` and qualifying moonshot buckets exist (and non-moonshot Core candidates exist), Core receives `(1 - moonshot_share)` distributed via exploitation/uncertainty weights and Moonshot receives `moonshot_share` uniformly across qualifying un-probed buckets (falling back to qualifying ready buckets if all qualifying buckets already hold an active human probe). When no Core items exist, Moonshot receives `1.0` (if `remaining_slots > 0`, else empty). When `remaining_slots == 0` or no moonshot buckets qualify, Moonshot receives `0.0` and only Core items carry positive mass (returning empty if none exist; never falling back to `1.0 / n` or `len - 1`). Multi-item `do_next_draw_sample` draws each bucket at most once and stops drawing Step 2 lottery moonshots once `drawn_moonshots + active_moonshot_probes >= max_active_moonshot_probes`.
 3. **Then nodes with no figure.** Nodes whose `flow_status ≠ ok` (carrying `null` figures per E3 adopted) come next, then nodes with all figures at 0.
 4. **Then id ASC,** a deterministic total order.
 
@@ -428,7 +435,7 @@ Its form follows `flow-rule.md` §12. The cost is one maximum-product search per
 
 **R21. Never summed (S10, S16, I1).** No tool, CLI command or export emits a sum, mean or total of `gain`, `loss_averted` or `decision_value` across two or more nodes (`flow-rule.md` §4.1, "What it breaks"). Group views such as `nested_tasks` and `task_summary` show counts and the share of children done, never added worth.
 
-**R22. Benefit per effort (S9, U16, I8).** Display may show `gain / effort_days` and `loss_averted / effort_days` side by side, for U16. These are display fields, never stored inputs. Whether a sort by them is offered is Q12. Until then, `list_tasks` offers it as a non-default `sort` value (§7.2).
+**R22. Benefit per effort and moonshot ranking (S9, U16, I8, S29).** Display may show `gain / effort_days` and `loss_averted / effort_days` side by side, for U16. These are display fields, never stored inputs. `list_tasks` and `pkb tasks` offer `gain_per_effort`, `loss_averted_per_effort`, and `moonshots` (`moonshot_cmp` over moonshot-eligible or explicit-effort ordering) as non-default `sort` values (§7.2, §7.3).
 
 ---
 
@@ -501,7 +508,7 @@ When `flow_status ≠ ok`, the three figures are `null` and a `loop: [ids]` key 
 | `claim_task` | as `get_task` (it returns `get_task`) | as `get_task` | `src/mcp_server/handlers_task_lifecycle.rs:12-90` |
 | `list_tasks` (json) | per row: `id`, `title`, `status`, `gain`, `loss_averted`, `decision_value`, `flow_status`, `ready`, `blocked`, `on_cliff`, `due`, `deadline_class`, `effort`; ordered by `display_cmp` | `focus_score`, `effective_intent`, `signals` | `handlers_task.rs:1487-1525` |
 | `list_tasks` (markdown ready view) | columns Gain, Loss averted, Decision, Due (class), Cliff | Weight, "!", Crit, Urg | `handlers_task.rs:1605-1696` |
-| `list_tasks` inputs | add `gain_gte`, `loss_averted_gte`, and `sort` ∈ {`default`, `gain`, `loss_averted`, `decision_value`, `gain_per_effort`, `loss_averted_per_effort`, `due`, `id`}; `intent` filters on the stored `intent` (Q10) | `focus_score_gte`, `weight_gte` (a filter on the removed `downstream_weight`) | `handlers_task.rs:1146-1749`; `src/batch_ops/filters.rs:305-306` |
+| `list_tasks` inputs | add `gain_gte`, `loss_averted_gte`, `sort` ∈ {`default`, `gain`, `loss_averted`, `decision_value`, `gain_per_effort`, `loss_averted_per_effort`, `moonshots`, `due`, `id`}, and opt-in `draw: bool`, `seed: u64` (fail-fast invalid-params if `draw: true` pairs with explicit non-`default` `sort`, or `seed` is set without `draw: true`; when `draw: true`, intersects `graph.ready` with active filters and returns non-numeric barbell lane/bucket/slot provenance `BarbellDrawResult`); `intent` filters on stored `intent` (Q10) | `focus_score_gte`, `weight_gte` (a filter on the removed `downstream_weight`) | `handlers_task.rs:1146-1749`; `src/batch_ops/filters.rs:305-306` |
 | `nested_tasks` | each `NestedTaskNode` carries `gain`, `loss_averted`, `decision_value`, `blocked`; parents show the share of children done, never a sum (R21); siblings ordered by `display_cmp` | `effective_intent`, `downstream_weight` | `src/graph_display.rs:739-765`, `:912-923`, `:1117-1160` |
 | `task_search` (markdown) | Gain / Loss averted per hit; order stays semantic | "Metrics: scope / uncertainty / criticality" | `src/mcp_server/handlers_search.rs:177-190` |
 | `search` | unchanged; its `confidence` nudge (`handlers_search.rs:290`, `:395`) is a search score, not ranking, and is out of scope | — | — |
@@ -516,14 +523,14 @@ When `flow_status ≠ ok`, the three figures are `null` and a `loop: [ids]` key 
 | `create_task`, `update_task`, `create`, `batch_update` | accept `links`, `worth`, `deadline_class`; on write, an entry R5 would warn about is **rejected with an error** instead, so tools never write a value the parser would drop | the `contributes_to` / `depends_on` / `soft_depends_on` inputs stay, mapped by R7, until the migration spec retires them (E5) | `handlers_task.rs:135`, `:1751` |
 | `pkb_trace`, `complete_task` / `release_task` neighbourhood | unchanged (no ranking fields today) | — | `handlers_search.rs:570-641`; `handlers_task_lifecycle.rs:287-391` |
 
-**R23. No other ranking number (S3, S16).** No tool emits a ranking number other than `gain`, `loss_averted`, `decision_value`, `stake`, `loop_extra`, `display_rank` and the centrality diagnostics (`flow-rule.md` §12).
+**R23. No other ranking number (S3, S16).** No tool emits a ranking number other than `gain`, `loss_averted`, `decision_value`, `stake`, `loop_extra`, `display_rank` and the centrality diagnostics (`flow-rule.md` §12). Barbell draw provenance fields (`lane`, `bucket`, `active_moonshot_probes`, `max_active_moonshot_probes`, `remaining_moonshot_slots`, `moonshot_suppressed_reason`, `has_explicit_effort`) are non-numeric categorical, slot-count, or boolean provenance metadata rather than competing task scores.
 
 ### 7.3. CLI and other outputs
 
 | Surface | Shows | Removed | Code |
 |---|---|---|---|
-| `pkb tasks`, `pkb list` | default order `display_cmp`; `--sort gain\|loss\|decision\|due\|intent`; columns Gain / Loss averted / Due | `--sort weight`, the WEIGHT column, "!" | `src/cli.rs:1509-1588` |
-| `pkb focus` (the default command) | the cliff lane, then the head of `display_cmp` over ready work | `focus_picks` | `src/cli.rs:1025`, `:1648-1666` |
+| `pkb tasks`, `pkb list` | default order `display_cmp`; `--sort gain\|loss\|decision\|gain_per_effort\|loss_averted_per_effort\|moonshots\|due\|id`; columns Gain / Loss averted / Due | `--sort weight`, the WEIGHT column, "!" | `src/cli.rs:1509-1588` |
+| `pkb focus` (the default command) | deterministic cliff lane + `display_cmp` head over ready work (`focus_picks`), or opt-in `--draw [--seed <u64>]` Barbell Do-Next Draw with lane/slot provenance | urgency-first `focus_picks` | `src/cli.rs:1025`, `:1648-1666` |
 | `pkb show` | the `get_task` flow block and explanation | Weight, exposure | `src/cli.rs:1712-1722` |
 | `pkb metrics` | pagerank, betweenness, degrees | D.WT ranking, exposure | `src/cli.rs:1788-1905` |
 | `format_task_line` | `g:` and `l:` figures | `wt:`, "!" | `src/cli.rs:4452-4493`; `src/graph_display.rs:813` |
@@ -578,8 +585,9 @@ Each criterion is something an observer can check against the built server. Ever
 | A28 | `get_task` returns at most `ROUTE_CAP` routes per target, strongest first, with `routes_truncated` set when more exist, and an explanation sentence naming each target and the strongest path | R18, U18 | T-routes |
 | A29 | A blocked node is never in the ready list but keeps its figures; the ready list is in `display_cmp` order | R20, S4 | T-ready |
 | A30 | `list_tasks` with `sort: gain_per_effort` orders by `gain / effort_days`; the default order is unchanged by it | R22 | T-sort |
-| A31 | A write tool given a `links` entry, `worth` or `deadline_class` that R5, R9 or R10 would warn about returns an error and writes nothing | §7.2 | T-write-reject |
-| A32 | Cancelling a priced opportunity drops to 0 every node that served only it; no passage of time, age or inactivity changes any figure | R25, S6, U19 | T-ripeness |
+| A31 | A write tool given a malformed `links` entry, non-finite/`unrecognized` `worth`, or invalid `deadline_class` returns an error and writes nothing; uncapped finite floats (`10.0`, `45.0`, `-2.0`) and all twelve R9 anchors succeed | §7.2, R9 | `T-write-reject` |
+| A32 | Cancelling a priced opportunity drops to 0 every node that served only it; no passage of time, age or inactivity changes any figure | R25, S6, U19 | `T-ripeness` |
+| A33 | Two-lane Barbell Do-Next Draw allocates `moonshot_share` (`0.30`) across distinct qualifying `TicketBucket`s (`worth >= 10.0`, `nic_sum > 0`), respects non-compensatory Step 1 `on_cliff` and `1–2` human active-moonshot focus slot bound without zero-mass leaks, orders bucket reps by `moonshot_cmp` (`has_explicit_effort`, `gain / effort`), validates `DrawConfig`, and preserves deterministic default parity across MCP and CLI | R19, R22, R23, S29 | `T-barbell` |
 
 ---
 
@@ -613,13 +621,14 @@ There is one test per invariant, T-I1 to T-I17, and fourteen engine tests. Each 
 | T-determinism `flow_rebuild_determinism` | A22 | build through every entry point listed in `ranking.md` §1.1 | byte-identical `flow` |
 | T-nosum `no_output_sums_worth` | A23 | two nodes with gain 0.37 and 0.58 under one parent; every group view | no numeric field within 1e-9 of 0.95 (their sum) or 0.475 (their mean) in any group-level output |
 | T-cli-parity `cli_and_mcp_display_order_parity` | A24 | replaces `cli_focus_agrees_with_canonical_focus_order` (`tests/cli_default_ordering.rs`) | identical id order and figures |
-| T-schema `links_schema_mapping` | A25, A26 | one node per case: both-ends duplicate (agreeing, then disagreeing); `parent:` at quantum 0; map entries `{to, quantum, set_by}` inside `depends_on`, `soft_depends_on`, `contributes_to`, and `parent`; status→state cases (`cancelled`, `retired`, missing `status`, `paused`, `blocked`, `partial`, `review`); `worth` as a float, an anchor word, 1.5, and alongside `standing_weight`; a `due` with no class; a `needs` entry with no quantum; one entry as `agent-proposed` (on `needs` and `serves`), as `nic`, and as `migrated`; omitted `set_by` | one edge for the agreeing duplicate; the `from` entry and a warning for the disagreeing one; map entries parsed without dropping; status mapping verified; R1, R6, R7, R9, R26, R27 readings exactly; `fake`; `needs` 1.0; `agent-proposed`, `nic`, `migrated` and omitted `set_by` (`unattributed`) at stated quantum |
+| T-schema `links_schema_mapping` | A25, A26 | one node per case: both-ends duplicate (agreeing, then disagreeing); `parent:` at quantum 0; map entries `{to, quantum, set_by}` inside `depends_on`, `soft_depends_on`, `contributes_to`, and `parent`; status→state cases (`cancelled`, `retired`, missing `status`, `paused`, `blocked`, `partial`, `review`); `worth` as finite floats (`1.5`, `45.0`, `-2.0`), all 12 R9 anchors, rejected legacy/unknown words, and alongside `standing_weight`; a `due` with no class; a `needs` entry with no quantum; one entry as `agent-proposed` (on `needs` and `serves`), as `nic`, and as `migrated`; omitted `set_by` | one edge for the agreeing duplicate; the `from` entry and a warning for the disagreeing one; map entries parsed without dropping; status mapping verified; R1, R4, R6, R7, R9 readings (`1.5`, `45.0`, `-2.0` accepted as uncapped `Some(...)`; `"NaN"`/`"inf"`/unknown/retired words rejected), R26, R27 readings; `fake`; `needs` 1.0; `agent-proposed`, `nic`, `migrated` and omitted `set_by` (`unattributed`) at stated quantum |
 | T-carryover `flow_carried_over_until_rebuild` | A27 | write to a node, read before and after the background rebuild; create a new node | previous `flow`, then the new one; new node 0 / 0 / 0 `ok` until rebuild |
 | T-routes `routes_cap_and_explanation` | A28 | a node with seven routes to one target | 5 routes, strongest first, `routes_truncated: true`; the sentence names the target and the strongest path |
 | T-ready `ready_predicate_reads_needs` | A29 | a blocked node and its open blocker | blocker ready, blocked node not ready, both with figures; ready list in `display_cmp` order |
 | T-sort `gain_per_effort_sort` | A30 | three ready nodes with different gain and effort | ordered by gain per effort day; default order unchanged |
-| T-write-reject `write_tools_reject_invalid_links` | A31 | `create_task` and `update_task` with an unknown label, quantum 1.5, `worth: 2`, `deadline_class: maybe` | each returns an error; no file changes |
+| T-write-reject `write_tools_reject_invalid_links` | A31 | `create_task` and `update_task` with an unknown label, quantum 1.5, `worth: "not_a_number"` / `NaN`, `deadline_class: maybe` (while `worth: 45.0` and `"moonshot"` succeed) | invalid entries return an error and write nothing; valid uncapped/anchor worth writes succeed |
 | T-ripeness `ripeness_only_when_told` | A32 | a priced opportunity served by one task; shift `created`, `modified` and today by 400 days; then set the opportunity `cancelled` | no change after the shift; the task 0 / 0 / 0 after cancelling |
+| T-barbell `display_barbell_draw_and_moonshot_rank` | A33 | synthetic barbell graph (Core `gain: 0.9` vs multi-bucket `worth >= 10.0` probes, unestimated vs explicit effort, negative `nic_sum`, `on_cliff` moonshots, human vs agent `in_progress` leaves, single-bucket fallback, cycle-guarded `Root` bucket, invalid `DrawConfig`, `list_tasks` & CLI parity) | exact `1 - λ` / `λ` lane shares, 1 ticket per `TicketBucket`, non-compensatory Step 1 cliff with Step 2 slot cap, `has_explicit_effort` + `gain / effort` ordering, no `1/n` or `len-1` zero-mass leaks, fail-fast errors, and default order unchanged |
 
 **Tests retired with the code they test.** These tests were removed, not adapted:
 
@@ -668,12 +677,12 @@ Each comes with the proposal this spec builds against if it is not answered. Set
 |---|---|---|
 | Q1 | R6, `PART_OF_QUANTUM` (0.0), and grouping reads `part_of` | Settled (Point 1, §5.2) |
 | Q2 | `DEFAULT_QUANTUM` (0.0) | Settled (Point 2, §5.2) |
-| Q3 | step 2 of `display_cmp` (R19) uses Do-Next draw (S29) or plain sum `gain + loss_averted` DESC | Settled (Points 17, 29, §7) |
+| Q3 | step 2 of `display_cmp` (R19) uses Barbell Do-Next Draw (S29) or plain sum `gain + loss_averted` DESC | Settled (Points 17, 29, §7) |
 | Q4 | the comparison scalar in `compute_decision_value` (R14) uses plain sum `gain + loss_averted` | Settled (Point 4, §6) |
 | Q5, Q21 | the label set the parser accepts (R5) | Settled (Points 5, 21, §5.2) |
-| Q9, Q26 | `CLIFF_BUFFER_DAYS` (3 days) and the cliff trigger | Settled (Points 9, 24, 26, §7) |
+| Q9, Q26 | `CLIFF_BUFFER_DAYS` (7 days) and the cliff trigger | Settled (Points 9, 24, 26, §7) |
 | Q10 | whether `intent` stays as a filter and a column (stays stored only, dropped from maths) | Settled (Points 10, §3.4) |
-| Q12 | whether `gain_per_effort` is offered as a sort (display option only) | Settled (Point 12, §7.2) |
+| Q12 | whether `gain_per_effort` and `moonshots` are offered as sorts (display options only) | Settled (Point 12, §7.2) |
 | Q13 | who sets an opportunity `cancelled` or reprices it (agents propose, Nic approves per S14) | Settled (Point 13, §5.6) |
 | Q17 | whether worth passes between priced targets and adds (§5.1 copies the reference) | Settled (Point 17, §3.3) |
 | Q18 | reading an unclassed `due` as `fake` (R10) | Settled (Point 18, §3.3) |
@@ -682,10 +691,10 @@ Each comes with the proposal this spec builds against if it is not answered. Set
 | Q23 | R8, and the cost budget R15 (wikilinks excluded from flow maths) | Settled (Point 23, §4.1) |
 | Q24 | whether `severity` stays only as a stored field (§3.4, §7.4) | Settled (Point 24, §3.4) |
 | Q25 | Odds chaining by probability multiplication without time discounting | Settled (Point 25, §4.6) |
-| Q26 | Open-ended logarithmic target scale ($W_t \in \mathbb{R}$) | Settled (Point 26, §5.6) |
+| Q26 | Open-ended cardinal `1/p` gamble scale ($W_t \in \mathbb{R}$, ladder `1, 3, 10, 30, 100+`, never $\log(W)$) | Settled (Point 26, §5.6) |
 | Q27 | Capital stock targets as unpriced or priced hubs | Settled (Point 27, §4.8) |
-| Q28 | Mirrored continuous logarithmic scale for loss averted | Settled (Point 28, §5.6) |
-| Q29 | Do-next list as a draw (Thompson / softmax sampling) | Settled (Point 29, §7) |
+| Q28 | Mirrored open-ended cardinal avoidance scale for loss averted | Settled (Point 28, §5.6) |
+| Q29 | Do-next list as a two-lane Barbell Do-Next Draw (Cliff first, Core `1 - λ` + slot-bounded `TicketBucket` Moonshot Lottery `λ`, `moonshot_cmp`) | Settled (Point 29, §7) |
 | Q30 | keeping `supersedes` out of the flow (R8) | Settled (Point 30, §5.2) |
 | Q31 | the ready predicate's type and status gates (R20) | Settled (Point 31, §7.1) |
 

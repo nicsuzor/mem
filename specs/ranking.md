@@ -86,17 +86,17 @@ Roots are the uncompleted actionable tasks with no parent, or whose parent is no
 3. then nodes with no figure: those with `flow_status ≠ ok` before those whose figures are all zero;
 4. then `id` ascending, so the order is total and deterministic.
 
-`display_cmp_by` applies an explicit `sort` key instead (`default`, `gain`, `loss_averted`, `decision_value`, `gain_per_effort`, `loss_averted_per_effort`, `due`, `id`).
+`display_cmp_by` applies an explicit `sort` key instead (`default`, `gain`, `loss_averted`, `decision_value`, `gain_per_effort`, `loss_averted_per_effort`, `moonshots`, `due`, `id`), where `moonshots` orders moonshot candidates by `moonshot_cmp` (`has_explicit_effort` descending, then `gain / effort_days` descending, `gain` descending, `loss_averted` descending, and `id` ascending).
 
-Every ordered surface goes through it, via `GraphStore::sort_by_display` / `sort_by_display_with_sort`:
+Every default ordered surface goes through `display_cmp` via `GraphStore::sort_by_display` / `sort_by_display_with_sort`:
 
-- `list_tasks` (all views and formats) and `nested_tasks` siblings (`graph_display::sort_siblings`);
+- `list_tasks` (all views and formats when `draw` is unset/false) and `nested_tasks` siblings (`graph_display::sort_siblings`);
 - the `ready`, `blocked` and `roots` lists, `all_tasks` and `all_nodes_with_id`;
-- `pkb tasks` (flat and tree) and `pkb focus`;
+- `pkb tasks` (flat and tree) and `pkb focus` (without `--draw`);
 - focus picks (`GraphStore::focus_picks`): the cliff lane, then the head of `display_cmp` over ready work;
 - `display_rank` (1..N) on `export_graph` nodes and in the MCP index (`pkb graph --format mcp-index`).
 
-The CLI and MCP surfaces therefore agree for the same query by construction; `tests/cli_default_ordering.rs` checks the parity.
+Interactive two-lane Barbell Do-Next sampling (`GraphStore::do_next_draw`) is opt-in via `list_tasks(draw: true)` and `pkb focus --draw [--seed]`, returning the cliff lane non-compensatorily followed by the Core (`1 - moonshot_share`) and Moonshot Lottery (`moonshot_share`) picks alongside non-numeric lane, bucket, and active-slot provenance (`BarbellDrawResult`). Default deterministic surfaces never invoke stochastic sampling, so CLI and MCP default ordering agree by construction; `tests/cli_default_ordering.rs` checks that parity.
 
 ---
 
@@ -107,7 +107,8 @@ These are computed during the build and shown by tools. None of them enters `flo
 | Field | Computation | Read by |
 |---|---|---|
 | `scope` | Recursive count of distinct descendants through parent-child edges (cycle-protected). | Graph JSON. |
-| `uncertainty` | `clamp(1 − confidence, 0, 1)` when `confidence` is set; else 0.50 when the body carries a genuine open question (`detect_open_question`); else 0.0. Missing acceptance criteria, body length and child count feed nothing. | The do-next draw's exploration weight (`display_rank::compute_draw_distribution`). |
+| `uncertainty` | `clamp(1 − confidence, 0, 1)` when `confidence` is set; else 0.50 when the body carries a genuine open question (`detect_open_question`); else 0.0. Missing acceptance criteria, body length and child count feed nothing. | The Core lane exploration weight inside the two-lane Barbell Do-Next Draw (`display_rank::compute_draw_distribution`). |
+| `has_explicit_effort` | Boolean (`effort.is_some()`); non-filtering tie-break partition key ranking explicit estimates ahead of unestimated items (`DEFAULT_EFFORT_DAYS`). | Moonshot representative selection and `moonshot_cmp`. |
 | `target_ancestors` | Ancestors reachable through `parent`, `contributes_to` and `closes` edges. | Graph JSON; typed facts. |
 | `pagerank` | Power iteration, 20 iterations, damping 0.85 (`src/metrics.rs`). | `top_n_by_metric`, `get_network_metrics`, `pkb metrics`. |
 | `betweenness` | Exact Brandes over all edges, undirected normalisation. | As `pagerank`. |
