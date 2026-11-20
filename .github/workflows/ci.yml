@@ -1,4 +1,4 @@
-name: "PR Review Pipeline"
+name: CI
 
 on:
   pull_request:
@@ -27,7 +27,7 @@ jobs:
               - 'Cargo.toml'
               - 'Cargo.lock'
               - '.github/workflows/extension.yml'
-              - '.github/workflows/pr-pipeline.yml'
+              - '.github/workflows/ci.yml'
 
   # ─── Step 2: Rust CI ──────────────────────────────────────────────
   # This project uses Rust, so we run cargo checks here when Rust/core files change.
