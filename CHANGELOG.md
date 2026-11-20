@@ -5,6 +5,30 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0](https://github.com/nicsuzor/mem/compare/mem-v0.5.9...mem-v0.6.0) (2026-11-20)
+
+
+### ⚠ BREAKING CHANGES
+
+* **otel:** build CF Access OTLP headers from CF_ACCESS_CLIENT_ID/_SECRET ([#860](https://github.com/nicsuzor/mem/issues/860))
+
+### Features
+
+* **cli:** search via the PKB server by default; tags from frontmatter only ([#862](https://github.com/nicsuzor/mem/issues/862)) ([411f8b2](https://github.com/nicsuzor/mem/commit/411f8b2e8459712632507bc54e598ef256e375de))
+
+
+### Bug Fixes
+
+* **excalidraw:** derive edge direction from arrowheads, not bindings ([#865](https://github.com/nicsuzor/mem/issues/865)) ([3211b78](https://github.com/nicsuzor/mem/commit/3211b78ea4fe60ca551251e563c8bf356ccfd49a))
+* **mcp:** stop advertising reserved computed keys (superseded_by, blocked) in update_task schema; add schema/validator guard test ([#859](https://github.com/nicsuzor/mem/issues/859)) ([#861](https://github.com/nicsuzor/mem/issues/861)) ([71d1f5c](https://github.com/nicsuzor/mem/commit/71d1f5cfc6222e5b07bfa9005ad806b1255e89e6))
+* **otel:** build CF Access OTLP headers from CF_ACCESS_CLIENT_ID/_SECRET ([#860](https://github.com/nicsuzor/mem/issues/860)) ([05e467c](https://github.com/nicsuzor/mem/commit/05e467cea1545145bef1b2e43eca8a66b99e50c9))
+* **ranking:** gate multi-token sub-token ID pinning, add rank_eval harness, and fix ORT 1.23.2 download ([#866](https://github.com/nicsuzor/mem/issues/866)) ([895f75a](https://github.com/nicsuzor/mem/commit/895f75aa603f3dd70ecbcbbb382d009c665f56e8))
+
+
+### CI/CD
+
+* remove merge-prep-status Initialize job from pr-pipeline ([#864](https://github.com/nicsuzor/mem/issues/864)) ([33d5969](https://github.com/nicsuzor/mem/commit/33d59696972cbae7607a8ce2ead92caa2c506240))
+
 ## [0.5.9](https://github.com/nicsuzor/mem/compare/mem-v0.5.8...mem-v0.5.9) (2026-11-16)
 
 
