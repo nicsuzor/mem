@@ -13,7 +13,9 @@ use std::sync::{Arc, OnceLock};
 
 pub const EMBEDDING_DIM: usize = 1024;
 pub const DEFAULT_QUERY_DENSE_TOKEN_CAP: usize = 160;
+const DEFAULT_HF_BASE_URL: &str = "https://huggingface.co";
 const MODEL_REPO: &str = "BAAI/bge-m3";
+const FP16_MODEL_REPO: &str = "Xenova/bge-m3";
 
 /// Instruction prefix for query encoding (asymmetric retrieval).
 /// Documents are embedded without prefix.
@@ -120,10 +122,10 @@ impl Default for EmbeddingConfig {
 
 /// Which BGE-M3 ONNX weights to load.
 ///
-/// Selected with `pkb --model <auto|quantized|fp32>` or `AOPS_MODEL_VARIANT`.
+/// Selected with `pkb --model <auto|quantized|fp16|fp32>` or `AOPS_MODEL_VARIANT`.
 /// The int8 `quantized` model is fastest on CPU, but its dynamic-quantisation
 /// ops run poorly under the CUDA execution provider (about 10x slower than
-/// `fp32` on an RTX 3080), so GPU reindexing should use `fp32`.
+/// `fp32` on an RTX 3080), so GPU reindexing should use `fp32` or `fp16`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ModelVariant {
     /// Prefer `model_quantized.onnx`, fall back to `model.onnx`.
@@ -131,6 +133,8 @@ pub enum ModelVariant {
     Auto,
     /// Require the int8 `model_quantized.onnx`.
     Quantized,
+    /// Require the half-precision `model_fp16.onnx`.
+    Fp16,
     /// Require the full-precision `model.onnx` (+ `model.onnx_data`).
     Fp32,
 }
@@ -150,6 +154,7 @@ impl ModelVariant {
         match self {
             ModelVariant::Auto => "auto",
             ModelVariant::Quantized => "quantized",
+            ModelVariant::Fp16 => "fp16",
             ModelVariant::Fp32 => "fp32",
         }
     }
@@ -159,6 +164,7 @@ impl ModelVariant {
         match self {
             ModelVariant::Auto => &["model_quantized.onnx", "model.onnx"],
             ModelVariant::Quantized => &["model_quantized.onnx"],
+            ModelVariant::Fp16 => &["model_fp16.onnx"],
             ModelVariant::Fp32 => &["model.onnx"],
         }
     }
@@ -170,9 +176,10 @@ impl std::str::FromStr for ModelVariant {
         match s.trim().to_ascii_lowercase().as_str() {
             "auto" | "" => Ok(ModelVariant::Auto),
             "quantized" => Ok(ModelVariant::Quantized),
+            "fp16" => Ok(ModelVariant::Fp16),
             "fp32" => Ok(ModelVariant::Fp32),
             other => Err(format!(
-                "unknown model variant '{other}' (expected auto, quantized or fp32)"
+                "unknown model variant '{other}' (expected auto, quantized, fp16 or fp32)"
             )),
         }
     }
@@ -197,20 +204,76 @@ impl EmbeddingConfig {
                     .unwrap_or_else(|| get_cache_dir().join("models/bge-m3"))
             });
 
-        let model_file = Self::find_model_variant(&base_path, variant)
-            .unwrap_or_else(|| variant.candidates()[0].to_string());
-
-        let query_dense_token_cap = std::env::var("AOPS_QUERY_DENSE_TOKEN_CAP")
+        let mut config = Self::for_dir(&base_path, variant);
+        if let Some(cap) = std::env::var("AOPS_QUERY_DENSE_TOKEN_CAP")
             .ok()
             .and_then(|v| v.parse().ok())
-            .unwrap_or(DEFAULT_QUERY_DENSE_TOKEN_CAP);
+        {
+            config.query_dense_token_cap = cap;
+        }
+        config
+    }
+
+    /// Resolve configuration for an explicit model directory and variant without reading env vars.
+    pub fn for_dir(base_path: &std::path::Path, variant: ModelVariant) -> Self {
+        let model_file = Self::find_model_variant(base_path, variant)
+            .unwrap_or_else(|| variant.candidates()[0].to_string());
 
         Self {
             model_path: base_path.join(model_file),
             tokenizer_path: base_path.join("tokenizer.json"),
             max_length: 512,
-            query_dense_token_cap,
+            query_dense_token_cap: DEFAULT_QUERY_DENSE_TOKEN_CAP,
         }
+    }
+
+    /// Ensure model and tokenizer files exist in `self.model_path.parent()`,
+    /// downloading missing artifacts for `variant` from `hf_base_url` unless `offline` is set.
+    fn ensure_files(
+        &mut self,
+        variant: ModelVariant,
+        offline: bool,
+        hf_base_url: &str,
+    ) -> Result<()> {
+        if self.model_path.exists() && self.tokenizer_path.exists() {
+            return Ok(());
+        }
+
+        let models_dir = self
+            .model_path
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .map(std::path::Path::to_path_buf)
+            .unwrap_or_else(get_models_dir);
+
+        if offline {
+            match variant {
+                ModelVariant::Fp16 => bail!(
+                    "Model files not found and AOPS_OFFLINE=true.\n\
+                     Download manually from https://huggingface.co/{FP16_MODEL_REPO}/tree/main:\n  \
+                       onnx/model_fp16.onnx -> model_fp16.onnx, tokenizer.json\n\
+                     Place them in: {models_dir:?}"
+                ),
+                ModelVariant::Auto | ModelVariant::Quantized | ModelVariant::Fp32 => bail!(
+                    "Model files not found and AOPS_OFFLINE=true.\n\
+                     Download manually from https://huggingface.co/{MODEL_REPO}/tree/main/onnx:\n  \
+                       model.onnx, model.onnx_data, Constant_7_attr__value, tokenizer.json\n\
+                     Place them in: {models_dir:?}"
+                ),
+            }
+        }
+
+        download_models_into(&models_dir, variant, hf_base_url)?;
+        let model_file = Self::find_model_variant(&models_dir, variant).with_context(|| {
+            format!(
+                "No {} model in {models_dir:?} (looked for {:?})",
+                variant.as_str(),
+                variant.candidates()
+            )
+        })?;
+        self.model_path = models_dir.join(model_file);
+        self.tokenizer_path = models_dir.join("tokenizer.json");
+        Ok(())
     }
 
     /// Find the best available model file in a directory.
@@ -242,55 +305,87 @@ fn get_models_dir() -> PathBuf {
     get_cache_dir().join("models/bge-m3")
 }
 
-/// Download model files from HuggingFace if not present.
-/// BGE-M3 uses split ONNX format: model.onnx (graph) + model.onnx_data (weights).
-fn download_models() -> Result<PathBuf> {
-    let models_dir = get_models_dir();
-    std::fs::create_dir_all(&models_dir)?;
+/// Download missing model files for `variant` from `hf_base_url` into `models_dir`.
+///
+/// - `ModelVariant::Fp16` fetches self-contained `onnx/model_fp16.onnx` and root `tokenizer.json`
+///   from `Xenova/bge-m3`.
+/// - Other variants fetch split ONNX artifacts (`model.onnx`, `model.onnx_data`,
+///   `Constant_7_attr__value`, `tokenizer.json`) from `BAAI/bge-m3`.
+///
+/// Existing destination files are never overwritten, and in-flight downloads stream to a
+/// unique `.{filename}.{pid}.{nonce}.part` file before atomic rename so concurrent processes
+/// or PID-1 containers sharing a cache directory never collide or unlink each other's temp files.
+fn download_models_into(
+    models_dir: &std::path::Path,
+    variant: ModelVariant,
+    hf_base_url: &str,
+) -> Result<()> {
+    std::fs::create_dir_all(models_dir)?;
 
-    let base_url = format!("https://huggingface.co/{MODEL_REPO}/resolve/main/onnx");
+    let hf_base = hf_base_url.trim_end_matches('/');
+    let files: Vec<(&str, String)> = match variant {
+        ModelVariant::Fp16 => {
+            let repo_base = format!("{hf_base}/{FP16_MODEL_REPO}/resolve/main");
+            vec![
+                (
+                    "model_fp16.onnx",
+                    format!("{repo_base}/onnx/model_fp16.onnx"),
+                ),
+                ("tokenizer.json", format!("{repo_base}/tokenizer.json")),
+            ]
+        }
+        ModelVariant::Auto | ModelVariant::Quantized | ModelVariant::Fp32 => {
+            let base_url = format!("{hf_base}/{MODEL_REPO}/resolve/main/onnx");
+            vec![
+                ("model.onnx", format!("{base_url}/model.onnx")),
+                ("model.onnx_data", format!("{base_url}/model.onnx_data")),
+                (
+                    "Constant_7_attr__value",
+                    format!("{base_url}/Constant_7_attr__value"),
+                ),
+                ("tokenizer.json", format!("{base_url}/tokenizer.json")),
+            ]
+        }
+    };
 
-    // BGE-M3 split ONNX: graph (724KB) + weights (2.1GB) + external initializer + tokenizer
-    let files = [
-        ("model.onnx", format!("{base_url}/model.onnx")),
-        ("model.onnx_data", format!("{base_url}/model.onnx_data")),
-        (
-            "Constant_7_attr__value",
-            format!("{base_url}/Constant_7_attr__value"),
-        ),
-        ("tokenizer.json", format!("{base_url}/tokenizer.json")),
-    ];
-
+    let pid = std::process::id();
+    let nonce: u64 = rand::random();
     for (filename, url) in &files {
         let dest = models_dir.join(filename);
         if dest.exists() {
             continue;
         }
-        // Clean up any leftover partial downloads from previous interrupted runs
-        let tmp = models_dir.join(format!(".{filename}.part"));
-        let _ = std::fs::remove_file(&tmp);
 
+        let tmp = models_dir.join(format!(".{filename}.{pid}.{nonce:016x}.part"));
         eprintln!("  Downloading {filename}...");
-        let resp = ureq::get(url)
-            .call()
-            .with_context(|| format!("Failed to download {url}"))?;
-        let mut reader = resp.into_reader();
-        // Write to a temp file, then atomically rename — a partial download
-        // will never be mistaken for a complete one on the next run.
-        let mut file = std::fs::File::create(&tmp)?;
-        let bytes = std::io::copy(&mut reader, &mut file).inspect_err(|_e| {
-            let _ = std::fs::remove_file(&tmp);
-        })?;
-        drop(file);
-        std::fs::rename(&tmp, &dest)
-            .with_context(|| format!("Failed to move {tmp:?} to {dest:?}"))?;
-        eprintln!(
-            "  ✓ Downloaded {filename} ({:.1} MB)",
-            bytes as f64 / 1_048_576.0
-        );
+        let download_result = (|| -> Result<u64> {
+            let resp = ureq::get(url)
+                .call()
+                .with_context(|| format!("Failed to download {url}"))?;
+            let mut reader = resp.into_reader();
+            let mut file = std::fs::File::create(&tmp)?;
+            let bytes = std::io::copy(&mut reader, &mut file)?;
+            drop(file);
+            std::fs::rename(&tmp, &dest)
+                .with_context(|| format!("Failed to move {tmp:?} to {dest:?}"))?;
+            Ok(bytes)
+        })();
+
+        match download_result {
+            Ok(bytes) => {
+                eprintln!(
+                    "  ✓ Downloaded {filename} ({:.1} MB)",
+                    bytes as f64 / 1_048_576.0
+                );
+            }
+            Err(err) => {
+                let _ = std::fs::remove_file(&tmp);
+                return Err(err);
+            }
+        }
     }
 
-    Ok(models_dir)
+    Ok(())
 }
 
 /// Download ONNX Runtime shared library if not present.
@@ -436,7 +531,8 @@ fn download_onnx_runtime() -> Result<PathBuf> {
 
                 if let Some(fname) = filename {
                     // Normalize the main library name (strip version suffix)
-                    let is_main_lib = fname.starts_with("libonnxruntime.") || fname == "onnxruntime.dll";
+                    let is_main_lib =
+                        fname.starts_with("libonnxruntime.") || fname == "onnxruntime.dll";
                     let dest_name = if is_main_lib {
                         lib_name.to_string()
                     } else {
@@ -764,7 +860,9 @@ impl SessionPool {
         };
         let mut initial_sessions = vec![Arc::new(Mutex::new(session))];
         if !using_gpu && max_sess > 1 {
-            let cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
+            let cores = std::thread::available_parallelism()
+                .map(|n| n.get())
+                .unwrap_or(4);
             let sess_threads = if override_threads > 0 {
                 override_threads
             } else {
@@ -777,7 +875,9 @@ impl SessionPool {
                     .map(|i| {
                         s.spawn(move || {
                             Session::builder()
-                                .and_then(|b| b.with_optimization_level(GraphOptimizationLevel::Level3))
+                                .and_then(|b| {
+                                    b.with_optimization_level(GraphOptimizationLevel::Level3)
+                                })
                                 .and_then(|b| b.with_intra_threads(sess_threads))
                                 .and_then(|b| b.commit_from_file(model_path))
                                 .map_err(|e| (i + 1, e))
@@ -984,7 +1084,9 @@ impl SessionPool {
                     .map(|i| {
                         s.spawn(move || {
                             Session::builder()
-                                .and_then(|b| b.with_optimization_level(GraphOptimizationLevel::Level3))
+                                .and_then(|b| {
+                                    b.with_optimization_level(GraphOptimizationLevel::Level3)
+                                })
                                 .and_then(|b| b.with_intra_threads(sess_threads))
                                 .and_then(|b| b.commit_from_file(model_path))
                                 .map_err(|e| (i + 1, e))
@@ -1015,10 +1117,7 @@ impl SessionPool {
         *sessions = initial_sessions;
 
         self.gpu_mode.store(false, Ordering::Relaxed);
-        tracing::info!(
-            "Now using CPU parallel mode (up to {} sessions)",
-            max_sess
-        );
+        tracing::info!("Now using CPU parallel mode (up to {} sessions)", max_sess);
         Ok(())
     }
 
@@ -1132,35 +1231,51 @@ impl Embedder {
         ensure_ort_available(offline)
             .context("ONNX Runtime is required. Set ORT_DYLIB_PATH or allow auto-download.")?;
 
-        // 2. Ensure model files exist (download_models is a no-op if already cached)
+        // 2. Ensure model files exist in the resolved model directory (no-op if already cached)
+        let variant = ModelVariant::from_env();
         let mut config = EmbeddingConfig::from_env();
+        config.ensure_files(variant, offline, DEFAULT_HF_BASE_URL)?;
 
-        if !config.model_path.exists() || !config.tokenizer_path.exists() {
-            if offline {
-                bail!(
-                    "Model files not found and AOPS_OFFLINE=true.\n\
-                     Download manually from https://huggingface.co/{MODEL_REPO}/tree/main/onnx:\n  \
-                       model.onnx, model.onnx_data, Constant_7_attr__value, tokenizer.json\n\
-                     Place them in: {:?}",
-                    config.model_path.parent().unwrap_or(&config.model_path)
-                );
-            }
+        Ok(Self::from_config(config))
+    }
 
-            let models_dir = download_models()?;
-            let variant = ModelVariant::from_env();
-            let model_file = EmbeddingConfig::find_model_variant(&models_dir, variant)
-                .with_context(|| {
-                    format!(
-                        "No {} model in {models_dir:?} (looked for {:?})",
-                        variant.as_str(),
-                        variant.candidates()
-                    )
-                })?;
-            config.model_path = models_dir.join(model_file);
-            config.tokenizer_path = models_dir.join("tokenizer.json");
+    /// Construct an embedder for an explicit model directory and variant, auto-downloading
+    /// ONNX Runtime and missing model files unless `AOPS_OFFLINE=true`.
+    pub fn new_for_variant(dir: &std::path::Path, variant: ModelVariant) -> Result<Self> {
+        let offline = std::env::var("AOPS_OFFLINE")
+            .map(|v| v == "1" || v.to_lowercase() == "true")
+            .unwrap_or(false);
+
+        ensure_ort_available(offline)
+            .context("ONNX Runtime is required. Set ORT_DYLIB_PATH or allow auto-download.")?;
+
+        let mut config = EmbeddingConfig::for_dir(dir, variant);
+        config.ensure_files(variant, offline, DEFAULT_HF_BASE_URL)?;
+
+        Ok(Self::from_config(config))
+    }
+
+    /// Log the configuration and effective parallelism (reflecting any overrides).
+    pub fn log_info(&self) {
+        if self.is_dummy {
+            return;
         }
+        let model_file = self.model_file_name();
+        let (sessions, threads, batch_size) = self.effective_config();
+        if gpu_available() {
+            tracing::info!(
+                "Using BGE-M3 ONNX embeddings ({model_file}, {EMBEDDING_DIM}-dim, GPU/CUDA mode, batch size {batch_size})"
+            );
+        } else {
+            tracing::info!(
+                "Using BGE-M3 ONNX embeddings ({model_file}, {EMBEDDING_DIM}-dim, up to {sessions} sessions × {threads} threads, batch size {batch_size})"
+            );
+        }
+    }
 
-        Ok(Self {
+    /// Construct an embedder from an already-resolved `EmbeddingConfig` (sessions load lazily).
+    pub fn from_config(config: EmbeddingConfig) -> Self {
+        Self {
             config,
             pool: OnceLock::new(),
             override_max_sessions: 0,
@@ -1174,24 +1289,19 @@ impl Embedder {
                     .collect(),
             ),
             dummy_delay: parking_lot::Mutex::new(None),
-        })
+        }
     }
 
-    /// Log the configuration and effective parallelism (reflecting any overrides).
-    pub fn log_info(&self) {
+    /// Filename of the configured ONNX model weights, or `"dummy"` for dummy embedders.
+    pub fn model_file_name(&self) -> &str {
         if self.is_dummy {
-            return;
+            return "dummy";
         }
-        let (sessions, threads, batch_size) = self.effective_config();
-        if gpu_available() {
-            tracing::info!(
-                "Using BGE-M3 ONNX embeddings ({EMBEDDING_DIM}-dim, GPU/CUDA mode, batch size {batch_size})"
-            );
-        } else {
-            tracing::info!(
-                "Using BGE-M3 ONNX embeddings ({EMBEDDING_DIM}-dim, up to {sessions} sessions × {threads} threads, batch size {batch_size})"
-            );
-        }
+        self.config
+            .model_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("")
     }
 
     /// Create a dummy embedder that returns zero vectors (for testing).
@@ -1236,9 +1346,8 @@ impl Embedder {
         self.override_threads = threads;
         self.override_batch_size = batch_size;
         if self.is_dummy && sessions > 0 {
-            *self.dummy_sessions.write() = (0..sessions)
-                .map(|_| Arc::new(Mutex::new(())))
-                .collect();
+            *self.dummy_sessions.write() =
+                (0..sessions).map(|_| Arc::new(Mutex::new(()))).collect();
         }
         self
     }
@@ -1283,13 +1392,16 @@ impl Embedder {
         }
 
         let prefixed = format!("{QUERY_PREFIX}{text}");
-        let results = self.encode_batch_with_cap(&[&prefixed], self.config.query_dense_token_cap)?;
+        let results =
+            self.encode_batch_with_cap(&[&prefixed], self.config.query_dense_token_cap)?;
         let res = results
             .into_iter()
             .next()
             .unwrap_or_else(|| vec![0.0; EMBEDDING_DIM]);
 
-        self.query_cache.lock().insert(text.to_string(), res.clone());
+        self.query_cache
+            .lock()
+            .insert(text.to_string(), res.clone());
         crate::otel::call_metrics::CallMetrics::record_embed_duration(start.elapsed());
         Ok(res)
     }
@@ -1495,35 +1607,209 @@ impl Embedder {
             session.run(ort::inputs![input_ids_val, attention_val])?
         };
 
-        // Use the model's sentence_embedding output (pre-pooled, shape [batch_size, EMBEDDING_DIM]).
-        // BGE-M3 outputs: [0] token_embeddings [batch, seq, dim], [1] sentence_embedding [batch, dim].
-        // The model's built-in pooling produces much better embeddings than manual mean pooling.
-        let (_, sent_data) = outputs["sentence_embedding"].try_extract_tensor::<f32>()?;
+        extract_session_embeddings(&outputs, batch_size)
+    }
+}
 
-        let mut results = Vec::with_capacity(batch_size);
-        for batch_idx in 0..batch_size {
-            let offset = batch_idx * EMBEDDING_DIM;
-            let mut pooled: Vec<f32> = sent_data[offset..offset + EMBEDDING_DIM].to_vec();
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OutputKind {
+    /// Pre-pooled 2D output `[batch, EMBEDDING_DIM]` (`sentence_embedding`).
+    SentenceEmbedding,
+    /// Unpooled 3D token states `[batch, seq, EMBEDDING_DIM]` (`last_hidden_state` or `token_embeddings`).
+    TokenEmbeddings,
+}
 
-            // Clean NaN/Inf
-            for val in pooled.iter_mut() {
-                if val.is_nan() || val.is_infinite() {
-                    *val = 0.0;
-                }
-            }
+enum RawTensorSlice<'a> {
+    F32(&'a [f32]),
+    F16(&'a [half::f16]),
+}
 
-            // L2 normalize
-            let norm: f32 = pooled.iter().map(|x| x * x).sum::<f32>().sqrt();
-            if norm > f32::EPSILON && !norm.is_nan() {
-                for val in &mut pooled {
-                    *val /= norm;
-                }
-            }
-
-            results.push(pooled);
+impl RawTensorSlice<'_> {
+    fn len(&self) -> usize {
+        match self {
+            RawTensorSlice::F32(s) => s.len(),
+            RawTensorSlice::F16(s) => s.len(),
         }
+    }
 
-        Ok(results)
+    fn copy_vec_f32(&self, start: usize, len: usize) -> Vec<f32> {
+        match self {
+            RawTensorSlice::F32(s) => s[start..start + len].to_vec(),
+            RawTensorSlice::F16(s) => s[start..start + len].iter().map(|v| v.to_f32()).collect(),
+        }
+    }
+}
+
+fn select_output_key<'a>(keys: &[&'a str]) -> Result<(OutputKind, &'a str)> {
+    if let Some(&k) = keys.iter().find(|&&k| k == "sentence_embedding") {
+        Ok((OutputKind::SentenceEmbedding, k))
+    } else if let Some(&k) = keys.iter().find(|&&k| k == "last_hidden_state") {
+        Ok((OutputKind::TokenEmbeddings, k))
+    } else if let Some(&k) = keys.iter().find(|&&k| k == "token_embeddings") {
+        Ok((OutputKind::TokenEmbeddings, k))
+    } else {
+        bail!(
+            "ONNX model outputs missing expected embedding tensor \
+             (looked for 'sentence_embedding', 'last_hidden_state', or 'token_embeddings'; \
+             found {keys:?})"
+        )
+    }
+}
+
+fn clean_and_l2_normalize(mut vec: Vec<f32>) -> Vec<f32> {
+    for val in vec.iter_mut() {
+        if val.is_nan() || val.is_infinite() {
+            *val = 0.0;
+        }
+    }
+    let norm: f32 = vec.iter().map(|x| x * x).sum::<f32>().sqrt();
+    if norm > f32::EPSILON && !norm.is_nan() {
+        for val in &mut vec {
+            *val /= norm;
+        }
+    }
+    vec
+}
+
+fn extract_embeddings_from_raw(
+    kind: OutputKind,
+    output_name: &str,
+    shape: &[i64],
+    data: RawTensorSlice<'_>,
+    expected_batch: usize,
+) -> Result<Vec<Vec<f32>>> {
+    match kind {
+        OutputKind::SentenceEmbedding => {
+            if shape.len() != 2 {
+                bail!(
+                    "Expected 2D [batch, {EMBEDDING_DIM}] tensor for '{output_name}', got shape {shape:?}"
+                );
+            }
+            let batch = usize::try_from(shape[0])
+                .ok()
+                .filter(|&b| b == expected_batch)
+                .with_context(|| {
+                    format!(
+                        "Batch size mismatch for '{output_name}': expected {expected_batch}, got shape {shape:?}"
+                    )
+                })?;
+            let dim = usize::try_from(shape[1]).unwrap_or(0);
+            if dim != EMBEDDING_DIM {
+                bail!(
+                    "Embedding dimension mismatch for '{output_name}': expected {EMBEDDING_DIM}, got {dim} (shape {shape:?})"
+                );
+            }
+            let expected_len = batch
+                .checked_mul(EMBEDDING_DIM)
+                .context("Tensor buffer size overflow")?;
+            if data.len() != expected_len {
+                bail!(
+                    "Tensor buffer length mismatch for '{output_name}': expected {expected_len}, got {}",
+                    data.len()
+                );
+            }
+
+            let mut results = Vec::with_capacity(batch);
+            for batch_idx in 0..batch {
+                let offset = batch_idx * EMBEDDING_DIM;
+                let pooled = data.copy_vec_f32(offset, EMBEDDING_DIM);
+                results.push(clean_and_l2_normalize(pooled));
+            }
+            Ok(results)
+        }
+        OutputKind::TokenEmbeddings => {
+            if shape.len() != 3 {
+                bail!(
+                    "Expected 3D [batch, seq, {EMBEDDING_DIM}] tensor for '{output_name}', got shape {shape:?}"
+                );
+            }
+            let batch = usize::try_from(shape[0])
+                .ok()
+                .filter(|&b| b == expected_batch)
+                .with_context(|| {
+                    format!(
+                        "Batch size mismatch for '{output_name}': expected {expected_batch}, got shape {shape:?}"
+                    )
+                })?;
+            let seq_len = usize::try_from(shape[1]).unwrap_or(0);
+            if seq_len == 0 {
+                bail!(
+                    "Token embeddings sequence length must be >= 1 for '{output_name}', got shape {shape:?}"
+                );
+            }
+            let dim = usize::try_from(shape[2]).unwrap_or(0);
+            if dim != EMBEDDING_DIM {
+                bail!(
+                    "Embedding dimension mismatch for '{output_name}': expected {EMBEDDING_DIM}, got {dim} (shape {shape:?})"
+                );
+            }
+            let expected_len = batch
+                .checked_mul(seq_len)
+                .and_then(|n| n.checked_mul(EMBEDDING_DIM))
+                .context("Tensor buffer size overflow")?;
+            if data.len() != expected_len {
+                bail!(
+                    "Tensor buffer length mismatch for '{output_name}': expected {expected_len}, got {}",
+                    data.len()
+                );
+            }
+
+            // BGE-M3 pooling_mode_cls_token = true: slice token index 0 ([CLS]) per batch item.
+            let mut results = Vec::with_capacity(batch);
+            for batch_idx in 0..batch {
+                let offset = batch_idx * seq_len * EMBEDDING_DIM;
+                let cls_vec = data.copy_vec_f32(offset, EMBEDDING_DIM);
+                results.push(clean_and_l2_normalize(cls_vec));
+            }
+            Ok(results)
+        }
+    }
+}
+
+fn extract_session_embeddings(
+    outputs: &ort::session::SessionOutputs<'_>,
+    expected_batch: usize,
+) -> Result<Vec<Vec<f32>>> {
+    let keys: Vec<&str> = outputs.keys().collect();
+    let (kind, output_name) = select_output_key(&keys)?;
+    let value = outputs
+        .get(output_name)
+        .with_context(|| format!("Missing ONNX output '{output_name}'"))?;
+
+    let elem_type = match value.dtype() {
+        ort::value::ValueType::Tensor { ty, .. } => *ty,
+        other => bail!("ONNX output '{output_name}' is not a tensor: {other:?}"),
+    };
+
+    match elem_type {
+        ort::tensor::TensorElementType::Float32 => {
+            let (shape, slice) = value
+                .try_extract_tensor::<f32>()
+                .with_context(|| format!("Failed to extract f32 tensor from '{output_name}'"))?;
+            extract_embeddings_from_raw(
+                kind,
+                output_name,
+                shape,
+                RawTensorSlice::F32(slice),
+                expected_batch,
+            )
+        }
+        ort::tensor::TensorElementType::Float16 => {
+            let (shape, slice) = value
+                .try_extract_tensor::<half::f16>()
+                .with_context(|| format!("Failed to extract f16 tensor from '{output_name}'"))?;
+            extract_embeddings_from_raw(
+                kind,
+                output_name,
+                shape,
+                RawTensorSlice::F16(slice),
+                expected_batch,
+            )
+        }
+        other => bail!(
+            "Unsupported tensor element type '{other}' for ONNX output '{output_name}' \
+             (expected f32 or f16)"
+        ),
     }
 }
 
@@ -2187,7 +2473,10 @@ After the code.";
 
         // Step 1: Simulate interrupted download (leaves .part file, dest does not exist)
         std::fs::write(&tmp, b"incomplete payload").unwrap();
-        assert!(!dest.exists(), "Interrupted download must not leave final destination file");
+        assert!(
+            !dest.exists(),
+            "Interrupted download must not leave final destination file"
+        );
         assert!(tmp.exists(), "Interrupted download leaves .part file");
 
         // Step 2: Simulate subsequent run logic from download_models()
@@ -2206,8 +2495,14 @@ After the code.";
         std::fs::rename(&tmp, &dest).unwrap();
 
         // 2e. Assert final destination exists with full payload, tmp is gone
-        assert!(dest.exists(), "Destination file must exist after successful rename");
-        assert!(!tmp.exists(), "Temp .part file must no longer exist after rename");
+        assert!(
+            dest.exists(),
+            "Destination file must exist after successful rename"
+        );
+        assert!(
+            !tmp.exists(),
+            "Temp .part file must no longer exist after rename"
+        );
         assert_eq!(std::fs::read(&dest).unwrap(), full_payload);
     }
 
@@ -2255,14 +2550,570 @@ After the code.";
     }
 
     #[test]
+    fn fp16_selects_model_fp16_while_auto_ignores_it() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let dir = temp_dir.path();
+
+        // Empty directory: Fp16 default config targets model_fp16.onnx in dir
+        let empty_cfg = EmbeddingConfig::for_dir(dir, ModelVariant::Fp16);
+        assert_eq!(empty_cfg.model_path, dir.join("model_fp16.onnx"));
+        assert_eq!(empty_cfg.tokenizer_path, dir.join("tokenizer.json"));
+        assert_eq!(
+            EmbeddingConfig::find_model_variant(dir, ModelVariant::Fp16),
+            None,
+            "Fp16 must return None when model_fp16.onnx is absent"
+        );
+
+        // Directory with only model_fp16.onnx: Fp16 selects it, Auto/Quantized/Fp32 ignore it
+        std::fs::write(dir.join("model_fp16.onnx"), b"fp16 weights").unwrap();
+        assert_eq!(
+            EmbeddingConfig::find_model_variant(dir, ModelVariant::Fp16),
+            Some("model_fp16.onnx".to_string()),
+            "Fp16 must select model_fp16.onnx when present"
+        );
+        assert_eq!(
+            EmbeddingConfig::find_model_variant(dir, ModelVariant::Auto),
+            None,
+            "Auto must never select model_fp16.onnx even when it is the only model in cache"
+        );
+        assert_eq!(
+            EmbeddingConfig::find_model_variant(dir, ModelVariant::Quantized),
+            None
+        );
+        assert_eq!(
+            EmbeddingConfig::find_model_variant(dir, ModelVariant::Fp32),
+            None
+        );
+
+        // Add model.onnx: Auto selects model.onnx (still ignoring model_fp16.onnx), Fp16 still selects model_fp16.onnx
+        std::fs::write(dir.join("model.onnx"), b"fp32 weights").unwrap();
+        assert_eq!(
+            EmbeddingConfig::find_model_variant(dir, ModelVariant::Auto),
+            Some("model.onnx".to_string()),
+            "Auto must select model.onnx over model_fp16.onnx"
+        );
+        assert_eq!(
+            EmbeddingConfig::find_model_variant(dir, ModelVariant::Fp16),
+            Some("model_fp16.onnx".to_string())
+        );
+
+        // Remove model_fp16.onnx while model.onnx + model_quantized.onnx exist: Fp16 must NOT fall back
+        std::fs::remove_file(dir.join("model_fp16.onnx")).unwrap();
+        std::fs::write(dir.join("model_quantized.onnx"), b"int8 weights").unwrap();
+        assert_eq!(
+            EmbeddingConfig::find_model_variant(dir, ModelVariant::Fp16),
+            None,
+            "Fp16 must not fall back to quantized or fp32"
+        );
+        assert_eq!(
+            EmbeddingConfig::find_model_variant(dir, ModelVariant::Auto),
+            Some("model_quantized.onnx".to_string()),
+            "Auto must still prefer model_quantized.onnx over model.onnx"
+        );
+    }
+
+    #[test]
+    fn embedder_model_file_name_reports_dummy_and_configured_basename() {
+        let dummy = Embedder::new_dummy();
+        assert_eq!(dummy.model_file_name(), "dummy");
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let fp16_embedder = Embedder::from_config(EmbeddingConfig::for_dir(
+            temp_dir.path(),
+            ModelVariant::Fp16,
+        ));
+        assert_eq!(fp16_embedder.model_file_name(), "model_fp16.onnx");
+
+        let fp32_embedder = Embedder::from_config(EmbeddingConfig::for_dir(
+            temp_dir.path(),
+            ModelVariant::Fp32,
+        ));
+        assert_eq!(fp32_embedder.model_file_name(), "model.onnx");
+    }
+
+    /// Spawn a local HTTP/1.1 test server handling exactly `responses.len()` sequential requests,
+    /// returning `(base_url, join_handle_yielding_request_paths)`.
+    fn spawn_mock_hf_server(
+        responses: Vec<(&'static [u8], Option<usize>)>,
+    ) -> (String, std::thread::JoinHandle<Vec<String>>) {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind loopback");
+        listener.set_nonblocking(true).expect("set_nonblocking");
+        let addr = listener.local_addr().expect("local_addr");
+        let base_url = format!("http://{addr}");
+
+        let handle = std::thread::spawn(move || {
+            let mut paths = Vec::with_capacity(responses.len());
+            for (body, declared_len_override) in responses {
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+                let mut stream = loop {
+                    match listener.accept() {
+                        Ok((s, _)) => break s,
+                        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                            if std::time::Instant::now() >= deadline {
+                                return paths;
+                            }
+                            std::thread::sleep(std::time::Duration::from_millis(5));
+                        }
+                        Err(e) => panic!("accept failed: {e}"),
+                    }
+                };
+                stream.set_nonblocking(false).expect("set blocking");
+                stream
+                    .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                    .unwrap();
+                let mut req_buf = Vec::new();
+                let mut chunk = [0u8; 512];
+                while !req_buf.windows(4).any(|w| w == b"\r\n\r\n") {
+                    let n = stream.read(&mut chunk).expect("read request");
+                    if n == 0 {
+                        break;
+                    }
+                    req_buf.extend_from_slice(&chunk[..n]);
+                }
+                let req_str = String::from_utf8_lossy(&req_buf);
+                let first_line = req_str.lines().next().unwrap_or("");
+                let path = first_line
+                    .split_whitespace()
+                    .nth(1)
+                    .unwrap_or("")
+                    .to_string();
+                paths.push(path);
+
+                let content_len = declared_len_override.unwrap_or(body.len());
+                let header = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {content_len}\r\nConnection: close\r\n\r\n"
+                );
+                stream.write_all(header.as_bytes()).unwrap();
+                let _ = stream.write_all(body);
+                let _ = stream.flush();
+            }
+            paths
+        });
+
+        (base_url, handle)
+    }
+
+    fn part_files_in(dir: &std::path::Path) -> Vec<String> {
+        std::fs::read_dir(dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.ends_with(".part"))
+            .collect()
+    }
+
+    #[test]
+    fn download_fp16_and_fp32_fetch_expected_paths_without_clobbering_or_leaking_parts() {
+        // 1. Fp16 into custom dir (two requests: Xenova onnx/model_fp16.onnx + root tokenizer.json)
+        let fp16_dir = tempfile::tempdir().unwrap();
+        let custom_sub = fp16_dir.path().join("custom_models");
+        let (base_url, server) = spawn_mock_hf_server(vec![
+            (b"xenova-fp16-onnx-bytes", None),
+            (b"xenova-tokenizer-bytes", None),
+        ]);
+
+        let mut fp16_cfg = EmbeddingConfig::for_dir(&custom_sub, ModelVariant::Fp16);
+        fp16_cfg
+            .ensure_files(ModelVariant::Fp16, false, &base_url)
+            .expect("fp16 download should succeed");
+        let fp16_paths = server.join().expect("join mock server");
+
+        assert_eq!(
+            fp16_paths,
+            vec![
+                "/Xenova/bge-m3/resolve/main/onnx/model_fp16.onnx",
+                "/Xenova/bge-m3/resolve/main/tokenizer.json",
+            ]
+        );
+        assert_eq!(fp16_cfg.model_path, custom_sub.join("model_fp16.onnx"));
+        assert_eq!(fp16_cfg.tokenizer_path, custom_sub.join("tokenizer.json"));
+        assert_eq!(
+            std::fs::read(custom_sub.join("model_fp16.onnx")).unwrap(),
+            b"xenova-fp16-onnx-bytes"
+        );
+        assert_eq!(
+            std::fs::read(custom_sub.join("tokenizer.json")).unwrap(),
+            b"xenova-tokenizer-bytes"
+        );
+        assert!(
+            part_files_in(&custom_sub).is_empty(),
+            "No .part files may remain after completed download"
+        );
+
+        // 2. Shared directory with existing BAAI tokenizer.json + another PID's .part file:
+        //    Fp16 must NOT overwrite tokenizer.json and must NOT unlink the other PID's .part file.
+        let shared_dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            shared_dir.path().join("tokenizer.json"),
+            b"existing-baai-tokenizer",
+        )
+        .unwrap();
+        let foreign_part = shared_dir.path().join(".model_fp16.onnx.999999.part");
+        std::fs::write(&foreign_part, b"concurrent-inflight").unwrap();
+
+        let (base_url2, server2) = spawn_mock_hf_server(vec![(b"xenova-fp16-shared-bytes", None)]);
+        let mut shared_cfg = EmbeddingConfig::for_dir(shared_dir.path(), ModelVariant::Fp16);
+        shared_cfg
+            .ensure_files(ModelVariant::Fp16, false, &base_url2)
+            .expect("shared fp16 download should succeed");
+        let shared_paths = server2.join().expect("join mock server 2");
+
+        assert_eq!(
+            shared_paths,
+            vec!["/Xenova/bge-m3/resolve/main/onnx/model_fp16.onnx"],
+            "Existing tokenizer.json must be skipped without HTTP request"
+        );
+        assert_eq!(
+            std::fs::read(shared_dir.path().join("tokenizer.json")).unwrap(),
+            b"existing-baai-tokenizer",
+            "Existing tokenizer.json must never be overwritten"
+        );
+        assert_eq!(
+            std::fs::read(shared_dir.path().join("model_fp16.onnx")).unwrap(),
+            b"xenova-fp16-shared-bytes"
+        );
+        assert_eq!(
+            part_files_in(shared_dir.path()),
+            vec![".model_fp16.onnx.999999.part".to_string()],
+            "Concurrent PID's .part file must remain untouched while current PID's .part is renamed"
+        );
+
+        // 3. Fp32 / Auto downloads the 4 BAAI/bge-m3/resolve/main/onnx/* files and updates Auto model_path
+        let auto_dir = tempfile::tempdir().unwrap();
+        let (base_url3, server3) = spawn_mock_hf_server(vec![
+            (b"baai-graph", None),
+            (b"baai-weights", None),
+            (b"baai-const7", None),
+            (b"baai-tokenizer", None),
+        ]);
+        let mut auto_cfg = EmbeddingConfig::for_dir(auto_dir.path(), ModelVariant::Auto);
+        assert_eq!(
+            auto_cfg.model_path,
+            auto_dir.path().join("model_quantized.onnx")
+        );
+        auto_cfg
+            .ensure_files(ModelVariant::Auto, false, &base_url3)
+            .expect("auto download should succeed");
+        let auto_paths = server3.join().expect("join mock server 3");
+
+        assert_eq!(
+            auto_paths,
+            vec![
+                "/BAAI/bge-m3/resolve/main/onnx/model.onnx",
+                "/BAAI/bge-m3/resolve/main/onnx/model.onnx_data",
+                "/BAAI/bge-m3/resolve/main/onnx/Constant_7_attr__value",
+                "/BAAI/bge-m3/resolve/main/onnx/tokenizer.json",
+            ]
+        );
+        assert_eq!(auto_cfg.model_path, auto_dir.path().join("model.onnx"));
+        assert!(part_files_in(auto_dir.path()).is_empty());
+
+        // 4. Truncated HTTP body cleans up current PID's .part file and leaves no destination file
+        let err_dir = tempfile::tempdir().unwrap();
+        let (base_url4, server4) = spawn_mock_hf_server(vec![(b"short", Some(1024))]);
+        let mut err_cfg = EmbeddingConfig::for_dir(err_dir.path(), ModelVariant::Fp16);
+        let err = err_cfg
+            .ensure_files(ModelVariant::Fp16, false, &base_url4)
+            .expect_err("truncated stream must fail");
+        let _ = server4.join();
+        assert!(
+            !err_dir.path().join("model_fp16.onnx").exists(),
+            "Incomplete download must not create destination file (err: {err:#})"
+        );
+        assert!(
+            part_files_in(err_dir.path()).is_empty(),
+            "Failed download must remove its own PID .part file"
+        );
+
+        // 5. Offline bail messages are variant-accurate
+        let offline_dir = tempfile::tempdir().unwrap();
+        let mut off_fp16 = EmbeddingConfig::for_dir(offline_dir.path(), ModelVariant::Fp16);
+        let msg_fp16 = off_fp16
+            .ensure_files(ModelVariant::Fp16, true, "http://127.0.0.1:1")
+            .expect_err("offline fp16 must bail")
+            .to_string();
+        assert!(
+            msg_fp16.contains("Xenova/bge-m3")
+                && msg_fp16.contains("onnx/model_fp16.onnx")
+                && msg_fp16.contains("tokenizer.json"),
+            "Unexpected fp16 offline error: {msg_fp16}"
+        );
+
+        let mut off_fp32 = EmbeddingConfig::for_dir(offline_dir.path(), ModelVariant::Fp32);
+        let msg_fp32 = off_fp32
+            .ensure_files(ModelVariant::Fp32, true, "http://127.0.0.1:1")
+            .expect_err("offline fp32 must bail")
+            .to_string();
+        assert!(
+            msg_fp32.contains("BAAI/bge-m3")
+                && msg_fp32.contains("model.onnx_data")
+                && msg_fp32.contains("Constant_7_attr__value"),
+            "Unexpected fp32 offline error: {msg_fp32}"
+        );
+    }
+
+    #[test]
+    fn extract_2d_sentence_embedding_supports_f32_and_f16() {
+        let mut f32_buf = vec![0.0f32; 2 * EMBEDDING_DIM];
+        // Batch 0: (3, 4, 0, ...) -> norm 5 -> (0.6, 0.8, 0, ...)
+        f32_buf[0] = 3.0;
+        f32_buf[1] = 4.0;
+        // Batch 1: (0, 5, 12, 0, ...) -> norm 13 -> (0, 5/13, 12/13, ...)
+        f32_buf[EMBEDDING_DIM + 1] = 5.0;
+        f32_buf[EMBEDDING_DIM + 2] = 12.0;
+
+        let shape = [2i64, EMBEDDING_DIM as i64];
+        let out_f32 = extract_embeddings_from_raw(
+            OutputKind::SentenceEmbedding,
+            "sentence_embedding",
+            &shape,
+            RawTensorSlice::F32(&f32_buf),
+            2,
+        )
+        .expect("2D f32 extraction failed");
+
+        assert_eq!(out_f32.len(), 2);
+        assert!((out_f32[0][0] - 0.6).abs() < 1e-6);
+        assert!((out_f32[0][1] - 0.8).abs() < 1e-6);
+        assert_eq!(out_f32[0][2], 0.0);
+        assert!((out_f32[1][1] - 5.0 / 13.0).abs() < 1e-6);
+        assert!((out_f32[1][2] - 12.0 / 13.0).abs() < 1e-6);
+
+        let f16_buf: Vec<half::f16> = f32_buf.iter().copied().map(half::f16::from_f32).collect();
+        let out_f16 = extract_embeddings_from_raw(
+            OutputKind::SentenceEmbedding,
+            "sentence_embedding",
+            &shape,
+            RawTensorSlice::F16(&f16_buf),
+            2,
+        )
+        .expect("2D f16 extraction failed");
+
+        assert_eq!(out_f16.len(), 2);
+        assert!((out_f16[0][0] - 0.6).abs() < 1e-3);
+        assert!((out_f16[0][1] - 0.8).abs() < 1e-3);
+        assert!((out_f16[1][1] - 5.0 / 13.0).abs() < 1e-3);
+        assert!((out_f16[1][2] - 12.0 / 13.0).abs() < 1e-3);
+    }
+
+    #[test]
+    fn extract_3d_cls_pooling_slices_token_zero_at_seq_stride_for_f32_and_f16() {
+        let batch = 2usize;
+        let seq = 4usize;
+        let mut f32_buf = vec![0.0f32; batch * seq * EMBEDDING_DIM];
+
+        // Batch 0, token 0 ([CLS]): (3, 4, 0, ...) -> (0.6, 0.8, 0, ...)
+        f32_buf[0] = 3.0;
+        f32_buf[1] = 4.0;
+        // Batch 0, tokens 1..4: unequal distractor values that would corrupt mean pooling or wrong stride
+        for tok in 1..seq {
+            let base = tok * EMBEDDING_DIM;
+            f32_buf[base] = -250.0 * (tok as f32);
+            f32_buf[base + 3] = 512.0 * (tok as f32);
+        }
+
+        // Batch 1, token 0 ([CLS]) at stride 1 * seq * EMBEDDING_DIM: (0, 8, 15, 0, ...) -> norm 17
+        let b1_cls = seq * EMBEDDING_DIM;
+        f32_buf[b1_cls + 1] = 8.0;
+        f32_buf[b1_cls + 2] = 15.0;
+        // Batch 1, tokens 1..4: different unequal distractor values
+        for tok in 1..seq {
+            let base = b1_cls + tok * EMBEDDING_DIM;
+            f32_buf[base + 5] = 999.0 / (tok as f32);
+            f32_buf[base + 6] = -333.0;
+        }
+
+        let shape = [batch as i64, seq as i64, EMBEDDING_DIM as i64];
+        let out_f32 = extract_embeddings_from_raw(
+            OutputKind::TokenEmbeddings,
+            "last_hidden_state",
+            &shape,
+            RawTensorSlice::F32(&f32_buf),
+            batch,
+        )
+        .expect("3D f32 CLS extraction failed");
+
+        assert_eq!(out_f32.len(), 2);
+        assert!((out_f32[0][0] - 0.6).abs() < 1e-6);
+        assert!((out_f32[0][1] - 0.8).abs() < 1e-6);
+        assert_eq!(
+            out_f32[0][3], 0.0,
+            "Non-CLS tokens must not bleed into batch 0"
+        );
+        assert!((out_f32[1][1] - 8.0 / 17.0).abs() < 1e-6);
+        assert!((out_f32[1][2] - 15.0 / 17.0).abs() < 1e-6);
+        assert_eq!(
+            out_f32[1][5], 0.0,
+            "Non-CLS tokens must not bleed into batch 1"
+        );
+
+        let f16_buf: Vec<half::f16> = f32_buf.iter().copied().map(half::f16::from_f32).collect();
+        let out_f16 = extract_embeddings_from_raw(
+            OutputKind::TokenEmbeddings,
+            "last_hidden_state",
+            &shape,
+            RawTensorSlice::F16(&f16_buf),
+            batch,
+        )
+        .expect("3D f16 CLS extraction failed");
+
+        assert_eq!(out_f16.len(), 2);
+        assert!((out_f16[0][0] - 0.6).abs() < 1e-3);
+        assert!((out_f16[0][1] - 0.8).abs() < 1e-3);
+        assert_eq!(out_f16[0][3], 0.0);
+        assert!((out_f16[1][1] - 8.0 / 17.0).abs() < 1e-3);
+        assert!((out_f16[1][2] - 15.0 / 17.0).abs() < 1e-3);
+        assert_eq!(out_f16[1][5], 0.0);
+    }
+
+    #[test]
+    fn extract_embeddings_scrubs_nan_and_inf_before_l2_normalization() {
+        let mut buf = vec![0.0f32; 2 * EMBEDDING_DIM];
+        buf[0] = f32::NAN;
+        buf[1] = f32::INFINITY;
+        buf[2] = f32::NEG_INFINITY;
+        buf[3] = 6.0;
+        buf[4] = 8.0;
+        // Second item all NaN -> scrubbed to all zeros without producing NaN on division
+        for v in &mut buf[EMBEDDING_DIM..] {
+            *v = f32::NAN;
+        }
+
+        let out = extract_embeddings_from_raw(
+            OutputKind::SentenceEmbedding,
+            "sentence_embedding",
+            &[2, EMBEDDING_DIM as i64],
+            RawTensorSlice::F32(&buf),
+            2,
+        )
+        .expect("NaN/Inf cleanup failed");
+
+        assert_eq!(out[0][0], 0.0);
+        assert_eq!(out[0][1], 0.0);
+        assert_eq!(out[0][2], 0.0);
+        assert!((out[0][3] - 0.6).abs() < 1e-6);
+        assert!((out[0][4] - 0.8).abs() < 1e-6);
+        assert!(out[1].iter().all(|&x| x == 0.0 && !x.is_nan()));
+    }
+
+    #[test]
+    fn extract_embeddings_selects_output_keys_and_bails_on_invalid_shapes() {
+        assert_eq!(
+            select_output_key(&["token_embeddings", "sentence_embedding"]).unwrap(),
+            (OutputKind::SentenceEmbedding, "sentence_embedding")
+        );
+        assert_eq!(
+            select_output_key(&["last_hidden_state"]).unwrap(),
+            (OutputKind::TokenEmbeddings, "last_hidden_state")
+        );
+        assert_eq!(
+            select_output_key(&["token_embeddings"]).unwrap(),
+            (OutputKind::TokenEmbeddings, "token_embeddings")
+        );
+        let missing_err = select_output_key(&["logits"]).unwrap_err().to_string();
+        assert!(
+            missing_err.contains("sentence_embedding") && missing_err.contains("last_hidden_state"),
+            "Expected missing-key error message, got: {missing_err}"
+        );
+
+        // seq == 0 must bail
+        let seq_zero_err = extract_embeddings_from_raw(
+            OutputKind::TokenEmbeddings,
+            "last_hidden_state",
+            &[1, 0, EMBEDDING_DIM as i64],
+            RawTensorSlice::F32(&[]),
+            1,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            seq_zero_err.contains("sequence length"),
+            "Expected seq==0 error, got: {seq_zero_err}"
+        );
+
+        // Wrong dim must bail (both 2D and 3D)
+        let wrong_dim_2d = extract_embeddings_from_raw(
+            OutputKind::SentenceEmbedding,
+            "sentence_embedding",
+            &[1, 768],
+            RawTensorSlice::F32(&vec![0.0; 768]),
+            1,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            wrong_dim_2d.contains("dimension"),
+            "Expected 2D dim mismatch error, got: {wrong_dim_2d}"
+        );
+
+        let wrong_dim_3d = extract_embeddings_from_raw(
+            OutputKind::TokenEmbeddings,
+            "last_hidden_state",
+            &[1, 2, 512],
+            RawTensorSlice::F32(&vec![0.0; 1024]),
+            1,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            wrong_dim_3d.contains("dimension"),
+            "Expected 3D dim mismatch error, got: {wrong_dim_3d}"
+        );
+
+        // Wrong rank must bail (3D passed as SentenceEmbedding; 2D passed as TokenEmbeddings)
+        let wrong_rank_se = extract_embeddings_from_raw(
+            OutputKind::SentenceEmbedding,
+            "sentence_embedding",
+            &[1, 2, EMBEDDING_DIM as i64],
+            RawTensorSlice::F32(&vec![0.0; 2 * EMBEDDING_DIM]),
+            1,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            wrong_rank_se.contains("2D"),
+            "Expected 2D rank error, got: {wrong_rank_se}"
+        );
+
+        let wrong_rank_tok = extract_embeddings_from_raw(
+            OutputKind::TokenEmbeddings,
+            "last_hidden_state",
+            &[1, EMBEDDING_DIM as i64],
+            RawTensorSlice::F32(&vec![0.0; EMBEDDING_DIM]),
+            1,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            wrong_rank_tok.contains("3D"),
+            "Expected 3D rank error, got: {wrong_rank_tok}"
+        );
+    }
+
+    #[test]
     fn model_variant_parses() {
         assert_eq!("auto".parse::<ModelVariant>(), Ok(ModelVariant::Auto));
         assert_eq!(
             "Quantized".parse::<ModelVariant>(),
             Ok(ModelVariant::Quantized)
         );
+        assert_eq!(
+            "fp16".parse::<ModelVariant>().map(|v| v.as_str()),
+            Ok("fp16")
+        );
+        assert_eq!(
+            "FP16".parse::<ModelVariant>().map(|v| v.as_str()),
+            Ok("fp16")
+        );
         assert_eq!("fp32".parse::<ModelVariant>(), Ok(ModelVariant::Fp32));
-        assert!("bogus".parse::<ModelVariant>().is_err());
+        assert_eq!(
+            "bogus".parse::<ModelVariant>(),
+            Err(
+                "unknown model variant 'bogus' (expected auto, quantized, fp16 or fp32)"
+                    .to_string()
+            )
+        );
     }
 
     #[test]
@@ -2284,8 +3135,14 @@ After the code.";
         let config = EmbeddingConfig::from_env();
         std::env::remove_var("AOPS_MODEL_PATH");
 
-        assert_eq!(config.model_path, temp_dir.path().join("model_quantized.onnx"));
-        assert_eq!(config.tokenizer_path, temp_dir.path().join("tokenizer.json"));
+        assert_eq!(
+            config.model_path,
+            temp_dir.path().join("model_quantized.onnx")
+        );
+        assert_eq!(
+            config.tokenizer_path,
+            temp_dir.path().join("tokenizer.json")
+        );
     }
 
     #[test]
@@ -2374,7 +3231,11 @@ After the code.";
             .encode_batch(vec![prefixed.as_str()], true)
             .expect("fixed tokenization failed");
 
-        assert_eq!(encodings[0].get_ids().len(), 512, "Fixed padding must produce 512 tokens");
+        assert_eq!(
+            encodings[0].get_ids().len(),
+            512,
+            "Fixed padding must produce 512 tokens"
+        );
 
         let mut input_ids = vec![0i64; 512];
         let mut attention = vec![0i64; 512];
@@ -2392,16 +3253,23 @@ After the code.";
 
         let session_arc = pool.acquire_session();
         let mut session = session_arc.lock();
-        let outputs = session
-            .run(ort::inputs![input_ids_val, attention_val])
-            .expect("session run");
-        let (_, sent_data) = outputs["sentence_embedding"]
-            .try_extract_tensor::<f32>()
-            .expect("extract tensor");
-
-        let mut fixed_vec = vec![0.0f32; EMBEDDING_DIM];
-        fixed_vec.copy_from_slice(&sent_data[..EMBEDDING_DIM]);
-        crate::distance::normalize_inplace(&mut fixed_vec);
+        let outputs = if pool.uses_token_type_ids {
+            let token_type_data = vec![0i64; 512];
+            let token_types_val =
+                TensorRef::from_array_view((shape, token_type_data.as_slice())).unwrap();
+            session
+                .run(ort::inputs![input_ids_val, attention_val, token_types_val])
+                .expect("session run")
+        } else {
+            session
+                .run(ort::inputs![input_ids_val, attention_val])
+                .expect("session run")
+        };
+        let fixed_vec = extract_session_embeddings(&outputs, 1)
+            .expect("extract embeddings")
+            .into_iter()
+            .next()
+            .expect("single batch vector");
 
         let sim = crate::distance::cosine_similarity(&dynamic_vec, &fixed_vec);
         let max_diff = dynamic_vec
@@ -2410,16 +3278,25 @@ After the code.";
             .map(|(a, b)| (a - b).abs())
             .fold(0.0f32, f32::max);
 
-        eprintln!("Cosine similarity between dynamic and fixed(512) vectors: {sim:.8}");
-        eprintln!("Max absolute difference: {max_diff:.8}");
+        let model_file = embedder.model_file_name();
+        eprintln!(
+            "Model {model_file}: cosine similarity between dynamic and fixed(512) vectors: {sim:.8}"
+        );
+        eprintln!("Model {model_file}: max absolute difference: {max_diff:.8}");
+
+        let (min_sim, max_allowed_diff) = if model_file == "model_fp16.onnx" {
+            (0.999f32, 5e-3f32)
+        } else {
+            (0.9999f32, 1e-3f32)
+        };
 
         assert!(
-            sim > 0.9999,
-            "Cosine similarity between dynamic and fixed padding must be > 0.9999, got {sim:.8}"
+            sim > min_sim,
+            "Cosine similarity between dynamic and fixed padding for {model_file} must be > {min_sim}, got {sim:.8}"
         );
         assert!(
-            max_diff < 1e-3,
-            "Max absolute difference between dynamic and fixed padding must be < 1e-3, got {max_diff:.8}"
+            max_diff < max_allowed_diff,
+            "Max absolute difference between dynamic and fixed padding for {model_file} must be < {max_allowed_diff}, got {max_diff:.8}"
         );
     }
 
@@ -2427,22 +3304,334 @@ After the code.";
     #[ignore]
     fn measure_single_query_latency() {
         let embedder = Embedder::new().expect("failed to create embedder");
-        let query = "keyboard EMR interference";
+        let query = format!("{QUERY_PREFIX}keyboard EMR interference");
 
-        // Warmup
-        let _ = embedder.encode_query(query).expect("warmup failed");
+        // Warmup (uncached batch=1 query inference)
+        let _ = embedder
+            .encode_batch_with_cap(&[query.as_str()], DEFAULT_QUERY_DENSE_TOKEN_CAP)
+            .expect("warmup failed");
 
         let iters = 10;
         let mut total_duration = std::time::Duration::ZERO;
 
         for _ in 0..iters {
             let start = std::time::Instant::now();
-            let _ = embedder.encode_query(query).expect("encode failed");
+            let out = embedder
+                .encode_batch_with_cap(&[query.as_str()], DEFAULT_QUERY_DENSE_TOKEN_CAP)
+                .expect("encode failed");
             total_duration += start.elapsed();
+            assert_eq!(out.len(), 1);
         }
 
         let avg_ms = total_duration.as_secs_f64() * 1000.0 / (iters as f64);
+        eprintln!(
+            "SINGLE_QUERY_LATENCY ({}, batch=1 uncached, {iters} iters): {avg_ms:.2} ms",
+            embedder.model_file_name()
+        );
         eprintln!("POST_FIX_AVG_LATENCY_MS: {avg_ms:.2} ms");
+        assert_eq!(
+            embedder.query_cache_len(),
+            0,
+            "measure_single_query_latency must bypass LruQueryCache so iterations run ONNX inference"
+        );
+    }
+
+    #[test]
+    #[ignore] // Requires real BAAI/bge-m3 (fp32) and Xenova/bge-m3 (fp16) ONNX weights
+    fn fp32_and_fp16_embeddings_are_interchangeable() {
+        let models_dir = std::env::var("AOPS_MODEL_PATH")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| get_models_dir());
+
+        let queries: [&str; 6] = [
+            "split ergonomic keyboard wireless receiver interference",
+            "SessionOutputs try_extract_tensor half::f16 last_hidden_state",
+            "dense retrieval asymmetric query token cap and chunk contextual headers",
+            "append_wal_record wal.compacting bincode atomic snapshot compaction",
+            "proportionality test for indefinite account suspension under human rights law",
+            "/sys/fs/cgroup/memory.max ONNX session pool OOM cap",
+        ];
+
+        let spec_chunk_350_tokens = "\
+PKB Search | spec | Retrieval > Dense Encoding\n\n\
+Dense semantic retrieval encodes every markdown chunk and incoming search query into a \
+1024-dimensional unit vector using the multilingual BGE-M3 transformer architecture. \
+During indexing, the markdown-aware semantic chunker splits documents on structural \
+paragraph, list, and fenced-code boundaries while prepending a concise contextual \
+header formatted as `Title | type | Section > Subsection` ahead of each body passage \
+so isolated paragraphs retain their document identity and topical hierarchy. \
+Document passages are tokenized with XLM-RoBERTa SentencePiece up to `max_length = 512` \
+tokens using dynamic batch padding (`PaddingStrategy::BatchLongest`) rather than fixed \
+512-token padding, avoiding quadratic self-attention overhead on short notes while \
+preserving prefix-identical attention masks. Incoming user queries apply an asymmetric \
+dense token budget (`DEFAULT_QUERY_DENSE_TOKEN_CAP = 160`) and an in-memory LRU vector \
+cache. At retrieval time, the engine computes exact cosine similarity against all chunk \
+vectors in `VectorStore` and fuses dense similarity with lexical BM25 scores.";
+
+        let documents: [&str; 6] = [
+            "Wireless split keyboards using low-power 2.4 GHz transceivers suffer packet drops \
+             when placed directly beside USB 3.0 hubs or unshielded phone chargers. Moving the \
+             receiver dongle onto a shielded extension cable eliminates key-up stalls.",
+            "In src/embeddings.rs, extract_session_embeddings inspects SessionOutputs for \
+             sentence_embedding first and falls back to last_hidden_state or token_embeddings. \
+             When ValueType::Tensor reports TensorElementType::Float16, \
+             try_extract_tensor::<half::f16>() converts token 0 ([CLS]) via half::f16::to_f32 \
+             before L2 normalization.",
+            spec_chunk_350_tokens,
+            "VectorStore::save rotates pkb_vectors.wal to pkb_vectors.wal.compacting before \
+             serializing the bincode snapshot to a temporary file and atomically renaming it \
+             into place. Each append_wal_record call frames a 4-byte little-endian payload \
+             length with O_APPEND so concurrent writers never interleave bytes.",
+            "Independent oversight review of indefinite platform account suspensions evaluates \
+             legality, legitimate public-safety aim, necessity, and proportionality under \
+             international freedom-of-expression standards, requiring periodic reassessment \
+             criteria rather than permanent unreviewed bans.",
+            "Every CPU ONNX Runtime session retains its own optimized copy of model weights \
+             plus an inference arena. Reading /sys/fs/cgroup/memory.max alongside /proc/meminfo \
+             MemTotal lets sessions_within_memory cap parallel sessions to those fitting within \
+             half the container memory budget, preventing cgroup OOM kills.",
+        ];
+
+        let assert_valid_unit_vectors = |label: &str, vecs: &[Vec<f32>]| {
+            for (i, v) in vecs.iter().enumerate() {
+                assert_eq!(v.len(), EMBEDDING_DIM, "{label}[{i}] wrong dim");
+                assert!(
+                    v.iter().all(|x| x.is_finite()),
+                    "{label}[{i}] contains NaN or Inf"
+                );
+                let norm = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+                assert!(
+                    (norm - 1.0).abs() < 1e-4,
+                    "{label}[{i}] expected unit L2 norm, got {norm:.6}"
+                );
+            }
+        };
+
+        // 1. Load fp32 with a single session (respecting 6 GiB cgroup limit), encode, then drop.
+        let fp32_embedder = Embedder::new_for_variant(&models_dir, ModelVariant::Fp32)
+            .expect("failed to initialize fp32 embedder")
+            .with_overrides(1, 4, 8);
+        assert_eq!(fp32_embedder.model_file_name(), "model.onnx");
+
+        let tokenizer_path = models_dir.join("tokenizer.json");
+        let tok_mtime_before = std::fs::metadata(&tokenizer_path)
+            .expect("stat tokenizer.json after fp32 init")
+            .modified()
+            .expect("tokenizer.json mtime");
+        let tok_hash_before = blake3::hash(
+            &std::fs::read(&tokenizer_path).expect("read tokenizer.json after fp32 init"),
+        );
+
+        {
+            let pool = fp32_embedder.ensure_pool().expect("fp32 ensure_pool");
+            let spec_tokens = pool
+                .tokenizer
+                .encode(spec_chunk_350_tokens, true)
+                .expect("tokenize ~350-token chunk")
+                .get_ids()
+                .len();
+            eprintln!("Contextual spec chunk token count: {spec_tokens}");
+            assert!(
+                (280..=450).contains(&spec_tokens),
+                "Expected representative ~350-token spec chunk, got {spec_tokens} tokens"
+            );
+        }
+
+        let fp32_queries_single: Vec<Vec<f32>> = queries
+            .iter()
+            .map(|q| fp32_embedder.encode_query(q).expect("fp32 encode_query"))
+            .collect();
+        let fp32_queries_batch = fp32_embedder
+            .encode_batch(&queries)
+            .expect("fp32 encode_batch queries");
+        let fp32_docs_batch = fp32_embedder
+            .encode_batch(&documents)
+            .expect("fp32 encode_batch documents");
+
+        // Explicitly drop fp32 before constructing fp16 so both models are never co-resident in RAM.
+        drop(fp32_embedder);
+
+        // 2. Load fp16 against the same directory (auto-downloads model_fp16.onnx, preserves tokenizer.json).
+        let fp16_embedder = Embedder::new_for_variant(&models_dir, ModelVariant::Fp16)
+            .expect("failed to initialize fp16 embedder")
+            .with_overrides(1, 4, 8);
+        assert_eq!(fp16_embedder.model_file_name(), "model_fp16.onnx");
+        assert!(models_dir.join("model_fp16.onnx").exists());
+
+        let tok_mtime_after = std::fs::metadata(&tokenizer_path)
+            .expect("stat tokenizer.json after fp16 init")
+            .modified()
+            .expect("tokenizer.json mtime after fp16");
+        let tok_hash_after = blake3::hash(
+            &std::fs::read(&tokenizer_path).expect("read tokenizer.json after fp16 init"),
+        );
+        assert_eq!(
+            tok_mtime_before, tok_mtime_after,
+            "fp16 initialization must not modify existing tokenizer.json mtime"
+        );
+        assert_eq!(
+            tok_hash_before, tok_hash_after,
+            "fp16 initialization must not alter existing tokenizer.json contents"
+        );
+
+        let fp16_queries_single: Vec<Vec<f32>> = queries
+            .iter()
+            .map(|q| fp16_embedder.encode_query(q).expect("fp16 encode_query"))
+            .collect();
+        let fp16_queries_batch = fp16_embedder
+            .encode_batch(&queries)
+            .expect("fp16 encode_batch queries");
+        let fp16_docs_batch = fp16_embedder
+            .encode_batch(&documents)
+            .expect("fp16 encode_batch documents");
+
+        drop(fp16_embedder);
+
+        assert_valid_unit_vectors("fp32_queries_single", &fp32_queries_single);
+        assert_valid_unit_vectors("fp32_queries_batch", &fp32_queries_batch);
+        assert_valid_unit_vectors("fp32_docs_batch", &fp32_docs_batch);
+        assert_valid_unit_vectors("fp16_queries_single", &fp16_queries_single);
+        assert_valid_unit_vectors("fp16_queries_batch", &fp16_queries_batch);
+        assert_valid_unit_vectors("fp16_docs_batch", &fp16_docs_batch);
+
+        let max_abs_diff = |a: &[f32], b: &[f32]| -> f32 {
+            a.iter()
+                .zip(b.iter())
+                .map(|(x, y)| (x - y).abs())
+                .fold(0.0f32, f32::max)
+        };
+
+        let mut all_sims = Vec::new();
+        let mut overall_max_diff = 0.0f32;
+        for (i, q) in queries.iter().enumerate() {
+            let sim_q_single = crate::distance::cosine_similarity(
+                &fp32_queries_single[i],
+                &fp16_queries_single[i],
+            );
+            let sim_q_batch =
+                crate::distance::cosine_similarity(&fp32_queries_batch[i], &fp16_queries_batch[i]);
+            let diff_q = max_abs_diff(&fp32_queries_single[i], &fp16_queries_single[i]);
+            overall_max_diff = overall_max_diff.max(diff_q);
+            eprintln!(
+                "Query[{i}] cosine(fp32, fp16): encode_query={sim_q_single:.8}, encode_batch={sim_q_batch:.8}, max_abs_diff={diff_q:.8} ({q:?})"
+            );
+            assert!(
+                sim_q_single > 0.99,
+                "Query[{i}] encode_query fp32-vs-fp16 cosine {sim_q_single:.8} <= 0.99"
+            );
+            assert!(
+                sim_q_batch > 0.99,
+                "Query[{i}] encode_batch fp32-vs-fp16 cosine {sim_q_batch:.8} <= 0.99"
+            );
+            all_sims.push(sim_q_single);
+            all_sims.push(sim_q_batch);
+        }
+
+        for (i, d) in documents.iter().enumerate() {
+            let sim_doc =
+                crate::distance::cosine_similarity(&fp32_docs_batch[i], &fp16_docs_batch[i]);
+            let diff_doc = max_abs_diff(&fp32_docs_batch[i], &fp16_docs_batch[i]);
+            overall_max_diff = overall_max_diff.max(diff_doc);
+            let preview = &d[..d.floor_char_boundary(60)];
+            eprintln!(
+                "Doc[{i}] cosine(fp32, fp16): encode_batch={sim_doc:.8}, max_abs_diff={diff_doc:.8} ({preview:?}...)"
+            );
+            assert!(
+                sim_doc > 0.99,
+                "Doc[{i}] encode_batch fp32-vs-fp16 cosine {sim_doc:.8} <= 0.99"
+            );
+            all_sims.push(sim_doc);
+        }
+
+        let min_sim = all_sims.iter().copied().fold(f32::INFINITY, f32::min);
+        let mean_sim = all_sims.iter().sum::<f32>() / (all_sims.len() as f32);
+        eprintln!(
+            "fp32-vs-fp16 summary across {} comparisons: min={min_sim:.8}, mean={mean_sim:.8}, max_abs_diff={overall_max_diff:.8}",
+            all_sims.len()
+        );
+
+        // 3. Bidirectional VectorStore retrieval: fp32 index + fp16 queries, and fp16 index + fp32 queries.
+        let mut fp32_store = crate::vectordb::VectorStore::new(EMBEDDING_DIM);
+        let mut fp16_store = crate::vectordb::VectorStore::new(EMBEDDING_DIM);
+        let dummy_root = std::path::Path::new("/tmp");
+
+        for (idx, doc_text) in documents.iter().enumerate() {
+            let doc_id = format!("doc_{idx}");
+            let pkb_doc = crate::pkb::PkbDocument {
+                path: PathBuf::from(format!("{doc_id}.md")),
+                title: format!("Representative Document {idx}"),
+                tags: vec![],
+                doc_type: Some("spec".to_string()),
+                status: None,
+                consolidated: None,
+                consolidated_at: None,
+                modified: None,
+                body: (*doc_text).to_string(),
+                content_hash: format!("chash_{idx}"),
+                file_hash: format!("fhash_{idx}"),
+                frontmatter: Some(serde_json::json!({ "id": doc_id })),
+            };
+            fp32_store.insert_precomputed(
+                &pkb_doc,
+                vec![(*doc_text).to_string()],
+                vec![fp32_docs_batch[idx].clone()],
+            );
+            fp16_store.insert_precomputed(
+                &pkb_doc,
+                vec![(*doc_text).to_string()],
+                vec![fp16_docs_batch[idx].clone()],
+            );
+        }
+
+        for q_idx in 0..queries.len() {
+            let expected_id = format!("doc_{q_idx}");
+            let baseline_fp32 = fp32_store.search(
+                &fp32_queries_single[q_idx],
+                6,
+                dummy_root,
+                None,
+                None,
+                None,
+                None,
+            );
+            let cross_fp32_idx_fp16_q = fp32_store.search(
+                &fp16_queries_single[q_idx],
+                6,
+                dummy_root,
+                None,
+                None,
+                None,
+                None,
+            );
+            let baseline_fp16 = fp16_store.search(
+                &fp16_queries_single[q_idx],
+                6,
+                dummy_root,
+                None,
+                None,
+                None,
+                None,
+            );
+            let cross_fp16_idx_fp32_q = fp16_store.search(
+                &fp32_queries_single[q_idx],
+                6,
+                dummy_root,
+                None,
+                None,
+                None,
+                None,
+            );
+
+            assert_eq!(baseline_fp32[0].id, expected_id);
+            assert_eq!(
+                cross_fp32_idx_fp16_q[0].id, baseline_fp32[0].id,
+                "Query[{q_idx}]: fp16 query against fp32 index changed top-1 hit"
+            );
+            assert_eq!(baseline_fp16[0].id, expected_id);
+            assert_eq!(
+                cross_fp16_idx_fp32_q[0].id, baseline_fp16[0].id,
+                "Query[{q_idx}]: fp32 query against fp16 index changed top-1 hit"
+            );
+        }
     }
 }
-

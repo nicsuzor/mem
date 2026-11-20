@@ -411,7 +411,7 @@ MCP Client <--stdio--> pkb (MCP server)
 | `AOPS_OFFLINE` | `false` | Disable model/runtime auto-download |
 | `AOPS_DUMMY_EMBEDDER` | `false` | Use zero-vector dummy embedder (for tests/offline) |
 | `AOPS_MODEL_PATH` | (auto) | Override model directory path |
-| `AOPS_MODEL_VARIANT` | `auto` | Embedding weights: `auto` (int8 if present), `quantized`, or `fp32`; same as the global `--model` flag. Use `fp32` for GPU reindexing (int8 runs ~10x slower under CUDA),; the variants' vectors are compatible, so an index built with `fp32` on GPU can be served with `quantized` on CPU |
+| `AOPS_MODEL_VARIANT` | `auto` | Embedding weights: `auto` (quantized if present), `quantized`, `fp16`, or `fp32`; same as the global `--model` flag. Use `fp16` or `fp32` for GPU reindexing (int8 runs ~10x slower under CUDA). Explicit `fp16` (`model_fp16.onnx` auto-downloaded from `Xenova/bge-m3`) has half the weight footprint of `fp32` on GPU while `auto` keeps `quantized`-first fallback to `fp32`. All three precision variants (`quantized`, `fp16`, `fp32`) emit compatible 1024-dim vectors in one shared index, so an index built with `fp32` or `fp16` on GPU can be served with `quantized` on CPU |
 | `ORT_DYLIB_PATH` | (auto) | Override ONNX Runtime library path |
 
 ## Acknowledgments
