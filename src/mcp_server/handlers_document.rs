@@ -103,19 +103,17 @@ impl PkbSearchServer {
                 data: None,
             })?;
 
-        // Try ID/flexible resolution first (covers IDs, filename stems, titles, permalinks)
-        let (path, label, node_id) = {
+        // ID-only CRUD resolution (with debounced ID reindex + single retry on miss).
+        let (path, label, node_id) = if let Some(node) = self.resolve_crud_with_reindex(query) {
             let graph = self.graph.read();
-            if let Some(node) = graph.resolve_crud(query) {
-                let abs_path = self.abs_path_for_node(node, Some(&graph))?;
-                (abs_path, node.label.clone(), node.id.clone())
-            } else {
-                return Err(McpError {
-                    code: ErrorCode::INVALID_PARAMS,
-                    message: Cow::from(format!("Document not found: {query}")),
-                    data: None,
-                });
-            }
+            let abs_path = self.abs_path_for_node(&node, Some(&graph))?;
+            (abs_path, node.label.clone(), node.id.clone())
+        } else {
+            return Err(McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from(format!("Document not found: {query}")),
+                data: None,
+            });
         };
 
         if !path.exists() {

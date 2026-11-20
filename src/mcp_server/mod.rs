@@ -225,6 +225,47 @@ pub struct PkbSearchServer {
     pub(crate) rebuild_mutex: Arc<Mutex<()>>,
     /// Total count of full graph rebuilds performed.
     pub(crate) rebuild_count: Arc<std::sync::atomic::AtomicUsize>,
+    /// Active bulk operations counter; when > 0, miss-triggered reindexing is deferred.
+    pub(crate) active_bulk_ops: Arc<std::sync::atomic::AtomicUsize>,
+    /// Node IDs whose lookup missed while a bulk operation was in flight.
+    pub(crate) deferred_miss_ids: Arc<Mutex<std::collections::HashSet<String>>>,
+    /// Mutex serialising debounced miss-triggered ID reindexes.
+    pub(crate) miss_reindex_lock: Arc<Mutex<()>>,
+    /// Timestamp of the last completed miss-triggered ID reindex.
+    pub(crate) last_miss_reindex: Arc<Mutex<Option<std::time::Instant>>>,
+    /// Debounce window (milliseconds) for miss-triggered ID reindexes.
+    pub(crate) miss_reindex_debounce_ms: Arc<std::sync::atomic::AtomicU64>,
+    /// Total count of miss-triggered ID reindexes executed.
+    pub(crate) miss_reindex_count: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+/// RAII guard that marks a bulk operation in flight and flushes any deferred
+/// miss-triggered ID reindex (at most once) when the outermost bulk operation completes.
+pub struct BulkOpGuard {
+    server: PkbSearchServer,
+}
+
+impl Drop for BulkOpGuard {
+    fn drop(&mut self) {
+        let prev = self
+            .server
+            .active_bulk_ops
+            .fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+        if prev == 1 {
+            let has_deferred = {
+                let mut deferred = self.server.deferred_miss_ids.lock();
+                if deferred.is_empty() {
+                    false
+                } else {
+                    deferred.clear();
+                    true
+                }
+            };
+            if has_deferred {
+                self.server.trigger_debounced_id_reindex();
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -311,6 +352,12 @@ impl PkbSearchServer {
             })),
             rebuild_mutex: Arc::new(Mutex::new(())),
             rebuild_count: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            active_bulk_ops: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            deferred_miss_ids: Arc::new(Mutex::new(std::collections::HashSet::new())),
+            miss_reindex_lock: Arc::new(Mutex::new(())),
+            last_miss_reindex: Arc::new(Mutex::new(None)),
+            miss_reindex_debounce_ms: Arc::new(std::sync::atomic::AtomicU64::new(150)),
+            miss_reindex_count: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
         }
     }
 
@@ -329,6 +376,85 @@ impl PkbSearchServer {
     pub fn rebuild_count(&self) -> usize {
         self.rebuild_count
             .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Override the debounce window (ms) for miss-triggered ID reindexes.
+    pub fn set_miss_reindex_debounce_ms(&self, ms: u64) {
+        self.miss_reindex_debounce_ms
+            .store(ms, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Total count of miss-triggered ID reindexes that have executed.
+    pub fn miss_reindex_count(&self) -> usize {
+        self.miss_reindex_count
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Mark a bulk operation as active; miss-triggered reindexes are deferred
+    /// until the outermost guard drops.
+    pub fn begin_bulk_op(&self) -> BulkOpGuard {
+        self.active_bulk_ops
+            .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+        BulkOpGuard {
+            server: self.clone(),
+        }
+    }
+
+    /// Execute a debounced ID reindex, coalescing concurrent misses into one rebuild.
+    pub(crate) fn trigger_debounced_id_reindex(&self) {
+        let entered_at = std::time::Instant::now();
+        let _guard = self.miss_reindex_lock.lock();
+        let debounce_ms = self
+            .miss_reindex_debounce_ms
+            .load(std::sync::atomic::Ordering::Relaxed);
+        if let Some(last) = *self.last_miss_reindex.lock() {
+            if last >= entered_at {
+                // Another caller already completed a reindex after we missed.
+                return;
+            }
+            let elapsed = last.elapsed();
+            let window = std::time::Duration::from_millis(debounce_ms);
+            if elapsed < window {
+                std::thread::sleep(window - elapsed);
+            }
+        }
+        self.rebuild_graph();
+        self.miss_reindex_count
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        *self.last_miss_reindex.lock() = Some(std::time::Instant::now());
+    }
+
+    /// Resolve a node by ID (or explicit user alias), triggering a debounced ID
+    /// reindex (or deferring during bulk ops) and retrying once on lookup miss.
+    pub(crate) fn resolve_crud_with_reindex(&self, id: &str) -> Option<crate::graph::GraphNode> {
+        {
+            let graph = self.graph.read();
+            if let Some(node) = graph.resolve_crud(id) {
+                if self.pkb_root.join(&node.path).is_file() {
+                    return Some(node.clone());
+                }
+            }
+        }
+
+        if self
+            .active_bulk_ops
+            .load(std::sync::atomic::Ordering::Acquire)
+            > 0
+        {
+            self.deferred_miss_ids.lock().insert(id.to_string());
+            return None;
+        }
+
+        self.trigger_debounced_id_reindex();
+
+        let graph = self.graph.read();
+        graph.resolve_crud(id).and_then(|node| {
+            if self.pkb_root.join(&node.path).is_file() {
+                Some(node.clone())
+            } else {
+                None
+            }
+        })
     }
 
     /// Number of Tier-2 background rebuilds that have actually executed.
@@ -627,6 +753,7 @@ impl PkbSearchServer {
     /// multiple documents atomically (e.g. decompose_task) to avoid N
     /// separate lock acquisitions.
     pub(crate) fn batch_upsert_and_rebuild(&self, docs: Vec<crate::pkb::PkbDocument>) {
+        let _bulk_guard = self.begin_bulk_op();
         let _t = std::time::Instant::now();
         {
             let mut g = self.graph.write();
@@ -1319,12 +1446,12 @@ impl PkbSearchServer {
         tracing::debug!(target: "perf::vector", phase = "save_store_dispatch", elapsed_ms = _t_save.elapsed().as_secs_f64() * 1000.0);
     }
 
-    /// Queue a document for background re-embedding. Coalesces by path
+    /// Queue a document for background re-embedding. Coalesces by canonical ID
     /// (latest doc wins). Spawns a single worker (via spawn_blocking) if
     /// one isn't already running.
     pub(crate) fn schedule_embed(&self, doc: crate::pkb::PkbDocument) {
-        let path_key = doc.path.to_string_lossy().to_string();
-        self.embed_pending.lock().insert(path_key, doc);
+        let id_key = doc.id();
+        self.embed_pending.lock().insert(id_key, doc);
 
         // Single-worker gate: only the caller that flips false→true spawns.
         if self.embed_worker_running.swap(true, Ordering::SeqCst) {
@@ -1479,8 +1606,10 @@ impl PkbSearchServer {
         modified_paths: &[std::path::PathBuf],
         removed_paths: &[std::path::PathBuf],
     ) {
+        let _bulk_guard = self.begin_bulk_op();
         if modified_paths.is_empty() && removed_paths.is_empty() {
             // Still rebuild graph in case callers rely on it post-mutation.
+            self.deferred_miss_ids.lock().clear();
             self.rebuild_graph();
             return;
         }
@@ -1493,6 +1622,7 @@ impl PkbSearchServer {
             );
             // Graph still needs rebuilding from disk so in-memory state
             // reflects the structural changes.
+            self.deferred_miss_ids.lock().clear();
             self.rebuild_graph();
             return;
         }
@@ -1579,6 +1709,7 @@ impl PkbSearchServer {
 
         // One coalesced save and one graph rebuild for the whole batch.
         self.save_store();
+        self.deferred_miss_ids.lock().clear();
         self.rebuild_graph();
     }
 

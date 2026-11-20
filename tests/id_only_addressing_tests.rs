@@ -307,3 +307,57 @@ fn test_convert_document_move_to_subdir_readable_and_writable_by_id() {
     let status_json: serde_json::Value = serde_json::from_str(&status_text).unwrap();
     assert_eq!(status_json["index"]["unlinked_node_count"], 0);
 }
+
+#[test]
+fn test_lookup_miss_triggers_debounced_id_reindex_and_retries_once() {
+    let (server, tmp) = setup_test_server_with_files(&[]);
+    server.set_miss_reindex_debounce_ms(10);
+
+    // Write a file directly to disk without updating GraphStore
+    fs::write(
+        tmp.path().join("notes/note_ext123_external.md"),
+        "---\nid: note_ext123\ntitle: \"External Note\"\ntype: note\n---\n\nCreated externally.\n",
+    )
+    .unwrap();
+
+    // Lookup succeeds after graph refresh/reindex
+    let res = server
+        .dispatch_tool_sync(
+            "get_document",
+            &json!({ "id": "note_ext123", "session_id": "test-sess" }),
+        )
+        .unwrap();
+    assert!(!res.is_error.unwrap_or(false));
+    assert!(server.rebuild_count() >= 1);
+
+    // Non-existent ID triggers debounced miss reindex once and fails fast (no fallback)
+    let before = server.miss_reindex_count();
+    let missing = server.dispatch_tool_sync(
+        "get_document",
+        &json!({ "id": "note_does_not_exist", "session_id": "test-sess" }),
+    );
+    assert!(missing.is_err());
+    assert_eq!(server.miss_reindex_count(), before + 1);
+}
+
+#[test]
+fn test_bulk_operation_defers_miss_reindex_and_triggers_at_most_one() {
+    let (server, _tmp) = setup_test_server_with_files(&[]);
+    server.set_miss_reindex_debounce_ms(10);
+
+    {
+        let _guard = server.begin_bulk_op();
+        for missing_id in ["miss_1", "miss_2", "miss_3"] {
+            let err = server.dispatch_tool_sync(
+                "get_document",
+                &json!({ "id": missing_id, "session_id": "test-sess" }),
+            );
+            assert!(err.is_err());
+        }
+        // Deferred while bulk op is active
+        assert_eq!(server.miss_reindex_count(), 0);
+    }
+
+    // At most one reindex triggered when bulk op finishes
+    assert_eq!(server.miss_reindex_count(), 1);
+}
