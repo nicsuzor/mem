@@ -335,11 +335,7 @@ impl PkbSearchServer {
     /// surfacing, PR #406) and `title_boost` (near-exact title match,
     /// task_1542e818). Pulled out as a pure
     /// function so both the handler and its tests share one formula.
-    pub(crate) fn ranked_score(
-        query: &str,
-        r: &crate::vectordb::SearchResult,
-        boost: f32,
-    ) -> f32 {
+    pub(crate) fn ranked_score(query: &str, r: &crate::vectordb::SearchResult, boost: f32) -> f32 {
         let type_boost = Self::type_boost_for(r.doc_type.as_deref());
         let title_boost = Self::title_match_boost(query, &r.title);
         r.score * (1.0 + boost + type_boost + title_boost)
@@ -375,7 +371,8 @@ impl PkbSearchServer {
             .get("detail")
             .and_then(|v| v.as_str())
             .unwrap_or("snippet");
-        const VALID_SEARCH_DETAILS: &[&str] = &["chunk", "snippet", "summary", "full", "metadata", "ids"];
+        const VALID_SEARCH_DETAILS: &[&str] =
+            &["chunk", "snippet", "summary", "full", "metadata", "ids"];
         if let Some(raw_detail) = args.get("detail") {
             if let Some(d) = raw_detail.as_str() {
                 if !VALID_SEARCH_DETAILS.contains(&d.to_ascii_lowercase().as_str()) {
@@ -504,18 +501,26 @@ impl PkbSearchServer {
             .iter()
             .map(|r| {
                 let node = graph.get_node(&r.id).or_else(|| graph.resolve(&r.id));
-                let node_id = node.as_ref().map(|n| n.id.clone()).unwrap_or_else(|| r.id.clone());
+                let node_id = node
+                    .as_ref()
+                    .map(|n| n.id.clone())
+                    .unwrap_or_else(|| r.id.clone());
 
                 let boost = boost_map.get(&node_id).copied().unwrap_or(0.0);
                 let base_score = Self::ranked_score(query, r, boost);
 
-                let doc_type = r.doc_type.as_deref().or_else(|| node.as_ref().and_then(|n| n.node_type.as_deref()));
+                let doc_type = r
+                    .doc_type
+                    .as_deref()
+                    .or_else(|| node.as_ref().and_then(|n| n.node_type.as_deref()));
                 let date = r.date.as_deref();
                 let modified = node.as_ref().and_then(|n| n.modified.as_deref());
 
-                let recency_decay = crate::salience::document_recency_decay(doc_type, date, modified, now);
+                let recency_decay =
+                    crate::salience::document_recency_decay(doc_type, date, modified, now);
                 let salience_score = salience_store.get_salience(&node_id);
-                let read_boost = crate::salience::recent_read_boost(salience_score, &salience_config);
+                let read_boost =
+                    crate::salience::recent_read_boost(salience_score, &salience_config);
 
                 let aliases = graph.aliases(&r.id);
                 let is_exact = crate::ranking::is_exact_id_match(query, &r.id, &r.path, &aliases);
@@ -714,7 +719,8 @@ impl PkbSearchServer {
             }
         );
 
-        for (i, (r, score, recency_decay, read_boost, salience_score)) in scored.iter().enumerate() {
+        for (i, (r, score, recency_decay, read_boost, salience_score)) in scored.iter().enumerate()
+        {
             let node = graph.get_node(&r.id);
             let display_id = node
                 .map(|n| n.task_id.as_deref().unwrap_or(&n.id))
@@ -732,7 +738,11 @@ impl PkbSearchServer {
                 r.title,
                 score
             ));
-            if detail != "metadata" && ((*recency_decay - 1.0).abs() > 1e-4 || (*read_boost - 1.0).abs() > 1e-4 || *salience_score > 0.0) {
+            if detail != "metadata"
+                && ((*recency_decay - 1.0).abs() > 1e-4
+                    || (*read_boost - 1.0).abs() > 1e-4
+                    || *salience_score > 0.0)
+            {
                 output.push_str(&format!(
                     "**Priors:** recency={:.3}, recent_read={:.3}, salience={:.1}\n",
                     recency_decay, read_boost, salience_score
@@ -881,7 +891,7 @@ impl PkbSearchServer {
 
         let graph = self.graph.read();
 
-        let from_node = graph.resolve(from).ok_or_else(|| McpError {
+        let from_node = graph.resolve_crud(from).ok_or_else(|| McpError {
             code: ErrorCode::INVALID_PARAMS,
             message: Cow::from(format!("Source node not found: {from}")),
             data: None,
@@ -889,7 +899,7 @@ impl PkbSearchServer {
         let from_id = from_node.id.clone();
         let from_label = from_node.label.clone();
 
-        let to_node = graph.resolve(to).ok_or_else(|| McpError {
+        let to_node = graph.resolve_crud(to).ok_or_else(|| McpError {
             code: ErrorCode::INVALID_PARAMS,
             message: Cow::from(format!("Target node not found: {to}")),
             data: None,
@@ -1443,19 +1453,38 @@ mod title_match_ranking_tests {
         let memory_base = PkbSearchServer::ranked_score(query, &type_boosted_memory, 0.0);
         let rival_base = PkbSearchServer::ranked_score(query, &higher_raw_score_task, 0.0);
 
-        let target_final = crate::salience::apply_priors_with_floor(target_base as f64, 0.0, 1.0, 1.0);
-        let memory_final = crate::salience::apply_priors_with_floor(memory_base as f64, 0.0, 1.0, 1.0);
-        let rival_final = crate::salience::apply_priors_with_floor(rival_base as f64, 0.0, 1.0, 1.0);
+        let target_final =
+            crate::salience::apply_priors_with_floor(target_base as f64, 0.0, 1.0, 1.0);
+        let memory_final =
+            crate::salience::apply_priors_with_floor(memory_base as f64, 0.0, 1.0, 1.0);
+        let rival_final =
+            crate::salience::apply_priors_with_floor(rival_base as f64, 0.0, 1.0, 1.0);
 
-        assert!(target_final > memory_final, "target {target_final} > memory {memory_final}");
-        assert!(target_final > rival_final, "target {target_final} > rival {rival_final}");
-        assert!(target_final <= 0.990, "target {target_final} must not exceed 0.990");
+        assert!(
+            target_final > memory_final,
+            "target {target_final} > memory {memory_final}"
+        );
+        assert!(
+            target_final > rival_final,
+            "target {target_final} > rival {rival_final}"
+        );
+        assert!(
+            target_final <= 0.990,
+            "target {target_final} must not exceed 0.990"
+        );
 
         // 2. Proximity boost strictly increases score without saturating at 1.000
         let boosted_base = PkbSearchServer::ranked_score(query, &target, 0.3);
-        let boosted_final = crate::salience::apply_priors_with_floor(boosted_base as f64, 0.0, 1.0, 1.0);
-        assert!(boosted_final > target_final, "boosted {boosted_final} > unboosted {target_final}");
-        assert!(boosted_final <= 0.990, "boosted {boosted_final} must not exceed 0.990");
+        let boosted_final =
+            crate::salience::apply_priors_with_floor(boosted_base as f64, 0.0, 1.0, 1.0);
+        assert!(
+            boosted_final > target_final,
+            "boosted {boosted_final} > unboosted {target_final}"
+        );
+        assert!(
+            boosted_final <= 0.990,
+            "boosted {boosted_final} must not exceed 0.990"
+        );
     }
 }
 
@@ -1785,11 +1814,26 @@ mod search_status_projection_tests {
         let text = result_text(&result);
 
         assert!(!text.contains("No results found"));
-        assert!(text.contains("**Type:** note"), "should return note: {text}");
-        assert!(text.contains("**Type:** knowledge"), "should return knowledge: {text}");
-        assert!(text.contains("**Type:** memory"), "should return memory: {text}");
-        assert!(!text.contains("**Type:** task"), "should not return task: {text}");
-        assert!(!text.contains("**Type:** template"), "should not return template: {text}");
+        assert!(
+            text.contains("**Type:** note"),
+            "should return note: {text}"
+        );
+        assert!(
+            text.contains("**Type:** knowledge"),
+            "should return knowledge: {text}"
+        );
+        assert!(
+            text.contains("**Type:** memory"),
+            "should return memory: {text}"
+        );
+        assert!(
+            !text.contains("**Type:** task"),
+            "should not return task: {text}"
+        );
+        assert!(
+            !text.contains("**Type:** template"),
+            "should not return template: {text}"
+        );
     }
 
     #[test]
@@ -1812,22 +1856,48 @@ mod search_status_projection_tests {
         let text_task = result_text(&result_task);
 
         assert!(!text_task.contains("No results found"));
-        assert!(text_task.contains("**Type:** task"), "should return task: {text_task}");
-        assert!(text_task.contains("**Type:** epic"), "should return epic: {text_task}");
-        assert!(!text_task.contains("**Type:** note"), "should not return note: {text_task}");
-        assert!(!text_task.contains("**Type:** template"), "should not return template: {text_task}");
+        assert!(
+            text_task.contains("**Type:** task"),
+            "should return task: {text_task}"
+        );
+        assert!(
+            text_task.contains("**Type:** epic"),
+            "should return epic: {text_task}"
+        );
+        assert!(
+            !text_task.contains("**Type:** note"),
+            "should not return note: {text_task}"
+        );
+        assert!(
+            !text_task.contains("**Type:** template"),
+            "should not return template: {text_task}"
+        );
 
         // Test type: "actionable"
         let result_act = server
-            .handle_pkb_search(&serde_json::json!({"query": "widget", "type": "actionable", "limit": 10}))
+            .handle_pkb_search(
+                &serde_json::json!({"query": "widget", "type": "actionable", "limit": 10}),
+            )
             .expect("search");
         let text_act = result_text(&result_act);
 
         assert!(!text_act.contains("No results found"));
-        assert!(text_act.contains("**Type:** task"), "should return task: {text_act}");
-        assert!(text_act.contains("**Type:** epic"), "should return epic: {text_act}");
-        assert!(!text_act.contains("**Type:** note"), "should not return note: {text_act}");
-        assert!(!text_act.contains("**Type:** template"), "should not return template: {text_act}");
+        assert!(
+            text_act.contains("**Type:** task"),
+            "should return task: {text_act}"
+        );
+        assert!(
+            text_act.contains("**Type:** epic"),
+            "should return epic: {text_act}"
+        );
+        assert!(
+            !text_act.contains("**Type:** note"),
+            "should not return note: {text_act}"
+        );
+        assert!(
+            !text_act.contains("**Type:** template"),
+            "should not return template: {text_act}"
+        );
     }
 
     #[test]
@@ -1848,7 +1918,11 @@ mod search_status_projection_tests {
         let json_val: serde_json::Value = serde_json::from_str(&text).expect("valid json");
         let hits = json_val["results"].as_array().expect("results array");
 
-        assert!(hits.len() >= 3, "expected at least 3 hits, got {}", hits.len());
+        assert!(
+            hits.len() >= 3,
+            "expected at least 3 hits, got {}",
+            hits.len()
+        );
 
         let mut scores = Vec::new();
         for hit in hits {
@@ -1865,7 +1939,10 @@ mod search_status_projection_tests {
 
         // Verify discriminating scores: not all top hits have identical scores (no flat plateau)
         let first_score = scores[0];
-        let has_distinct = scores.iter().skip(1).any(|&s| (s - first_score).abs() > 1e-4);
+        let has_distinct = scores
+            .iter()
+            .skip(1)
+            .any(|&s| (s - first_score).abs() > 1e-4);
         assert!(
             has_distinct,
             "top search hits must carry discriminating scores, but all were {first_score}: {:?}",
@@ -1922,12 +1999,18 @@ mod search_status_projection_tests {
         server = server.with_reranker(reranker);
 
         let result = server.handle_pkb_search(&serde_json::json!({"query": "widget"}));
-        assert!(result.is_err(), "search must error when reranker fails to load");
+        assert!(
+            result.is_err(),
+            "search must error when reranker fails to load"
+        );
         let err = result.unwrap_err();
         assert_eq!(err.message, "reranker_unavailable");
 
         let task_result = server.handle_task_search(&serde_json::json!({"query": "widget"}));
-        assert!(task_result.is_err(), "task_search must error when reranker fails to load");
+        assert!(
+            task_result.is_err(),
+            "task_search must error when reranker fails to load"
+        );
         let err = task_result.unwrap_err();
         assert_eq!(err.message, "reranker_unavailable");
     }
@@ -1960,10 +2043,7 @@ mod search_status_projection_tests {
             .unwrap();
 
             let doc = crate::pkb::parse_file(&note_path).unwrap();
-            let emb = server
-                .embedder
-                .encode_query("architecture guide")
-                .unwrap();
+            let emb = server.embedder.encode_query("architecture guide").unwrap();
 
             server
                 .store

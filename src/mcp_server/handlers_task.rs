@@ -465,7 +465,7 @@ impl PkbSearchServer {
             let force = args.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
             let graph = self.graph.read();
             if let Some(ref parent_id) = fields.parent {
-                match graph.resolve(parent_id) {
+                match graph.resolve_crud(parent_id) {
                     None => {
                         if allow_missing {
                             tracing::warn!(
@@ -739,7 +739,7 @@ impl PkbSearchServer {
             })?;
 
         let graph = self.graph.read();
-        let node = graph.resolve(id).ok_or_else(|| McpError {
+        let node = graph.resolve_crud(id).ok_or_else(|| McpError {
             code: ErrorCode::INVALID_PARAMS,
             message: Cow::from(format!("Task not found: {id}")),
             data: None,
@@ -799,7 +799,7 @@ impl PkbSearchServer {
 
         // Resolve ID to graph node (supports exact ID, filename stem, title)
         let graph = self.graph.read();
-        let node = graph.resolve(id).ok_or_else(|| McpError {
+        let node = graph.resolve_crud(id).ok_or_else(|| McpError {
             code: ErrorCode::INVALID_PARAMS,
             message: Cow::from(format!("Task not found: {id}")),
             data: None,
@@ -860,7 +860,7 @@ impl PkbSearchServer {
         // Re-resolve after the possible self-heal above so every field built
         // below (including `node.status`) reflects disk, not the pre-heal copy.
         let graph = self.graph.read();
-        let node = graph.resolve(id).ok_or_else(|| McpError {
+        let node = graph.resolve_crud(id).ok_or_else(|| McpError {
             code: ErrorCode::INVALID_PARAMS,
             message: Cow::from(format!("Task not found: {id}")),
             data: None,
@@ -894,7 +894,7 @@ impl PkbSearchServer {
 
         // Build relationship context from graph
         let resolve_ref = |rid: &str| -> serde_json::Value {
-            if let Some(n) = graph.resolve(rid) {
+            if let Some(n) = graph.resolve_crud(rid) {
                 serde_json::json!({
                     "id": n.id,
                     "title": n.label,
@@ -916,7 +916,7 @@ impl PkbSearchServer {
             .children
             .iter()
             .map(|c| {
-                if let Some(n) = graph.resolve(c) {
+                if let Some(n) = graph.resolve_crud(c) {
                     serde_json::json!({
                         "id": n.id,
                         "title": n.label,
@@ -936,7 +936,7 @@ impl PkbSearchServer {
             .subtasks
             .iter()
             .map(|sid| {
-                if let Some(n) = graph.resolve(sid) {
+                if let Some(n) = graph.resolve_crud(sid) {
                     serde_json::json!({
                         "id": n.id,
                         "title": n.label,
@@ -1010,7 +1010,7 @@ impl PkbSearchServer {
             .map(|c| {
                 let mut res = serde_json::to_value(c).unwrap_or_else(|_| serde_json::json!({}));
                 let target_id = c.resolved_to.as_deref().unwrap_or(&c.to);
-                if let Some(n) = graph.resolve(target_id) {
+                if let Some(n) = graph.resolve_crud(target_id) {
                     if let Some(obj) = res.as_object_mut() {
                         obj.insert("title".to_string(), serde_json::json!(n.label));
                         if let Some(ref s) = n.status {
@@ -1083,7 +1083,7 @@ impl PkbSearchServer {
                         let mut nodes_to_check = vec![node];
                         for link in graph.links_out(&node.id) {
                             if let Some(to) = &link.to {
-                                if let Some(target_node) = graph.resolve(to) {
+                                if let Some(target_node) = graph.resolve_crud(to) {
                                     nodes_to_check.push(target_node);
                                 }
                             }
@@ -1250,7 +1250,7 @@ impl PkbSearchServer {
             (args.get("max_depth").and_then(|v| v.as_u64()).unwrap_or(10) as usize).min(1000);
 
         let graph = self.graph.read();
-        let node = graph.resolve(id).ok_or_else(|| McpError {
+        let node = graph.resolve_crud(id).ok_or_else(|| McpError {
             code: ErrorCode::INVALID_PARAMS,
             message: Cow::from(format!("Task not found: {id}")),
             data: None,
@@ -1295,7 +1295,7 @@ impl PkbSearchServer {
             let tree_json: Vec<serde_json::Value> = tree
                 .iter()
                 .map(|(dep_id, depth)| {
-                    let dep_node = graph.resolve(dep_id);
+                    let dep_node = graph.resolve_crud(dep_id);
                     let label = dep_node.map(|n| n.label.as_str()).unwrap_or("?");
                     let (status, gain, loss_averted) = if let Some(n) = dep_node {
                         (
@@ -1349,7 +1349,7 @@ impl PkbSearchServer {
 
         for (dep_id, depth) in &tree {
             let indent = "  ".repeat(*depth);
-            let dep_node = graph.resolve(dep_id);
+            let dep_node = graph.resolve_crud(dep_id);
             let label = dep_node.map(|n| n.label.as_str()).unwrap_or("?");
             let status = dep_node.and_then(|n| n.status.as_deref()).unwrap_or("?");
             output.push_str(&format!("{indent}- `{dep_id}` [{status}] {label}\n"));
@@ -1384,7 +1384,7 @@ impl PkbSearchServer {
             (args.get("limit").and_then(|v| v.as_u64()).unwrap_or(200) as usize).min(MAX_RESULTS);
 
         let graph = self.graph.read();
-        let node = graph.resolve(id).ok_or_else(|| McpError {
+        let node = graph.resolve_crud(id).ok_or_else(|| McpError {
             code: ErrorCode::INVALID_PARAMS,
             message: Cow::from(format!("Task not found: {id}")),
             data: None,
@@ -1914,7 +1914,7 @@ impl PkbSearchServer {
 
                 if wants_rel_summary {
                     let resolve_ref = |rid: &str| -> serde_json::Value {
-                        if let Some(n) = graph.resolve(rid) {
+                        if let Some(n) = graph.resolve_crud(rid) {
                             serde_json::json!({
                                 "id": n.id,
                                 "title": n.label,
@@ -2019,7 +2019,7 @@ impl PkbSearchServer {
                 if !t.depends_on.is_empty() {
                     out.push_str("**Blocked by:**\n");
                     for dep in &t.depends_on {
-                        let dep_node = graph.resolve(dep);
+                        let dep_node = graph.resolve_crud(dep);
                         let dep_label = dep_node.map(|n| n.label.as_str()).unwrap_or("?");
                         let dep_status = dep_node.and_then(|n| n.status.as_deref()).unwrap_or("?");
                         out.push_str(&format!("- `{}` [{}] {}\n", dep, dep_status, dep_label));
@@ -2230,7 +2230,7 @@ impl PkbSearchServer {
 
         let (mut path, mut canonical_id, node_type) = {
             let graph = self.graph.read();
-            let node = graph.resolve(id).ok_or_else(|| McpError {
+            let node = graph.resolve_crud(id).ok_or_else(|| McpError {
                 code: ErrorCode::INVALID_PARAMS,
                 message: Cow::from(format!("Document not found: {id}")),
                 data: None,
@@ -2381,7 +2381,7 @@ impl PkbSearchServer {
                 }
                 let (new_path, new_canonical_id) = {
                     let graph = self.graph.read();
-                    let node = graph.resolve(id).ok_or_else(|| McpError {
+                    let node = graph.resolve_crud(id).ok_or_else(|| McpError {
                         code: ErrorCode::INTERNAL_ERROR,
                         message: Cow::from(format!("Document not found after conversion: {id}")),
                         data: None,
@@ -2462,7 +2462,7 @@ impl PkbSearchServer {
                     .unwrap_or(false);
                 let graph = self.graph.read();
                 // 1. Existence check (task-89b2af87)
-                if graph.resolve(new_parent).is_none() {
+                if graph.resolve_crud(new_parent).is_none() {
                     if allow_missing {
                         tracing::warn!(
                             "update_task: parent '{}' not found in PKB; proceeding because allow_missing_parent=true",
@@ -2511,7 +2511,7 @@ impl PkbSearchServer {
             let graph = self.graph.read();
             let unresolved: Vec<String> = targets
                 .iter()
-                .filter(|t| graph.resolve(t).is_none())
+                .filter(|t| graph.resolve_crud(t).is_none())
                 .cloned()
                 .collect();
             if !unresolved.is_empty() {
@@ -2682,7 +2682,7 @@ impl PkbSearchServer {
         if update_map.is_empty() {
             let (node_title, node_type, node_status, node_modified) = {
                 let graph = self.graph.read();
-                if let Some(node) = graph.resolve(id) {
+                if let Some(node) = graph.resolve_crud(id) {
                     (
                         Some(node.label.clone()),
                         node.node_type.clone(),
@@ -2767,7 +2767,7 @@ impl PkbSearchServer {
 
         let (node_title, node_type, node_status, node_modified) = {
             let graph = self.graph.read();
-            if let Some(node) = graph.resolve(id) {
+            if let Some(node) = graph.resolve_crud(id) {
                 (
                     Some(node.label.clone()),
                     node.node_type.clone(),

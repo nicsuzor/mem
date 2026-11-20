@@ -106,7 +106,7 @@ impl PkbSearchServer {
         // Try ID/flexible resolution first (covers IDs, filename stems, titles, permalinks)
         let (path, label, node_id) = {
             let graph = self.graph.read();
-            if let Some(node) = graph.resolve(query) {
+            if let Some(node) = graph.resolve_crud(query) {
                 let abs_path = self.abs_path_for_node(node, Some(&graph))?;
                 (abs_path, node.label.clone(), node.id.clone())
             } else {
@@ -350,7 +350,7 @@ impl PkbSearchServer {
         drop(store);
 
         let graph = self.graph.read();
-        results.retain(|r| r.path.is_file() && graph.resolve(&r.id).is_some());
+        results.retain(|r| r.path.is_file() && graph.resolve_crud(&r.id).is_some());
 
         if let Some(ref req_tags) = tags_vec {
             results.retain(|r| {
@@ -367,7 +367,7 @@ impl PkbSearchServer {
 
         let get_effective_mod = |r_id: &str, r_path: &Path| -> String {
             if let Some(fm_mod) = graph
-                .resolve(r_id)
+                .resolve_crud(r_id)
                 .and_then(|n| n.modified.clone())
                 .filter(|s| !s.trim().is_empty())
             {
@@ -1017,7 +1017,7 @@ impl PkbSearchServer {
 
         // Resolve ID to path via graph
         let graph = self.graph.read();
-        let node = graph.resolve(id).ok_or_else(|| McpError {
+        let node = graph.resolve_crud(id).ok_or_else(|| McpError {
             code: ErrorCode::INVALID_PARAMS,
             message: Cow::from(format!("Document not found: {id}")),
             data: None,
@@ -1124,7 +1124,7 @@ impl PkbSearchServer {
 
         let (abs_path, label, node_type) = {
             let graph = self.graph.read();
-            let node = graph.resolve(id).ok_or_else(|| McpError {
+            let node = graph.resolve_crud(id).ok_or_else(|| McpError {
                 code: ErrorCode::INVALID_PARAMS,
                 message: Cow::from(format!("Document not found: {id}")),
                 data: None,
@@ -1217,7 +1217,7 @@ impl PkbSearchServer {
 
         let (abs_path, label, node_type) = {
             let graph = self.graph.read();
-            let node = graph.resolve(id).ok_or_else(|| McpError {
+            let node = graph.resolve_crud(id).ok_or_else(|| McpError {
                 code: ErrorCode::INVALID_PARAMS,
                 message: Cow::from(format!("Document not found: {id}")),
                 data: None,
@@ -1330,7 +1330,7 @@ impl PkbSearchServer {
 
         let (abs_path, label) = {
             let graph = self.graph.read();
-            let node = graph.resolve(id).ok_or_else(|| McpError {
+            let node = graph.resolve_crud(id).ok_or_else(|| McpError {
                 code: ErrorCode::INVALID_PARAMS,
                 message: Cow::from(format!("Document not found: {id}")),
                 data: None,
@@ -1430,7 +1430,7 @@ impl PkbSearchServer {
 
         let (abs_path, label) = {
             let graph = self.graph.read();
-            let node = graph.resolve(id).ok_or_else(|| McpError {
+            let node = graph.resolve_crud(id).ok_or_else(|| McpError {
                 code: ErrorCode::INVALID_PARAMS,
                 message: Cow::from(format!("Document not found: {id}")),
                 data: None,
@@ -1496,7 +1496,7 @@ impl PkbSearchServer {
 
             for id in ids {
                 let graph = self.graph.read();
-                let node = match graph.resolve(&id) {
+                let node = match graph.resolve_crud(&id) {
                     Some(n) => n.clone(),
                     None => {
                         results.push(serde_json::json!({
@@ -1588,7 +1588,7 @@ impl PkbSearchServer {
             })?;
 
         let graph = self.graph.read();
-        let node = graph.resolve(id).ok_or_else(|| McpError {
+        let node = graph.resolve_crud(id).ok_or_else(|| McpError {
             code: ErrorCode::INVALID_PARAMS,
             message: Cow::from(format!("Document not found: {id}")),
             data: None,
@@ -1693,7 +1693,7 @@ impl PkbSearchServer {
 
         let (abs_path, node_id, label) = {
             let graph = self.graph.read();
-            let node = graph.resolve(id).ok_or_else(|| McpError {
+            let node = graph.resolve_crud(id).ok_or_else(|| McpError {
                 code: ErrorCode::INVALID_PARAMS,
                 message: Cow::from(format!("Document not found: {id}")),
                 data: None,
@@ -1722,10 +1722,12 @@ impl PkbSearchServer {
             data: None,
         })?;
 
-        // The vector entry carries the file path, so a moved document is
-        // dropped and re-embedded under its new path.
         if result.moved {
-            self.try_remove_document(&node_id, Some(&result.old_path));
+            let rel_new_path = result
+                .new_path
+                .strip_prefix(&self.pkb_root)
+                .unwrap_or(&result.new_path);
+            self.store.write().update_entry_path(&node_id, rel_new_path);
         }
         if let Some(doc) = crate::pkb::parse_file_relative(&result.new_path, &self.pkb_root) {
             self.rebuild_graph_for_pkb_document(&doc);

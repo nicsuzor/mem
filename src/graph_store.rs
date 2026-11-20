@@ -105,6 +105,8 @@ pub struct GraphStore {
     roots: Vec<String>,
     /// Lowercase (id | filename stem | title | permalink) → canonical node ID
     resolution_map: HashMap<String, String>,
+    /// Lowercase (id | task_id | explicit alias) → canonical node ID for ID-only CRUD
+    crud_map: HashMap<String, String>,
     /// Generation stamp recorded at build/patch time for validate-on-read cache invalidation
     generation: crate::pkb::GenerationStamp,
     pub flow_input: Option<crate::flow::FlowInput>,
@@ -604,9 +606,9 @@ impl GraphStore {
         compute_divergence_anomalies(&mut node_map, &blocked, DEFAULT_DIVERGENCE_THRESHOLD_DAYS);
         tracing::debug!(target: "perf::graph_rebuild", phase = "divergence_anomalies", elapsed_ms = _t.elapsed().as_secs_f64() * 1000.0);
 
-        // 12. Build resolution map for flexible node lookup
+        // 12. Build resolution map for flexible node lookup & Tier-0 CRUD map
         let _t = std::time::Instant::now();
-        let resolution_map = build_resolution_map(&node_map);
+        let (resolution_map, crud_map) = build_resolution_map(&node_map);
         tracing::debug!(target: "perf::graph_rebuild", phase = "resolution_map", elapsed_ms = _t.elapsed().as_secs_f64() * 1000.0);
 
         let generation = crate::pkb::scan_generation(pkb_root);
@@ -618,6 +620,7 @@ impl GraphStore {
             blocked,
             roots,
             resolution_map,
+            crud_map,
             generation,
             flow_input: Some(flow_input),
         }
@@ -875,7 +878,11 @@ impl GraphStore {
     /// (pagerank, children/subtasks inverses) stays consistent until the
     /// background rebuild refreshes them.
     /// Caller is expected to hold the graph write lock.
-    pub fn upsert_node_in_place(&mut self, mut new_node: GraphNode, pkb_root: &Path) -> Vec<String> {
+    pub fn upsert_node_in_place(
+        &mut self,
+        mut new_node: GraphNode,
+        pkb_root: &Path,
+    ) -> Vec<String> {
         // Resolve canonical absolute path once, mirroring the build pipeline.
         if new_node.canonical_abs_path.is_none() && !new_node.path.as_os_str().is_empty() {
             let full_path = if new_node.path.is_absolute() {
@@ -909,8 +916,14 @@ impl GraphStore {
         // Capture the old parent, old dependencies, and old id before consuming `prior`.
         let old_parent_id: Option<String> = prior.as_ref().and_then(|n| n.parent.clone());
         let old_node_id: Option<String> = prior.as_ref().map(|n| n.id.clone());
-        let old_depends_on: Vec<String> = prior.as_ref().map(|n| n.depends_on.clone()).unwrap_or_default();
-        let old_soft_depends_on: Vec<String> = prior.as_ref().map(|n| n.soft_depends_on.clone()).unwrap_or_default();
+        let old_depends_on: Vec<String> = prior
+            .as_ref()
+            .map(|n| n.depends_on.clone())
+            .unwrap_or_default();
+        let old_soft_depends_on: Vec<String> = prior
+            .as_ref()
+            .map(|n| n.soft_depends_on.clone())
+            .unwrap_or_default();
 
         let mut affected_nodes: Vec<String> = vec![new_node.id.clone()];
         if let Some(ref old_nid) = old_node_id {
@@ -960,16 +973,20 @@ impl GraphStore {
 
         // Canonicalize new_node depends_on and soft_depends_on references
         for dep in new_node.depends_on.iter_mut() {
-            if let Some(canon) = self.resolution_map.get(&dep.to_lowercase()).or_else(|| {
-                self.nodes.get(dep.as_str()).map(|n| &n.id)
-            }) {
+            if let Some(canon) = self
+                .resolution_map
+                .get(&dep.to_lowercase())
+                .or_else(|| self.nodes.get(dep.as_str()).map(|n| &n.id))
+            {
                 *dep = canon.clone();
             }
         }
         for sdep in new_node.soft_depends_on.iter_mut() {
-            if let Some(canon) = self.resolution_map.get(&sdep.to_lowercase()).or_else(|| {
-                self.nodes.get(sdep.as_str()).map(|n| &n.id)
-            }) {
+            if let Some(canon) = self
+                .resolution_map
+                .get(&sdep.to_lowercase())
+                .or_else(|| self.nodes.get(sdep.as_str()).map(|n| &n.id))
+            {
                 *sdep = canon.clone();
             }
         }
@@ -1039,7 +1056,9 @@ impl GraphStore {
                 .unwrap_or_else(|| old_dep.clone());
             if !new_node.depends_on.contains(&canon_old) && !new_node.depends_on.contains(old_dep) {
                 if let Some(dep_node) = self.nodes.get_mut(&canon_old) {
-                    dep_node.blocks.retain(|b| b != &new_node.id && b != old_nid);
+                    dep_node
+                        .blocks
+                        .retain(|b| b != &new_node.id && b != old_nid);
                     affected_nodes.push(canon_old);
                 }
             }
@@ -1088,9 +1107,13 @@ impl GraphStore {
                 .get(&old_sdep.to_lowercase())
                 .cloned()
                 .unwrap_or_else(|| old_sdep.clone());
-            if !new_node.soft_depends_on.contains(&canon_old) && !new_node.soft_depends_on.contains(old_sdep) {
+            if !new_node.soft_depends_on.contains(&canon_old)
+                && !new_node.soft_depends_on.contains(old_sdep)
+            {
                 if let Some(dep_node) = self.nodes.get_mut(&canon_old) {
-                    dep_node.soft_blocks.retain(|b| b != &new_node.id && b != old_nid);
+                    dep_node
+                        .soft_blocks
+                        .retain(|b| b != &new_node.id && b != old_nid);
                     affected_nodes.push(canon_old);
                 }
             }
@@ -1102,7 +1125,8 @@ impl GraphStore {
                 .get(&new_sdep.to_lowercase())
                 .cloned()
                 .unwrap_or_else(|| new_sdep.clone());
-            if !old_soft_depends_on.contains(&canon_new) && !old_soft_depends_on.contains(new_sdep) {
+            if !old_soft_depends_on.contains(&canon_new) && !old_soft_depends_on.contains(new_sdep)
+            {
                 if let Some(dep_node) = self.nodes.get_mut(&canon_new) {
                     if !dep_node.soft_blocks.contains(&new_node.id) {
                         dep_node.soft_blocks.push(new_node.id.clone());
@@ -1155,13 +1179,18 @@ impl GraphStore {
         // reintroduces the shadowing bug one node at a time, between full
         // rebuilds. Mirrors the tier order in `build_resolution_map`.
         let id_lower = new_node.id.to_lowercase();
+        self.crud_map.retain(|_, v| v != &new_node.id);
+        self.crud_map.insert(id_lower.clone(), new_node.id.clone());
         self.resolution_map
             .insert(id_lower.clone(), new_node.id.clone());
         if let Some(ref tid) = new_node.task_id {
+            self.crud_map
+                .insert(tid.to_lowercase(), new_node.id.clone());
             self.resolution_map
                 .insert(tid.to_lowercase(), new_node.id.clone());
         }
         for pl in &new_node.permalinks {
+            self.crud_map.insert(pl.clone(), new_node.id.clone());
             self.resolution_map.insert(pl.clone(), new_node.id.clone());
         }
 
@@ -1541,6 +1570,21 @@ impl GraphStore {
     // -----------------------------------------------------------------------
     // Flexible node resolution
     // -----------------------------------------------------------------------
+
+    /// Resolve a query strictly by canonical ID (or explicit frontmatter alias).
+    ///
+    /// Never matches filesystem paths, `.md` suffixes, filename stems, or titles.
+    /// Used by all PKB CRUD operations.
+    pub fn resolve_crud(&self, query: &str) -> Option<&GraphNode> {
+        if let Some(node) = self.nodes.get(query) {
+            return Some(node);
+        }
+        let lower = query.to_lowercase();
+        if let Some(canonical_id) = self.crud_map.get(&lower) {
+            return self.nodes.get(canonical_id);
+        }
+        None
+    }
 
     /// Resolve a query to a node using flexible matching.
     ///
@@ -2968,7 +3012,10 @@ fn compute_inverses(
         if node.depends_on_raw.is_empty() && !node.depends_on.is_empty() && node.blocks.is_empty() {
             node.depends_on_raw = node.depends_on.clone();
         }
-        if node.soft_depends_on_raw.is_empty() && !node.soft_depends_on.is_empty() && node.soft_blocks.is_empty() {
+        if node.soft_depends_on_raw.is_empty()
+            && !node.soft_depends_on.is_empty()
+            && node.soft_blocks.is_empty()
+        {
             node.soft_depends_on_raw = node.soft_depends_on.clone();
         }
         if node.children_raw.is_empty() && !node.children.is_empty() && node.parent.is_none() {
@@ -3181,13 +3228,16 @@ fn compute_similarity_edges(
     }
 
     // Pre-fetch all embeddings via the snapshot (no store lock held).
+    // `averaged_embeddings()` is keyed by canonical document ID.
     let embeddings: Vec<Option<&Vec<f32>>> = nodes
         .iter()
         .map(|node| {
-            let path = node.path.to_string_lossy();
-            embeddings_by_path.get(path.as_ref()).or_else(|| {
-                let stripped = path.strip_prefix("tasks/").unwrap_or(&path);
-                embeddings_by_path.get(stripped)
+            embeddings_by_path.get(&node.id).or_else(|| {
+                let path = node.path.to_string_lossy();
+                embeddings_by_path.get(path.as_ref()).or_else(|| {
+                    let stripped = path.strip_prefix("tasks/").unwrap_or(&path);
+                    embeddings_by_path.get(stripped)
+                })
             })
         })
         .collect();
@@ -3614,7 +3664,9 @@ fn find_reachable_set(nodes: &[GraphNode], edges: &[Edge]) -> HashSet<String> {
 /// - node.task_id (if present)
 /// - filename stem from node.path
 /// - node.label (title)
-fn build_resolution_map(nodes: &HashMap<String, GraphNode>) -> HashMap<String, String> {
+fn build_resolution_map(
+    nodes: &HashMap<String, GraphNode>,
+) -> (HashMap<String, String>, HashMap<String, String>) {
     // Registered in strict authority order, and deterministically within each
     // tier. Iterating the node HashMap directly meant the winner of a contested
     // key changed between rebuilds of an unchanged tree — the same lookup string
@@ -3625,6 +3677,7 @@ fn build_resolution_map(nodes: &HashMap<String, GraphNode>) -> HashMap<String, S
     // another node's filename or title, or a lookup binds to whichever node
     // merely *looks* like the string being asked for.
     let mut map: HashMap<String, String> = HashMap::new();
+    let mut crud_map: HashMap<String, String> = HashMap::new();
     let mut ordered: Vec<&GraphNode> = nodes.values().collect();
     ordered.sort_unstable_by(|a, b| a.id.cmp(&b.id));
 
@@ -3632,12 +3685,21 @@ fn build_resolution_map(nodes: &HashMap<String, GraphNode>) -> HashMap<String, S
     for node in &ordered {
         map.entry(node.id.to_lowercase())
             .or_insert_with(|| node.id.clone());
+        crud_map
+            .entry(node.id.to_lowercase())
+            .or_insert_with(|| node.id.clone());
         if let Some(ref tid) = node.task_id {
             map.entry(tid.to_lowercase())
+                .or_insert_with(|| node.id.clone());
+            crud_map
+                .entry(tid.to_lowercase())
                 .or_insert_with(|| node.id.clone());
         }
         for pl in &node.permalinks {
             map.entry(pl.clone()).or_insert_with(|| node.id.clone());
+            crud_map
+                .entry(pl.clone())
+                .or_insert_with(|| node.id.clone());
         }
     }
     // Tier 1 — keys derived from the file's name (stem, scraped id-prefix).
@@ -3658,7 +3720,7 @@ fn build_resolution_map(nodes: &HashMap<String, GraphNode>) -> HashMap<String, S
             map.entry(label_key).or_insert_with(|| node.id.clone());
         }
     }
-    map
+    (map, crud_map)
 }
 
 // ===========================================================================

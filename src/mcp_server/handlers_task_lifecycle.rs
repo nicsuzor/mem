@@ -23,7 +23,7 @@ impl PkbSearchServer {
 
         let resolved_type = {
             let graph = self.graph.read();
-            let node = graph.resolve(id).ok_or_else(|| McpError {
+            let node = graph.resolve_crud(id).ok_or_else(|| McpError {
                 code: ErrorCode::INVALID_PARAMS,
                 message: Cow::from(format!("Task not found: {id}")),
                 data: None,
@@ -110,7 +110,7 @@ impl PkbSearchServer {
         // `template_tags`), after `fm` is parsed.
         let (template_id, template_path, template_label, template_intent, template_assignee) = {
             let graph = self.graph.read();
-            let node = graph.resolve(id).ok_or_else(|| McpError {
+            let node = graph.resolve_crud(id).ok_or_else(|| McpError {
                 code: ErrorCode::INVALID_PARAMS,
                 message: Cow::from(format!("Task not found: {id}")),
                 data: None,
@@ -359,7 +359,7 @@ impl PkbSearchServer {
             if unblocked.len() >= 5 {
                 break;
             }
-            let Some(dep) = graph.resolve(dep_id) else {
+            let Some(dep) = graph.resolve_crud(dep_id) else {
                 continue;
             };
             if !graph.is_blocked(&dep.id) && !is_completed(dep.status.as_deref()) {
@@ -400,7 +400,7 @@ impl PkbSearchServer {
         let pr_url = args.get("pr_url").and_then(|v| v.as_str());
 
         let graph = self.graph.read();
-        let node = graph.resolve(id).ok_or_else(|| McpError {
+        let node = graph.resolve_crud(id).ok_or_else(|| McpError {
             code: ErrorCode::INVALID_PARAMS,
             message: Cow::from(format!("Task not found: {id}")),
             data: None,
@@ -534,8 +534,8 @@ impl PkbSearchServer {
         let (node_title, node_modified) = {
             let graph = self.graph.read();
             (
-                graph.resolve(id).map(|n| n.label.clone()),
-                graph.resolve(id).and_then(|n| n.modified.clone()),
+                graph.resolve_crud(id).map(|n| n.label.clone()),
+                graph.resolve_crud(id).and_then(|n| n.modified.clone()),
             )
         };
         let new_modified = node_modified.unwrap_or_else(|| chrono::Utc::now().to_rfc3339());
@@ -574,10 +574,10 @@ impl PkbSearchServer {
         };
 
         // Fetch extra candidates so type-filtering has enough to choose from.
-        let candidates = self
-            .store
-            .read()
-            .search(&embedding, 50, &self.pkb_root, None, None, None, None);
+        let candidates =
+            self.store
+                .read()
+                .search(&embedding, 50, &self.pkb_root, None, None, None, None);
 
         for candidate in &candidates {
             if candidate.score < CONFIDENCE_THRESHOLD {
@@ -628,7 +628,7 @@ impl PkbSearchServer {
         // Fast path: already present in graph
         {
             let graph = self.graph.read();
-            if graph.resolve(&epic_id).is_some() {
+            if graph.resolve_crud(&epic_id).is_some() {
                 tracing::debug!(target: "adhoc_grouping", epic_id = epic_id.as_str(), "M2: reusing existing session epic");
                 return Ok(epic_id);
             }
@@ -644,7 +644,7 @@ impl PkbSearchServer {
         {
             let graph = self.graph.read();
             if graph
-                .resolve(crate::document_crud::ADHOC_SESSIONS_ROOT_ID)
+                .resolve_crud(crate::document_crud::ADHOC_SESSIONS_ROOT_ID)
                 .is_none()
             {
                 drop(graph);
@@ -760,7 +760,7 @@ impl PkbSearchServer {
         // Rebuild graph if adhoc-sessions is missing from memory
         {
             let graph = self.graph.read();
-            if graph.resolve("adhoc-sessions").is_none() {
+            if graph.resolve_crud("adhoc-sessions").is_none() {
                 drop(graph);
                 self.rebuild_graph();
             }
@@ -855,13 +855,7 @@ impl PkbSearchServer {
             })?;
 
         // Validate status enum with helpful suggestions
-        let valid_statuses = [
-            "done",
-            "review",
-            "cancelled",
-            "partial",
-            "failed",
-        ];
+        let valid_statuses = ["done", "review", "cancelled", "partial", "failed"];
         if !valid_statuses.contains(&status) {
             let suggestion = match status {
                 "complete" | "completed" | "merge_ready" | "merge-ready" => {
@@ -936,7 +930,7 @@ impl PkbSearchServer {
 
         // Resolve task
         let graph = self.graph.read();
-        let node = graph.resolve(id).ok_or_else(|| McpError {
+        let node = graph.resolve_crud(id).ok_or_else(|| McpError {
             code: ErrorCode::INVALID_PARAMS,
             message: Cow::from(format!("Task not found: {id}")),
             data: None,
@@ -1147,7 +1141,6 @@ impl PkbSearchServer {
             );
         }
 
-
         if let Some(rs) = release_summary {
             updates.insert(
                 "release_summary".to_string(),
@@ -1281,7 +1274,7 @@ impl PkbSearchServer {
 
         let node_modified = {
             let graph = self.graph.read();
-            graph.resolve(id).and_then(|n| n.modified.clone())
+            graph.resolve_crud(id).and_then(|n| n.modified.clone())
         };
         let new_modified = node_modified.unwrap_or_else(|| chrono::Utc::now().to_rfc3339());
         let mut json = serde_json::json!({
@@ -1354,7 +1347,7 @@ impl PkbSearchServer {
 
         let (project_prefix, parent_project) = {
             let graph = self.graph.read();
-            match graph.resolve(parent_id) {
+            match graph.resolve_crud(parent_id) {
                 None => {
                     return Err(McpError {
                         code: ErrorCode::INVALID_PARAMS,
@@ -1465,7 +1458,7 @@ impl PkbSearchServer {
                                     unresolvable.push(dep.to_string());
                                 }
                             } else if !title_to_id.contains_key(&dep.to_lowercase())
-                                && graph.resolve(dep).is_none()
+                                && graph.resolve_crud(dep).is_none()
                             {
                                 unresolvable.push(dep.to_string());
                             }

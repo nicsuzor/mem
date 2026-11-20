@@ -102,8 +102,17 @@ impl DocumentEntry {
         let chunks = self
             .chunk_texts
             .iter()
-            .zip(self.body_chunks.iter().chain(std::iter::repeat(&String::new())))
-            .zip(self.chunk_embeddings.iter().map(|v| Some(v.clone())).chain(std::iter::repeat(None)))
+            .zip(
+                self.body_chunks
+                    .iter()
+                    .chain(std::iter::repeat(&String::new())),
+            )
+            .zip(
+                self.chunk_embeddings
+                    .iter()
+                    .map(|v| Some(v.clone()))
+                    .chain(std::iter::repeat(None)),
+            )
             .map(|((text, body), vector)| crate::chunker::ChunkRecord {
                 text: text.clone(),
                 body: body.clone(),
@@ -331,9 +340,7 @@ pub const NOTE_FAMILY: &[&str] = &[
 ];
 
 /// Category 1 Actionable types expanding under the `task` / `actionable` family.
-pub const TASK_FAMILY: &[&str] = &[
-    "task", "epic", "learn", "pr", "bug", "feature", "action",
-];
+pub const TASK_FAMILY: &[&str] = &["task", "epic", "learn", "pr", "bug", "feature", "action"];
 
 /// Expand taxonomic type family keyword to constituent types.
 pub fn expand_type_family(token: &str) -> Vec<&'static str> {
@@ -412,7 +419,11 @@ pub fn matches_type_filter(doc_type: Option<&str>, filter: Option<&str>) -> bool
         }
     }
 
-    if pos_exact.is_empty() && pos_expanded.is_empty() && neg_exact.is_empty() && neg_expanded.is_empty() {
+    if pos_exact.is_empty()
+        && pos_expanded.is_empty()
+        && neg_exact.is_empty()
+        && neg_expanded.is_empty()
+    {
         return true;
     }
 
@@ -909,11 +920,8 @@ impl VectorStore {
         }
 
         // Slow path: re-chunk and re-embed.
-        let doc_chunks = crate::chunker::chunk_document(
-            &doc.title,
-            doc.doc_type.as_deref(),
-            &doc.body,
-        );
+        let doc_chunks =
+            crate::chunker::chunk_document(&doc.title, doc.doc_type.as_deref(), &doc.body);
         let chunks: Vec<String> = doc_chunks.iter().map(|c| c.text.clone()).collect();
         let body_chunks: Vec<String> = doc_chunks.into_iter().map(|c| c.body).collect();
         let chunk_refs: Vec<&str> = chunks.iter().map(|s| s.as_str()).collect();
@@ -959,52 +967,20 @@ impl VectorStore {
         Ok(PreparedUpsert::Full(Box::new(entry)))
     }
 
-fn upsert_entry_to_bm25(bm25: &mut crate::bm25::Bm25Index, entry: &DocumentEntry) {
-    bm25.remove(&entry.id);
-    let chunks: &[String] = if !entry.chunk_texts.is_empty() {
-        &entry.chunk_texts
-    } else if !entry.body_chunks.is_empty() {
-        &entry.body_chunks
-    } else {
-        &[]
-    };
+    fn upsert_entry_to_bm25(bm25: &mut crate::bm25::Bm25Index, entry: &DocumentEntry) {
+        bm25.remove(&entry.id);
+        let chunks: &[String] = if !entry.chunk_texts.is_empty() {
+            &entry.chunk_texts
+        } else if !entry.body_chunks.is_empty() {
+            &entry.body_chunks
+        } else {
+            &[]
+        };
 
-    if chunks.is_empty() {
-        bm25.upsert_chunk(
-            &entry.id,
-            0,
-            entry.path.clone(),
-            &entry.title,
-            entry.doc_type.clone(),
-            entry.status.clone(),
-            entry.tags.clone(),
-            entry.modified.clone(),
-            entry.date.clone(),
-            entry.confidence,
-            String::new(),
-            String::new(),
-            None,
-            &[],
-            "",
-        );
-    } else {
-        for (chunk_id, chunk_text) in chunks.iter().enumerate() {
-            let heading = if chunk_text.trim_start().starts_with('#') {
-                chunk_text
-                    .lines()
-                    .next()
-                    .map(|l| l.trim_start_matches('#').trim())
-            } else {
-                None
-            };
-            let snippet = entry
-                .body_chunks
-                .get(chunk_id)
-                .cloned()
-                .unwrap_or_else(|| chunk_text.clone());
+        if chunks.is_empty() {
             bm25.upsert_chunk(
                 &entry.id,
-                chunk_id,
+                0,
                 entry.path.clone(),
                 &entry.title,
                 entry.doc_type.clone(),
@@ -1013,15 +989,47 @@ fn upsert_entry_to_bm25(bm25: &mut crate::bm25::Bm25Index, entry: &DocumentEntry
                 entry.modified.clone(),
                 entry.date.clone(),
                 entry.confidence,
-                snippet,
-                chunk_text.clone(),
-                heading,
+                String::new(),
+                String::new(),
+                None,
                 &[],
-                chunk_text,
+                "",
             );
+        } else {
+            for (chunk_id, chunk_text) in chunks.iter().enumerate() {
+                let heading = if chunk_text.trim_start().starts_with('#') {
+                    chunk_text
+                        .lines()
+                        .next()
+                        .map(|l| l.trim_start_matches('#').trim())
+                } else {
+                    None
+                };
+                let snippet = entry
+                    .body_chunks
+                    .get(chunk_id)
+                    .cloned()
+                    .unwrap_or_else(|| chunk_text.clone());
+                bm25.upsert_chunk(
+                    &entry.id,
+                    chunk_id,
+                    entry.path.clone(),
+                    &entry.title,
+                    entry.doc_type.clone(),
+                    entry.status.clone(),
+                    entry.tags.clone(),
+                    entry.modified.clone(),
+                    entry.date.clone(),
+                    entry.confidence,
+                    snippet,
+                    chunk_text.clone(),
+                    heading,
+                    &[],
+                    chunk_text,
+                );
+            }
         }
     }
-}
 
     /// Synchronize the in-memory BM25 index with all documents currently in the store.
     pub fn sync_bm25_all(&self) {
@@ -1129,6 +1137,23 @@ fn upsert_entry_to_bm25(bm25: &mut crate::bm25::Bm25Index, entry: &DocumentEntry
         self.documents.insert(canonical_id, entry);
     }
 
+    /// Update the relative file path of an existing document entry in place
+    /// without discarding its embeddings. Also refreshes the in-memory stamp
+    /// mapping if present.
+    pub fn update_entry_path(&mut self, id: &str, new_rel_path: &Path) -> bool {
+        if let Some(entry) = self.documents.get_mut(id) {
+            let old_path = std::mem::replace(&mut entry.path, new_rel_path.to_path_buf());
+            let mut stamps = self.stamps.write();
+            if let Some(stamp) = stamps.remove(&old_path) {
+                stamps.insert(new_rel_path.to_path_buf(), stamp);
+            }
+            Self::upsert_entry_to_bm25(&mut self.bm25.write(), entry);
+            true
+        } else {
+            false
+        }
+    }
+
     /// Remove a single document by its ID.
     ///
     /// Returns true if the document was found and removed.
@@ -1195,9 +1220,15 @@ fn upsert_entry_to_bm25(bm25: &mut crate::bm25::Bm25Index, entry: &DocumentEntry
         predicate: Option<&dyn Fn(&GateCandidate) -> bool>,
     ) -> Vec<SearchResult> {
         let clean_query = crate::bm25::strip_wikilink_brackets(query);
-        self.bm25
-            .read()
-            .search(&clean_query, limit, pkb_root, since, before, type_filter, predicate)
+        self.bm25.read().search(
+            &clean_query,
+            limit,
+            pkb_root,
+            since,
+            before,
+            type_filter,
+            predicate,
+        )
     }
 
     /// Hybrid search: Combines vector similarity and BM25 lexical retrieval via TM2C2
@@ -1266,8 +1297,15 @@ fn upsert_entry_to_bm25(bm25: &mut crate::bm25::Bm25Index, entry: &DocumentEntry
             type_filter,
             predicate,
         );
-        let bm25_results =
-            self.search_bm25(&clean_query, fetch_limit_lex, pkb_root, since, before, type_filter, predicate);
+        let bm25_results = self.search_bm25(
+            &clean_query,
+            fetch_limit_lex,
+            pkb_root,
+            since,
+            before,
+            type_filter,
+            predicate,
+        );
 
         let config = crate::ranking::RankingConfig::default();
         let fused = crate::ranking::try_fuse_tm2c2(
@@ -2138,8 +2176,24 @@ mod tests {
         // Wide range includes all dated entries; narrow range must be a strict subset.
         let store = build_dated_store();
         let root = Path::new("/pkb");
-        let wide = store.search(&[1.0, 0.0, 0.0], 10, root, Some("2000-01-01"), None, None, None);
-        let narrow = store.search(&[1.0, 0.0, 0.0], 10, root, Some("2024-01-01"), None, None, None);
+        let wide = store.search(
+            &[1.0, 0.0, 0.0],
+            10,
+            root,
+            Some("2000-01-01"),
+            None,
+            None,
+            None,
+        );
+        let narrow = store.search(
+            &[1.0, 0.0, 0.0],
+            10,
+            root,
+            Some("2024-01-01"),
+            None,
+            None,
+            None,
+        );
         assert!(
             narrow.len() < wide.len(),
             "narrowing since must reduce result count: wide={} narrow={}",
@@ -2949,7 +3003,15 @@ mod tests {
             "System architecture content",
         );
 
-        let res = store.search_bm25("[[kb_295732fd]]", 5, Path::new("/pkb"), None, None, None, None);
+        let res = store.search_bm25(
+            "[[kb_295732fd]]",
+            5,
+            Path::new("/pkb"),
+            None,
+            None,
+            None,
+            None,
+        );
         assert_eq!(res.len(), 1);
         assert_eq!(res[0].id, "kb_295732fd");
         assert!(res[0].score >= crate::bm25::EXACT_ID_BM25_BOOST);
@@ -3003,15 +3065,41 @@ mod tests {
 
         let query_emb = vec![1.0, 0.0, 0.0];
         // Query exact ID without brackets
-        let res = store.search_hybrid("aops_8a2448c0", &query_emb, 5, Path::new("/pkb"), None, None, None, None, None);
+        let res = store.search_hybrid(
+            "aops_8a2448c0",
+            &query_emb,
+            5,
+            Path::new("/pkb"),
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
         assert!(!res.is_empty());
-        assert_eq!(res[0].id, "aops_8a2448c0", "Exact ID query must rank matching document #1 in hybrid search");
+        assert_eq!(
+            res[0].id, "aops_8a2448c0",
+            "Exact ID query must rank matching document #1 in hybrid search"
+        );
         assert!(res[0].score >= crate::ranking::EXACT_ID_HYBRID_BOOST);
 
         // Query with wikilink brackets
-        let res_bracketed = store.search_hybrid("[[aops_8a2448c0]]", &query_emb, 5, Path::new("/pkb"), None, None, None, None, None);
+        let res_bracketed = store.search_hybrid(
+            "[[aops_8a2448c0]]",
+            &query_emb,
+            5,
+            Path::new("/pkb"),
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
         assert!(!res_bracketed.is_empty());
-        assert_eq!(res_bracketed[0].id, "aops_8a2448c0", "Bracketed ID query must rank matching document #1 in hybrid search");
+        assert_eq!(
+            res_bracketed[0].id, "aops_8a2448c0",
+            "Bracketed ID query must rank matching document #1 in hybrid search"
+        );
         assert!(res_bracketed[0].score >= crate::ranking::EXACT_ID_HYBRID_BOOST);
     }
 }

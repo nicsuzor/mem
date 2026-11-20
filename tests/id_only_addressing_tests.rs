@@ -5,8 +5,15 @@ use mem::document_crud::{
     convert_document, create_document, create_memory, create_task, ensure_adhoc_sessions_root,
     DocumentFields, MemoryFields, TaskFields,
 };
+use mem::embeddings::Embedder;
+use mem::graph_store::GraphStore;
+use mem::mcp_server::PkbSearchServer;
+use mem::vectordb::VectorStore;
+use parking_lot::RwLock;
+use serde_json::json;
 use std::collections::HashMap;
 use std::fs;
+use std::sync::Arc;
 use tempfile::TempDir;
 
 #[test]
@@ -172,4 +179,131 @@ fn test_schemas_slug_optional_filename_discouraged_and_id_only_descriptions() {
             "{name} schema must not advertise filename stem resolution: {serialized}"
         );
     }
+}
+
+fn setup_test_server_with_files(files: &[(&str, &str)]) -> (PkbSearchServer, TempDir) {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path();
+    fs::create_dir_all(root.join("notes")).unwrap();
+    fs::create_dir_all(root.join("tasks")).unwrap();
+    for (rel, content) in files {
+        let p = root.join(rel);
+        if let Some(parent) = p.parent() {
+            fs::create_dir_all(parent).unwrap();
+        }
+        fs::write(&p, content).unwrap();
+    }
+    let db_path = root.join("pkb_vectors.bin");
+    let store = Arc::new(RwLock::new(VectorStore::new(3)));
+    let embedder = Arc::new(Embedder::new_dummy());
+    let docs: Vec<_> = mem::pkb::scan_directory(root)
+        .iter()
+        .filter_map(|p| mem::pkb::parse_file_relative(p, root))
+        .collect();
+    let graph = Arc::new(RwLock::new(GraphStore::build(&docs, root)));
+    let server = PkbSearchServer::new(store, embedder, root.to_path_buf(), db_path, graph);
+    (server, tmp)
+}
+
+#[test]
+fn test_crud_rejects_path_stem_and_title_resolves_only_by_id_and_alias() {
+    let (server, _tmp) = setup_test_server_with_files(&[(
+        "notes/note_idonly1_my_unique_slug.md",
+        "---\nid: note_idonly1\ntitle: \"Unique Note Title\"\ntype: note\nalias:\n  - user-reorg-alias\n---\n\nBody text.\n",
+    )]);
+
+    // Canonical ID succeeds
+    let res = server.dispatch_tool_sync(
+        "get_document",
+        &json!({ "id": "note_idonly1", "session_id": "test-sess" }),
+    );
+    assert!(res.is_ok(), "get_document by ID must succeed: {res:?}");
+
+    // Explicit user-reorganisation alias succeeds
+    let res_alias = server.dispatch_tool_sync(
+        "get_document",
+        &json!({ "id": "user-reorg-alias", "session_id": "test-sess" }),
+    );
+    assert!(
+        res_alias.is_ok(),
+        "get_document by explicit user alias must succeed: {res_alias:?}"
+    );
+
+    // Path, filename stem, and title must be rejected
+    for bad_query in [
+        "notes/note_idonly1_my_unique_slug.md",
+        "note_idonly1_my_unique_slug",
+        "Unique Note Title",
+    ] {
+        let err = server.dispatch_tool_sync(
+            "get_document",
+            &json!({ "id": bad_query, "session_id": "test-sess" }),
+        );
+        assert!(
+            err.is_err(),
+            "get_document must reject non-ID query '{bad_query}', got: {err:?}"
+        );
+    }
+}
+
+#[test]
+fn test_convert_document_move_to_subdir_readable_and_writable_by_id() {
+    let (server, _tmp) = setup_test_server_with_files(&[]);
+
+    let created = server
+        .dispatch_tool_sync(
+            "create",
+            &json!({
+                "title": "Movable Note",
+                "type": "note",
+                "id": "note_move847",
+                "body": "Initial body.",
+                "session_id": "test-sess"
+            }),
+        )
+        .unwrap();
+    assert!(!created.is_error.unwrap_or(false));
+
+    let converted = server
+        .dispatch_tool_sync(
+            "convert_document",
+            &json!({
+                "id": "note_move847",
+                "dir": "reviews/sub",
+                "slug": "moved-slug",
+                "title": "Moved Note",
+                "session_id": "test-sess"
+            }),
+        )
+        .unwrap();
+    assert!(!converted.is_error.unwrap_or(false));
+
+    // Immediately read and write by ID (#847)
+    let fetched = server
+        .dispatch_tool_sync(
+            "get_document",
+            &json!({ "id": "note_move847", "session_id": "test-sess" }),
+        )
+        .unwrap();
+    assert!(!fetched.is_error.unwrap_or(false));
+
+    let updated = server
+        .dispatch_tool_sync(
+            "update_body",
+            &json!({
+                "id": "note_move847",
+                "new_body": "Updated after move.",
+                "session_id": "test-sess"
+            }),
+        )
+        .unwrap();
+    assert!(!updated.is_error.unwrap_or(false));
+
+    // Status reports 0 unlinked nodes (#848)
+    let status = server
+        .dispatch_tool_sync("status", &json!({ "session_id": "test-sess" }))
+        .unwrap();
+    let status_text = status.content[0].as_text().unwrap().text.clone();
+    let status_json: serde_json::Value = serde_json::from_str(&status_text).unwrap();
+    assert_eq!(status_json["index"]["unlinked_node_count"], 0);
 }

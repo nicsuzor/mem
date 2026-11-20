@@ -868,9 +868,25 @@ impl PkbSearchServer {
     }
 
     pub(crate) fn handle_status(&self, _args: &JsonValue) -> Result<CallToolResult, McpError> {
-        let node_count = self.graph.read().node_count();
+        if !self.external_lock_held() {
+            self.ensure_graph_fresh();
+        }
+        let (node_count, unlinked_node_count) = {
+            let graph = self.graph.read();
+            let unlinked = graph
+                .nodes_map()
+                .values()
+                .filter(|n| {
+                    !n.path.as_os_str().is_empty() && !self.pkb_root.join(&n.path).is_file()
+                })
+                .count();
+            (graph.node_count(), unlinked)
+        };
         let (disk_file_count, indexed_file_count) = self.index_disk_counts();
-        let vector_count = self.store.read().len();
+        let (vector_count, missing_embeddings_count) = {
+            let store = self.store.read();
+            (store.len(), store.count_docs_missing_embeddings())
+        };
         let last_reindex = self.last_reindex.read().clone();
         let embed_pending_count = self.embed_pending.lock().len();
         let deferred_paths_count = self.deferred_paths.lock().len();
@@ -883,7 +899,7 @@ impl PkbSearchServer {
             || self.graph_rebuild_dirty.load(Ordering::Relaxed);
         let stale_report = crate::check_index_staleness_with_stats(&self.pkb_root, &self.store);
         let stale_docs = stale_report.stale_count;
-        let is_fresh = stale_docs == 0;
+        let is_fresh = stale_docs == 0 && unlinked_node_count == 0 && missing_embeddings_count == 0;
         let ghost_count = node_count.saturating_sub(indexed_file_count);
         let unparseable_count = disk_file_count.saturating_sub(indexed_file_count);
 
@@ -896,10 +912,12 @@ impl PkbSearchServer {
                 "document_count": indexed_file_count,
                 "node_count": node_count,
                 "ghost_node_count": ghost_count,
+                "unlinked_node_count": unlinked_node_count,
                 "disk_file_count": disk_file_count,
                 "indexed_file_count": indexed_file_count,
                 "unparseable_file_count": unparseable_count,
                 "vector_count": vector_count,
+                "missing_embeddings_count": missing_embeddings_count,
                 "last_reindex": {
                     "timestamp": last_reindex.timestamp,
                     "outcome": last_reindex.outcome,
