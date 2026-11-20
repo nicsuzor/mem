@@ -742,6 +742,7 @@ mod tests {
             target_node_id: Some("task-y".to_string()),
             source_element_id: Some("elem-x".to_string()),
             target_element_id: Some("elem-y".to_string()),
+            bidirectional: false,
             edge_type: EdgeType::ContributesTo,
             label: None,
             custom_data: None,

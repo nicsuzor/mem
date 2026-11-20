@@ -1729,13 +1729,42 @@ fn rotated_rect_contains(outer: &LogicalNode, inner: &LogicalNode) -> bool {
     })
 }
 
+fn has_arrowhead(e: &Value, field: &str) -> bool {
+    matches!(
+        e.get(field).and_then(|v| v.as_str()),
+        Some(s) if !s.is_empty() && s != "none"
+    )
+}
+
+/// Derive logical edge endpoints and bidirectionality from `startArrowhead`/`endArrowhead`.
+/// Arrowheads, not bindings, determine direction:
+/// - both arrowheads -> `(start, end, true)` (bidirectional)
+/// - start-only arrowhead -> `(end, start, false)` (points at binding source)
+/// - end-only or neither -> `(start, end, false)`
+fn arrow_direction<'a>(e: &'a Value, start: &'a str, end: &'a str) -> (&'a str, &'a str, bool) {
+    let has_start = has_arrowhead(e, "startArrowhead");
+    let has_end = has_arrowhead(e, "endArrowhead");
+    match (has_start, has_end) {
+        (true, true) => (start, end, true),
+        (true, false) => (end, start, false),
+        (false, true) | (false, false) => (start, end, false),
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct LogicalEdge {
     pub id: String,
     pub from_id: String,
     pub to_id: String,
+    pub bidirectional: bool,
     pub label: String,
     pub text_id: Option<String>,
+}
+
+impl LogicalEdge {
+    pub fn arrow_op(&self) -> &'static str {
+        if self.bidirectional { "<->" } else { "->" }
+    }
 }
 
 pub fn get_logical_nodes_and_edges(doc: &Value) -> (Vec<LogicalNode>, Vec<LogicalEdge>) {
@@ -1794,10 +1823,13 @@ pub fn get_logical_nodes_and_edges(doc: &Value) -> (Vec<LogicalNode>, Vec<Logica
                 }
             }
 
+            let (from_id, to_id, bidirectional) = arrow_direction(e, &s, &t);
+
             edges.push(LogicalEdge {
                 id,
-                from_id: s,
-                to_id: t,
+                from_id: from_id.to_string(),
+                to_id: to_id.to_string(),
+                bidirectional,
                 label,
                 text_id,
             });
@@ -3559,24 +3591,7 @@ pub fn cmd_map(doc: &Value) {
         }
 
         if e_type == "arrow" {
-            let s = e
-                .get("startBinding")
-                .and_then(|v| v.get("elementId"))
-                .and_then(|v| v.as_str())
-                .filter(|s| !s.is_empty())
-                .unwrap_or("-");
-            let t = e
-                .get("endBinding")
-                .and_then(|v| v.get("elementId"))
-                .and_then(|v| v.as_str())
-                .filter(|s| !s.is_empty())
-                .unwrap_or("-");
-            let lbl = label_of(e, &texts);
-            if !lbl.is_empty() {
-                println!("{id}\tarrow\t{s} -> {t}\t{lbl}");
-            } else {
-                println!("{id}\tarrow\t{s} -> {t}");
-            }
+            println!("{}", format_map_arrow_line(e, &texts));
         } else if e_type == "text" {
             let x = e.get("x").and_then(|v| v.as_f64()).unwrap_or(0.0);
             let y = e.get("y").and_then(|v| v.as_f64()).unwrap_or(0.0);
@@ -3651,15 +3666,44 @@ pub fn cmd_nodes_label_only(doc: &Value) {
     }
 }
 
+fn format_map_arrow_line(e: &Value, texts: &HashMap<&str, &Value>) -> String {
+    let id = e.get("id").and_then(|v| v.as_str()).unwrap_or("");
+    let s = e
+        .get("startBinding")
+        .and_then(|v| v.get("elementId"))
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .unwrap_or("-");
+    let t = e
+        .get("endBinding")
+        .and_then(|v| v.get("elementId"))
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .unwrap_or("-");
+    let (from_id, to_id, bidirectional) = arrow_direction(e, s, t);
+    let op = if bidirectional { "<->" } else { "->" };
+    let lbl = label_of(e, texts);
+    if !lbl.is_empty() {
+        format!("{id}\tarrow\t{from_id} {op} {to_id}\t{lbl}")
+    } else {
+        format!("{id}\tarrow\t{from_id} {op} {to_id}")
+    }
+}
+
+fn format_edge_line(e: &LogicalEdge) -> String {
+    let lbl = e.label.replace('\n', " / ");
+    let op = e.arrow_op();
+    if !lbl.is_empty() {
+        format!("{}\t{} {} {}\t{}", e.id, e.from_id, op, e.to_id, lbl)
+    } else {
+        format!("{}\t{} {} {}", e.id, e.from_id, op, e.to_id)
+    }
+}
+
 pub fn cmd_edges(doc: &Value) {
     let (_, edges) = get_logical_nodes_and_edges(doc);
     for e in edges {
-        let lbl = e.label.replace('\n', " / ");
-        if !lbl.is_empty() {
-            println!("{}\t{} -> {}\t{}", e.id, e.from_id, e.to_id, lbl);
-        } else {
-            println!("{}\t{} -> {}", e.id, e.from_id, e.to_id);
-        }
+        println!("{}", format_edge_line(&e));
     }
 }
 
@@ -3678,12 +3722,12 @@ pub fn cmd_inspect(doc: &Value, id: &str) {
     if let Some(n) = nodes.iter().find(|n| n.id == id) {
         let inbound: Vec<&str> = edges
             .iter()
-            .filter(|e| e.to_id == id)
+            .filter(|e| e.to_id == id || (e.bidirectional && e.from_id == id))
             .map(|e| e.id.as_str())
             .collect();
         let outbound: Vec<&str> = edges
             .iter()
-            .filter(|e| e.from_id == id)
+            .filter(|e| e.from_id == id || (e.bidirectional && e.to_id == id))
             .map(|e| e.id.as_str())
             .collect();
 
@@ -3699,6 +3743,9 @@ pub fn cmd_inspect(doc: &Value, id: &str) {
         println!("type: arrow");
         println!("from: {}", edge.from_id);
         println!("to: {}", edge.to_id);
+        if edge.bidirectional {
+            println!("bidirectional: true");
+        }
         println!("label: {}", edge.label);
     } else {
         let x = e.get("x").and_then(|v| v.as_f64()).unwrap_or(0.0);
@@ -3805,6 +3852,7 @@ pub fn cmd_check(doc: &Value) -> Result<String, Vec<String>> {
     }
 
     let mut fails: Vec<String> = Vec::new();
+    let mut warnings: Vec<String> = Vec::new();
 
     // 1. Duplicate IDs
     let mut id_counts: Vec<(&str, usize)> = Vec::new();
@@ -3915,6 +3963,18 @@ pub fn cmd_check(doc: &Value) -> Result<String, Vec<String>> {
                     "arrow {id} is half-bound: startBinding={s_ref}, endBinding={e_ref}"
                 ));
             }
+            if has_arrowhead(e, "startArrowhead") && !has_arrowhead(e, "endArrowhead") {
+                let id = e.get("id").and_then(|v| v.as_str()).unwrap_or("");
+                let sa = e
+                    .get("startArrowhead")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let s_ref = s_id.unwrap_or("none");
+                let e_ref = e_id.unwrap_or("none");
+                warnings.push(format!(
+                    "WARN: arrow {id} arrowhead/binding disagreement: startArrowhead={sa}, endArrowhead=none — points at startBinding ({s_ref}) opposite binding order ({s_ref} -> {e_ref})"
+                ));
+            }
         }
     }
 
@@ -4012,10 +4072,17 @@ pub fn cmd_check(doc: &Value) -> Result<String, Vec<String>> {
 
     if !fails.is_empty() {
         Err(fails)
-    } else {
+    } else if warnings.is_empty() {
         Ok(format!(
             "OK: {} elements, ids unique, index-sorted, all bindings resolve",
             els.len()
+        ))
+    } else {
+        Ok(format!(
+            "OK: {} elements, ids unique, index-sorted, all bindings resolve ({} warning(s))\n  {}",
+            els.len(),
+            warnings.len(),
+            warnings.join("\n  ")
         ))
     }
 }
@@ -4374,8 +4441,8 @@ pub fn cmd_struct_diff(doc1: &Value, doc2: &Value) -> Vec<String> {
                 String::new()
             };
             diffs.push(format!(
-                "+ edge [{}] {} -> {}{}",
-                e2.id, e2.from_id, e2.to_id, lbl_str
+                "+ edge [{}] {} {} {}{}",
+                e2.id, e2.from_id, e2.arrow_op(), e2.to_id, lbl_str
             ));
         }
     }
@@ -4389,8 +4456,8 @@ pub fn cmd_struct_diff(doc1: &Value, doc2: &Value) -> Vec<String> {
                 String::new()
             };
             diffs.push(format!(
-                "- edge [{}] {} -> {}{}",
-                e1.id, e1.from_id, e1.to_id, lbl_str
+                "- edge [{}] {} {} {}{}",
+                e1.id, e1.from_id, e1.arrow_op(), e1.to_id, lbl_str
             ));
         }
     }
@@ -4398,10 +4465,16 @@ pub fn cmd_struct_diff(doc1: &Value, doc2: &Value) -> Vec<String> {
     // Modified edges
     for e1 in &edges1 {
         if let Some(e2) = e2_map.get(e1.id.as_str()) {
-            if e1.from_id != e2.from_id || e1.to_id != e2.to_id {
+            if e1.from_id != e2.from_id || e1.to_id != e2.to_id || e1.bidirectional != e2.bidirectional {
                 diffs.push(format!(
-                    "~ edge [{}] retargeted: {}->{} -> {}->{}",
-                    e1.id, e1.from_id, e1.to_id, e2.from_id, e2.to_id
+                    "~ edge [{}] retargeted: {}{}{} -> {}{}{}",
+                    e1.id,
+                    e1.from_id,
+                    e1.arrow_op(),
+                    e1.to_id,
+                    e2.from_id,
+                    e2.arrow_op(),
+                    e2.to_id
                 ));
             }
             if e1.label != e2.label {
@@ -4934,13 +5007,15 @@ pub fn cmd_describe(doc: &Value) {
     for e in &elements {
         if e.get("type").and_then(|v| v.as_str()) == Some("arrow") {
             let id = e.get("id").and_then(|v| v.as_str()).unwrap_or("");
-            let from = e.get("startBinding").and_then(|b| b.get("elementId")).and_then(|v| v.as_str()).unwrap_or("?");
-            let to = e.get("endBinding").and_then(|b| b.get("elementId")).and_then(|v| v.as_str()).unwrap_or("?");
+            let s = e.get("startBinding").and_then(|b| b.get("elementId")).and_then(|v| v.as_str()).unwrap_or("?");
+            let t = e.get("endBinding").and_then(|b| b.get("elementId")).and_then(|v| v.as_str()).unwrap_or("?");
+            let (from, to, bidirectional) = arrow_direction(e, s, t);
+            let op = if bidirectional { "<-->" } else { "-->" };
             let label = label_of(e, &texts);
             if label.is_empty() {
-                connection_descs.push(format!("  {} --> {} (arrow: {})", from, to, id));
+                connection_descs.push(format!("  {} {} {} (arrow: {})", from, op, to, id));
             } else {
-                connection_descs.push(format!("  {} --> {} (arrow: {}, label: {:?})", from, to, id, label));
+                connection_descs.push(format!("  {} {} {} (arrow: {}, label: {:?})", from, op, to, id, label));
             }
         }
     }
@@ -7799,5 +7874,83 @@ mod tests {
         // The text should wrap into at least 4 lines
         let tspan_count = svg_long.matches("<tspan").count();
         assert!(tspan_count >= 4, "Expected >= 4 tspans, found {tspan_count} in {svg_long}");
+    }
+
+    #[test]
+    fn test_map_and_edges_arrowhead_direction() {
+        let doc = json!({
+            "elements": [
+                { "id": "r1", "type": "rectangle", "index": "a0" },
+                { "id": "r2", "type": "rectangle", "index": "a1" },
+                {
+                    "id": "a_bi",
+                    "type": "arrow",
+                    "index": "a2",
+                    "startBinding": { "elementId": "r1" },
+                    "endBinding": { "elementId": "r2" },
+                    "startArrowhead": "arrow",
+                    "endArrowhead": "arrow"
+                },
+                {
+                    "id": "a_start",
+                    "type": "arrow",
+                    "index": "a3",
+                    "startBinding": { "elementId": "r1" },
+                    "endBinding": { "elementId": "r2" },
+                    "startArrowhead": "arrow",
+                    "endArrowhead": null
+                },
+                {
+                    "id": "a_end",
+                    "type": "arrow",
+                    "index": "a4",
+                    "startBinding": { "elementId": "r1" },
+                    "endBinding": { "elementId": "r2" },
+                    "startArrowhead": null,
+                    "endArrowhead": "arrow"
+                }
+            ]
+        });
+
+        let texts = HashMap::new();
+        let els = live(&doc);
+        let map_lines: Vec<String> = els
+            .iter()
+            .filter(|e| e.get("type").and_then(|v| v.as_str()) == Some("arrow"))
+            .map(|e| format_map_arrow_line(e, &texts))
+            .collect();
+        assert_eq!(map_lines[0], "a_bi\tarrow\tr1 <-> r2");
+        assert_eq!(map_lines[1], "a_start\tarrow\tr2 -> r1");
+        assert_eq!(map_lines[2], "a_end\tarrow\tr1 -> r2");
+
+        let (_, edges) = get_logical_nodes_and_edges(&doc);
+        let edge_lines: Vec<String> = edges.iter().map(format_edge_line).collect();
+        assert_eq!(edge_lines[0], "a_bi\tr1 <-> r2");
+        assert_eq!(edge_lines[1], "a_start\tr2 -> r1");
+        assert_eq!(edge_lines[2], "a_end\tr1 -> r2");
+    }
+
+    #[test]
+    fn test_check_reports_arrowhead_binding_disagreement() {
+        let doc = json!({
+            "elements": [
+                { "id": "r1", "type": "rectangle", "index": "a0" },
+                { "id": "r2", "type": "rectangle", "index": "a1" },
+                {
+                    "id": "a_start",
+                    "type": "arrow",
+                    "index": "a2",
+                    "startBinding": { "elementId": "r1" },
+                    "endBinding": { "elementId": "r2" },
+                    "startArrowhead": "arrow",
+                    "endArrowhead": null
+                }
+            ]
+        });
+        let msg = cmd_check(&doc).expect("start-only arrowhead should warn, not fail");
+        assert!(
+            msg.contains("a_start") && msg.contains("arrowhead/binding disagreement"),
+            "unexpected check output: {msg}"
+        );
     }
 }
