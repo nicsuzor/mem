@@ -3838,3 +3838,31 @@ fn test_output_schema_for_update_body_and_edit_body_declares_diff() {
         "edit alias output schema must declare diff property as string: {edit_val:?}"
     );
 }
+
+#[test]
+fn test_update_task_schema_advertises_no_field_the_validator_rejects_by_name() {
+    // Class guard (#859): a field listed in the advertised update_task schema
+    // must never be one `validate_update_field` rejects outright. Reserved
+    // computed keywords (blocked, superseded_by) and removed ones must not
+    // be advertised.
+    let tools = PkbSearchServer::get_all_tools();
+    let tool = tools
+        .iter()
+        .find(|t| t.name.as_ref() == "update_task")
+        .expect("update_task tool should exist");
+    let schema = serde_json::Value::Object((*tool.input_schema).clone());
+    let props = schema["properties"]
+        .as_object()
+        .expect("properties must exist");
+    for key in props.keys() {
+        for probe in [json!("x"), json!(["x"]), json!(true)] {
+            if let Err(msg) = crate::document_crud::validate_update_field(key, &probe) {
+                assert!(
+                    !msg.contains("reserved computed keyword")
+                        && !msg.contains("no longer supported"),
+                    "update_task schema advertises '{key}' but the validator rejects it: {msg}"
+                );
+            }
+        }
+    }
+}
