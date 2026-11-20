@@ -5,12 +5,8 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.6.0](https://github.com/nicsuzor/mem/compare/mem-v0.5.9...mem-v0.6.0) (2026-11-20)
+## [0.5.10](https://github.com/nicsuzor/mem/compare/mem-v0.5.9...mem-v0.5.10) (2026-11-20)
 
-
-### ⚠ BREAKING CHANGES
-
-* **otel:** build CF Access OTLP headers from CF_ACCESS_CLIENT_ID/_SECRET ([#860](https://github.com/nicsuzor/mem/issues/860))
 
 ### Features
 
