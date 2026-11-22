@@ -109,8 +109,7 @@ fn test_create_task_severity_coercion() {
             "slug": "target-with-sev",
             "type": "target",
             "severity": 3,
-            "project": "proj-alpha",
-            "parent": "proj-alpha"
+            "project": "proj-alpha"
         }))
         .unwrap();
     let target_text = res_target

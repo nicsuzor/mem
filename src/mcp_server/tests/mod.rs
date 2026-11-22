@@ -37,6 +37,7 @@ mod write_reply_type_tests;
 mod dependency_removal_tests;
 mod tool_efficiency_tests;
 mod prompt_tests;
+mod non_task_child_tests;
 
 
 pub(crate) fn make_doc(

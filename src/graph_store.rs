@@ -1608,6 +1608,37 @@ impl GraphStore {
         Ok(())
     }
 
+    /// Reject an attempt to make a non-task node a child of a task node.
+    /// A task's children are only its direct, separate steps, which must be tasks.
+    ///
+    /// If `parent_id` does not resolve, returns `Ok(())` — the caller's own
+    /// existence check is responsible for reporting a missing parent.
+    pub fn reject_non_task_child_of_task(
+        &self,
+        parent_id: &str,
+        child_type: &str,
+    ) -> Result<(), String> {
+        if crate::graph::TASK_TYPES.contains(&child_type) {
+            return Ok(());
+        }
+        if let Some(parent_node) = self.resolve(parent_id) {
+            let parent_is_task = parent_node
+                .node_type
+                .as_deref()
+                .map(|t| crate::graph::TASK_TYPES.contains(&t))
+                .unwrap_or(false);
+            if parent_is_task {
+                return Err(format!(
+                    "Cannot parent `{}` node under task `{}`: a task's children must be tasks \
+                     (its direct, separate steps). Link non-task nodes via `links` or wikilinks \
+                     instead of `parent`.",
+                    child_type, parent_node.id
+                ));
+            }
+        }
+        Ok(())
+    }
+
     // -----------------------------------------------------------------------
     // Parent-chain helpers
     // -----------------------------------------------------------------------

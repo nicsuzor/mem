@@ -850,6 +850,25 @@ impl PkbSearchServer {
                 root_allowed.join(", "),
             ));
         }
+        if let Some(ref parent_id) = fields.parent {
+            if !parent_id.trim().is_empty() {
+                let graph = self.graph.read();
+                if let Err(msg) = graph.reject_target_as_parent(parent_id) {
+                    return Err(McpError {
+                        code: ErrorCode::INVALID_PARAMS,
+                        message: Cow::from(msg),
+                        data: None,
+                    });
+                }
+                if let Err(msg) = graph.reject_non_task_child_of_task(parent_id, doc_type) {
+                    return Err(McpError {
+                        code: ErrorCode::INVALID_PARAMS,
+                        message: Cow::from(msg),
+                        data: None,
+                    });
+                }
+            }
+        }
 
         let t_total = std::time::Instant::now();
 
@@ -1683,19 +1702,30 @@ impl PkbSearchServer {
         let dir = args.get("dir").and_then(|v| v.as_str());
         let status = args.get("status").and_then(|v| v.as_str());
 
-        let (abs_path, node_id, label) = {
+        let (abs_path, node_id, label, node_parent) = {
             let graph = self.graph.read();
             let node = graph.resolve(id).ok_or_else(|| McpError {
                 code: ErrorCode::INVALID_PARAMS,
                 message: Cow::from(format!("Document not found: {id}")),
                 data: None,
             })?;
+            if let (Some(t), Some(ref parent_id)) = (new_type, &node.parent) {
+                if let Err(msg) = graph.reject_non_task_child_of_task(parent_id, t) {
+                    return Err(McpError {
+                        code: ErrorCode::INVALID_PARAMS,
+                        message: Cow::from(msg),
+                        data: None,
+                    });
+                }
+            }
             (
                 self.abs_path_for_node(node, Some(&graph))?,
                 node.id.clone(),
                 node.label.clone(),
+                node.parent.clone(),
             )
         };
+        let _ = node_parent;
 
         let result = crate::document_crud::convert_document(
             &self.pkb_root,

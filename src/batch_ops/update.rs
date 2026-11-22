@@ -135,6 +135,35 @@ pub fn batch_update(
             }
         }
 
+        if updates_map.contains_key("parent") || updates_map.contains_key("type") {
+            let effective_parent = updates_map
+                .get("parent")
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .or_else(|| {
+                    if updates_map.contains_key("parent") {
+                        None
+                    } else {
+                        node.parent.as_deref()
+                    }
+                });
+            let effective_type = updates_map
+                .get("type")
+                .and_then(|v| v.as_str())
+                .or(node.node_type.as_deref())
+                .unwrap_or("task");
+            if let Some(p) = effective_parent {
+                if let Err(msg) = graph.reject_non_task_child_of_task(p, effective_type) {
+                    summary.errors.push(TaskError {
+                        id: id.clone(),
+                        error: msg,
+                    });
+                    continue;
+                }
+            }
+        }
+
         let file_path = if node.path.is_absolute() {
             node.path.clone()
         } else {
