@@ -493,6 +493,13 @@ impl PkbSearchServer {
                                 data: None,
                             });
                         }
+                        if let Err(msg) = graph.reject_non_task_child_of_task(parent_id, task_type_str) {
+                            return Err(McpError {
+                                code: ErrorCode::INVALID_PARAMS,
+                                message: Cow::from(msg),
+                                data: None,
+                            });
+                        }
                         // Reject closed parents unless caller opts in with force=true.
                         let parent_status = parent_node.status.as_deref().unwrap_or("");
                         if crate::graph::is_closed_for_hierarchy(parent_node.status.as_deref())
@@ -2494,8 +2501,31 @@ impl PkbSearchServer {
                         data: None,
                     });
                 }
+                let effective_type = updates
+                    .get("type")
+                    .and_then(|v| v.as_str())
+                    .or(node_type.as_deref())
+                    .unwrap_or("task");
+                if let Err(msg) = graph.reject_non_task_child_of_task(new_parent, effective_type) {
+                    return Err(McpError {
+                        code: ErrorCode::INVALID_PARAMS,
+                        message: Cow::from(msg),
+                        data: None,
+                    });
+                }
                 // 3. Cycle check (pre-existing)
                 if let Err(msg) = graph.would_create_parent_cycle(id, new_parent) {
+                    return Err(McpError {
+                        code: ErrorCode::INVALID_PARAMS,
+                        message: Cow::from(msg),
+                        data: None,
+                    });
+                }
+            }
+        } else if let Some(new_type) = updates.get("type").and_then(|v| v.as_str()) {
+            let graph = self.graph.read();
+            if let Some(existing_parent) = graph.resolve(id).and_then(|n| n.parent.as_deref()) {
+                if let Err(msg) = graph.reject_non_task_child_of_task(existing_parent, new_type) {
                     return Err(McpError {
                         code: ErrorCode::INVALID_PARAMS,
                         message: Cow::from(msg),

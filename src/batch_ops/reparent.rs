@@ -99,6 +99,16 @@ pub fn batch_reparent(
             continue;
         }
 
+        // Reject parenting non-task nodes under a task
+        let child_type = node.node_type.as_deref().unwrap_or("task");
+        if let Err(msg) = graph.reject_non_task_child_of_task(&canonical_parent_id, child_type) {
+            summary.errors.push(TaskError {
+                id: id.clone(),
+                error: msg,
+            });
+            continue;
+        }
+
         // Reject cycle creation
         if let Err(msg) = graph.would_create_hard_cycle(id, &canonical_parent_id) {
             summary.errors.push(TaskError {
