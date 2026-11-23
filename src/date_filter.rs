@@ -160,6 +160,34 @@ impl DateFilter {
         Ok(DateFilter { since, before })
     }
 
+    pub fn parse_since_arg(
+        args: &serde_json::Value,
+        param: &'static str,
+    ) -> Result<Option<DateTime<Utc>>, rmcp::ErrorData> {
+        let Some(val) = args.get(param) else {
+            return Ok(None);
+        };
+        if val.is_null() {
+            return Ok(None);
+        }
+        let s = val.as_str().ok_or_else(|| rmcp::ErrorData {
+            code: rmcp::model::ErrorCode::INVALID_PARAMS,
+            message: std::borrow::Cow::from(format!(
+                "Invalid '{param}' parameter: expected string, found {val}"
+            )),
+            data: None,
+        })?;
+        let bound = parse_bound_str(s, param).map_err(|e| rmcp::ErrorData {
+            code: rmcp::model::ErrorCode::INVALID_PARAMS,
+            message: std::borrow::Cow::from(e.to_string()),
+            data: None,
+        })?;
+        Ok(Some(match bound {
+            ParsedBound::Date(d) => d.and_hms_opt(0, 0, 0).unwrap().and_utc(),
+            ParsedBound::Timestamp(ts) => ts,
+        }))
+    }
+
     pub fn from_args(args: &serde_json::Value) -> Result<Self, rmcp::ErrorData> {
         let extract = |param: &'static str| -> Result<Option<&str>, rmcp::ErrorData> {
             let Some(val) = args.get(param) else {

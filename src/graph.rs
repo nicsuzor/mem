@@ -1056,6 +1056,22 @@ pub struct GraphNode {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub modified: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub released_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub origin_agent: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub handled_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub handled_by: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pr_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub release_summary: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub assignee: Option<String>,
     /// Who is waiting on this task (e.g. "Jacob", "funding-committee").
     /// Informational field; not a ranking input.
@@ -2437,6 +2453,23 @@ impl GraphNode {
         let created = fm
             .as_ref()
             .and_then(|f| f.get("created").and_then(|v| v.as_str()).map(String::from));
+        let fm_nonempty_str = |key: &str| -> Option<String> {
+            fm.as_ref().and_then(|f| {
+                f.get(key)
+                    .and_then(|v| v.as_str())
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(String::from)
+            })
+        };
+        let released_at = fm_nonempty_str("released_at");
+        let origin_agent = fm_nonempty_str("origin_agent");
+        let handled_at = fm_nonempty_str("handled_at");
+        let handled_by = fm_nonempty_str("handled_by");
+        let pr_url = fm_nonempty_str("pr_url");
+        let branch = fm_nonempty_str("branch");
+        let release_summary = fm_nonempty_str("release_summary");
+        let reason = fm_nonempty_str("reason");
         let depth = fm
             .as_ref()
             .and_then(|f| f.get("depth").and_then(|v| v.as_i64()).map(|v| v as i32))
@@ -3210,6 +3243,14 @@ impl GraphNode {
             due,
             created,
             modified: doc.modified.clone(),
+            released_at,
+            origin_agent,
+            handled_at,
+            handled_by,
+            pr_url,
+            branch,
+            release_summary,
+            reason,
             assignee,
             stakeholder,
             waiting_since,
