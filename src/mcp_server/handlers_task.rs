@@ -184,6 +184,7 @@ impl PkbSearchServer {
                 "depends_on",
                 "soft_depends_on",
                 "assignee",
+                "origin_agent",
                 "complexity",
                 "effort",
                 "consequence",
@@ -328,6 +329,12 @@ impl PkbSearchServer {
             assignee: args
                 .get("assignee")
                 .and_then(|v| v.as_str())
+                .map(String::from),
+            origin_agent: args
+                .get("origin_agent")
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
                 .map(String::from),
             complexity: args
                 .get("complexity")
@@ -1543,6 +1550,21 @@ impl PkbSearchServer {
         let limit =
             (args.get("limit").and_then(|v| v.as_u64()).unwrap_or(50) as usize).min(MAX_RESULTS);
         let date_filter = crate::date_filter::DateFilter::from_args(args)?;
+        let released_since =
+            crate::date_filter::DateFilter::parse_since_arg(args, "released_since")?;
+        let unhandled_only = match args.get("unhandled") {
+            None | Some(JsonValue::Null) => false,
+            Some(JsonValue::Bool(b)) => *b,
+            Some(other) => {
+                return Err(McpError {
+                    code: ErrorCode::INVALID_PARAMS,
+                    message: Cow::from(format!(
+                        "Invalid 'unhandled' parameter: expected boolean, found {other}"
+                    )),
+                    data: None,
+                });
+            }
+        };
         let include_subtasks = args
             .get("include_subtasks")
             .and_then(|v| v.as_bool())
@@ -1550,13 +1572,13 @@ impl PkbSearchServer {
         // By default hide done/cancelled tasks — callers looking for work don't
         // want completed items cluttering the list. Matches task_search default.
         // Pass `include_done=true` to opt back in. When an explicit `status`
-        // filter is provided the caller already knows what they want, so this
-        // gate is skipped (e.g. status="done" still works).
-        let include_done = args
+        // filter is provided (or a release-feed filter such as `released_since`
+        // or `unhandled: true` without an explicit `include_done: false`), this
+        // gate is skipped so released terminal tasks are returned.
+        let explicit_include_done = args
             .get("include_done")
             .and_then(|v| v.as_bool())
-            .or_else(|| args.get("include_closed").and_then(|v| v.as_bool()))
-            .unwrap_or(false);
+            .or_else(|| args.get("include_closed").and_then(|v| v.as_bool()));
         let format = args.get("format").and_then(|v| v.as_str()).unwrap_or(
             if args.get("fields").is_some() || args.get("budget_ms").is_some() {
                 "json"
@@ -1612,7 +1634,10 @@ impl PkbSearchServer {
                 })
             })
             .unwrap_or(false);
-        let query_include_done = include_done || is_explicit_closed_status;
+        let query_include_done = match explicit_include_done {
+            Some(b) => b || is_explicit_closed_status,
+            None => is_explicit_closed_status || released_since.is_some() || unhandled_only,
+        };
 
         let base_nodes: Vec<&crate::graph::GraphNode> = if doc_type.is_some() {
             graph.all_nodes_with_id(query_include_done)
@@ -1630,7 +1655,7 @@ impl PkbSearchServer {
             });
         }
 
-        if !include_done && !is_explicit_closed_status {
+        if !query_include_done {
             tasks.retain(|t| {
                 t.status
                     .as_deref()
@@ -1739,6 +1764,21 @@ impl PkbSearchServer {
         // are excluded when any date filter is active.
         if date_filter.is_active() {
             tasks.retain(|t| date_filter.matches(t.modified.as_deref()));
+        }
+
+        // Release-feed filters: `released_since` matches `released_at >= bound`
+        // (excluding unreleased or unparseable tasks); `unhandled: true` retains
+        // only released tasks that have not yet been marked `handled_at`.
+        if let Some(since_ts) = released_since {
+            tasks.retain(|t| {
+                t.released_at
+                    .as_deref()
+                    .and_then(crate::date_filter::parse_modified_instant)
+                    .is_some_and(|ts| ts >= since_ts)
+            });
+        }
+        if unhandled_only {
+            tasks.retain(|t| t.released_at.is_some() && t.handled_at.is_none());
         }
 
         let explicitly_wants_target = doc_type
@@ -1915,7 +1955,16 @@ impl PkbSearchServer {
                     "intent": t.intent.unwrap_or(4),
                     "project": t.project,
                     "assignee": t.assignee,
+                    "origin_agent": t.origin_agent,
+                    "created": t.created,
                     "modified": t.modified,
+                    "released_at": t.released_at,
+                    "handled_at": t.handled_at,
+                    "handled_by": t.handled_by,
+                    "pr_url": t.pr_url,
+                    "branch": t.branch,
+                    "release_summary": t.release_summary,
+                    "reason": t.reason,
                     "tags": t.tags,
                     "parent": t.parent,
                     "depends_on": t.depends_on,
@@ -2162,60 +2211,151 @@ impl PkbSearchServer {
             }
             out
         } else {
-            // Default view: standard table
-            let mut out = if has_superseded_by.is_some() {
-                format!(
-                    "**{total} tasks** (showing {})\n\n| # | ID | Pri | Status | Superseded By | Title |\n|---|---|---|---|---|---|\n",
-                    tasks.len()
-                )
-            } else {
-                format!(
-                    "**{total} tasks** (showing {})\n\n| # | ID | Pri | Status | Title |\n|---|---|---|---|---|\n",
-                    tasks.len()
-                )
+            // Default view: standard table (or release-feed table when querying releases)
+            let is_release_feed = task_sort == crate::display_rank::TaskSort::ReleasedAtDesc
+                || released_since.is_some()
+                || unhandled_only;
+            let esc_cell = |s: &str| -> String {
+                s.replace('\r', "")
+                    .replace('\n', " ")
+                    .replace('|', "\\|")
+                    .trim()
+                    .to_string()
             };
-            for (i, t) in tasks.iter().enumerate() {
-                let id = t.task_id.as_deref().unwrap_or(&t.id);
-                let pri = t.intent.unwrap_or(4);
-                let status_str = t.status.as_deref().unwrap_or("-");
-                if has_superseded_by.is_some() {
-                    let superseded_str = if t.superseded_by.is_empty() {
-                        "-".to_string()
-                    } else {
-                        t.superseded_by.join(", ")
+            if is_release_feed {
+                let mut out = format!(
+                    "**{total} tasks** (showing {})\n\n| # | ID | Status | Released At | Origin | Handled | PR / Branch | Summary / Reason | Title |\n|---|---|---|---|---|---|---|---|---|\n",
+                    tasks.len()
+                );
+                for (i, t) in tasks.iter().enumerate() {
+                    let id = t.task_id.as_deref().unwrap_or(&t.id);
+                    let status_str = t.status.as_deref().unwrap_or("-");
+                    let released_str = t.released_at.as_deref().unwrap_or("-");
+                    let origin_str = t
+                        .origin_agent
+                        .as_deref()
+                        .map(&esc_cell)
+                        .unwrap_or_else(|| "-".to_string());
+                    let handled_str = match (t.handled_at.as_deref(), t.handled_by.as_deref()) {
+                        (Some(at), Some(by)) => format!("{} ({})", esc_cell(at), esc_cell(by)),
+                        (Some(at), None) => esc_cell(at),
+                        (None, Some(by)) => esc_cell(by),
+                        (None, None) => "-".to_string(),
                     };
+                    let pr_branch_str = match (t.pr_url.as_deref(), t.branch.as_deref()) {
+                        (Some(pr), Some(br)) => format!("{} ({})", esc_cell(pr), esc_cell(br)),
+                        (Some(pr), None) => esc_cell(pr),
+                        (None, Some(br)) => esc_cell(br),
+                        (None, None) => "-".to_string(),
+                    };
+                    let summary_reason_str =
+                        match (t.release_summary.as_deref(), t.reason.as_deref()) {
+                            (Some(rs), Some(r)) => {
+                                format!("{}; reason: {}", esc_cell(rs), esc_cell(r))
+                            }
+                            (Some(rs), None) => esc_cell(rs),
+                            (None, Some(r)) => esc_cell(r),
+                            (None, None) => "-".to_string(),
+                        };
                     out.push_str(&format!(
-                        "| {} | {} | {} | {} | {} | {} |\n",
+                        "| {} | {} | {} | {} | {} | {} | {} | {} | {} |\n",
                         i + 1,
                         id,
-                        pri,
                         status_str,
-                        superseded_str,
-                        t.label
-                    ));
-                } else {
-                    out.push_str(&format!(
-                        "| {} | {} | {} | {} | {} |\n",
-                        i + 1,
-                        id,
-                        pri,
-                        status_str,
-                        t.label
+                        esc_cell(released_str),
+                        origin_str,
+                        handled_str,
+                        pr_branch_str,
+                        summary_reason_str,
+                        esc_cell(&t.label)
                     ));
                 }
+                out
+            } else {
+                let mut out = if has_superseded_by.is_some() {
+                    format!(
+                        "**{total} tasks** (showing {})\n\n| # | ID | Pri | Status | Superseded By | Title |\n|---|---|---|---|---|---|\n",
+                        tasks.len()
+                    )
+                } else {
+                    format!(
+                        "**{total} tasks** (showing {})\n\n| # | ID | Pri | Status | Title |\n|---|---|---|---|---|\n",
+                        tasks.len()
+                    )
+                };
+                for (i, t) in tasks.iter().enumerate() {
+                    let id = t.task_id.as_deref().unwrap_or(&t.id);
+                    let pri = t.intent.unwrap_or(4);
+                    let status_str = t.status.as_deref().unwrap_or("-");
+                    if has_superseded_by.is_some() {
+                        let superseded_str = if t.superseded_by.is_empty() {
+                            "-".to_string()
+                        } else {
+                            t.superseded_by.join(", ")
+                        };
+                        out.push_str(&format!(
+                            "| {} | {} | {} | {} | {} | {} |\n",
+                            i + 1,
+                            id,
+                            pri,
+                            status_str,
+                            superseded_str,
+                            t.label
+                        ));
+                    } else {
+                        out.push_str(&format!(
+                            "| {} | {} | {} | {} | {} |\n",
+                            i + 1,
+                            id,
+                            pri,
+                            status_str,
+                            t.label
+                        ));
+                    }
+                }
+                out
             }
-            out
         };
 
         let payload = serde_json::json!({
             "total": total,
             "showing": tasks.len(),
             "tasks": tasks.iter().map(|t| {
-                serde_json::json!({
+                let mut row = serde_json::json!({
                     "id": t.task_id.as_deref().unwrap_or(&t.id),
                     "title": t.label,
                     "status": t.status,
-                })
+                });
+                if let Some(map) = row.as_object_mut() {
+                    if let Some(ref v) = t.created {
+                        map.insert("created".to_string(), serde_json::json!(v));
+                    }
+                    if let Some(ref v) = t.released_at {
+                        map.insert("released_at".to_string(), serde_json::json!(v));
+                    }
+                    if let Some(ref v) = t.origin_agent {
+                        map.insert("origin_agent".to_string(), serde_json::json!(v));
+                    }
+                    if let Some(ref v) = t.handled_at {
+                        map.insert("handled_at".to_string(), serde_json::json!(v));
+                    }
+                    if let Some(ref v) = t.handled_by {
+                        map.insert("handled_by".to_string(), serde_json::json!(v));
+                    }
+                    if let Some(ref v) = t.pr_url {
+                        map.insert("pr_url".to_string(), serde_json::json!(v));
+                    }
+                    if let Some(ref v) = t.branch {
+                        map.insert("branch".to_string(), serde_json::json!(v));
+                    }
+                    if let Some(ref v) = t.release_summary {
+                        map.insert("release_summary".to_string(), serde_json::json!(v));
+                    }
+                    if let Some(ref v) = t.reason {
+                        map.insert("reason".to_string(), serde_json::json!(v));
+                    }
+                }
+                row
             }).collect::<Vec<_>>(),
         });
         Ok(Self::structured_result(output, payload))

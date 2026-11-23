@@ -778,6 +778,12 @@ impl PkbSearchServer {
                 .get("assignee")
                 .and_then(|v| v.as_str())
                 .map(String::from),
+            origin_agent: args
+                .get("origin_agent")
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(String::from),
             complexity: args
                 .get("complexity")
                 .and_then(|v| v.as_str())
