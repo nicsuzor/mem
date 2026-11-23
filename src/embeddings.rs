@@ -150,6 +150,20 @@ impl ModelVariant {
             .unwrap_or_default()
     }
 
+    pub fn try_from_env() -> Result<Self> {
+        Self::from_env_res(std::env::var(Self::ENV))
+    }
+
+    fn from_env_res(res: std::result::Result<String, std::env::VarError>) -> Result<Self> {
+        match res {
+            Ok(val) => val.parse().map_err(anyhow::Error::msg),
+            Err(std::env::VarError::NotPresent) => Ok(Self::Auto),
+            Err(std::env::VarError::NotUnicode(_)) => {
+                bail!("{} is not valid UTF-8", Self::ENV)
+            }
+        }
+    }
+
     pub fn as_str(self) -> &'static str {
         match self {
             ModelVariant::Auto => "auto",
@@ -179,7 +193,7 @@ impl std::str::FromStr for ModelVariant {
             "fp16" => Ok(ModelVariant::Fp16),
             "fp32" => Ok(ModelVariant::Fp32),
             other => Err(format!(
-                "unknown model variant '{other}' (expected auto, quantized, fp16 or fp32)"
+                "unknown model variant '{other}' (expected auto, quantized, fp16, or fp32)"
             )),
         }
     }
@@ -187,7 +201,15 @@ impl std::str::FromStr for ModelVariant {
 
 impl EmbeddingConfig {
     pub fn from_env() -> Self {
-        let variant = ModelVariant::from_env();
+        Self::from_env_with_variant(ModelVariant::from_env())
+    }
+
+    pub fn try_from_env() -> Result<Self> {
+        let variant = ModelVariant::try_from_env()?;
+        Ok(Self::from_env_with_variant(variant))
+    }
+
+    fn from_env_with_variant(variant: ModelVariant) -> Self {
         let base_path = std::env::var("AOPS_MODEL_PATH")
             .map(PathBuf::from)
             .unwrap_or_else(|_| {
@@ -247,27 +269,42 @@ impl EmbeddingConfig {
             .unwrap_or_else(get_models_dir);
 
         if offline {
+            let dir = models_dir.display();
             match variant {
                 ModelVariant::Fp16 => bail!(
                     "Model files not found and AOPS_OFFLINE=true.\n\
                      Download manually from https://huggingface.co/{FP16_MODEL_REPO}/tree/main:\n  \
-                       onnx/model_fp16.onnx -> model_fp16.onnx, tokenizer.json\n\
-                     Place them in: {models_dir:?}"
+                       onnx/model_fp16.onnx -> model_fp16.onnx\n  \
+                       tokenizer.json -> tokenizer.json\n\
+                     Place them in: {dir}"
                 ),
-                ModelVariant::Auto | ModelVariant::Quantized | ModelVariant::Fp32 => bail!(
+                ModelVariant::Quantized => bail!(
+                    "Quantized model files not found and AOPS_OFFLINE=true.\n\
+                     Place pre-cached model_quantized.onnx and tokenizer.json in: {dir}"
+                ),
+                ModelVariant::Auto | ModelVariant::Fp32 => bail!(
                     "Model files not found and AOPS_OFFLINE=true.\n\
                      Download manually from https://huggingface.co/{MODEL_REPO}/tree/main/onnx:\n  \
                        model.onnx, model.onnx_data, Constant_7_attr__value, tokenizer.json\n\
-                     Place them in: {models_dir:?}"
+                     Place them in: {dir}"
                 ),
             }
+        }
+
+        if variant == ModelVariant::Quantized && !self.model_path.exists() {
+            bail!(
+                "Quantized model not found: model_quantized.onnx is missing from {}.\n\
+                 model_quantized.onnx cannot be auto-downloaded; place model_quantized.onnx and tokenizer.json there or select --model auto, fp16, or fp32.",
+                models_dir.display()
+            );
         }
 
         download_models_into(&models_dir, variant, hf_base_url)?;
         let model_file = Self::find_model_variant(&models_dir, variant).with_context(|| {
             format!(
-                "No {} model in {models_dir:?} (looked for {:?})",
+                "No {} model in {} (looked for {:?})",
                 variant.as_str(),
+                models_dir.display(),
                 variant.candidates()
             )
         })?;
@@ -334,7 +371,11 @@ fn download_models_into(
                 ("tokenizer.json", format!("{repo_base}/tokenizer.json")),
             ]
         }
-        ModelVariant::Auto | ModelVariant::Quantized | ModelVariant::Fp32 => {
+        ModelVariant::Quantized => {
+            let base_url = format!("{hf_base}/{MODEL_REPO}/resolve/main/onnx");
+            vec![("tokenizer.json", format!("{base_url}/tokenizer.json"))]
+        }
+        ModelVariant::Auto | ModelVariant::Fp32 => {
             let base_url = format!("{hf_base}/{MODEL_REPO}/resolve/main/onnx");
             vec![
                 ("model.onnx", format!("{base_url}/model.onnx")),
@@ -865,9 +906,7 @@ impl SessionPool {
         };
         let mut initial_sessions = vec![Arc::new(Mutex::new(session))];
         if !using_gpu && max_sess > 1 {
-            let cores = std::thread::available_parallelism()
-                .map(|n| n.get())
-                .unwrap_or(4);
+            let cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4);
             let sess_threads = if override_threads > 0 {
                 override_threads
             } else {
@@ -880,9 +919,7 @@ impl SessionPool {
                     .map(|i| {
                         s.spawn(move || {
                             Session::builder()
-                                .and_then(|b| {
-                                    b.with_optimization_level(GraphOptimizationLevel::Level3)
-                                })
+                                .and_then(|b| b.with_optimization_level(GraphOptimizationLevel::Level3))
                                 .and_then(|b| b.with_intra_threads(sess_threads))
                                 .and_then(|b| b.commit_from_file(model_path))
                                 .map_err(|e| (i + 1, e))
@@ -1089,9 +1126,7 @@ impl SessionPool {
                     .map(|i| {
                         s.spawn(move || {
                             Session::builder()
-                                .and_then(|b| {
-                                    b.with_optimization_level(GraphOptimizationLevel::Level3)
-                                })
+                                .and_then(|b| b.with_optimization_level(GraphOptimizationLevel::Level3))
                                 .and_then(|b| b.with_intra_threads(sess_threads))
                                 .and_then(|b| b.commit_from_file(model_path))
                                 .map_err(|e| (i + 1, e))
@@ -1122,7 +1157,10 @@ impl SessionPool {
         *sessions = initial_sessions;
 
         self.gpu_mode.store(false, Ordering::Relaxed);
-        tracing::info!("Now using CPU parallel mode (up to {} sessions)", max_sess);
+        tracing::info!(
+            "Now using CPU parallel mode (up to {} sessions)",
+            max_sess
+        );
         Ok(())
     }
 
@@ -1219,6 +1257,17 @@ pub struct Embedder {
     dummy_delay: parking_lot::Mutex<Option<std::time::Duration>>,
 }
 
+fn ensure_ort_from_env() -> Result<bool> {
+    let offline = std::env::var("AOPS_OFFLINE")
+        .map(|v| v == "1" || v.to_lowercase() == "true")
+        .unwrap_or(false);
+
+    ensure_ort_available(offline)
+        .context("ONNX Runtime is required. Set ORT_DYLIB_PATH or allow auto-download.")?;
+
+    Ok(offline)
+}
+
 impl Embedder {
     pub fn new() -> Result<Self> {
         if std::env::var("AOPS_DUMMY_EMBEDDER")
@@ -1228,17 +1277,12 @@ impl Embedder {
             return Ok(Self::new_dummy());
         }
 
-        let offline = std::env::var("AOPS_OFFLINE")
-            .map(|v| v == "1" || v.to_lowercase() == "true")
-            .unwrap_or(false);
-
         // 1. Ensure ONNX Runtime is available
-        ensure_ort_available(offline)
-            .context("ONNX Runtime is required. Set ORT_DYLIB_PATH or allow auto-download.")?;
+        let offline = ensure_ort_from_env()?;
 
         // 2. Ensure model files exist in the resolved model directory (no-op if already cached)
-        let variant = ModelVariant::from_env();
-        let mut config = EmbeddingConfig::from_env();
+        let variant = ModelVariant::try_from_env()?;
+        let mut config = EmbeddingConfig::from_env_with_variant(variant);
         config.ensure_files(variant, offline, DEFAULT_HF_BASE_URL)?;
 
         Ok(Self::from_config(config))
@@ -1247,12 +1291,7 @@ impl Embedder {
     /// Construct an embedder for an explicit model directory and variant, auto-downloading
     /// ONNX Runtime and missing model files unless `AOPS_OFFLINE=true`.
     pub fn new_for_variant(dir: &std::path::Path, variant: ModelVariant) -> Result<Self> {
-        let offline = std::env::var("AOPS_OFFLINE")
-            .map(|v| v == "1" || v.to_lowercase() == "true")
-            .unwrap_or(false);
-
-        ensure_ort_available(offline)
-            .context("ONNX Runtime is required. Set ORT_DYLIB_PATH or allow auto-download.")?;
+        let offline = ensure_ort_from_env()?;
 
         let mut config = EmbeddingConfig::for_dir(dir, variant);
         config.ensure_files(variant, offline, DEFAULT_HF_BASE_URL)?;
@@ -1269,11 +1308,11 @@ impl Embedder {
         let (sessions, threads, batch_size) = self.effective_config();
         if gpu_available() {
             tracing::info!(
-                "Using BGE-M3 ONNX embeddings ({model_file}, {EMBEDDING_DIM}-dim, GPU/CUDA mode, batch size {batch_size})"
+                "Using BGE-M3 ONNX embeddings ({EMBEDDING_DIM}-dim, {model_file}, GPU/CUDA mode, batch size {batch_size})"
             );
         } else {
             tracing::info!(
-                "Using BGE-M3 ONNX embeddings ({model_file}, {EMBEDDING_DIM}-dim, up to {sessions} sessions × {threads} threads, batch size {batch_size})"
+                "Using BGE-M3 ONNX embeddings ({EMBEDDING_DIM}-dim, {model_file}, up to {sessions} sessions × {threads} threads, batch size {batch_size})"
             );
         }
     }
@@ -1351,8 +1390,9 @@ impl Embedder {
         self.override_threads = threads;
         self.override_batch_size = batch_size;
         if self.is_dummy && sessions > 0 {
-            *self.dummy_sessions.write() =
-                (0..sessions).map(|_| Arc::new(Mutex::new(()))).collect();
+            *self.dummy_sessions.write() = (0..sessions)
+                .map(|_| Arc::new(Mutex::new(())))
+                .collect();
         }
         self
     }
@@ -1397,16 +1437,13 @@ impl Embedder {
         }
 
         let prefixed = format!("{QUERY_PREFIX}{text}");
-        let results =
-            self.encode_batch_with_cap(&[&prefixed], self.config.query_dense_token_cap)?;
+        let results = self.encode_batch_with_cap(&[&prefixed], self.config.query_dense_token_cap)?;
         let res = results
             .into_iter()
             .next()
             .unwrap_or_else(|| vec![0.0; EMBEDDING_DIM]);
 
-        self.query_cache
-            .lock()
-            .insert(text.to_string(), res.clone());
+        self.query_cache.lock().insert(text.to_string(), res.clone());
         crate::otel::call_metrics::CallMetrics::record_embed_duration(start.elapsed());
         Ok(res)
     }
@@ -2478,10 +2515,7 @@ After the code.";
 
         // Step 1: Simulate interrupted download (leaves .part file, dest does not exist)
         std::fs::write(&tmp, b"incomplete payload").unwrap();
-        assert!(
-            !dest.exists(),
-            "Interrupted download must not leave final destination file"
-        );
+        assert!(!dest.exists(), "Interrupted download must not leave final destination file");
         assert!(tmp.exists(), "Interrupted download leaves .part file");
 
         // Step 2: Simulate subsequent run logic from download_models()
@@ -2500,14 +2534,8 @@ After the code.";
         std::fs::rename(&tmp, &dest).unwrap();
 
         // 2e. Assert final destination exists with full payload, tmp is gone
-        assert!(
-            dest.exists(),
-            "Destination file must exist after successful rename"
-        );
-        assert!(
-            !tmp.exists(),
-            "Temp .part file must no longer exist after rename"
-        );
+        assert!(dest.exists(), "Destination file must exist after successful rename");
+        assert!(!tmp.exists(), "Temp .part file must no longer exist after rename");
         assert_eq!(std::fs::read(&dest).unwrap(), full_payload);
     }
 
@@ -2636,34 +2664,56 @@ After the code.";
         assert_eq!(fp32_embedder.model_file_name(), "model.onnx");
     }
 
-    /// Spawn a local HTTP/1.1 test server handling exactly `responses.len()` sequential requests,
-    /// returning `(base_url, join_handle_yielding_request_paths)`.
+    struct MockHfServer {
+        addr: std::net::SocketAddr,
+        stop: Arc<AtomicBool>,
+        handle: Option<std::thread::JoinHandle<Vec<String>>>,
+    }
+
+    impl MockHfServer {
+        fn join(mut self) -> std::thread::Result<Vec<String>> {
+            self.stop.store(true, Ordering::Release);
+            if self.handle.as_ref().is_some_and(|h| !h.is_finished()) {
+                let _ = std::net::TcpStream::connect(self.addr);
+            }
+            self.handle.take().expect("mock server handle").join()
+        }
+    }
+
+    impl Drop for MockHfServer {
+        fn drop(&mut self) {
+            self.stop.store(true, Ordering::Release);
+            if let Some(handle) = self.handle.take() {
+                if !handle.is_finished() {
+                    let _ = std::net::TcpStream::connect(self.addr);
+                }
+                let _ = handle.join();
+            }
+        }
+    }
+
+    /// Spawn a local HTTP/1.1 test server handling up to `responses.len()` sequential requests,
+    /// returning `(base_url, server_guard)` with clean wake-up shutdown and zero polling sleeps.
     fn spawn_mock_hf_server(
         responses: Vec<(&'static [u8], Option<usize>)>,
-    ) -> (String, std::thread::JoinHandle<Vec<String>>) {
+    ) -> (String, MockHfServer) {
         use std::io::{Read, Write};
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind loopback");
-        listener.set_nonblocking(true).expect("set_nonblocking");
         let addr = listener.local_addr().expect("local_addr");
         let base_url = format!("http://{addr}");
+        let stop = Arc::new(AtomicBool::new(false));
+        let stop_thread = Arc::clone(&stop);
 
         let handle = std::thread::spawn(move || {
             let mut paths = Vec::with_capacity(responses.len());
             for (body, declared_len_override) in responses {
-                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-                let mut stream = loop {
-                    match listener.accept() {
-                        Ok((s, _)) => break s,
-                        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                            if std::time::Instant::now() >= deadline {
-                                return paths;
-                            }
-                            std::thread::sleep(std::time::Duration::from_millis(5));
-                        }
-                        Err(e) => panic!("accept failed: {e}"),
-                    }
-                };
-                stream.set_nonblocking(false).expect("set blocking");
+                if stop_thread.load(Ordering::Acquire) {
+                    break;
+                }
+                let (mut stream, _) = listener.accept().expect("accept failed");
+                if stop_thread.load(Ordering::Acquire) {
+                    break;
+                }
                 stream
                     .set_read_timeout(Some(std::time::Duration::from_secs(5)))
                     .unwrap();
@@ -2696,7 +2746,14 @@ After the code.";
             paths
         });
 
-        (base_url, handle)
+        (
+            base_url,
+            MockHfServer {
+                addr,
+                stop,
+                handle: Some(handle),
+            },
+        )
     }
 
     fn part_files_in(dir: &std::path::Path) -> Vec<String> {
@@ -2831,8 +2888,9 @@ After the code.";
             "Failed download must remove its own PID .part file"
         );
 
-        // 5. Offline bail messages are variant-accurate
+        // 5. Offline bail messages are variant-accurate and format paths without Debug quotes
         let offline_dir = tempfile::tempdir().unwrap();
+        let expected_dir = offline_dir.path().display().to_string();
         let mut off_fp16 = EmbeddingConfig::for_dir(offline_dir.path(), ModelVariant::Fp16);
         let msg_fp16 = off_fp16
             .ensure_files(ModelVariant::Fp16, true, "http://127.0.0.1:1")
@@ -2840,8 +2898,11 @@ After the code.";
             .to_string();
         assert!(
             msg_fp16.contains("Xenova/bge-m3")
-                && msg_fp16.contains("onnx/model_fp16.onnx")
-                && msg_fp16.contains("tokenizer.json"),
+                && msg_fp16.contains("onnx/model_fp16.onnx -> model_fp16.onnx")
+                && msg_fp16.contains("tokenizer.json")
+                && !msg_fp16.contains("model_fp16.onnx, tokenizer.json")
+                && msg_fp16.contains(&expected_dir)
+                && !msg_fp16.contains(&format!("{:?}", offline_dir.path())),
             "Unexpected fp16 offline error: {msg_fp16}"
         );
 
@@ -2853,8 +2914,61 @@ After the code.";
         assert!(
             msg_fp32.contains("BAAI/bge-m3")
                 && msg_fp32.contains("model.onnx_data")
-                && msg_fp32.contains("Constant_7_attr__value"),
+                && msg_fp32.contains("Constant_7_attr__value")
+                && msg_fp32.contains(&expected_dir)
+                && !msg_fp32.contains(&format!("{:?}", offline_dir.path())),
             "Unexpected fp32 offline error: {msg_fp32}"
+        );
+
+        let mut off_quantized =
+            EmbeddingConfig::for_dir(offline_dir.path(), ModelVariant::Quantized);
+        let msg_quantized = off_quantized
+            .ensure_files(ModelVariant::Quantized, true, "http://127.0.0.1:1")
+            .expect_err("offline quantized must bail")
+            .to_string();
+        assert!(
+            msg_quantized.contains("model_quantized.onnx")
+                && msg_quantized.contains("tokenizer.json")
+                && !msg_quantized.contains("model.onnx_data")
+                && msg_quantized.contains(&expected_dir),
+            "Unexpected quantized offline error: {msg_quantized}"
+        );
+
+        // 6. Online Quantized with missing model_quantized.onnx fails fast with zero HTTP requests
+        let (base_url_q, server_q) = spawn_mock_hf_server(vec![]);
+        let mut online_quantized =
+            EmbeddingConfig::for_dir(offline_dir.path(), ModelVariant::Quantized);
+        let err_quantized = online_quantized
+            .ensure_files(ModelVariant::Quantized, false, &base_url_q)
+            .expect_err("missing quantized model must fail fast without downloading fp32")
+            .to_string();
+        assert!(
+            err_quantized.contains("model_quantized.onnx"),
+            "Expected model_quantized.onnx error, got: {err_quantized}"
+        );
+        assert!(
+            server_q.join().expect("join mock server q").is_empty(),
+            "Missing quantized model must issue zero HTTP downloads"
+        );
+
+        // 7. Reverse non-clobbering case: model_fp16.onnx pre-existing + tokenizer.json missing
+        let reverse_dir = tempfile::tempdir().unwrap();
+        std::fs::write(reverse_dir.path().join("model_fp16.onnx"), b"existing-fp16").unwrap();
+        let (base_url_rev, server_rev) =
+            spawn_mock_hf_server(vec![(b"xenova-tokenizer-only", None)]);
+        let mut rev_cfg = EmbeddingConfig::for_dir(reverse_dir.path(), ModelVariant::Fp16);
+        rev_cfg
+            .ensure_files(ModelVariant::Fp16, false, &base_url_rev)
+            .expect("reverse non-clobber fp16 download should succeed");
+        let rev_paths = server_rev.join().expect("join mock server rev");
+        assert_eq!(rev_paths, vec!["/Xenova/bge-m3/resolve/main/tokenizer.json"]);
+        assert_eq!(
+            std::fs::read(reverse_dir.path().join("model_fp16.onnx")).unwrap(),
+            b"existing-fp16"
+        );
+        assert_eq!(
+            std::fs::read(reverse_dir.path().join("tokenizer.json")).unwrap(),
+            b"xenova-tokenizer-only"
         );
     }
 
@@ -3094,6 +3208,49 @@ After the code.";
             wrong_rank_tok.contains("3D"),
             "Expected 3D rank error, got: {wrong_rank_tok}"
         );
+
+        // Batch mismatch, buffer length mismatch, and negative dimension must bail (2D and 3D)
+        let batch_err_2d = extract_embeddings_from_raw(
+            OutputKind::SentenceEmbedding,
+            "sentence_embedding",
+            &[2, EMBEDDING_DIM as i64],
+            RawTensorSlice::F32(&vec![0.0; 2 * EMBEDDING_DIM]),
+            1,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            batch_err_2d.contains("Batch size mismatch"),
+            "Expected 2D batch mismatch error, got: {batch_err_2d}"
+        );
+
+        let len_err_3d = extract_embeddings_from_raw(
+            OutputKind::TokenEmbeddings,
+            "last_hidden_state",
+            &[1, 2, EMBEDDING_DIM as i64],
+            RawTensorSlice::F32(&vec![0.0; EMBEDDING_DIM]),
+            1,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            len_err_3d.contains("buffer length mismatch"),
+            "Expected 3D buffer length mismatch error, got: {len_err_3d}"
+        );
+
+        let neg_dim = extract_embeddings_from_raw(
+            OutputKind::TokenEmbeddings,
+            "last_hidden_state",
+            &[1, 2, -1],
+            RawTensorSlice::F32(&[]),
+            1,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            neg_dim.contains("dimension"),
+            "Expected negative dim error, got: {neg_dim}"
+        );
     }
 
     #[test]
@@ -3115,9 +3272,36 @@ After the code.";
         assert_eq!(
             "bogus".parse::<ModelVariant>(),
             Err(
-                "unknown model variant 'bogus' (expected auto, quantized, fp16 or fp32)"
+                "unknown model variant 'bogus' (expected auto, quantized, fp16, or fp32)"
                     .to_string()
             )
+        );
+    }
+
+    #[test]
+    fn model_variant_try_from_env_rejects_invalid_and_defaults_unset() {
+        assert_eq!(
+            ModelVariant::from_env_res(Err(std::env::VarError::NotPresent)).unwrap(),
+            ModelVariant::Auto
+        );
+        assert_eq!(
+            ModelVariant::from_env_res(Ok(String::new())).unwrap(),
+            ModelVariant::Auto
+        );
+        assert_eq!(
+            ModelVariant::from_env_res(Ok("fp16".to_string())).unwrap(),
+            ModelVariant::Fp16
+        );
+        let invalid = ModelVariant::from_env_res(Ok("f16".to_string()))
+            .expect_err("typo in AOPS_MODEL_VARIANT must fail fast")
+            .to_string();
+        assert!(
+            invalid.contains("unknown model variant"),
+            "Expected explicit variant parse error, got: {invalid}"
+        );
+        assert!(
+            ModelVariant::from_env_res(Err(std::env::VarError::NotUnicode("bad".into()))).is_err(),
+            "Non-UTF8 AOPS_MODEL_VARIANT must fail fast"
         );
     }
 
@@ -3140,14 +3324,8 @@ After the code.";
         let config = EmbeddingConfig::from_env();
         std::env::remove_var("AOPS_MODEL_PATH");
 
-        assert_eq!(
-            config.model_path,
-            temp_dir.path().join("model_quantized.onnx")
-        );
-        assert_eq!(
-            config.tokenizer_path,
-            temp_dir.path().join("tokenizer.json")
-        );
+        assert_eq!(config.model_path, temp_dir.path().join("model_quantized.onnx"));
+        assert_eq!(config.tokenizer_path, temp_dir.path().join("tokenizer.json"));
     }
 
     #[test]
@@ -3236,11 +3414,7 @@ After the code.";
             .encode_batch(vec![prefixed.as_str()], true)
             .expect("fixed tokenization failed");
 
-        assert_eq!(
-            encodings[0].get_ids().len(),
-            512,
-            "Fixed padding must produce 512 tokens"
-        );
+        assert_eq!(encodings[0].get_ids().len(), 512, "Fixed padding must produce 512 tokens");
 
         let mut input_ids = vec![0i64; 512];
         let mut attention = vec![0i64; 512];
@@ -3732,7 +3906,8 @@ vectors in `VectorStore` and fuses dense similarity with lexical BM25 scores.";
         // 3. Bidirectional VectorStore retrieval: fp32 index + fp16 queries, and fp16 index + fp32 queries.
         let mut fp32_store = crate::vectordb::VectorStore::new(EMBEDDING_DIM);
         let mut fp16_store = crate::vectordb::VectorStore::new(EMBEDDING_DIM);
-        let dummy_root = std::path::Path::new("/tmp");
+        let dummy_root_dir = tempfile::tempdir().unwrap();
+        let dummy_root = dummy_root_dir.path();
 
         for (idx, doc_text) in documents.iter().enumerate() {
             let doc_id = format!("doc_{idx}");

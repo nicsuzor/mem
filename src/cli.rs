@@ -34,10 +34,18 @@ struct Cli {
     #[arg(long, global = true, env = "PKB_DB_PATH", default_value_t = default_db_path())]
     db_path: String,
 
-    /// Embedding model weights: auto (int8 if present, else fp32), quantized (int8), fp16, or fp32.
-    /// Use fp16 or fp32 for GPU reindexing — the int8 model runs ~10x slower under CUDA.
-    /// Variants produce compatible vectors: an fp32- or fp16-built index can be served with int8 queries.
-    #[arg(long = "model", global = true, env = "AOPS_MODEL_VARIANT", value_enum)]
+    #[arg(
+        long = "model",
+        global = true,
+        env = "AOPS_MODEL_VARIANT",
+        value_enum,
+        help = "Embedding model weights: auto, quantized (int8), fp16, or fp32",
+        long_help = "Embedding model weights: auto, quantized (int8), fp16, or fp32.\n\n\
+            `auto` (default) prefers `quantized (int8)` if cached and falls back to `fp32` (never selects `fp16`).\n\
+            `fp16` selects half-precision `model_fp16.onnx` (~1.1 GB, half the weight/VRAM footprint of `fp32`) for GPU reindexing; `quantized (int8)` runs ~10x slower under CUDA.\n\
+            All three precision variants share one 1024-dim index, so an `fp32`- or `fp16`-built index can be served with `quantized (int8)` queries.\n\n\
+            Note: `pkb search` queries the PKB server by default unless `--local` is passed; `--model` applies to local embedding paths (`search --local`, `reindex`, `bench-reindex`, `status`, `mcp`)."
+    )]
     model: Option<ModelArg>,
 
     #[command(subcommand)]
@@ -1177,6 +1185,18 @@ fn remote_search(
     Ok(())
 }
 
+fn format_embeddings_label(embedder: &embeddings::Embedder) -> String {
+    if embedder.is_dummy() {
+        format!("dummy ({}-dim zero vectors)", embedder.dimension())
+    } else {
+        format!(
+            "BGE-M3 ONNX ({}-dim, {})",
+            embedder.dimension(),
+            embedder.model_file_name()
+        )
+    }
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -1643,11 +1663,7 @@ async fn main() -> Result<()> {
 
             println!("PKB root:    {}", pkb_root.display());
             println!("DB path:     {}", db_path.display());
-            println!(
-                "Embeddings:  BGE-M3 ONNX ({}-dim, {})",
-                embedder.dimension(),
-                embedder.model_file_name()
-            );
+            println!("Embeddings:  {}", format_embeddings_label(embedder));
             println!("Documents:   {total}");
             println!("DB size:     {:.1} MB", db_size as f64 / 1_048_576.0);
 
@@ -3660,17 +3676,13 @@ async fn main() -> Result<()> {
 
             eprintln!("🔍 PKB Search MCP Server starting...");
             eprintln!(
-                "   Version:  {} ({})",
+                "   Version:    {} ({})",
                 env!("CARGO_PKG_VERSION"),
                 env!("BUILD_GIT_HASH")
             );
-            eprintln!("   PKB root: {}", pkb_root.display());
-            eprintln!("   DB path:  {}", db_path.display());
-            eprintln!(
-                "   Embeddings: BGE-M3 ({}-dim, {})",
-                embedder.dimension(),
-                embedder.model_file_name()
-            );
+            eprintln!("   PKB root:   {}", pkb_root.display());
+            eprintln!("   DB path:    {}", db_path.display());
+            eprintln!("   Embeddings: {}", format_embeddings_label(&embedder));
 
             // Check index freshness
             eprintln!("   Checking index freshness...");
@@ -5021,8 +5033,12 @@ mod tests {
     fn test_cli_model_arg_parses_fp16_and_preserves_existing_variants() {
         use clap::CommandFactory;
 
-        let default_cli = Cli::try_parse_from(["pkb", "status"]).expect("omitted --model");
-        assert!(default_cli.model.is_none());
+        // Isolate default-omitted check from any ambient AOPS_MODEL_VARIANT in the environment.
+        let detached_matches = Cli::command()
+            .mut_arg("model", |a| a.env(None))
+            .try_get_matches_from(["pkb", "status"])
+            .expect("omitted --model");
+        assert!(detached_matches.get_one::<ModelArg>("model").is_none());
 
         for (flag_val, expected) in [
             ("auto", "auto"),
@@ -5040,7 +5056,7 @@ mod tests {
             "--model bogus must fail to parse"
         );
 
-        let cmd = Cli::command();
+        let mut cmd = Cli::command();
         let model_arg = cmd
             .get_arguments()
             .find(|a| a.get_id() == "model")
@@ -5049,14 +5065,39 @@ mod tests {
             model_arg.get_env(),
             Some(std::ffi::OsStr::new("AOPS_MODEL_VARIANT"))
         );
-        let help = model_arg
-            .get_long_help()
-            .or_else(|| model_arg.get_help())
-            .expect("model help")
-            .to_string();
+
+        let short_help = cmd.render_help().to_string();
+        let long_help = cmd.render_long_help().to_string();
         assert!(
-            help.contains("fp16"),
-            "--model help should document fp16, got: {help}"
+            short_help.contains("--model") && short_help.contains("quantized (int8)"),
+            "Rendered short help should show concise --model summary with quantized (int8), got: {short_help}"
+        );
+        assert!(
+            long_help.contains("fp16")
+                && long_help.contains("quantized (int8)")
+                && long_help.contains("--local")
+                && long_help.contains("half"),
+            "Rendered long help should document fp16 footprint, quantized (int8), and --local search boundary, got: {long_help}"
+        );
+    }
+
+    #[test]
+    fn test_format_embeddings_label_handles_dummy_and_onnx_models() {
+        let dummy = embeddings::Embedder::new_dummy();
+        let dummy_label = format_embeddings_label(&dummy);
+        assert!(
+            dummy_label.contains("dummy") && !dummy_label.contains("ONNX"),
+            "Dummy embedder must not claim ONNX, got: {dummy_label}"
+        );
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let fp16 = embeddings::Embedder::from_config(embeddings::EmbeddingConfig::for_dir(
+            temp_dir.path(),
+            embeddings::ModelVariant::Fp16,
+        ));
+        assert_eq!(
+            format_embeddings_label(&fp16),
+            "BGE-M3 ONNX (1024-dim, model_fp16.onnx)"
         );
     }
 

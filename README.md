@@ -417,8 +417,10 @@ MCP Client <--stdio--> pkb (MCP server)
 | `AOPS_OFFLINE` | `false` | Disable model/runtime auto-download |
 | `AOPS_DUMMY_EMBEDDER` | `false` | Use zero-vector dummy embedder (for tests/offline) |
 | `AOPS_MODEL_PATH` | (auto) | Override model directory path |
-| `AOPS_MODEL_VARIANT` | `auto` | Embedding weights: `auto` (quantized if present), `quantized`, `fp16`, or `fp32`; same as the global `--model` flag. Use `fp16` or `fp32` for GPU reindexing (int8 runs ~10x slower under CUDA). Explicit `fp16` (`model_fp16.onnx` auto-downloaded from `Xenova/bge-m3`) has half the weight footprint of `fp32` on GPU while `auto` keeps `quantized`-first fallback to `fp32`. All three precision variants (`quantized`, `fp16`, `fp32`) emit compatible 1024-dim vectors in one shared index, so an index built with `fp32` or `fp16` on GPU can be served with `quantized` on CPU |
+| `AOPS_MODEL_VARIANT` | `auto` | Embedding weights: `auto`, `quantized` (int8), `fp16`, or `fp32` (same as `--model`) |
 | `ORT_DYLIB_PATH` | (auto) | Override ONNX Runtime library path |
+
+- **Model variants (`--model` / `AOPS_MODEL_VARIANT`)**: `auto` prefers `quantized (int8)` if present and falls back to `fp32`, never selecting `fp16`. Use `fp16` (`model_fp16.onnx` auto-downloaded from `Xenova/bge-m3`, half the weight footprint of `fp32`) or `fp32` for GPU reindexing (`quantized (int8)` runs ~10x slower under CUDA). All three variants emit compatible 1024-dim vectors in one shared index, and `--model` applies to local embedding commands (`search --local`, `reindex`, `bench-reindex`, `status`, `mcp`) because `pkb search` queries the PKB server by default.
 
 ## Acknowledgments
 
