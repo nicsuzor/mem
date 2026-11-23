@@ -224,7 +224,7 @@ impl PkbSearchServer {
             .with_annotations(ToolAnnotations::new().read_only(true)),
             Tool::new(
                 "list_tasks",
-                "List tasks with smart filtering, in flow display order: the hard-deadline cliff lane first, then tasks carrying flow figures by gain + loss_averted descending. `sort` picks another key. JSON rows carry gain, loss_averted, decision_value, flow_status and on_cliff.",
+                "List tasks with smart filtering, in flow display order: the hard-deadline cliff lane first, then tasks carrying flow figures by gain + loss_averted descending. `sort` picks another key (including `released_at_desc` for reverse-chronological releases). JSON rows carry gain, loss_averted, decision_value, flow_status, on_cliff, created, and release/handling metadata.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -246,12 +246,14 @@ impl PkbSearchServer {
                         "loss_averted_gte": { "type": "number" },
                         "sort": {
                             "type": "string",
-                            "enum": ["default", "gain", "loss_averted", "decision_value", "gain_per_effort", "loss_averted_per_effort", "due", "id"]
+                            "enum": ["default", "gain", "loss_averted", "decision_value", "gain_per_effort", "loss_averted_per_effort", "due", "id", "released_at_desc"]
                         },
                         "tags": { "type": "array", "items": { "type": "string" } },
                         "has_superseded_by": { "type": "boolean" },
                         "since": { "type": "string" },
                         "before": { "type": "string" },
+                        "released_since": { "type": "string", "description": "Filter to tasks with released_at on or after this ISO date or RFC 3339 timestamp" },
+                        "unhandled": { "type": "boolean", "description": "When true, return only released tasks without handled_at (default: false)" },
                         "limit": { "type": "integer" },
                         "include_subtasks": { "type": "boolean" },
                         "include_done": { "type": "boolean", "description": "Include done and cancelled tasks (default: false)" },
@@ -295,6 +297,7 @@ impl PkbSearchServer {
                         "depends_on": { "type": "array", "items": { "type": "string" } },
                         "soft_depends_on": { "type": "array", "items": { "type": "string" } },
                         "assignee": { "type": "string" },
+                        "origin_agent": { "type": "string" },
                         "complexity": { "type": "string", "description": "Complexity size label (e.g. S, M, L; use effort for duration strings)" },
                         "effort": { "type": "string", "description": "Effort duration string: 1d, 2h, 1w (minimum 1h; use complexity for size labels)" },
                         "consequence": { "type": "string" },
@@ -336,6 +339,7 @@ impl PkbSearchServer {
                         "depends_on": { "type": "array", "items": { "type": "string" } },
                         "soft_depends_on": { "type": "array", "items": { "type": "string" } },
                         "assignee": { "type": "string" },
+                        "origin_agent": { "type": "string" },
                         "complexity": { "type": "string", "description": "Complexity size label (e.g. S, M, L; use effort for duration strings)" },
                         "effort": { "type": "string", "description": "Effort duration string: 1d, 2h, 1w (minimum 1h; use complexity for size labels)" },
                         "consequence": { "type": "string" },
@@ -393,6 +397,9 @@ impl PkbSearchServer {
                         "blocks": { "type": "array", "items": { "type": "string" } },
                         "soft_blocks": { "type": "array", "items": { "type": "string" } },
                         "assignee": { "type": "string" },
+                        "origin_agent": { "type": "string" },
+                        "handled_at": { "type": "string" },
+                        "handled_by": { "type": "string" },
                         "complexity": { "type": "string" },
                         "effort": { "type": "string" },
                         "consequence": { "type": "string" },

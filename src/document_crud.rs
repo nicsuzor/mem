@@ -87,6 +87,7 @@ pub struct DocumentFields {
     pub depends_on: Vec<String>,
     pub soft_depends_on: Vec<String>,
     pub assignee: Option<String>,
+    pub origin_agent: Option<String>,
     pub complexity: Option<String>,
     pub effort: Option<String>,
     pub consequence: Option<String>,
@@ -125,6 +126,7 @@ pub struct TaskFields {
     pub depends_on: Vec<String>,
     pub soft_depends_on: Vec<String>,
     pub assignee: Option<String>,
+    pub origin_agent: Option<String>,
     pub complexity: Option<String>,
     pub effort: Option<String>,
     pub consequence: Option<String>,
@@ -217,6 +219,9 @@ pub fn create_document(root: &Path, fields: DocumentFields) -> Result<PathBuf> {
     let max_len = max_frontmatter_scalar_len();
     if let Some(ref s) = fields.assignee {
         validate_str_scalar("assignee", s, max_len)?;
+    }
+    if let Some(ref s) = fields.origin_agent {
+        validate_str_scalar("origin_agent", s, max_len)?;
     }
     if let Some(ref s) = fields.complexity {
         validate_str_scalar("complexity", s, max_len)?;
@@ -411,6 +416,13 @@ pub fn create_document(root: &Path, fields: DocumentFields) -> Result<PathBuf> {
 
     if let Some(ref assignee) = fields.assignee {
         fm.push_str(&format!("assignee: {}\n", assignee));
+    }
+
+    if let Some(ref origin_agent) = fields.origin_agent {
+        fm.push_str(&format!(
+            "origin_agent: \"{}\"\n",
+            yaml_escape_double_quoted(origin_agent)
+        ));
     }
 
     if let Some(ref complexity) = fields.complexity {
@@ -671,6 +683,9 @@ pub fn create_task(root: &Path, fields: TaskFields) -> Result<PathBuf> {
     if let Some(ref s) = fields.assignee {
         validate_str_scalar("assignee", s, max_len)?;
     }
+    if let Some(ref s) = fields.origin_agent {
+        validate_str_scalar("origin_agent", s, max_len)?;
+    }
     if let Some(ref s) = fields.complexity {
         validate_str_scalar("complexity", s, max_len)?;
     }
@@ -882,6 +897,13 @@ pub fn create_task(root: &Path, fields: TaskFields) -> Result<PathBuf> {
 
     if let Some(ref assignee) = fields.assignee {
         fm.push_str(&format!("assignee: {}\n", assignee));
+    }
+
+    if let Some(ref origin_agent) = fields.origin_agent {
+        fm.push_str(&format!(
+            "origin_agent: \"{}\"\n",
+            yaml_escape_double_quoted(origin_agent)
+        ));
     }
 
     if let Some(ref complexity) = fields.complexity {
@@ -7902,6 +7924,9 @@ pub fn validate_update_field(key: &str, value: &serde_json::Value) -> Result<(),
             }
         }
         "assignee"
+        | "origin_agent"
+        | "handled_at"
+        | "handled_by"
         | "complexity"
         | "consequence"
         | "body"

@@ -799,6 +799,12 @@ impl PkbSearchServer {
             project: Some(project.to_string()),
             tags: vec!["adhoc".to_string(), "session-release".to_string()],
             session_id: session_id_opt.map(String::from),
+            origin_agent: args
+                .get("origin_agent")
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(String::from),
             issue_url: args
                 .get("issue_url")
                 .and_then(|v| v.as_str())
@@ -1170,6 +1176,11 @@ impl PkbSearchServer {
             "released_at".to_string(),
             serde_json::Value::String(now.clone()),
         );
+        // Clear any prior completion-handling markers so a re-released task
+        // (e.g. a partial or reopened failed task) re-enters the unhandled feed,
+        // while preserving `origin_agent` untouched.
+        updates.insert("handled_at".to_string(), serde_json::Value::Null);
+        updates.insert("handled_by".to_string(), serde_json::Value::Null);
 
         let t = std::time::Instant::now();
         crate::document_crud::update_document(&abs_path, updates).map_err(|e| McpError {
@@ -1555,6 +1566,12 @@ impl PkbSearchServer {
                 assignee: subtask
                     .get("assignee")
                     .and_then(|v| v.as_str())
+                    .map(String::from),
+                origin_agent: subtask
+                    .get("origin_agent")
+                    .and_then(|v| v.as_str())
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
                     .map(String::from),
                 complexity: subtask
                     .get("complexity")

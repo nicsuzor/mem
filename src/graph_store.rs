@@ -1323,7 +1323,19 @@ impl GraphStore {
             .map(|node| {
                 let dt =
                     crate::display_rank::DisplayTask::from_graph_node(node, node.flow.as_ref());
-                (node.id.clone(), dt.to_display_item(today, buffer_days))
+                let item = dt
+                    .to_display_item(today, buffer_days)
+                    .with_released_at(
+                        node.released_at
+                            .as_deref()
+                            .and_then(crate::date_filter::parse_modified_instant),
+                    )
+                    .with_modified(
+                        node.modified
+                            .as_deref()
+                            .and_then(crate::date_filter::parse_modified_instant),
+                    );
+                (node.id.clone(), item)
             })
             .collect();
 

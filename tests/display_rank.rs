@@ -249,6 +249,7 @@ fn test_t_i6_flow_output_byte_identical_under_every_sort_and_buffer() {
         TaskSort::LossAvertedPerEffort,
         TaskSort::Due,
         TaskSort::Id,
+        TaskSort::ReleasedAtDesc,
     ];
 
     let all_buffers = [0i64, 7, 14, 30];

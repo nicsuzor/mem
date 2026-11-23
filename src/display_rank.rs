@@ -13,7 +13,7 @@
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet, VecDeque};
 
-use chrono::NaiveDate;
+use chrono::{DateTime, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::flow::{clean_num, FlowOutput, FlowStatus, CLIFF_BUFFER_DAYS, DEFAULT_EFFORT_DAYS};
@@ -198,6 +198,8 @@ pub struct DisplayItem {
     pub effort_days: i64,
     pub display: Option<TaskDisplay>,
     pub uncertainty: Option<f64>,
+    pub released_at: Option<DateTime<Utc>>,
+    pub modified: Option<DateTime<Utc>>,
 }
 
 impl DisplayItem {
@@ -228,11 +230,23 @@ impl DisplayItem {
             effort_days,
             display: None,
             uncertainty: None,
+            released_at: None,
+            modified: None,
         }
     }
 
     pub fn with_uncertainty(mut self, uncertainty: f64) -> Self {
         self.uncertainty = Some(uncertainty);
+        self
+    }
+
+    pub fn with_released_at(mut self, released_at: Option<DateTime<Utc>>) -> Self {
+        self.released_at = released_at;
+        self
+    }
+
+    pub fn with_modified(mut self, modified: Option<DateTime<Utc>>) -> Self {
+        self.modified = modified;
         self
     }
 
@@ -381,6 +395,7 @@ pub enum TaskSort {
     LossAvertedPerEffort,
     Due,
     Id,
+    ReleasedAtDesc,
 }
 
 impl TaskSort {
@@ -394,6 +409,7 @@ impl TaskSort {
             "loss_averted_per_effort" => Some(Self::LossAvertedPerEffort),
             "due" => Some(Self::Due),
             "id" => Some(Self::Id),
+            "released_at_desc" => Some(Self::ReleasedAtDesc),
             _ => None,
         }
     }
@@ -508,6 +524,18 @@ pub fn display_cmp_by(a: &DisplayItem, b: &DisplayItem, sort: TaskSort) -> Order
             }
         }
         TaskSort::Id => a.id.cmp(&b.id),
+        TaskSort::ReleasedAtDesc => {
+            fn key(item: &DisplayItem) -> (u8, Option<std::cmp::Reverse<DateTime<Utc>>>, &str) {
+                if let Some(ts) = item.released_at {
+                    (0u8, Some(std::cmp::Reverse(ts)), item.id.as_str())
+                } else if let Some(ts) = item.modified {
+                    (1u8, Some(std::cmp::Reverse(ts)), item.id.as_str())
+                } else {
+                    (2u8, None, item.id.as_str())
+                }
+            }
+            key(a).cmp(&key(b))
+        }
     }
 }
 
