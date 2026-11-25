@@ -192,6 +192,9 @@ pub struct GateCandidate<'a> {
     pub doc_type: Option<&'a str>,
     pub status: Option<&'a str>,
     pub tags: &'a [String],
+    pub tier: crate::graph::CorpusTier,
+    pub superseded: bool,
+    pub date: Option<&'a str>,
     pub chunk_id: Option<usize>,
 }
 
@@ -1845,6 +1848,12 @@ impl VectorStore {
                             doc_type: entry.doc_type.as_deref(),
                             status: entry.status.as_deref(),
                             tags: &entry.tags,
+                            tier: crate::graph::derive_tier(
+                                entry.doc_type.as_deref(),
+                                entry.status.as_deref(),
+                            ),
+                            superseded: crate::graph::is_superseded_status(entry.status.as_deref()),
+                            date: entry.date.as_deref(),
                             chunk_id: Some(best_chunk_idx),
                         };
                         if !pred(&cand) {
@@ -2000,6 +2009,12 @@ impl VectorStore {
                         doc_type: entry.doc_type.as_deref(),
                         status: entry.status.as_deref(),
                         tags: &entry.tags,
+                        tier: crate::graph::derive_tier(
+                            entry.doc_type.as_deref(),
+                            entry.status.as_deref(),
+                        ),
+                        superseded: crate::graph::is_superseded_status(entry.status.as_deref()),
+                        date: entry.date.as_deref(),
                         chunk_id: Some(best_chunk_idx),
                     };
                     if !pred(&cand) {

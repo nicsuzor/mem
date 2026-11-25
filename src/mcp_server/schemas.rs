@@ -84,27 +84,38 @@ impl PkbSearchServer {
         let mut tools = vec![
             Tool::new(
                 "search",
-                "Hybrid semantic + graph search across the PKB using ONNX embeddings. If search times out, back off and retry. Detail levels: 'chunk' (matching chunk text), 'snippet' (short ~300-char extract), 'full' (complete document body), 'metadata' (lean metadata: id, title, type, status, score), 'ids' (matching IDs only).",
+                "Hybrid semantic + graph ONNX embedding search (back off and retry on timeout). Detail: 'chunk', 'snippet', 'summary', 'full', 'metadata', 'ids'.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
-                        "query": { "type": "string", "description": "Natural language query" },
+                        "query": { "type": "string", "description": "Query string" },
                         "limit": { "type": "integer" },
                         "type": { "type": "string" },
+                        "tiers": {
+                            "description": "Tiers: knowledge (default), log, archive, all.",
+                            "anyOf": [
+                                { "type": "string" },
+                                { "type": "array", "items": { "type": "string" } }
+                            ]
+                        },
+                        "include_superseded": { "type": "boolean" },
+                        "include_private": { "type": "boolean" },
                         "actionable_only": { "type": "boolean" },
-                        "include_done": { "type": "boolean", "description": "Include done/cancelled items" },
+                        "include_done": { "type": "boolean", "description": "Include done/cancelled" },
                         "since": { "type": "string" },
                         "before": { "type": "string" },
                         "boost_id": { "type": "string" },
                         "detail": {
                             "type": "string",
                             "enum": ["chunk", "snippet", "summary", "full", "metadata", "ids"],
-                            "default": "snippet",
-                            "description": "Level of detail: chunk, snippet, summary, full, metadata, ids."
+                            "default": "snippet"
                         },
                         "ids_only": { "type": "boolean" },
                         "max_bytes": { "type": "integer" },
-                        "format": { "type": "string", "enum": ["markdown", "json"] }
+                        "format": { "type": "string", "enum": ["markdown", "json"] },
+                        "caller": { "type": "string" },
+                        "surface": { "type": "string" },
+                        "prompt_kind": { "type": "string" }
                     },
                     "required": ["query"]
                 }))
@@ -145,7 +156,7 @@ impl PkbSearchServer {
             .with_annotations(ToolAnnotations::new().read_only(true)),
             Tool::new(
                 "get_task",
-                "Retrieve task details, metadata, body, and graph context. Returns full body by default. Detail levels: 'full' (complete body and graph relations), 'summary' (short excerpt), 'metadata' (task metadata without body). Flow engine: gain, loss_averted, decision_value, flow_status, stake; display: ready, blocked, on_cliff, deadline_class, days_until_due. include_routes adds target paths.",
+                "Read task metadata, body, and graph flow (gain, loss_averted, decision_value). Returns full body by default. Detail: 'full', 'summary', 'metadata'.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -154,13 +165,12 @@ impl PkbSearchServer {
                         "detail": {
                             "type": "string",
                             "enum": ["metadata", "summary", "full"],
-                            "default": "full",
-                            "description": "Level of detail: full, summary, metadata."
+                            "default": "full"
                         },
                         "budget_ms": { "type": "integer" },
-                        "max_bytes": { "type": "integer", "description": "Maximum body bytes to return. Defaults to returning the full body (no limit)." },
+                        "max_bytes": { "type": "integer" },
                         "metadata_only": { "type": "boolean" },
-                        "include_routes": { "type": "boolean", "default": false, "description": "Include computed Dijkstra routes to open target goals (defaults to false for speed and compact payloads)." },
+                        "include_routes": { "type": "boolean", "default": false },
                         "fields": {
                             "anyOf": [
                                 { "type": "string" },
@@ -224,7 +234,7 @@ impl PkbSearchServer {
             .with_annotations(ToolAnnotations::new().read_only(true)),
             Tool::new(
                 "list_tasks",
-                "List tasks with smart filtering, in flow display order: the hard-deadline cliff lane first, then tasks carrying flow figures by gain + loss_averted descending. `sort` picks another key (including `released_at_desc` for reverse-chronological releases). JSON rows carry gain, loss_averted, decision_value, flow_status, on_cliff, created, and release/handling metadata.",
+                "List tasks in flow display order (cliff lane first, then gain + loss_averted descending).",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -233,10 +243,9 @@ impl PkbSearchServer {
                             "anyOf": [
                                 { "type": "string" },
                                 { "type": "array", "items": { "type": "string" } }
-                            ],
-                            "description": "Stored status: inbox, ready, queued, in_progress, review, done, etc."
+                            ]
                         },
-                        "intent": { "type": "integer" },
+                        "intent": { "type": "integer", "description": "0-4. Default when unset: P4" },
                         "severity": { "type": "integer" },
                         "goal_type": { "type": "string" },
                         "assignee": { "type": "string" },
@@ -252,11 +261,11 @@ impl PkbSearchServer {
                         "has_superseded_by": { "type": "boolean" },
                         "since": { "type": "string" },
                         "before": { "type": "string" },
-                        "released_since": { "type": "string", "description": "Filter to tasks with released_at on or after this ISO date or RFC 3339 timestamp" },
-                        "unhandled": { "type": "boolean", "description": "When true, return only released tasks without handled_at (default: false)" },
+                        "released_since": { "type": "string" },
+                        "unhandled": { "type": "boolean" },
                         "limit": { "type": "integer" },
                         "include_subtasks": { "type": "boolean" },
-                        "include_done": { "type": "boolean", "description": "Include done and cancelled tasks (default: false)" },
+                        "include_done": { "type": "boolean" },
                         "budget_ms": { "type": "integer" },
                         "fields": {
                             "anyOf": [
@@ -278,7 +287,7 @@ impl PkbSearchServer {
             .with_annotations(ToolAnnotations::new().read_only(true)),
             Tool::new(
                 "create",
-                "Create a doc; dir defaults by type (template: `[<project>/]workflows/<snake_id>.md`). Requires a slug (<= 30 chars) used to construct the filename.",
+                "Create a document (slug <= 30 chars required).",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -287,19 +296,19 @@ impl PkbSearchServer {
                             "type": "string",
                             "enum": ["task", "learn", "pr", "template", "target", "note", "knowledge", "memory", "insight", "observation", "contact", "document", "reference", "review", "case", "spec", "prototype", "index", "daily"]
                         },
-                        "slug": { "type": "string", "maxLength": 30, "description": "Short filename slug (required, <= 30 characters). Used to construct the node filename." },
+                        "slug": { "type": "string", "maxLength": 30, "description": "Slug (<= 30 chars)" },
                         "id": { "type": "string" },
                         "tags": { "type": "array", "items": { "type": "string" } },
-                        "body": { "type": "string", "description": "Markdown body (wikilinks supported; host paths rejected)" },
+                        "body": { "type": "string" },
                         "status": { "type": "string", "enum": ["inbox", "ready", "failed"] },
-                        "intent": { "type": "integer", "description": "Intent band 0-4 (P0 Critical .. P4 Backlog). Default when unset: P4 (Backlog)." },
+                        "intent": { "type": "integer", "description": "0-4. Default when unset: P4" },
                         "parent": { "type": "string" },
                         "depends_on": { "type": "array", "items": { "type": "string" } },
                         "soft_depends_on": { "type": "array", "items": { "type": "string" } },
                         "assignee": { "type": "string" },
                         "origin_agent": { "type": "string" },
-                        "complexity": { "type": "string", "description": "Complexity size label (e.g. S, M, L; use effort for duration strings)" },
-                        "effort": { "type": "string", "description": "Effort duration string: 1d, 2h, 1w (minimum 1h; use complexity for size labels)" },
+                        "complexity": { "type": "string", "description": "Size S/M/L (use effort for durations)" },
+                        "effort": { "type": "string", "description": "Duration 1d/2h (use complexity for sizes)" },
                         "consequence": { "type": "string" },
                         "contributes_to": { "type": "array", "items": { "type": "object" } },
                         "source": { "type": "string" },
@@ -325,28 +334,28 @@ impl PkbSearchServer {
             .with_annotations(ToolAnnotations::new().read_only(false)),
             Tool::new(
                 "create_task",
-                "Create a new task markdown file with YAML frontmatter. Requires a slug (<= 30 chars) used to construct the filename. Parent is optional (omitted tasks are root tasks). Project inherits from ancestor if omitted.",
+                "Create a task markdown file (slug <= 30 chars required).",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
-                        "title": { "type": "string", "description": "Task title (required, alias task_title)" },
-                        "slug": { "type": "string", "maxLength": 30, "description": "Short filename slug (required, <= 30 characters). Used to construct the task filename." },
+                        "title": { "type": "string" },
+                        "slug": { "type": "string", "maxLength": 30, "description": "Slug (<= 30 chars)" },
                         "task_title": { "type": "string" },
                         "id": { "type": "string" },
                         "parent": { "type": "string" },
-                        "intent": { "type": "integer", "description": "Intent band 0-4 (P0 Critical .. P4 Backlog). Default when unset: P4 (Backlog)." },
+                        "intent": { "type": "integer", "description": "0-4. Default when unset: P4" },
                         "tags": { "type": "array", "items": { "type": "string" } },
                         "depends_on": { "type": "array", "items": { "type": "string" } },
                         "soft_depends_on": { "type": "array", "items": { "type": "string" } },
                         "assignee": { "type": "string" },
                         "origin_agent": { "type": "string" },
-                        "complexity": { "type": "string", "description": "Complexity size label (e.g. S, M, L; use effort for duration strings)" },
-                        "effort": { "type": "string", "description": "Effort duration string: 1d, 2h, 1w (minimum 1h; use complexity for size labels)" },
+                        "complexity": { "type": "string", "description": "Size S/M/L (use effort for durations)" },
+                        "effort": { "type": "string", "description": "Duration 1d/2h (use complexity for sizes)" },
                         "consequence": { "type": "string" },
                         "severity": { "type": "integer" },
                         "goal_type": { "type": "string", "enum": GOAL_TYPE_ENUM },
                         "classification": { "type": "string" },
-                        "body": { "type": "string", "description": "Markdown body (wikilinks supported; host paths rejected)" },
+                        "body": { "type": "string" },
                         "stakeholder": { "type": "string" },
                         "waiting_since": { "type": "string" },
                         "due": { "type": "string" },
@@ -372,7 +381,7 @@ impl PkbSearchServer {
             .with_annotations(ToolAnnotations::new().read_only(false)),
             Tool::new(
                 "update_task",
-                "Patch task metadata (flat, nested under updates, or mixed). Mixed calls merge both; conflicting fields reject. Supports status, type, intent, severity. Requires completion_evidence when setting status=done. Prefer release_task for transitions.",
+                "Patch task metadata (status, type, intent, severity; flat, under updates, or mixed; conflicting fields reject). Requires completion_evidence for done. Prefer release_task.",
                 serde_json::from_str::<JsonObject>(r#"{
                     "type": "object",
                     "properties": {
@@ -386,7 +395,7 @@ impl PkbSearchServer {
                             "type": "string",
                             "enum": ["task", "learn", "pr", "template", "target", "note", "knowledge", "memory", "insight", "observation", "contact", "document", "reference", "review", "case", "spec", "prototype", "index", "daily", "session-log", "audit-report"]
                         },
-                        "intent": { "type": "integer" },
+                        "intent": { "type": "integer", "description": "0-4. Default when unset: P4" },
                         "priority": { "type": "integer" },
                         "severity": { "type": "integer" },
                         "title": { "type": "string" },
@@ -400,8 +409,8 @@ impl PkbSearchServer {
                         "origin_agent": { "type": "string" },
                         "handled_at": { "type": "string" },
                         "handled_by": { "type": "string" },
-                        "complexity": { "type": "string" },
-                        "effort": { "type": "string" },
+                        "complexity": { "type": "string", "description": "Size S/M/L (use effort for durations)" },
+                        "effort": { "type": "string", "description": "Duration 1d/2h (use complexity for sizes)" },
                         "consequence": { "type": "string" },
                         "goal_type": { "type": "string", "enum": ["committed", "aspirational", "learning"] },
                         "body": { "type": "string" },
@@ -550,27 +559,26 @@ impl PkbSearchServer {
             .with_annotations(ToolAnnotations::new().read_only(false).destructive(false).idempotent(true)),
             Tool::new(
                 "release_task",
-                "Release a task to a terminal or handoff status (done, review, blocked, cancelled, partial, failed). Evidence-or-failure-reason contract: `summary` (or `completion_evidence`) is always required; releasing to done requires all acceptance checklist items in the task body to be ticked (- [x]); releasing to blocked/cancelled/review/partial/failed additionally requires a non-empty `reason` (or `blocker`, for `blocked`) — a handback with neither is rejected.",
+                "Release task to terminal/handoff status: `summary` (or `completion_evidence`) required; releasing to done requires all acceptance checklist items in the task body to be ticked (- [x]); blocked/cancelled/review/partial/failed require `reason`/`blocker`.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
                     "properties": {
-                        "id": { "type": "string", "description": "Task ID (flexible resolution: ID, filename stem, or title). If omitted, an ad-hoc task is created." },
-                        "project": { "type": "string", "description": "Project routing slug (required if id omitted)" },
+                        "id": { "type": "string" },
+                        "project": { "type": "string" },
                         "status": {
                             "type": "string",
-                            "enum": ["done", "review", "cancelled", "partial", "failed"],
-                            "description": "Target status"
+                            "enum": ["done", "review", "cancelled", "partial", "failed"]
                         },
-                        "summary": { "type": "string", "description": "What was done and outcome (or provide completion_evidence)." },
-                        "completion_evidence": { "type": "string", "description": "Alias for summary: what was done and outcome (required when status is done). Releasing as done requires all acceptance checklist items to be checked (- [x])." },
-                        "pr_url": { "type": "string", "description": "Pull request or commit URL" },
-                        "branch": { "type": "string", "description": "Git branch name (optional)" },
-                        "blocker": { "type": "string", "description": "Required when status=blocked (or provide reason)" },
-                        "reason": { "type": "string", "description": "Why the task didn't ship cleanly. Required (non-empty) when status is blocked/cancelled/review/partial/failed (for status=blocked, `blocker` may be given instead)." },
-                        "issue_url": { "type": "string", "description": "External issue/ticket URL" },
-                        "release_summary": { "type": "string", "description": "Detailed technical summary for the release. Warning if > 500 chars." },
-                        "body": { "type": "string", "description": "Markdown body for ad-hoc tasks (wikilinks supported; host paths rejected)" },
-                        "recursive": { "type": "boolean", "description": "Cascade-close open descendant tasks when releasing as done. Default: false." }
+                        "summary": { "type": "string" },
+                        "completion_evidence": { "type": "string", "description": "Releasing as done requires all acceptance checklist items to be checked (- [x])." },
+                        "pr_url": { "type": "string" },
+                        "branch": { "type": "string" },
+                        "blocker": { "type": "string" },
+                        "reason": { "type": "string" },
+                        "issue_url": { "type": "string" },
+                        "release_summary": { "type": "string" },
+                        "body": { "type": "string", "description": "Body for ad-hoc tasks" },
+                        "recursive": { "type": "boolean" }
                     },
                     "required": ["status", "summary"]
                 }))
@@ -625,6 +633,45 @@ impl PkbSearchServer {
                 .unwrap(),
             )
             .with_title("Server Status & Diagnostics")
+            .with_annotations(ToolAnnotations::new().read_only(true)),
+            Tool::new(
+                "resolve",
+                "Resolve IDs and inline prompt IDs with state (exact, alias, prefix, title, ghost, deleted, ambiguous, unknown).",
+                serde_json::from_value::<JsonObject>(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "ids": {
+                            "anyOf": [
+                                { "type": "string" },
+                                { "type": "array", "items": { "type": "string" } }
+                            ]
+                        },
+                        "prompt": { "type": "string" }
+                    }
+                }))
+                .unwrap(),
+            )
+            .with_title("Deterministic Identifier Resolution")
+            .with_annotations(ToolAnnotations::new().read_only(true)),
+            Tool::new(
+                "hydrate",
+                "Build XML-escaped <pkb-context> brief within 5000ms budget enforcing knowledge-tier, privacy, and 14-day daily gates.",
+                serde_json::from_value::<JsonObject>(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "prompt": { "type": "string" },
+                        "prompt_kind": { "type": "string" },
+                        "budget_ms": { "type": "integer" },
+                        "max_items": { "type": "integer" },
+                        "max_chars": { "type": "integer" },
+                        "caller": { "type": "string" },
+                        "surface": { "type": "string" }
+                    },
+                    "required": ["prompt"]
+                }))
+                .unwrap(),
+            )
+            .with_title("Hydrate Prompt Context")
             .with_annotations(ToolAnnotations::new().read_only(true))
         ];
         Self::attach_output_schemas(&mut tools);
@@ -1545,6 +1592,29 @@ impl PkbSearchServer {
                     "showing": { "type": "integer" },
                     "items": { "type": "array", "items": { "type": "object" } },
                     "documents": { "type": "array", "items": { "type": "object" } }
+                }
+            }),
+            "resolve" => serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "count": { "type": "integer" },
+                    "resolved_ids": { "type": "array", "items": { "type": "string" } },
+                    "entries": { "type": "array", "items": { "type": "object" } }
+                }
+            }),
+            "hydrate" => serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "abstained": { "type": "boolean" },
+                    "reason": { "type": "string" },
+                    "brief": { "type": "string" },
+                    "count": { "type": "integer" },
+                    "items": { "type": "array", "items": { "type": "object" } },
+                    "ranking": { "type": "string" },
+                    "reranker_loaded": { "type": "boolean" },
+                    "degraded": { "type": "boolean" },
+                    "query_truncated": { "type": "boolean" },
+                    "prompt_kind": { "type": "string" }
                 }
             }),
             _ => serde_json::json!({

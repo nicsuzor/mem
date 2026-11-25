@@ -26,11 +26,11 @@ async fn test_tools_list_publishes_about_16_tools_with_output_schema_and_ttl() {
 
     let list_res = server.list_tools_result();
 
-    // Publishes about 16 tools (15 to 18 tools)
+    // Publishes 20 tools
     let tool_count = list_res.tools.len();
     assert!(
-        (15..=18).contains(&tool_count),
-        "tools/list must publish about 16 tools, got {}",
+        (15..=20).contains(&tool_count),
+        "tools/list must publish 15..=20 tools, got {}",
         tool_count
     );
 

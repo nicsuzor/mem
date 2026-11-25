@@ -62,6 +62,18 @@ The PKB's value rests on one invariant: every node is currently true. Admitting 
 
 Session prompts are log tier permanently. What Nic typed at a given moment is true-as-of-then and never becomes false. Prompts are indexed, cited and queried where they live; they are never PKB nodes. Agents do not record or relay the user's words verbatim into the PKB; they make sense of asks in context, link them to prior context, recompose them into clear logical structures, and cite message ids as pointers.
 
+#### Derived corpus tier
+
+Every document's corpus tier (`knowledge | log | archive`) is strictly derived from existing canonical metadata — there is no `tier:` frontmatter field:
+
+- `archive`: any document with `status: archived` (case-insensitive); `archive` overrides `log` types.
+- `log`: any non-archived document whose `type` is `session-log`, `transcript`, or `verbatim-log` (`template` is never `log`).
+- `knowledge`: all remaining documents, including active and closed tasks and `type: daily` notes.
+
+`pkb lint --fix tier` enforces this invariant idempotently without altering markdown body bytes or `content_hash`: `doc-tier-legacy-marker` migrates retired marker tags (`archived`, `onenote-import`, `transcript`, `verbatim-log`) into canonical `status: archived` / `type: transcript` / `type: verbatim-log` and strips any redundant `tier:` key, and `doc-daily-no-date` populates missing frontmatter `date: YYYY-MM-DD` on `type: daily` notes from the filename stem, `id`, or `title`.
+
+Privacy-sensitive documents tagged `confidential`, `private`, or `sensitive` remain in the corpus but are excluded by default pre-pool retrieval gates unless `include_private: true` is passed to `search` (and are never surfaced by `hydrate`).
+
 ### 1.3. The flat-file test
 
 Apply before creating any new store, ledger, digest, export or generated `.md` artifact. A generated flat file is legitimate only when it is a rendered view that is:

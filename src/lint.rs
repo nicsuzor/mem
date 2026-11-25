@@ -172,6 +172,18 @@ pub struct FileResult {
     pub fixed_content: Option<String>,
 }
 
+/// Scope of automatic lint fixes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum FixScope {
+    /// Do not apply `--fix` mutations (missing-id self-heal still applies).
+    #[default]
+    None,
+    /// Apply all fixable lint rules (`--fix`).
+    All,
+    /// Apply only derived-tier canonicalization & daily-date frontmatter fixes (`--fix tier`).
+    Tier,
+}
+
 /// Summary statistics across all linted files.
 #[derive(Debug, Default)]
 pub struct LintSummary {
@@ -316,7 +328,9 @@ fn resolve_type_alias(t: &str) -> &'static str {
         // Reference aliases
         "article" | "reading-guide" | "talk" => "reference",
         "observation" | "insight" | "exploration" => "note",
-        "session-log" => "session-log",
+        "session-log" | "session_log" => "session-log",
+        "transcript" => "transcript",
+        "verbatim-log" | "verbatim_log" => "verbatim-log",
         "review" | "review-notes" | "peer-review" => "review",
         "daily" => "daily",
         "case" => "case",
@@ -417,10 +431,94 @@ fn generate_missing_id(path: &Path, fm: &serde_json::Map<String, serde_json::Val
     crate::graph::create_id(&prefix)
 }
 
+/// Legacy tag markers retired in favor of canonical `status: archived` or log `type:`.
+const LEGACY_TIER_TAGS: &[&str] = &["archived", "onenote-import", "transcript", "verbatim-log"];
+
+/// Extract `YYYY-MM-DD` (including compact `YYYYMMDD`) from filename stem, `id`, or `title`.
+fn extract_daily_date_flexible(
+    path: &Path,
+    fm: &serde_json::Map<String, serde_json::Value>,
+) -> Option<String> {
+    fn from_str(s: &str) -> Option<String> {
+        static DASHED: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+        static COMPACT: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+        let dashed =
+            DASHED.get_or_init(|| regex::Regex::new(r"^(\d{4}-\d{2}-\d{2})(?:\b|[-_]|$)").unwrap());
+        if let Some(c) = dashed.captures(s.trim()) {
+            return Some(c[1].to_string());
+        }
+        let compact = COMPACT.get_or_init(|| {
+            regex::Regex::new(r"^(\d{4})(\d{2})(\d{2})(?:[^0-9]|$)").unwrap()
+        });
+        if let Some(c) = compact.captures(s.trim()) {
+            let month: u32 = c[2].parse().ok()?;
+            let day: u32 = c[3].parse().ok()?;
+            if (1..=12).contains(&month) && (1..=31).contains(&day) {
+                return Some(format!("{}-{}-{}", &c[1], &c[2], &c[3]));
+            }
+        }
+        None
+    }
+
+    if let Some(stem) = path.file_stem() {
+        if let Some(d) = from_str(&stem.to_string_lossy()) {
+            return Some(d);
+        }
+    }
+    if let Some(d) = fm.get("id").and_then(|v| v.as_str()).and_then(from_str) {
+        return Some(d);
+    }
+    fm.get("title")
+        .and_then(|v| v.as_str())
+        .and_then(from_str)
+}
+
+/// Extract normalized tag strings from frontmatter `tags`.
+fn extract_fm_tags(fm: &serde_json::Map<String, serde_json::Value>) -> Vec<String> {
+    match fm.get("tags") {
+        Some(serde_json::Value::Array(arr)) => arr
+            .iter()
+            .filter_map(|v| v.as_str())
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect(),
+        Some(serde_json::Value::String(s)) => s
+            .split(',')
+            .map(|item| item.trim().to_string())
+            .filter(|item| !item.is_empty())
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// Return matching legacy tier marker tags present in `fm["tags"]` (lowercased, deduplicated).
+fn collect_legacy_tier_tags(fm: &serde_json::Map<String, serde_json::Value>) -> Vec<String> {
+    let mut found = Vec::new();
+    for tag in extract_fm_tags(fm) {
+        let lower = tag.to_ascii_lowercase();
+        if LEGACY_TIER_TAGS.contains(&lower.as_str()) && !found.contains(&lower) {
+            found.push(lower);
+        }
+    }
+    found
+}
+
 /// Lint a single file. If `fix` is true, also produce corrected content.
 pub fn lint_file(
     path: &Path,
     fix: bool,
+    known_ids: Option<&HashSet<String>>,
+    ancestor_map: Option<&AncestorMap>,
+    children_set: Option<&ChildrenSet>,
+) -> FileResult {
+    let scope = if fix { FixScope::All } else { FixScope::None };
+    lint_file_scoped(path, scope, known_ids, ancestor_map, children_set)
+}
+
+/// Lint a single file with an explicit [`FixScope`].
+pub fn lint_file_scoped(
+    path: &Path,
+    fix_scope: FixScope,
     known_ids: Option<&HashSet<String>>,
     ancestor_map: Option<&AncestorMap>,
     children_set: Option<&ChildrenSet>,
@@ -469,6 +567,7 @@ pub fn lint_file(
     // ── Frontmatter rules ────────────────────────────────────────────
 
     check_frontmatter(
+        path,
         &content,
         &fm_data,
         &mut diags,
@@ -494,7 +593,8 @@ pub fn lint_file(
     // frontmatter (safe write).
     let id_healed_content = match &fm_data {
         Some(serde_json::Value::Object(fm))
-            if !fm.contains_key("id")
+            if fix_scope != FixScope::Tier
+                && !fm.contains_key("id")
                 && !fm.contains_key("task_id")
                 && content.starts_with("---\n") =>
         {
@@ -507,15 +607,36 @@ pub fn lint_file(
 
     // ── Build fixed content if requested ─────────────────────────────
 
-    let fixed_content = if fix && diags.iter().any(|d| d.fixable) {
-        let fixed = apply_fixes(content_after_heal, &fm_data, path, ancestor_map);
-        if fixed != content {
-            Some(fixed)
-        } else {
-            None
+    let fixed_content = match fix_scope {
+        FixScope::None => id_healed_content.filter(|healed| healed != &content),
+        FixScope::Tier => {
+            let needs_tier_fix = diags.iter().any(|d| {
+                d.fixable && matches!(d.rule, "doc-tier-legacy-marker" | "doc-daily-no-date")
+            });
+            if needs_tier_fix {
+                let fixed = apply_tier_fixes(&content, path);
+                if fixed != content {
+                    Some(fixed)
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
         }
-    } else {
-        id_healed_content.filter(|healed| healed != &content)
+        FixScope::All => {
+            if diags.iter().any(|d| d.fixable) {
+                let fixed_general = apply_fixes(content_after_heal, &fm_data, path, ancestor_map);
+                let fixed = apply_tier_fixes(&fixed_general, path);
+                if fixed != content {
+                    Some(fixed)
+                } else {
+                    None
+                }
+            } else {
+                id_healed_content.filter(|healed| healed != &content)
+            }
+        }
     };
 
     FileResult {
@@ -642,6 +763,7 @@ fn resolves_project(id: &str, ancestor_map: &AncestorMap) -> bool {
 }
 
 fn check_frontmatter(
+    path: &Path,
     content: &str,
     fm_data: &Option<serde_json::Value>,
     diags: &mut Vec<Diagnostic>,
@@ -927,10 +1049,10 @@ fn check_frontmatter(
         }
     }
 
-    // Unknown keys
+    // Unknown keys (skip `tier`, which is reported by `doc-tier-legacy-marker`)
     let known: HashSet<&str> = KNOWN_KEYS.iter().copied().collect();
     for key in fm.keys() {
-        if !known.contains(key.as_str()) {
+        if !known.contains(key.as_str()) && key != "tier" {
             diags.push(Diagnostic::simple(
                 Severity::Style,
                 "fm-unknown-key",
@@ -1109,6 +1231,51 @@ fn check_frontmatter(
             None,
             false,
         ));
+    }
+
+    // Legacy tier marker tags or redundant `tier:` key
+    let has_tier_key = fm.contains_key("tier");
+    let legacy_tier_tags = collect_legacy_tier_tags(fm);
+    if has_tier_key || !legacy_tier_tags.is_empty() {
+        let mut reasons = Vec::new();
+        if has_tier_key {
+            reasons.push("redundant 'tier:' frontmatter key".to_string());
+        }
+        if !legacy_tier_tags.is_empty() {
+            reasons.push(format!(
+                "legacy tier marker tag(s) [{}]",
+                legacy_tier_tags.join(", ")
+            ));
+        }
+        diags.push(Diagnostic::simple(
+            Severity::Style,
+            "doc-tier-legacy-marker",
+            format!(
+                "Document uses {} instead of canonical derived tier (status: archived / type: transcript|verbatim-log)",
+                reasons.join(" and ")
+            ),
+            None,
+            true,
+        ));
+    }
+
+    // Daily notes should carry frontmatter `date: YYYY-MM-DD` for 14-day hydration window
+    if resolve_type_alias(node_type) == "daily" {
+        let has_date = fm
+            .get("date")
+            .and_then(|v| v.as_str())
+            .map(|s| !s.trim().is_empty())
+            .unwrap_or(false);
+        if !has_date {
+            let fixable = extract_daily_date_flexible(path, fm).is_some();
+            diags.push(Diagnostic::simple(
+                Severity::Warning,
+                "doc-daily-no-date",
+                "Daily note is missing frontmatter 'date:' field",
+                None,
+                fixable,
+            ));
+        }
     }
 
     // Task-type-specific checks
@@ -1970,6 +2137,201 @@ fn fix_project_alias(content: &str, old_proj: &str, new_proj: &str) -> String {
     res
 }
 
+/// Set or replace a top-level `key: value` scalar line inside frontmatter text.
+fn upsert_fm_scalar_line(fm_text: &str, key: &str, value: &str) -> String {
+    let prefix = format!("{key}:");
+    let mut lines: Vec<String> = Vec::new();
+    let mut replaced = false;
+    for line in fm_text.lines() {
+        if !replaced && line.starts_with(&prefix) {
+            let after = &line[prefix.len()..];
+            if after.is_empty() || after.starts_with(' ') || after.starts_with('\t') {
+                lines.push(format!("{key}: {value}"));
+                replaced = true;
+                continue;
+            }
+        }
+        lines.push(line.to_string());
+    }
+    if !replaced {
+        lines.push(format!("{key}: {value}"));
+    }
+    lines.join("\n")
+}
+
+/// Remove retired tier marker tags (`archived`, `onenote-import`, `transcript`,
+/// `verbatim-log`) from the frontmatter `tags:` entry while keeping all other tags intact.
+fn strip_legacy_tags_from_frontmatter(fm_text: &str) -> String {
+    let raw_lines: Vec<&str> = fm_text.lines().collect();
+    let mut out: Vec<String> = Vec::with_capacity(raw_lines.len());
+    let mut i = 0;
+    while i < raw_lines.len() {
+        let line = raw_lines[i];
+        let trimmed_start = line.trim_start();
+        if let Some(after_colon) = trimmed_start.strip_prefix("tags:") {
+            let indent = &line[..line.len() - trimmed_start.len()];
+            let rest = after_colon.trim();
+            if rest.is_empty() {
+                // Multi-line YAML sequence under `tags:`
+                let mut kept: Vec<&str> = Vec::new();
+                let mut j = i + 1;
+                while j < raw_lines.len() {
+                    let item_line = raw_lines[j];
+                    let item_trimmed = item_line.trim_start();
+                    if let Some(item_val) = item_trimmed.strip_prefix("- ") {
+                        let clean = item_val
+                            .trim()
+                            .trim_matches(|c| c == '"' || c == '\'')
+                            .to_ascii_lowercase();
+                        if !LEGACY_TIER_TAGS.contains(&clean.as_str()) {
+                            kept.push(item_line);
+                        }
+                        j += 1;
+                    } else if item_trimmed == "-" {
+                        kept.push(item_line);
+                        j += 1;
+                    } else {
+                        break;
+                    }
+                }
+                if kept.is_empty() {
+                    out.push(format!("{indent}tags: []"));
+                } else {
+                    out.push(line.to_string());
+                    for k in kept {
+                        out.push(k.to_string());
+                    }
+                }
+                i = j;
+                continue;
+            } else {
+                let inner = if rest.starts_with('[') && rest.ends_with(']') && rest.len() >= 2 {
+                    &rest[1..rest.len() - 1]
+                } else {
+                    rest
+                };
+                let kept: Vec<&str> = inner
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|item| !item.is_empty())
+                    .filter(|item| {
+                        let clean = item
+                            .trim_matches(|c| c == '"' || c == '\'')
+                            .to_ascii_lowercase();
+                        !LEGACY_TIER_TAGS.contains(&clean.as_str())
+                    })
+                    .collect();
+                out.push(format!("{indent}tags: [{}]", kept.join(", ")));
+                i += 1;
+                continue;
+            }
+        }
+        out.push(line.to_string());
+        i += 1;
+    }
+    out.join("\n")
+}
+
+/// Apply derived-tier canonicalization & daily-date frontmatter fixes in-place.
+///
+/// Rewrites ONLY frontmatter lines (`--- ... ---`) while leaving markdown body bytes
+/// untouched so `content_hash` / `body_hash` stay invariant, and runs idempotently.
+fn apply_tier_fixes(content: &str, path: &Path) -> String {
+    if !content.starts_with("---\n") {
+        return content.to_string();
+    }
+    let Some(fm_end_rel) = content[3..].find("\n---") else {
+        return content.to_string();
+    };
+    let fm_end = fm_end_rel + 3;
+    let tail = &content[fm_end + 4..];
+
+    let matter = Matter::<YAML>::new();
+    let parsed = matter.parse(content);
+    let fm_val = parsed
+        .data
+        .as_ref()
+        .and_then(|d| d.deserialize::<serde_json::Value>().ok())
+        .filter(|v| v.is_object())
+        .or_else(|| fallback_parse_frontmatter(content));
+
+    let Some(serde_json::Value::Object(fm)) = fm_val else {
+        return content.to_string();
+    };
+
+    let has_tier_key = fm.contains_key("tier");
+    let legacy_tags = collect_legacy_tier_tags(&fm);
+    let cur_type = fm.get("type").and_then(|v| v.as_str()).unwrap_or("");
+    let is_already_log_type = matches!(
+        cur_type.trim().to_ascii_lowercase().as_str(),
+        "session-log" | "transcript" | "verbatim-log"
+    );
+
+    let wants_archive = legacy_tags
+        .iter()
+        .any(|t| t == "archived" || t == "onenote-import");
+    let wants_log_type: Option<&str> = if is_already_log_type {
+        None
+    } else if legacy_tags.iter().any(|t| t == "verbatim-log") {
+        Some("verbatim-log")
+    } else if legacy_tags.iter().any(|t| t == "transcript") {
+        Some("transcript")
+    } else {
+        None
+    };
+
+    let missing_daily_date = resolve_type_alias(cur_type) == "daily"
+        && fm
+            .get("date")
+            .and_then(|v| v.as_str())
+            .map(|s| s.trim().is_empty())
+            .unwrap_or(true);
+    let daily_date = if missing_daily_date {
+        extract_daily_date_flexible(path, &fm)
+    } else {
+        None
+    };
+
+    if !has_tier_key
+        && legacy_tags.is_empty()
+        && !wants_archive
+        && wants_log_type.is_none()
+        && daily_date.is_none()
+    {
+        return content.to_string();
+    }
+
+    let mut fm_section = content[4..fm_end].to_string();
+    if has_tier_key {
+        fm_section = remove_key_from_frontmatter(&fm_section, "tier");
+    }
+    if wants_archive {
+        let already_archived = fm
+            .get("status")
+            .and_then(|v| v.as_str())
+            .is_some_and(|s| s.trim().eq_ignore_ascii_case("archived"));
+        if !already_archived {
+            fm_section = upsert_fm_scalar_line(&fm_section, "status", "archived");
+        }
+    }
+    if let Some(log_type) = wants_log_type {
+        fm_section = upsert_fm_scalar_line(&fm_section, "type", log_type);
+    }
+    if !legacy_tags.is_empty() {
+        fm_section = strip_legacy_tags_from_frontmatter(&fm_section);
+    }
+    if let Some(date) = daily_date {
+        fm_section = upsert_fm_scalar_line(&fm_section, "date", &date);
+    }
+
+    let trimmed_fm = fm_section.trim_end_matches('\n');
+    if trimmed_fm.is_empty() {
+        format!("---\n---{}", tail)
+    } else {
+        format!("---\n{}\n---{}", trimmed_fm, tail)
+    }
+}
+
 /// Apply fixes surgically — line-level edits only, preserving key order and formatting.
 fn apply_fixes(
     content: &str,
@@ -2803,13 +3165,34 @@ pub fn lint_directory(
     fix: bool,
     check_refs: bool,
 ) -> (Vec<FileResult>, LintSummary) {
-    lint_directory_with_cap(pkb_root, fix, check_refs, crate::flow::ITERATION_CAP)
+    let scope = if fix { FixScope::All } else { FixScope::None };
+    lint_directory_with_cap_scoped(pkb_root, scope, check_refs, crate::flow::ITERATION_CAP)
+}
+
+/// Lint all markdown files under a PKB root directory with an explicit [`FixScope`].
+pub fn lint_directory_scoped(
+    pkb_root: &Path,
+    fix_scope: FixScope,
+    check_refs: bool,
+) -> (Vec<FileResult>, LintSummary) {
+    lint_directory_with_cap_scoped(pkb_root, fix_scope, check_refs, crate::flow::ITERATION_CAP)
 }
 
 /// Lint all markdown files under a PKB root directory with a custom iteration cap for convergence check.
 pub fn lint_directory_with_cap(
     pkb_root: &Path,
     fix: bool,
+    check_refs: bool,
+    iter_cap: usize,
+) -> (Vec<FileResult>, LintSummary) {
+    let scope = if fix { FixScope::All } else { FixScope::None };
+    lint_directory_with_cap_scoped(pkb_root, scope, check_refs, iter_cap)
+}
+
+/// Lint all markdown files under a PKB root directory with explicit [`FixScope`] and custom iteration cap.
+pub fn lint_directory_with_cap_scoped(
+    pkb_root: &Path,
+    fix_scope: FixScope,
     check_refs: bool,
     iter_cap: usize,
 ) -> (Vec<FileResult>, LintSummary) {
@@ -3004,7 +3387,7 @@ pub fn lint_directory_with_cap(
     };
 
     // Pre-fix pass: collect ID renames
-    let id_renames: Vec<(String, String)> = if fix {
+    let id_renames: Vec<(String, String)> = if fix_scope == FixScope::All {
         let id_re = get_id_regex();
         files
             .par_iter()
@@ -3037,9 +3420,9 @@ pub fn lint_directory_with_cap(
     let mut results: Vec<FileResult> = files
         .par_iter()
         .map(|p| {
-            lint_file(
+            lint_file_scoped(
                 p,
-                fix,
+                fix_scope,
                 known_ids.as_ref(),
                 Some(&ancestor_map),
                 Some(&children_set),
@@ -3358,7 +3741,7 @@ pub fn lint_directory_with_cap(
         if let Some(diag) = project_slug_diags.get(&r.path) {
             r.diagnostics.push(diag.clone());
         }
-        if fix {
+        if fix_scope == FixScope::All {
             if let Some((old_proj, new_proj)) = project_alias_fixes.get(&r.path) {
                 let base_content = match r.fixed_content.as_deref() {
                     Some(s) => s.to_string(),
@@ -3376,7 +3759,7 @@ pub fn lint_directory_with_cap(
     let summary = LintSummary::from_results(&results);
 
     // Post-fix pass: apply cross-file ID renames via rename_id
-    if fix && !id_renames.is_empty() {
+    if fix_scope == FixScope::All && !id_renames.is_empty() {
         write_fixes(&results);
         for (old_id, new_id) in &id_renames {
             let _ = rename_id(pkb_root, old_id, new_id);
@@ -4208,6 +4591,7 @@ Body.\n",
             .and_then(|d| d.deserialize::<serde_json::Value>().ok());
 
         check_frontmatter(
+            Path::new("task-1.md"),
             content_task,
             &fm_data,
             &mut diags,
@@ -4237,6 +4621,7 @@ Body.\n",
 
         let mut diags_no = Vec::new();
         check_frontmatter(
+            Path::new("task-1.md"),
             content_no,
             &fm_data_no,
             &mut diags_no,
@@ -4271,6 +4656,7 @@ Body.\n",
 
         let mut diags = Vec::new();
         check_frontmatter(
+            Path::new("task-1.md"),
             content_task,
             &fm_data,
             &mut diags,
@@ -5195,5 +5581,106 @@ Real broken link that must be reported:
             "Single file check took {:?} — expected sub-second (<500ms)",
             elapsed
         );
+    }
+
+    #[test]
+    fn test_lint_tier_fix_idempotent_and_preserves_body_hash() {
+        let dir = tempfile::tempdir().unwrap();
+
+        // 1. Legacy `archived` + `onenote-import` tags and redundant `tier:` key
+        let body_a = "\nLegacy imported body   \nwith intentional spacing.\n";
+        let path_a = dir.path().join("legacy-archive.md");
+        let raw_a = format!(
+            "---\nid: doc-1111aaaa\ntitle: Legacy Doc\ntype: note\ntier: archive\ntags:\n  - reference\n  - archived\n  - onenote-import\n---{body_a}"
+        );
+        std::fs::write(&path_a, &raw_a).unwrap();
+        let orig_hash = crate::pkb::parse_file(&path_a).unwrap().content_hash;
+
+        // Diagnostic fires before fix
+        let check_a = lint_file_scoped(&path_a, FixScope::None, None, None, None);
+        assert!(
+            check_a
+                .diagnostics
+                .iter()
+                .any(|d| d.rule == "doc-tier-legacy-marker" && d.fixable),
+            "expected doc-tier-legacy-marker, got: {:?}",
+            check_a.diagnostics
+        );
+        assert!(
+            !check_a
+                .diagnostics
+                .iter()
+                .any(|d| d.rule == "fm-unknown-key" && d.message.contains("'tier'")),
+            "tier should not duplicate fm-unknown-key"
+        );
+
+        // Apply tier-only fix (must NOT rewrite body whitespace!)
+        let fixed_res = lint_file_scoped(&path_a, FixScope::Tier, None, None, None);
+        let fixed_a = fixed_res.fixed_content.expect("expected tier fix");
+        assert!(fixed_a.contains("status: archived"), "got:\n{fixed_a}");
+        assert!(!fixed_a.contains("tier:"), "got:\n{fixed_a}");
+        assert!(!fixed_a.contains("onenote-import"), "got:\n{fixed_a}");
+        assert!(fixed_a.contains("- reference"), "non-legacy tag must stay: {fixed_a}");
+        assert!(fixed_a.ends_with(body_a), "body bytes must stay identical: {fixed_a:?}");
+
+        std::fs::write(&path_a, &fixed_a).unwrap();
+        let reparsed = crate::pkb::parse_file(&path_a).unwrap();
+        assert_eq!(reparsed.content_hash, orig_hash);
+        assert_eq!(
+            crate::graph::derive_tier(
+                Some("note"),
+                reparsed
+                    .frontmatter
+                    .as_ref()
+                    .and_then(|f| f.get("status"))
+                    .and_then(|v| v.as_str())
+            ),
+            crate::graph::CorpusTier::Archive
+        );
+
+        // Second pass must be completely idempotent
+        let second = lint_file_scoped(&path_a, FixScope::Tier, None, None, None);
+        assert!(second.fixed_content.is_none(), "second pass must be a no-op");
+        assert!(!second
+            .diagnostics
+            .iter()
+            .any(|d| d.rule == "doc-tier-legacy-marker"));
+
+        // 2. Transcript tag upgrades type: note -> type: transcript
+        let path_b = dir.path().join("call-transcript.md");
+        std::fs::write(
+            &path_b,
+            "---\nid: doc-2222bbbb\ntitle: Call Log\ntype: note\ntags: [transcript, meeting]\n---\n\nTranscript text.\n",
+        )
+        .unwrap();
+        let fixed_b = lint_file_scoped(&path_b, FixScope::Tier, None, None, None)
+            .fixed_content
+            .expect("expected transcript upgrade");
+        assert!(fixed_b.contains("type: transcript"), "got:\n{fixed_b}");
+        assert!(fixed_b.contains("tags: [meeting]"), "got:\n{fixed_b}");
+
+        // 3. Daily note missing `date:` populates `YYYY-MM-DD` from compact stem `YYYYMMDD`
+        let path_c = dir.path().join("20261124-daily.md");
+        std::fs::write(
+            &path_c,
+            "---\nid: doc-3333cccc\ntitle: Daily Summary\ntype: daily\n---\n\nDay notes.\n",
+        )
+        .unwrap();
+        let check_c = lint_file_scoped(&path_c, FixScope::None, None, None, None);
+        assert!(check_c
+            .diagnostics
+            .iter()
+            .any(|d| d.rule == "doc-daily-no-date" && d.fixable));
+        let fixed_c = lint_file_scoped(&path_c, FixScope::Tier, None, None, None)
+            .fixed_content
+            .expect("expected daily date fix");
+        assert!(fixed_c.contains("date: 2026-11-24"), "got:\n{fixed_c}");
+        std::fs::write(&path_c, &fixed_c).unwrap();
+        let second_c = lint_file_scoped(&path_c, FixScope::Tier, None, None, None);
+        assert!(second_c.fixed_content.is_none(), "daily fix must be idempotent");
+        assert!(!second_c
+            .diagnostics
+            .iter()
+            .any(|d| d.rule == "doc-daily-no-date"));
     }
 }

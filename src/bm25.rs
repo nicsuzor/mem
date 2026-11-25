@@ -739,6 +739,12 @@ impl Bm25Index {
                     doc_type: chunk.doc_type.as_deref(),
                     status: chunk.status.as_deref(),
                     tags: &chunk.tags,
+                    tier: crate::graph::derive_tier(
+                        chunk.doc_type.as_deref(),
+                        chunk.status.as_deref(),
+                    ),
+                    superseded: crate::graph::is_superseded_status(chunk.status.as_deref()),
+                    date: chunk.date.as_deref(),
                     chunk_id: Some(chunk.chunk_id),
                 };
                 if !pred(&cand) {

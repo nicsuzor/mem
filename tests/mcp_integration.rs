@@ -933,8 +933,8 @@ fn test_http_tools_list_count() {
 
     assert_eq!(
         tools.len(),
-        18,
-        "expected 18 published tools from tools/list, got {}",
+        20,
+        "expected 20 published tools from tools/list, got {}",
         tools.len()
     );
     assert_eq!(msg["result"]["ttlMs"].as_u64(), Some(86_400_000));
@@ -1538,7 +1538,7 @@ fn test_phases_1_to_3_concurrency_and_contracts() {
         let list_json: Value = serde_json::from_str(&list_text).expect("parse list json");
 
         let tools = list_json["result"]["tools"].as_array().expect("tools array");
-        assert_eq!(tools.len(), 18, "Phase 3 contract: exactly 18 published tools");
+        assert_eq!(tools.len(), 20, "Contract: exactly 20 published tools");
         assert_eq!(
             list_json["result"]["ttlMs"].as_u64(),
             Some(86_400_000),

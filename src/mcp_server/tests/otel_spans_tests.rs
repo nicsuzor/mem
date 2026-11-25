@@ -426,5 +426,171 @@ async fn test_get_task_mcp_span_attributes() {
     assert_eq!(attrs.get("hybrid_search_time_ms").unwrap(), "0");
 }
 
+#[tokio::test]
+async fn test_search_and_hydrate_otel_span_untruncated_ids_and_timings() {
+    let _lock = OTEL_TEST_MUTEX.lock().await;
+    let exporter = InMemorySpanExporter::default();
+    let provider = TracerProvider::builder()
+        .with_simple_exporter(exporter.clone())
+        .build();
+    let _prev = opentelemetry::global::set_tracer_provider(provider.clone());
+
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    std::fs::create_dir_all(root.join("notes")).unwrap();
+    write_test_polecat_yaml(root);
+
+    let embedder = Arc::new(Embedder::new_dummy());
+    let query_vec = embedder.encode_query("telemetry lattice signal").unwrap();
+
+    // Seed 200 docs with 50-char IDs so JSON array of `search.result_ids` exceeds 8,192 bytes!
+    for i in 0..200 {
+        let id = format!("telemetry-long-identifier-entry-{i:04}-padding-xxxx");
+        std::fs::write(
+            root.join(format!("notes/{id}.md")),
+            format!(
+                "---\nid: {id}\ntype: note\ntitle: Telemetry Doc {i}\nstatus: active\n---\n\ntelemetry lattice signal\n"
+            ),
+        )
+        .unwrap();
+    }
+
+    let docs = crate::pkb::scan_directory(root)
+        .iter()
+        .filter_map(|p| crate::pkb::parse_file_relative(p, root))
+        .collect::<Vec<_>>();
+    let graph = GraphStore::build(&docs, root);
+    let mut store = VectorStore::new(query_vec.len());
+    for doc in &docs {
+        store.insert_precomputed(doc, vec![doc.body.clone()], vec![query_vec.clone()]);
+    }
+    let db_path = root.join("db");
+    let server = PkbSearchServer::new(
+        Arc::new(RwLock::new(store)),
+        embedder,
+        root.to_path_buf(),
+        db_path,
+        Arc::new(RwLock::new(graph)),
+    );
+
+    // 1. Search returning all 200 docs (>10KB of result IDs) with caller/surface/prompt_kind
+    let search_res = server
+        .execute_tool_call(
+            "search",
+            &json!({
+                "query": "telemetry lattice signal",
+                "limit": 200,
+                "ids_only": true,
+                "format": "json",
+                "caller": "hook",
+                "surface": "mcp",
+                "prompt_kind": "human",
+                "session_id": "test-session",
+            }),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    assert!(!search_res.content.is_empty());
+
+    // 2. Hydrate hit + filler abstention
+    let _ = server
+        .execute_tool_call(
+            "hydrate",
+            &json!({
+                "prompt": "telemetry lattice signal",
+                "prompt_kind": "agent",
+                "caller": "pre-turn",
+                "surface": "cli",
+                "session_id": "test-session",
+            }),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    let _ = server
+        .execute_tool_call(
+            "hydrate",
+            &json!({
+                "prompt": "   ",
+                "prompt_kind": "human",
+                "caller": "pre-turn",
+                "surface": "cli",
+                "session_id": "test-session",
+            }),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    let spans = exporter.spans.lock().unwrap();
+    let search_span = spans
+        .iter()
+        .find(|s| s.name == "mcp.search")
+        .expect("mcp.search span emitted");
+    let s_attrs: std::collections::HashMap<String, String> = search_span
+        .attributes
+        .iter()
+        .map(|kv| (kv.key.as_str().to_string(), kv.value.to_string()))
+        .collect();
+
+    let raw_ids = s_attrs
+        .get("search.result_ids")
+        .expect("search.result_ids missing");
+    assert!(
+        raw_ids.len() > 8192,
+        "expected untruncated search.result_ids > 8192 bytes, got {}",
+        raw_ids.len()
+    );
+    let parsed_ids: Vec<String> = serde_json::from_str(raw_ids).expect("valid JSON array");
+    assert_eq!(parsed_ids.len(), 200);
+    assert_eq!(s_attrs.get("search.result_count").unwrap(), "200");
+    assert_eq!(s_attrs.get("search.abstained").unwrap(), "false");
+    assert_eq!(s_attrs.get("search.reranker_loaded").unwrap(), "false");
+    assert_eq!(s_attrs.get("search.degraded").unwrap(), "false");
+    assert!(s_attrs.contains_key("search.stage.embed_ms"));
+    assert!(s_attrs.contains_key("search.stage.retrieve_ms"));
+    assert!(s_attrs.contains_key("search.stage.total_ms"));
+    assert_eq!(s_attrs.get("caller").unwrap(), "hook");
+    assert_eq!(s_attrs.get("surface").unwrap(), "mcp");
+    assert_eq!(s_attrs.get("prompt_kind").unwrap(), "human");
+
+    let hydrate_spans: Vec<_> = spans
+        .iter()
+        .filter(|s| s.name == "mcp.hydrate")
+        .collect();
+    assert_eq!(hydrate_spans.len(), 2);
+
+    let h0: std::collections::HashMap<String, String> = hydrate_spans[0]
+        .attributes
+        .iter()
+        .map(|kv| (kv.key.as_str().to_string(), kv.value.to_string()))
+        .collect();
+    assert_eq!(h0.get("search.abstained").unwrap(), "false");
+    assert_eq!(h0.get("search.result_count").unwrap(), "5");
+    let h0_ids: Vec<String> = serde_json::from_str(h0.get("search.result_ids").unwrap()).unwrap();
+    assert_eq!(h0_ids.len(), 5);
+    assert!(h0.contains_key("search.stage.embed_ms"));
+    assert!(h0.contains_key("search.stage.retrieve_ms"));
+    assert!(h0.contains_key("search.stage.total_ms"));
+    assert_eq!(h0.get("caller").unwrap(), "pre-turn");
+    assert_eq!(h0.get("surface").unwrap(), "cli");
+    assert_eq!(h0.get("prompt_kind").unwrap(), "agent");
+
+    let h1: std::collections::HashMap<String, String> = hydrate_spans[1]
+        .attributes
+        .iter()
+        .map(|kv| (kv.key.as_str().to_string(), kv.value.to_string()))
+        .collect();
+    assert_eq!(h1.get("search.abstained").unwrap(), "true");
+    assert_eq!(h1.get("search.result_count").unwrap(), "0");
+    assert_eq!(h1.get("search.result_ids").unwrap(), "[]");
+    assert!(h1.contains_key("search.stage.total_ms"));
+}
+
 
 

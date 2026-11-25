@@ -376,6 +376,77 @@ impl From<FlowState> for crate::flow::FlowState {
     }
 }
 
+/// Derived corpus tier: `knowledge | log | archive`.
+///
+/// Computed strictly from `type` and `status` at parse/build time — never read
+/// from or written to a duplicate `tier:` frontmatter field.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum CorpusTier {
+    #[default]
+    Knowledge,
+    Log,
+    Archive,
+}
+
+impl CorpusTier {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            CorpusTier::Knowledge => "knowledge",
+            CorpusTier::Log => "log",
+            CorpusTier::Archive => "archive",
+        }
+    }
+
+    #[allow(clippy::should_implement_trait)]
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "knowledge" => Some(CorpusTier::Knowledge),
+            "log" => Some(CorpusTier::Log),
+            "archive" => Some(CorpusTier::Archive),
+            _ => None,
+        }
+    }
+}
+
+/// Derive the canonical corpus tier from document `type` and `status`.
+///
+/// - `status == "archived"` (case-insensitive) -> `CorpusTier::Archive` (overrides log).
+/// - `type` in `{"session-log", "transcript", "verbatim-log"}`
+///   (case-insensitive; never `"template"`) -> `CorpusTier::Log`.
+/// - Otherwise -> `CorpusTier::Knowledge` (daily notes remain `Knowledge`).
+pub fn derive_tier(doc_type: Option<&str>, status: Option<&str>) -> CorpusTier {
+    if status.is_some_and(|s| s.trim().eq_ignore_ascii_case("archived")) {
+        return CorpusTier::Archive;
+    }
+    if let Some(dt) = doc_type {
+        match dt.trim().to_ascii_lowercase().as_str() {
+            "session-log" | "transcript" | "verbatim-log" => {
+                return CorpusTier::Log;
+            }
+            _ => {}
+        }
+    }
+    CorpusTier::Knowledge
+}
+
+/// Frontmatter tags that mark a document as private and excluded from default
+/// search and hydration unless explicitly requested.
+pub const PRIVATE_TAGS: &[&str] = &["confidential", "private", "sensitive"];
+
+/// Returns true when any frontmatter tag matches [`PRIVATE_TAGS`] (case-insensitive).
+pub fn is_private_tags(tags: &[String]) -> bool {
+    tags.iter().any(|t| {
+        let trimmed = t.trim();
+        PRIVATE_TAGS.iter().any(|p| trimmed.eq_ignore_ascii_case(p))
+    })
+}
+
+/// Returns true when `status` is case-insensitively `"superseded"`.
+pub fn is_superseded_status(status: Option<&str>) -> bool {
+    status.is_some_and(|s| s.trim().eq_ignore_ascii_case("superseded"))
+}
+
 /// A stored flow link on a node (pkb-flow-engine §3.1, R4).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Link {
@@ -1051,6 +1122,8 @@ pub struct GraphNode {
     pub subtasks: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub due: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub date: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub created: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1201,6 +1274,9 @@ pub struct GraphNode {
     /// Computed flow output (pkb-flow-engine §7.1, §7.2).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub flow: Option<crate::flow::FlowOutput>,
+    /// Derived corpus tier (`knowledge | log | archive`), computed at parse/build time.
+    #[serde(default)]
+    pub tier: CorpusTier,
     /// Structured parse warnings collected during frontmatter validation.
     /// Surfaced by the linter and `/maintain`; non-fatal at parse time.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -1632,6 +1708,8 @@ pub const VALID_NODE_TYPES: &[&str] = &[
     "index",
     "daily",
     "session-log",
+    "transcript",
+    "verbatim-log",
     "audit-report",
 ];
 
@@ -3209,6 +3287,8 @@ impl GraphNode {
         }
 
         let sg = status.as_deref().map(|s| status_group(Some(s)).to_string());
+        let date = fm_nonempty_str("date");
+        let tier = derive_tier(node_type.as_deref(), status.as_deref());
 
         GraphNode {
             id,
@@ -3219,6 +3299,8 @@ impl GraphNode {
             node_type,
             raw_node_type,
             status,
+            tier,
+            date,
             consolidated: doc.consolidated,
             consolidated_at: doc.consolidated_at.clone(),
             intent,
@@ -3750,5 +3832,38 @@ Just prose and notes.
 "#;
         assert!(!detect_acceptance_criteria(no_ac));
         assert!(find_unticked_acceptance_items(no_ac).is_empty());
+    }
+
+    #[test]
+    fn test_derive_tier_rules() {
+        assert_eq!(derive_tier(Some("note"), None), CorpusTier::Knowledge);
+        assert_eq!(derive_tier(Some("task"), Some("ready")), CorpusTier::Knowledge);
+        assert_eq!(derive_tier(Some("daily"), None), CorpusTier::Knowledge);
+        assert_eq!(derive_tier(Some("template"), None), CorpusTier::Knowledge);
+        assert_eq!(derive_tier(None, None), CorpusTier::Knowledge);
+
+        assert_eq!(derive_tier(Some("session-log"), None), CorpusTier::Log);
+        assert_eq!(derive_tier(Some("Transcript"), None), CorpusTier::Log);
+        assert_eq!(derive_tier(Some("verbatim-log"), None), CorpusTier::Log);
+
+        // Archive overrides log types and case differences
+        assert_eq!(derive_tier(Some("note"), Some("archived")), CorpusTier::Archive);
+        assert_eq!(derive_tier(Some("session-log"), Some("Archived")), CorpusTier::Archive);
+        assert_eq!(derive_tier(Some("transcript"), Some("ARCHIVED")), CorpusTier::Archive);
+        assert_eq!(derive_tier(Some("task"), Some("superseded")), CorpusTier::Knowledge);
+    }
+
+    #[test]
+    fn test_private_tags_and_superseded_status() {
+        assert!(!is_private_tags(&[]));
+        assert!(!is_private_tags(&["public".to_string(), "notes".to_string()]));
+        assert!(is_private_tags(&["Confidential".to_string()]));
+        assert!(is_private_tags(&["work".to_string(), "private".to_string()]));
+        assert!(is_private_tags(&["sensitive".to_string()]));
+
+        assert!(is_superseded_status(Some("superseded")));
+        assert!(is_superseded_status(Some(" Superseded ")));
+        assert!(!is_superseded_status(Some("cancelled")));
+        assert!(!is_superseded_status(None));
     }
 }
