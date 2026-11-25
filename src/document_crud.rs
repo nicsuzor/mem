@@ -204,6 +204,115 @@ fn type_prefix(doc_type: &str) -> &str {
     }
 }
 
+/// Preview the canonical `(id, target_abs_path)` for a `DocumentFields` create request without touching disk.
+pub fn preview_document_path(root: &Path, fields: &DocumentFields) -> Result<(String, PathBuf)> {
+    let project = match fields
+        .project
+        .as_deref()
+        .filter(|_| fields.doc_type == TEMPLATE_TYPE)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        Some(raw) => Some(crate::polecat_config::resolve_project(root, raw)?),
+        None => None,
+    };
+    let tp = type_prefix(&fields.doc_type);
+    let is_template = fields.doc_type == TEMPLATE_TYPE;
+    let is_daily =
+        fields.doc_type == "daily" || fields.id.as_deref().map(is_daily_id).unwrap_or(false);
+    let id = match &fields.id {
+        Some(explicit_id) => sanitize_explicit_id(explicit_id),
+        None => generate_id(tp),
+    };
+    let filename = match &fields.filename {
+        Some(explicit_filename) => validate_explicit_filename(explicit_filename)?,
+        None => {
+            if is_template {
+                template_filename(&id)?
+            } else {
+                let slug_source = fields.slug.as_deref().unwrap_or(&fields.title);
+                generate_filename(&id, slug_source)?
+            }
+        }
+    };
+    let subdir = match &fields.dir {
+        Some(d) => expand_env_vars(d),
+        None if is_template => template_subdir(project.as_deref())?,
+        None if is_daily => "daily".to_string(),
+        None => default_subdir_for_type(&fields.doc_type).to_string(),
+    };
+    Ok((id, root.join(subdir).join(filename)))
+}
+
+/// Preview the canonical `(id, target_abs_path)` for a `TaskFields` create request without touching disk.
+pub fn preview_task_path(root: &Path, fields: &TaskFields) -> Result<(String, PathBuf)> {
+    let project = match fields
+        .project
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        Some(raw) => Some(crate::polecat_config::resolve_project(root, raw)?),
+        None => None,
+    };
+    let id = match &fields.id {
+        Some(explicit_id) => sanitize_explicit_id(explicit_id),
+        None => {
+            let prefix = project.as_deref().unwrap_or("task");
+            generate_id(prefix)
+        }
+    };
+    let filename = match &fields.filename {
+        Some(explicit_filename) => validate_explicit_filename(explicit_filename)?,
+        None => {
+            let slug_source = fields.slug.as_deref().unwrap_or(&fields.title);
+            generate_filename(&id, slug_source)?
+        }
+    };
+    let subdir = fields
+        .dir
+        .as_ref()
+        .map(|d| expand_env_vars(d))
+        .unwrap_or_else(|| {
+            if let Some(ref p) = project {
+                p.clone()
+            } else {
+                match fields.task_type.as_deref().unwrap_or("task") {
+                    "goal" => "goals".to_string(),
+                    _ => "tasks".to_string(),
+                }
+            }
+        });
+    Ok((id, root.join(subdir).join(filename)))
+}
+
+/// Preview the canonical `(id, target_abs_path)` for a `MemoryFields` create request without touching disk.
+pub fn preview_memory_path(root: &Path, fields: &MemoryFields) -> Result<(String, PathBuf)> {
+    let id = match &fields.id {
+        Some(explicit_id) => sanitize_explicit_id(explicit_id),
+        None => generate_id("mem"),
+    };
+    let filename = match &fields.filename {
+        Some(explicit_filename) => validate_explicit_filename(explicit_filename)?,
+        None => {
+            let slug_source = fields.slug.as_deref().unwrap_or(&fields.title);
+            generate_filename(&id, slug_source)?
+        }
+    };
+    let subdir = fields
+        .dir
+        .as_ref()
+        .map(|d| expand_env_vars(d))
+        .unwrap_or_else(|| {
+            if let Some(ref p) = fields.project {
+                p.clone()
+            } else {
+                "memories".to_string()
+            }
+        });
+    Ok((id, root.join(subdir).join(filename)))
+}
+
 pub fn create_document(root: &Path, fields: DocumentFields) -> Result<PathBuf> {
     if let Some(ref dir) = fields.dir {
         if !is_safe_relative_path(dir) {

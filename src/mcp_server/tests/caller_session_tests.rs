@@ -6,6 +6,29 @@ fn make_meta(map: serde_json::Map<String, serde_json::Value>) -> rmcp::model::Re
     rmcp::model::RequestMetaObject(rmcp::model::MetaObject(map))
 }
 
+fn build_session_test_server() -> PkbSearchServer {
+    let server = build_test_server();
+    let doc = crate::pkb::PkbDocument {
+        path: std::path::PathBuf::from("tasks/alpha.md"),
+        title: "Alpha Task".to_string(),
+        tags: vec![],
+        doc_type: Some("task".to_string()),
+        status: Some("ready".to_string()),
+        consolidated: None,
+        consolidated_at: None,
+        modified: None,
+        body: "Alpha body".to_string(),
+        content_hash: "h".to_string(),
+        file_hash: "h".to_string(),
+        frontmatter: None,
+    };
+    server
+        .store_for_test()
+        .write()
+        .insert_precomputed(&doc, vec!["Alpha body".to_string()], vec![vec![0.1; 3]]);
+    server
+}
+
 #[tokio::test]
 async fn test_session_source_header() {
     let _lock = crate::mcp_server::tests::otel_spans_tests::OTEL_TEST_MUTEX.lock().await;
@@ -15,7 +38,7 @@ async fn test_session_source_header() {
         .build();
     let _prev = opentelemetry::global::set_tracer_provider(provider.clone());
 
-    let server = build_test_server();
+    let server = build_session_test_server();
     let req = http::Request::builder()
         .header("x-session-id", "header-sess-123")
         .body(())
@@ -58,7 +81,7 @@ async fn test_session_source_meta() {
         .build();
     let _prev = opentelemetry::global::set_tracer_provider(provider.clone());
 
-    let server = build_test_server();
+    let server = build_session_test_server();
     let mut meta_map = serde_json::Map::new();
     meta_map.insert("session_id".to_string(), json!("meta-sess-456"));
     let meta = make_meta(meta_map);
@@ -99,7 +122,7 @@ async fn test_session_source_argument_preserved() {
         .build();
     let _prev = opentelemetry::global::set_tracer_provider(provider.clone());
 
-    let server = build_test_server();
+    let server = build_session_test_server();
     let args = json!({
         "query": "alpha",
         "session_id": "arg-sess-789"
@@ -146,7 +169,7 @@ async fn test_session_precedence_header_over_meta_over_arg() {
         .build();
     let _prev = opentelemetry::global::set_tracer_provider(provider.clone());
 
-    let server = build_test_server();
+    let server = build_session_test_server();
     let req = http::Request::builder()
         .header("x-session-id", "hdr-1")
         .body(())
@@ -220,7 +243,7 @@ async fn test_missing_or_empty_session_id_rejected_on_reads_and_writes() {
         .build();
     let _prev = opentelemetry::global::set_tracer_provider(provider.clone());
 
-    let server = build_test_server();
+    let server = build_session_test_server();
 
     // Missing session_id on read tool
     let read_err = server
@@ -294,7 +317,7 @@ async fn test_stateless_client_info_trace_and_no_leakage() {
         .build();
     let _prev = opentelemetry::global::set_tracer_provider(provider.clone());
 
-    let server = build_test_server();
+    let server = build_session_test_server();
 
     let trace_id_str = "4bf92f3577b34da6a3ce929d0e0e4736";
     let parent_span_id_str = "00f067aa0ba902b7";

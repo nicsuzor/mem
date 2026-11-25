@@ -822,6 +822,20 @@ impl SessionPool {
     ) -> Result<Self> {
         use ort::session::builder::GraphOptimizationLevel;
 
+        if let Some(model_name) = config.model_path.file_name().and_then(|n| n.to_str()) {
+            crate::model_manifest::verify_asset(&config.model_path, model_name)
+                .with_context(|| format!("Model asset verification failed for {:?}", config.model_path))?;
+        }
+        if let Some(tok_name) = config.tokenizer_path.file_name().and_then(|n| n.to_str()) {
+            crate::model_manifest::verify_asset(&config.tokenizer_path, tok_name)
+                .with_context(|| {
+                    format!(
+                        "Tokenizer asset verification failed for {:?}",
+                        config.tokenizer_path
+                    )
+                })?;
+        }
+
         let threads = if override_threads > 0 {
             override_threads
         } else {
@@ -3987,5 +4001,25 @@ vectors in `VectorStore` and fuses dense similarity with lexical BM25 scores.";
                 "Query[{q_idx}]: fp32 query against fp16 index changed top-1 hit"
             );
         }
+    }
+
+    #[test]
+    fn session_pool_rejects_corrupt_tokenizer_via_manifest_and_dummy_skips_it() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("model.onnx"), b"fake-onnx").unwrap();
+        std::fs::write(dir.path().join("tokenizer.json"), b"corrupt-tokenizer").unwrap();
+
+        let cfg = EmbeddingConfig::for_dir(dir.path(), ModelVariant::Fp32);
+        let err = match SessionPool::new(&cfg, 1, 1) {
+            Ok(_) => panic!("corrupt tokenizer.json must fail manifest verification before ORT load"),
+            Err(e) => format!("{e:#}"),
+        };
+        assert!(
+            err.contains("SHA-256 hash mismatch"),
+            "Expected SHA-256 mismatch error, got: {err}"
+        );
+
+        let dummy = Embedder::new_dummy();
+        assert!(dummy.encode_query("hello").is_ok());
     }
 }

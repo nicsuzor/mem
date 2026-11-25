@@ -553,6 +553,18 @@ impl PkbSearchServer {
             }
         }
 
+        if fields.id.is_some() {
+            let (explicit_id, target_path) =
+                crate::document_crud::preview_task_path(&self.pkb_root, &fields).map_err(|e| {
+                    McpError {
+                        code: ErrorCode::INVALID_PARAMS,
+                        message: Cow::from(e.to_string()),
+                        data: None,
+                    }
+                })?;
+            self.check_create_duplicate_id(Some(&explicit_id), &target_path)?;
+        }
+
         let t_total = std::time::Instant::now();
 
         let t = std::time::Instant::now();

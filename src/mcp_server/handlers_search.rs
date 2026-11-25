@@ -432,6 +432,21 @@ impl PkbSearchServer {
 
         let graph = self.graph.read();
         let store = self.acquire_store_read();
+        let graph_doc_count = graph
+            .nodes_map()
+            .values()
+            .filter(|n| !n.path.as_os_str().is_empty())
+            .count();
+        if graph_doc_count > 0 && store.is_empty() {
+            return Err(McpError {
+                code: ErrorCode::INTERNAL_ERROR,
+                message: Cow::from(format!(
+                    "index_empty: vector store has 0 documents while knowledge graph has {graph_doc_count} document nodes. \
+                     Run `pkb reindex` or check index health.",
+                )),
+                data: None,
+            });
+        }
 
         // Build proximity boost map if boost_id provided
         let boost_map: std::collections::HashMap<String, f32> = if let Some(bid) = boost_id {
@@ -598,7 +613,7 @@ impl PkbSearchServer {
             });
             self.attach_reranker_reason(&mut zero, reranker_loaded);
             return Ok(Self::structured_result(
-                "No results found.".to_string(),
+                String::new(),
                 zero,
             ));
         }
@@ -1687,7 +1702,13 @@ mod search_status_projection_tests {
             .expect("search");
         let text = result_text(&result);
 
-        assert!(text.contains("No results found."));
+        assert!(
+            text.is_empty(),
+            "zero-hit search content[0].text must be empty, got: {text:?}"
+        );
+        let structured = result.structured_content.as_ref().expect("structuredContent");
+        assert_eq!(structured["total"], 0);
+        assert_eq!(structured["results"], serde_json::json!([]));
     }
 
     #[test]

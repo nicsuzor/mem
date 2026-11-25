@@ -1341,13 +1341,15 @@ async fn main() -> Result<()> {
         std::env::set_var("AOPS_GPU", "0");
     }
 
-    // Exclusive lock for index updates
+    // Exclusive lock for index updates (single-writer model: pkb mcp and CLI writers
+    // acquire the exclusive lock at startup and fail fast if already held).
     let needs_exclusive_lock = matches!(
         command,
         Commands::Reindex { .. }
             | Commands::BenchReindex { .. }
             | Commands::Add { .. }
             | Commands::Forget { .. }
+            | Commands::Mcp { .. }
     );
 
     let mut _index_lock = if needs_exclusive_lock {
@@ -1358,7 +1360,10 @@ async fn main() -> Result<()> {
     let _lock_guard = if let Some(ref mut l) = _index_lock {
         Some(l.try_write().map_err(|e| {
             if e.kind() == std::io::ErrorKind::WouldBlock {
-                anyhow::anyhow!("Index is locked by another process. Try again later.")
+                anyhow::anyhow!(
+                    "Index lock ({}) is held by another writer process. Failing fast — only one writer may hold the index lock at a time.",
+                    db_path.with_extension("lock").display()
+                )
             } else {
                 anyhow::anyhow!("Failed to acquire index lock: {e}")
             }
@@ -1636,7 +1641,7 @@ async fn main() -> Result<()> {
         } => {
             let embedder = embedder.as_ref().unwrap();
             let store = store.as_ref().unwrap();
-            let (indexed, removed, total) = index_pkb(&pkb_root, &db_path, store, embedder, force);
+            let (indexed, removed, total) = index_pkb(&pkb_root, &db_path, store, embedder, force)?;
             store.read().save(&db_path)?;
 
             println!("✓ {total} documents ({indexed} indexed, {removed} removed)");
@@ -3725,6 +3730,23 @@ async fn main() -> Result<()> {
                 graph,
             )
             .with_stale_count(stale_count);
+            server.set_owns_index_lock(true);
+
+            // Reconcile any skeleton entries missing embeddings at startup and periodically every 60s.
+            server.reconcile_empty_embeddings();
+            let server_reconcile = server.clone();
+            let _reconcile_task = tokio::spawn(async move {
+                let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
+                interval.tick().await;
+                loop {
+                    interval.tick().await;
+                    let srv = server_reconcile.clone();
+                    let _ = tokio::task::spawn_blocking(move || {
+                        srv.reconcile_empty_embeddings();
+                    })
+                    .await;
+                }
+            });
 
             if http {
                 // Stateless MCP 2026-07-28 Streamable HTTP mode
@@ -3752,9 +3774,20 @@ async fn main() -> Result<()> {
                     session_manager,
                     config,
                 );
+                let server_health = server.clone();
 
                 let app = axum::Router::new()
                     .route("/mcp", axum::routing::any_service(mcp_service))
+                    .route(
+                        "/health",
+                        axum::routing::get(move || {
+                            let srv = server_health.clone();
+                            async move {
+                                let (status, payload) = srv.health_status();
+                                (status, axum::Json(payload))
+                            }
+                        }),
+                    )
                     .layer(axum::middleware::from_fn(
                         |mut req: axum::extract::Request, next: axum::middleware::Next| async move {
                             // Ensure Host header is present for HTTP/2 requests where the :authority pseudo-header
@@ -4457,7 +4490,7 @@ fn index_pkb(
     store: &Arc<RwLock<vectordb::VectorStore>>,
     embedder: &embeddings::Embedder,
     force_all: bool,
-) -> (usize, usize, usize) {
+) -> Result<(usize, usize, usize)> {
     use indicatif::{ProgressBar, ProgressStyle};
     use rayon::prelude::*;
 
@@ -4471,6 +4504,8 @@ fn index_pkb(
         .par_iter()
         .filter_map(|p| pkb::parse_file_relative(p, pkb_root))
         .collect();
+
+    vectordb::VectorStore::validate_unique_document_ids(&all_docs)?;
 
     let existing_ids: std::collections::HashSet<String> = all_docs.iter().map(|d| d.id()).collect();
 
@@ -4497,7 +4532,7 @@ fn index_pkb(
 
     if to_process.is_empty() {
         let total = store.read().len();
-        return (0, removed, total);
+        return Ok((0, removed, total));
     }
 
     // Chunk each stale doc in parallel (parsing already done above).
@@ -4614,7 +4649,7 @@ fn index_pkb(
     pb.finish_and_clear();
 
     let total = store.read().len();
-    (indexed, removed, total)
+    Ok((indexed, removed, total))
 }
 
 /// Benchmark reindex: process a small number of stale (or random) docs with timing stats.

@@ -65,33 +65,19 @@ pub static DEFAULT_RERANKER_MANIFEST: ModelManifest = ModelManifest {
     ],
 };
 
-/// Verify that model files meet the manifest requirements.
+/// Verify that model files meet the manifest requirements via the canonical model_manifest engine.
 pub fn verify_manifest(dir: &Path, manifest: &ModelManifest) -> Result<(), RerankerError> {
     for entry in manifest.files {
         let file_path = dir.join(entry.filename);
-        if !file_path.exists() {
-            if entry.required {
-                return Err(RerankerError::Unavailable(format!(
-                    "manifest verification failed: missing file {:?}",
-                    entry.filename
-                )));
-            }
-            continue;
-        }
-        let metadata = std::fs::metadata(&file_path).map_err(|e| {
-            RerankerError::Unavailable(format!(
-                "manifest verification failed: cannot read metadata for {:?}: {e}",
-                entry.filename
-            ))
-        })?;
-        if metadata.len() < entry.min_bytes {
-            return Err(RerankerError::Unavailable(format!(
-                "manifest verification failed: {:?} is smaller than min bytes ({} < {})",
-                entry.filename,
-                metadata.len(),
-                entry.min_bytes
-            )));
-        }
+        crate::model_manifest::verify_file_integrity(
+            &file_path,
+            entry.filename,
+            entry.required,
+            Some(entry.min_bytes),
+            None,
+            None,
+        )
+        .map_err(|e| RerankerError::Unavailable(format!("manifest verification failed: {e}")))?;
     }
     Ok(())
 }
@@ -320,6 +306,15 @@ impl CrossEncoderReranker {
                     };
                 }
             }
+        }
+        if let Err(e) = crate::model_manifest::verify_asset(m_path, "reranker.onnx") {
+            return Self {
+                config,
+                session: None,
+                tokenizer: None,
+                uses_token_type_ids: false,
+                status: RerankerLoadStatus::Failed(e.to_string()),
+            };
         }
 
         if let Ok(metadata) = std::fs::metadata(m_path) {

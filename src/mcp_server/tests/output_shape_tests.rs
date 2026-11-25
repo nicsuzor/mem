@@ -701,6 +701,7 @@ fn test_ac1_payload_carried_once_per_named_tool() {
     .unwrap();
     let doc = crate::pkb::parse_file_relative(&task_path, root).unwrap();
     server.rebuild_graph_for_pkb_document(&doc);
+    server.try_upsert_document(&doc);
 
     // 1. search: has 'results', NOT 'items'
     let search_res = server
@@ -794,6 +795,7 @@ fn test_ac2_detail_bogus_rejected_with_valid_values() {
     .unwrap();
     let doc = crate::pkb::parse_file_relative(&task_path, root).unwrap();
     server.rebuild_graph_for_pkb_document(&doc);
+    server.try_upsert_document(&doc);
 
     // 1. search with bogus detail
     let err_search = server

@@ -1154,6 +1154,74 @@ fn upsert_entry_to_bm25(bm25: &mut crate::bm25::Bm25Index, entry: &DocumentEntry
         }
     }
 
+    /// Check if a document ID conflicts with an existing different document path.
+    pub fn check_duplicate_id(&self, id: &str, path: &Path) -> Result<()> {
+        let norm_path = PathBuf::from(path.to_string_lossy().replace('\\', "/"));
+        if let Some(existing) = self.documents.get(id) {
+            let existing_norm = PathBuf::from(existing.path.to_string_lossy().replace('\\', "/"));
+            if existing_norm != norm_path {
+                return Err(anyhow::anyhow!(
+                    "Duplicate document ID conflict: ID '{}' is declared by both '{}' and '{}'",
+                    id,
+                    existing.path.display(),
+                    path.display()
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// Batch validate unique explicit frontmatter document IDs across a slice of PKB documents.
+    /// Documents without an explicit frontmatter `id` are skipped; collisions on different
+    /// normalized paths fail explicitly naming both paths.
+    pub fn validate_unique_document_ids(docs: &[PkbDocument]) -> Result<()> {
+        let mut id_to_path: HashMap<String, PathBuf> = HashMap::new();
+        for doc in docs {
+            let Some(doc_id) = doc
+                .frontmatter
+                .as_ref()
+                .and_then(|f| f.get("id").and_then(|v| v.as_str()))
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+            else {
+                continue;
+            };
+            let norm_path = PathBuf::from(doc.path.to_string_lossy().replace('\\', "/"));
+            if let Some(existing_path) = id_to_path.get(doc_id) {
+                let existing_norm = PathBuf::from(existing_path.to_string_lossy().replace('\\', "/"));
+                if existing_norm != norm_path {
+                    return Err(anyhow::anyhow!(
+                        "Duplicate document ID conflict: ID '{}' is declared by both '{}' and '{}'",
+                        doc_id,
+                        existing_path.display(),
+                        doc.path.display()
+                    ));
+                }
+            } else {
+                id_to_path.insert(doc_id.to_string(), doc.path.clone());
+            }
+        }
+        Ok(())
+    }
+
+    /// Return the paths of all entries that have empty chunk_embeddings.
+    pub fn paths_missing_embeddings(&self) -> Vec<PathBuf> {
+        self.documents
+            .values()
+            .filter(|e| e.chunk_embeddings.is_empty())
+            .map(|e| e.path.clone())
+            .collect()
+    }
+
+    /// Apply a PreparedUpsert with duplicate ID check on full entry upserts.
+    pub fn apply_prepared_checked(&mut self, prepared: PreparedUpsert) -> Result<()> {
+        if let PreparedUpsert::Full(entry) = &prepared {
+            self.check_duplicate_id(&entry.id, &entry.path)?;
+        }
+        self.apply_prepared(prepared);
+        Ok(())
+    }
+
     /// Apply a [`PreparedUpsert`] under a brief write lock.
     ///
     /// `MetadataOnly` is a cheap HashMap mutation; `Full` is a single
@@ -1195,6 +1263,29 @@ fn upsert_entry_to_bm25(bm25: &mut crate::bm25::Bm25Index, entry: &DocumentEntry
                 }
             }
             PreparedUpsert::Full(entry) => {
+                // Stale path-id eviction: if any OTHER entry currently holds
+                // entry.path under a different ID, remove it first so a file
+                // never holds two index entries.
+                let norm_path_str = entry.path.to_string_lossy().replace('\\', "/");
+                let old_ids_to_remove: Vec<String> = self.documents
+                    .iter()
+                    .filter(|(k, v)| {
+                        **k != entry.id && v.path.to_string_lossy().replace('\\', "/") == norm_path_str
+                    })
+                    .map(|(k, _)| k.clone())
+                    .collect();
+
+                for old_id in old_ids_to_remove {
+                    tracing::info!(
+                        "Evicting stale path-id entry '{}' for path '{}' upon re-indexing with new id '{}'",
+                        old_id,
+                        entry.path.display(),
+                        entry.id
+                    );
+                    self.bm25.write().remove(&old_id);
+                    self.documents.remove(&old_id);
+                }
+
                 Self::upsert_entry_to_bm25(&mut self.bm25.write(), &entry);
                 self.documents.insert(entry.id.clone(), *entry);
             }
@@ -3485,5 +3576,152 @@ mod tests {
             !filtered.iter().any(|r| r.id == "doc_alpha"),
             "type_filter=task must exclude note doc_alpha even on exact-ID query"
         );
+    }
+
+    #[test]
+    fn test_stale_path_id_eviction_and_id_collision() {
+        let mut store = VectorStore::new(3);
+        let path = "notes/note_a.md";
+
+        // Insert initial entry under ID "id_old"
+        let entry1 = make_entry(
+            path,
+            "Note A",
+            Some("note"),
+            Some("active"),
+            &[],
+            Some("id_old"),
+            None,
+            vec![1.0, 0.0, 0.0],
+        );
+        store.apply_prepared(PreparedUpsert::Full(Box::new(entry1)));
+        assert!(store.get_entry("id_old").is_some());
+
+        // Re-index same path under new ID "id_new" -> should evict "id_old"
+        let entry2 = make_entry(
+            path,
+            "Note A Updated",
+            Some("note"),
+            Some("active"),
+            &[],
+            Some("id_new"),
+            None,
+            vec![1.0, 0.0, 0.0],
+        );
+        store.apply_prepared(PreparedUpsert::Full(Box::new(entry2)));
+        assert!(store.get_entry("id_old").is_none(), "Old ID must be evicted");
+        assert!(store.get_entry("id_new").is_some(), "New ID must be present");
+        assert_eq!(store.len(), 1, "Store must hold exactly 1 entry for the file");
+
+        // Duplicate frontmatter ID collision detection
+        let doc_dup1 = PkbDocument {
+            path: PathBuf::from("notes/path1.md"),
+            title: "Path 1".to_string(),
+            tags: vec![],
+            doc_type: Some("note".to_string()),
+            status: None,
+            consolidated: None,
+            consolidated_at: None,
+            modified: None,
+            body: "body".to_string(),
+            content_hash: "hash1".to_string(),
+            file_hash: "hash1".to_string(),
+            frontmatter: Some(serde_json::Value::Object(serde_json::Map::from_iter([(
+                "id".to_string(),
+                serde_json::Value::String("shared_id".to_string()),
+            )]))),
+        };
+        let doc_dup2 = PkbDocument {
+            path: PathBuf::from("notes/path2.md"),
+            title: "Path 2".to_string(),
+            tags: vec![],
+            doc_type: Some("note".to_string()),
+            status: None,
+            consolidated: None,
+            consolidated_at: None,
+            modified: None,
+            body: "body".to_string(),
+            content_hash: "hash2".to_string(),
+            file_hash: "hash2".to_string(),
+            frontmatter: Some(serde_json::Value::Object(serde_json::Map::from_iter([(
+                "id".to_string(),
+                serde_json::Value::String("shared_id".to_string()),
+            )]))),
+        };
+
+        let val_res = VectorStore::validate_unique_document_ids(&[doc_dup1.clone(), doc_dup2.clone()]);
+        assert!(val_res.is_err(), "validate_unique_document_ids must fail on duplicate explicit ID across distinct paths");
+
+        let err_msg = val_res.unwrap_err().to_string();
+        assert!(err_msg.contains("notes/path1.md") && err_msg.contains("notes/path2.md"), "Error must name both conflicting file paths: {}", err_msg);
+
+        // Check duplicate id on store
+        store.documents.clear();
+        let entry_shared = make_entry(
+            "notes/path1.md",
+            "Path 1",
+            Some("note"),
+            Some("active"),
+            &[],
+            Some("shared_id"),
+            None,
+            vec![1.0, 0.0, 0.0],
+        );
+        store.apply_prepared(PreparedUpsert::Full(Box::new(entry_shared)));
+        let check_res = store.check_duplicate_id("shared_id", Path::new("notes/path2.md"));
+        assert!(check_res.is_err(), "check_duplicate_id must fail when another path uses the ID");
+        assert!(store.check_duplicate_id("shared_id", Path::new("notes/path1.md")).is_ok());
+
+        // MetadataOnly patch via apply_prepared_checked succeeds on existing entry
+        let patch = MetadataPatch {
+            id: "shared_id".to_string(),
+            title: "Path 1 Retitled".to_string(),
+            doc_type: Some("note".to_string()),
+            status: Some("active".to_string()),
+            tags: vec![],
+            date: None,
+            consolidated: None,
+            consolidated_at: None,
+            modified: None,
+            confidence: None,
+            file_hash: "h2".to_string(),
+        };
+        assert!(store.apply_prepared_checked(PreparedUpsert::MetadataOnly(patch)).is_ok());
+        assert_eq!(store.get_entry("shared_id").unwrap().title, "Path 1 Retitled");
+
+        // Docs without explicit frontmatter ID must not falsely collide on fallback stem
+        let mut readme_a = doc_dup1.clone();
+        readme_a.path = PathBuf::from("a/README.md");
+        readme_a.frontmatter = None;
+        let mut readme_b = doc_dup2.clone();
+        readme_b.path = PathBuf::from("b/README.md");
+        readme_b.frontmatter = None;
+        assert!(VectorStore::validate_unique_document_ids(&[readme_a, readme_b]).is_ok());
+
+        // paths_missing_embeddings helper test
+        store.documents.clear();
+        let skeleton_entry = DocumentEntry {
+            path: PathBuf::from("notes/skeleton.md"),
+            title: "Skeleton".to_string(),
+            doc_type: Some("note".to_string()),
+            status: Some("active".to_string()),
+            tags: vec![],
+            id: "skeleton_id".to_string(),
+            date: None,
+            consolidated: None,
+            consolidated_at: None,
+            modified: None,
+            confidence: None,
+            content_hash: Some("h".to_string()),
+            file_hash: Some("h".to_string()),
+            body_hash: Some("h".to_string()),
+            chunk_embeddings: vec![], // empty embeddings
+            chunk_texts: vec![],
+            body_chunks: vec![],
+        };
+        store.documents.insert("skeleton_id".to_string(), skeleton_entry);
+        let missing = store.paths_missing_embeddings();
+        assert_eq!(missing.len(), 1);
+        assert_eq!(missing[0], PathBuf::from("notes/skeleton.md"));
     }
 }
