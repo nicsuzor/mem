@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.12](https://github.com/nicsuzor/mem/compare/mem-v0.5.11...mem-v0.5.12) (2026-11-25)
+
+
+### Features
+
+* **mcp,index:** harden single-writer lock, index integrity, write freshness, /health, and model manifest ([#877](https://github.com/nicsuzor/mem/issues/877)) ([ad1da5a](https://github.com/nicsuzor/mem/commit/ad1da5acfe0e91df4b78d0a89c3d1df6e90fc912))
+* **search:** derived corpus tiers, pre-pool gates, resolve/hydrate tools, and search telemetry ([#879](https://github.com/nicsuzor/mem/issues/879)) ([d9b54f1](https://github.com/nicsuzor/mem/commit/d9b54f1313e571cf16d07cae67280325933157ab))
+* **search:** index BM25 aliases/headings, refresh metadata postings, preserve short acronyms, and collapse repetitive series ([#878](https://github.com/nicsuzor/mem/issues/878)) ([79a7a62](https://github.com/nicsuzor/mem/commit/79a7a62073d36c13f3b8259646a7524348162c50))
+* **search:** single-pass calibrated hybrid fusion, decoupled exact-ID lookup, and silence/salience calibration ([#876](https://github.com/nicsuzor/mem/issues/876)) ([f629dd3](https://github.com/nicsuzor/mem/commit/f629dd323bc8148cb09b01f56b370e52a41b2018))
+
+
+### Bug Fixes
+
+* **graph:** evict concurrent deletes in Tier-2/full rebuilds and batch graph removal ([#873](https://github.com/nicsuzor/mem/issues/873)) ([bef4d30](https://github.com/nicsuzor/mem/commit/bef4d3068c7b25c73f1c57ec157751aa14e2eaf7))
+* **mcp:** omit stale document path lists from status by default ([#880](https://github.com/nicsuzor/mem/issues/880)) ([2a36d7e](https://github.com/nicsuzor/mem/commit/2a36d7e4bfdd3988a6f9ac321d04e6cdb8ee8631))
+* **search:** emit extract once in structuredContent for default format ([#875](https://github.com/nicsuzor/mem/issues/875)) ([7f86c2a](https://github.com/nicsuzor/mem/commit/7f86c2aa9d46dd47d35018a3a06a3859daf7dc3b))
+
+
+### Tests
+
+* **status:** align flow_propagation_and_status_tests with opt-in stale paths ([#881](https://github.com/nicsuzor/mem/issues/881)) ([80238ac](https://github.com/nicsuzor/mem/commit/80238ac4bc1c580111845f4666326c2d8173fa6d))
+
 ## [0.5.11](https://github.com/nicsuzor/mem/compare/mem-v0.5.10...mem-v0.5.11) (2026-11-25)
 
 
