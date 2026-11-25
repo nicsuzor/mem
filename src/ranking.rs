@@ -50,8 +50,8 @@ pub const EXACT_ID_HYBRID_BOOST: f32 = 1.0;
 /// Default ID multiplier when no exact match (m_id = 1.0).
 pub const M_ID_DEFAULT: f32 = 1.0;
 
-/// Maximum number of hits per repetitive series type (`daily`, `transcript`, `session_log`,
-/// `session`) retained in top-K search results when not explicitly requested via `type`.
+/// Maximum number of hits per repetitive series type (`daily`, `transcript`) retained
+/// in top-K search results when not explicitly requested via `type`.
 pub const MAX_REPETITIVE_SERIES_SLOTS: usize = 2;
 
 /// Hook for modular temporal and access multipliers (e.g. 8A recency decay and recent-read boost).
@@ -959,8 +959,6 @@ fn repetitive_series_key(doc_type: Option<&str>) -> Option<&'static str> {
         Some("daily")
     } else if dt.eq_ignore_ascii_case("transcript") {
         Some("transcript")
-    } else if dt.eq_ignore_ascii_case("session_log") || dt.eq_ignore_ascii_case("session") {
-        Some("session_log")
     } else {
         None
     }
@@ -982,18 +980,8 @@ pub fn type_filter_explicitly_requests(type_filter: Option<&str>, target_type: &
     })
 }
 
-fn is_repetitive_series_requested(type_filter: Option<&str>, series_key: &str) -> bool {
-    match series_key {
-        "session_log" => {
-            type_filter_explicitly_requests(type_filter, "session_log")
-                || type_filter_explicitly_requests(type_filter, "session")
-        }
-        other => type_filter_explicitly_requests(type_filter, other),
-    }
-}
-
-/// Collapse repetitive series types (`daily`, `transcript`, `session_log`, `session`) to at
-/// most [`MAX_REPETITIVE_SERIES_SLOTS`] per series when not explicitly requested by `type_filter`.
+/// Collapse repetitive series types (`daily`, `transcript`) to at most
+/// [`MAX_REPETITIVE_SERIES_SLOTS`] per series when not explicitly requested by `type_filter`.
 ///
 /// Preserves relative order among all retained items and never drops exact-ID `1.000` hits.
 pub fn collapse_repetitive_series_by<T, FType, FScore>(
@@ -1021,7 +1009,7 @@ where
         }
 
         if let Some(key) = repetitive_series_key(doc_type_of(&item)) {
-            if !is_repetitive_series_requested(type_filter, key) {
+            if !type_filter_explicitly_requests(type_filter, key) {
                 let count = series_counts.entry(key).or_insert(0);
                 if *count >= MAX_REPETITIVE_SERIES_SLOTS {
                     continue;
@@ -1936,9 +1924,6 @@ mod tests {
             make_typed("transcript_1", "transcript", 0.91),
             make_typed("transcript_2", "transcript", 0.90),
             make_typed("transcript_3", "transcript", 0.89),
-            make_typed("session_1", "session_log", 0.88),
-            make_typed("session_2", "session", 0.87),
-            make_typed("session_3", "session_log", 0.86),
             make_typed("know_1", "knowledge", 0.85),
             make_typed("task_1", "task", 0.84),
         ];
@@ -1953,8 +1938,6 @@ mod tests {
                 "daily_2",
                 "transcript_1",
                 "transcript_2",
-                "session_1",
-                "session_2",
                 "know_1",
                 "task_1",
             ]

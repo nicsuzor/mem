@@ -360,7 +360,7 @@ Search candidates are sorted descending by final score. Ties are broken determin
 2. `id` ascending (lexicographical);
 3. `chunk_id` ascending.
 
-Before truncating to `limit` in MCP `search`, `collapse_repetitive_series` caps repetitive series document types (`daily`, `transcript`, `session_log`, `session`) at `MAX_REPETITIVE_SERIES_SLOTS = 2` hits per series whenever the caller's `type` filter does not explicitly request that series (case-insensitive positive match). Relative order among all retained documents is preserved, and exact-ID `1.000` hits are never dropped.
+Before truncating to `limit` in MCP `search`, `collapse_repetitive_series` caps repetitive series document types (`daily`, `transcript`) at `MAX_REPETITIVE_SERIES_SLOTS = 2` hits per series whenever the caller's `type` filter does not explicitly request that series (case-insensitive positive match). Relative order among all retained documents is preserved, and exact-ID `1.000` hits are never dropped.
 
 The final result vector is truncated to `limit`.
 
