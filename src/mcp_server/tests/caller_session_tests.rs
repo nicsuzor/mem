@@ -350,3 +350,44 @@ async fn test_stateless_client_info_trace_and_no_leakage() {
         .await;
     assert!(res2.is_err(), "subsequent call without session_id must fail");
 }
+
+#[tokio::test]
+async fn test_create_task_accepts_and_strips_legacy_session_arg() {
+    let server = build_test_server();
+
+    // 1. Both top-level session_id and legacy _session present (exact failure mode from task_e7acbba3)
+    let res = server
+        .execute_tool_call(
+            "create_task",
+            &json!({
+                "title": "Task with legacy _session",
+                "slug": "legacy-session-both",
+                "project": "test",
+                "session_id": "valid-sess",
+                "_session": { "session_id": "legacy-sess" }
+            }),
+            None,
+            None,
+        )
+        .await;
+    assert!(res.is_ok(), "create_task with _session must succeed: {res:?}");
+
+    // 2. Only legacy _session present
+    let res_legacy_only = server
+        .execute_tool_call(
+            "create_task",
+            &json!({
+                "title": "Task with only _session",
+                "slug": "legacy-session-only",
+                "project": "test",
+                "_session": { "session_id": "legacy-only-sess" }
+            }),
+            None,
+            None,
+        )
+        .await;
+    assert!(
+        res_legacy_only.is_ok(),
+        "create_task with only _session must succeed: {res_legacy_only:?}"
+    );
+}
