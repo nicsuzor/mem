@@ -98,20 +98,26 @@ fn test_corpus_rechunking_contextual_headers_and_bm25_search() {
 
     store.insert_precomputed(&doc, chunk_texts.clone(), chunk_embeddings.clone());
 
-    // Verify BM25 lexical indexing carries contextual headers (doc_type, title, heading)
-    // Search for "knowledge" (from contextual header {doc_type})
-    let bm25_hits = store.search_bm25("knowledge", 10, root, None, None, None, None);
-    assert!(!bm25_hits.is_empty(), "BM25 should match doc_type from contextual headers");
-    assert_eq!(bm25_hits[0].id, "doc_pipeline");
+    // Verify BM25 lexical indexing matches title, markdown headings, and clean body
+    // without double-counting contextual header metadata ({doc_type}) into body terms.
+    let title_hits = store.search_bm25("Pipeline", 10, root, None, None, None, None);
+    assert!(!title_hits.is_empty(), "BM25 should match document title");
+    assert_eq!(title_hits[0].id, "doc_pipeline");
+
+    let type_leak_hits = store.search_bm25("knowledge", 10, root, None, None, None, None);
+    assert!(
+        type_leak_hits.is_empty(),
+        "BM25 must not pollute body term frequencies with contextual header doc_type"
+    );
 
     // Search for specific heading term "Ingestion" or "Kafka"
     let kafka_hits = store.search_bm25("Kafka", 10, root, None, None, None, None);
-    assert!(!kafka_hits.is_empty(), "BM25 should match heading token from contextual headers");
+    assert!(!kafka_hits.is_empty(), "BM25 should match heading token");
     assert_eq!(kafka_hits[0].id, "doc_pipeline");
 
     // Search for body term "LSM"
-    let lsm_hits = store.search_bm25("LSM", 10, root, None, None, None, None);
-    assert!(!lsm_hits.is_empty(), "BM25 should match body token");
+    let lsm_hits = store.search_bm25("LSM", 10, root, None, None, Some("knowledge"), None);
+    assert!(!lsm_hits.is_empty(), "BM25 should match body token with type filter");
     assert_eq!(lsm_hits[0].id, "doc_pipeline");
 
     // Verify AC3: Multi-chunk max-pooling dense score and best-chunk snippet selection

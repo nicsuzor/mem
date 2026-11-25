@@ -422,6 +422,21 @@ impl Bm25Index {
         };
         doc_len += 1;
         *term_freqs.entry(id_clean.clone()).or_insert(0.0) += WEIGHT_ID;
+        // In v2, search() collapses an inflected query token onto its Porter stem.
+        // Mirror WEIGHT_ID on id_clean's stem (when distinct) so single-token IDs
+        // that stem (e.g. short acronyms ending in 's') retain full WEIGHT_ID.
+        let id_stem = if self.rank_v1 {
+            None
+        } else {
+            let s = stem_word(&id_clean);
+            if s != id_clean && !is_stopword(&s) {
+                doc_len += 1;
+                *term_freqs.entry(s.clone()).or_insert(0.0) += WEIGHT_ID;
+                Some(s)
+            } else {
+                None
+            }
+        };
 
         // 2. ID sub-tokens (at body weight in v2; WEIGHT_ID in v1)
         let id_tokens = tokenizer(id);
@@ -431,7 +446,7 @@ impl Bm25Index {
             WEIGHT_ID_TOKENS
         };
         for t in id_tokens {
-            if t != id_clean {
+            if t != id_clean && id_stem.as_deref() != Some(t.as_str()) {
                 doc_len += 1;
                 *term_freqs.entry(t).or_insert(0.0) += id_token_weight;
             }
@@ -996,6 +1011,92 @@ mod tests {
                 r.id
             );
             assert!(r.matched_terms >= 1, "matched_terms must be populated");
+        }
+    }
+
+    #[test]
+    fn test_short_acronyms_and_alphanumeric_case_variants() {
+        for tok in ["lfs", "LFS", "2026J", "2026j", "2026N", "2026n"] {
+            let tokens = tokenize_v2(tok);
+            assert!(
+                tokens.contains(&tok.to_lowercase()),
+                "tokenize_v2({tok:?}) must preserve lowercased raw token; got {tokens:?}"
+            );
+            let terms = content_terms_v2(tok);
+            assert!(
+                !terms.is_empty(),
+                "content_terms_v2({tok:?}) must not drop token as stopword"
+            );
+        }
+
+        let mut idx = Bm25Index::new();
+        let root = Path::new("/pkb");
+
+        idx.upsert_chunk(
+            "doc_lfs",
+            0,
+            PathBuf::from("notes/lfs.md"),
+            "Large File Storage Guide",
+            Some("note".to_string()),
+            None,
+            vec![],
+            None,
+            None,
+            None,
+            "Git LFS details".to_string(),
+            "Git LFS details".to_string(),
+            Some("LFS Configuration"),
+            &["lfs".to_string()],
+            "Configure git LFS tracking for binary assets.",
+        );
+        idx.upsert_chunk(
+            "doc_2026j",
+            0,
+            PathBuf::from("notes/2026j.md"),
+            "Cohort 2026J Plan",
+            Some("note".to_string()),
+            None,
+            vec![],
+            None,
+            None,
+            None,
+            "Cohort 2026J".to_string(),
+            "Cohort 2026J".to_string(),
+            Some("Schedule 2026J"),
+            &["2026j".to_string()],
+            "Milestones for 2026J release.",
+        );
+        idx.upsert_chunk(
+            "doc_2026n",
+            0,
+            PathBuf::from("notes/2026n.md"),
+            "Cohort 2026N Overview",
+            Some("note".to_string()),
+            None,
+            vec![],
+            None,
+            None,
+            None,
+            "Cohort 2026N".to_string(),
+            "Cohort 2026N".to_string(),
+            Some("Schedule 2026N"),
+            &["2026n".to_string()],
+            "Notes for 2026N intake.",
+        );
+
+        for (query, expected_id) in [
+            ("lfs", "doc_lfs"),
+            ("LFS", "doc_lfs"),
+            ("2026J", "doc_2026j"),
+            ("2026j", "doc_2026j"),
+            ("2026N", "doc_2026n"),
+            ("2026n", "doc_2026n"),
+        ] {
+            let hits = idx.search(query, 5, root, None, None, None, None);
+            assert!(
+                !hits.is_empty() && hits[0].id == expected_id,
+                "Query {query:?} must match {expected_id} #1; got {hits:?}"
+            );
         }
     }
 }

@@ -50,6 +50,10 @@ pub const EXACT_ID_HYBRID_BOOST: f32 = 1.0;
 /// Default ID multiplier when no exact match (m_id = 1.0).
 pub const M_ID_DEFAULT: f32 = 1.0;
 
+/// Maximum number of hits per repetitive series type (`daily`, `transcript`, `session_log`,
+/// `session`) retained in top-K search results when not explicitly requested via `type`.
+pub const MAX_REPETITIVE_SERIES_SLOTS: usize = 2;
+
 /// Hook for modular temporal and access multipliers (e.g. 8A recency decay and recent-read boost).
 pub type TemporalAccessHook = Arc<dyn Fn(&SearchResult) -> f32 + Send + Sync>;
 
@@ -949,6 +953,102 @@ pub fn fuse_tm2c2<G: GraphStructuralLookup>(
     .expect("reranker failed in fuse_tm2c2; use try_fuse_tm2c2 to handle RerankerError")
 }
 
+fn repetitive_series_key(doc_type: Option<&str>) -> Option<&'static str> {
+    let dt = doc_type?.trim();
+    if dt.eq_ignore_ascii_case("daily") {
+        Some("daily")
+    } else if dt.eq_ignore_ascii_case("transcript") {
+        Some("transcript")
+    } else if dt.eq_ignore_ascii_case("session_log") || dt.eq_ignore_ascii_case("session") {
+        Some("session_log")
+    } else {
+        None
+    }
+}
+
+/// Returns true if `type_filter` contains an explicit positive match (exact or bare,
+/// case-insensitive) for `target_type`. Negated tokens (`!daily`, `!=daily`) return false.
+pub fn type_filter_explicitly_requests(type_filter: Option<&str>, target_type: &str) -> bool {
+    let Some(filter) = type_filter else {
+        return false;
+    };
+    filter.split(',').any(|part| {
+        let trimmed = part.trim();
+        if trimmed.is_empty() || trimmed.starts_with('!') {
+            return false;
+        }
+        let bare = trimmed.strip_prefix('=').unwrap_or(trimmed).trim();
+        bare.eq_ignore_ascii_case(target_type)
+    })
+}
+
+fn is_repetitive_series_requested(type_filter: Option<&str>, series_key: &str) -> bool {
+    match series_key {
+        "session_log" => {
+            type_filter_explicitly_requests(type_filter, "session_log")
+                || type_filter_explicitly_requests(type_filter, "session")
+        }
+        other => type_filter_explicitly_requests(type_filter, other),
+    }
+}
+
+/// Collapse repetitive series types (`daily`, `transcript`, `session_log`, `session`) to at
+/// most [`MAX_REPETITIVE_SERIES_SLOTS`] per series when not explicitly requested by `type_filter`.
+///
+/// Preserves relative order among all retained items and never drops exact-ID `1.000` hits.
+pub fn collapse_repetitive_series_by<T, FType, FScore>(
+    items: Vec<T>,
+    type_filter: Option<&str>,
+    doc_type_of: FType,
+    score_of: FScore,
+) -> Vec<T>
+where
+    FType: Fn(&T) -> Option<&str>,
+    FScore: Fn(&T) -> f32,
+{
+    let mut series_counts: HashMap<&'static str, usize> = HashMap::new();
+    let mut kept = Vec::with_capacity(items.len());
+
+    for item in items {
+        let score = score_of(&item);
+        let is_exact = score >= EXACT_ID_HYBRID_BOOST - 1e-6;
+        if is_exact {
+            if let Some(key) = repetitive_series_key(doc_type_of(&item)) {
+                *series_counts.entry(key).or_insert(0) += 1;
+            }
+            kept.push(item);
+            continue;
+        }
+
+        if let Some(key) = repetitive_series_key(doc_type_of(&item)) {
+            if !is_repetitive_series_requested(type_filter, key) {
+                let count = series_counts.entry(key).or_insert(0);
+                if *count >= MAX_REPETITIVE_SERIES_SLOTS {
+                    continue;
+                }
+                *count += 1;
+            }
+        }
+        kept.push(item);
+    }
+
+    kept
+}
+
+/// Collapse repetitive series types in a [`SearchResult`] slice to at most
+/// [`MAX_REPETITIVE_SERIES_SLOTS`] per series when not explicitly requested by `type_filter`.
+pub fn collapse_repetitive_series(
+    results: Vec<SearchResult>,
+    type_filter: Option<&str>,
+) -> Vec<SearchResult> {
+    collapse_repetitive_series_by(
+        results,
+        type_filter,
+        |r| r.doc_type.as_deref(),
+        |r| r.score,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1818,5 +1918,85 @@ mod tests {
         );
         assert_eq!(fused[0].id, "alias_hit");
         assert!(fused[0].score > fused[1].score);
+    }
+
+    #[test]
+    fn test_collapse_repetitive_series_caps_unfiltered_and_preserves_exact_and_explicit() {
+        let make_typed = |id: &str, doc_type: &str, score: f32| {
+            let mut r = make_result(id, id, score, None);
+            r.doc_type = Some(doc_type.to_string());
+            r
+        };
+
+        let items = vec![
+            make_typed("daily_1", "daily", 0.95),
+            make_typed("daily_2", "daily", 0.94),
+            make_typed("daily_3", "daily", 0.93),
+            make_typed("daily_4", "daily", 0.92),
+            make_typed("transcript_1", "transcript", 0.91),
+            make_typed("transcript_2", "transcript", 0.90),
+            make_typed("transcript_3", "transcript", 0.89),
+            make_typed("session_1", "session_log", 0.88),
+            make_typed("session_2", "session", 0.87),
+            make_typed("session_3", "session_log", 0.86),
+            make_typed("know_1", "knowledge", 0.85),
+            make_typed("task_1", "task", 0.84),
+        ];
+
+        // Unfiltered: each series capped to MAX_REPETITIVE_SERIES_SLOTS = 2, relative order preserved
+        let collapsed = collapse_repetitive_series(items.clone(), None);
+        let ids: Vec<&str> = collapsed.iter().map(|r| r.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            vec![
+                "daily_1",
+                "daily_2",
+                "transcript_1",
+                "transcript_2",
+                "session_1",
+                "session_2",
+                "know_1",
+                "task_1",
+            ]
+        );
+
+        // Negation filter (!task) does NOT exempt daily/transcript
+        let negated = collapse_repetitive_series(items.clone(), Some("!task"));
+        assert_eq!(
+            negated.iter().filter(|r| r.doc_type.as_deref() == Some("daily")).count(),
+            MAX_REPETITIVE_SERIES_SLOTS
+        );
+
+        // Explicit type_filter: "daily" disables collapse for daily only
+        let daily_explicit = collapse_repetitive_series(items.clone(), Some("DAILY"));
+        assert_eq!(
+            daily_explicit
+                .iter()
+                .filter(|r| r.doc_type.as_deref() == Some("daily"))
+                .count(),
+            4
+        );
+        assert_eq!(
+            daily_explicit
+                .iter()
+                .filter(|r| r.doc_type.as_deref() == Some("transcript"))
+                .count(),
+            MAX_REPETITIVE_SERIES_SLOTS
+        );
+
+        // Exact-ID 1.000 hits are NEVER dropped even if more than MAX_REPETITIVE_SERIES_SLOTS
+        let exact_items = vec![
+            make_typed("daily_exact_1", "daily", 1.0),
+            make_typed("daily_exact_2", "daily", 1.0),
+            make_typed("daily_exact_3", "daily", 1.0),
+            make_typed("daily_normal", "daily", 0.80),
+            make_typed("know_1", "knowledge", 0.70),
+        ];
+        let exact_collapsed = collapse_repetitive_series(exact_items, None);
+        let exact_ids: Vec<&str> = exact_collapsed.iter().map(|r| r.id.as_str()).collect();
+        assert_eq!(
+            exact_ids,
+            vec!["daily_exact_1", "daily_exact_2", "daily_exact_3", "know_1"]
+        );
     }
 }
