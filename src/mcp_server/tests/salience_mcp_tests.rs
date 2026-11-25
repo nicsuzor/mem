@@ -42,34 +42,29 @@ fn test_mcp_api_reads_salience_exponential_growth_and_linear_decay() {
     let score1 = val1.get("salience").and_then(|v| v.as_f64()).expect("salience field present in get_document");
     assert_eq!(score1, 1.0);
 
-    // 2nd MCP retrieval (get_document): raises exponentially (1.0 * 2.0 = 2.0)
+    // 2nd MCP retrieval (get_document): raises additively (1.0 + 1.0 = 2.0)
     let res2 = server.handle_get_document(&json!({"id": "doc-salience"})).unwrap();
     let val2 = res2.structured_content.unwrap();
     let score2 = val2.get("salience").and_then(|v| v.as_f64()).expect("salience field present in get_document");
     assert_eq!(score2, 2.0);
 
-    // 3rd MCP retrieval (get_task): raises exponentially (2.0 * 2.0 = 4.0)
+    // 3rd MCP retrieval (get_task): raises additively (2.0 + 1.0 = 3.0)
     let res3 = server.handle_get_task(&json!({"id": "doc-salience"})).unwrap();
     let val3 = res3.structured_content.unwrap();
     let score3 = val3.get("salience").and_then(|v| v.as_f64()).expect("salience field present in get_task");
-    assert_eq!(score3, 4.0);
+    assert_eq!(score3, 3.0);
 
-    // 4th MCP retrieval (get_task): raises exponentially (4.0 * 2.0 = 8.0)
+    // 4th MCP retrieval (get_task): raises additively (3.0 + 1.0 = 4.0)
     let res4 = server.handle_get_task(&json!({"id": "doc-salience"})).unwrap();
     let val4 = res4.structured_content.unwrap();
     let score4 = val4.get("salience").and_then(|v| v.as_f64()).expect("salience field present in get_task");
-    assert_eq!(score4, 8.0);
+    assert_eq!(score4, 4.0);
 
-    // Advance controlled clock by 1 day: score decays linearly by 1.0 -> 7.0
-    clock.advance_days(1.0);
+    // Advance controlled clock by 7 days (half-life): score halves to 2.0
+    clock.advance_days(7.0);
 
     let decayed_score = server.salience_store.read().get_salience("doc-salience");
-    assert_eq!(decayed_score, 7.0);
-
-    // Advance clock by another day: score decays linearly to 6.0
-    clock.advance_days(1.0);
-    let decayed_score2 = server.salience_store.read().get_salience("doc-salience");
-    assert_eq!(decayed_score2, 6.0);
+    assert!((decayed_score - 2.0).abs() < 1e-4);
 }
 
 #[test]

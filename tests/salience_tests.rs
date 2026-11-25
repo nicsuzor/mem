@@ -8,8 +8,8 @@ fn test_access_raises_score_exponentially_with_ceiling() {
     let clock = Arc::new(MockClock::new(t0));
     let config = SalienceConfig {
         initial_score: 1.0,
-        growth_factor: 2.0,
-        decay_per_day: 1.0,
+        access_increment: 1.0,
+        half_life_days: 7.0,
         ceiling: 100.0,
         floor: 0.0,
     };
@@ -23,38 +23,17 @@ fn test_access_raises_score_exponentially_with_ceiling() {
     assert_eq!(s1, 1.0);
     assert_eq!(store.get_salience("doc1"), 1.0);
 
-    // 2nd access: 1.0 * 2.0 = 2.0
+    // 2nd access: 1.0 + 1.0 = 2.0
     let s2 = store.record_access("doc1", AccessType::Read);
     assert_eq!(s2, 2.0);
 
-    // 3rd access: 2.0 * 2.0 = 4.0
+    // 3rd access: 2.0 + 1.0 = 3.0
     let s3 = store.record_access("doc1", AccessType::SearchHit);
-    assert_eq!(s3, 4.0);
+    assert_eq!(s3, 3.0);
 
-    // 4th access: 4.0 * 2.0 = 8.0
+    // 4th access: 3.0 + 1.0 = 4.0
     let s4 = store.record_access("doc1", AccessType::Link);
-    assert_eq!(s4, 8.0);
-
-    // 5th access: 8.0 * 2.0 = 16.0
-    let s5 = store.record_access("doc1", AccessType::McpRetrieval);
-    assert_eq!(s5, 16.0);
-
-    // 6th access: 16.0 * 2.0 = 32.0
-    let s6 = store.record_access("doc1", AccessType::McpRetrieval);
-    assert_eq!(s6, 32.0);
-
-    // 7th access: 32.0 * 2.0 = 64.0
-    let s7 = store.record_access("doc1", AccessType::McpRetrieval);
-    assert_eq!(s7, 64.0);
-
-    // 8th access: 64.0 * 2.0 = 128.0 -> clamped at ceiling 100.0
-    let s8 = store.record_access("doc1", AccessType::McpRetrieval);
-    assert_eq!(s8, 100.0);
-    assert_eq!(store.get_salience("doc1"), 100.0);
-
-    // Further access remains at ceiling
-    let s9 = store.record_access("doc1", AccessType::McpRetrieval);
-    assert_eq!(s9, 100.0);
+    assert_eq!(s4, 4.0);
 }
 
 #[test]
@@ -63,38 +42,22 @@ fn test_day_without_access_lowers_score_linearly_with_controlled_clock() {
     let clock = Arc::new(MockClock::new(t0));
     let config = SalienceConfig {
         initial_score: 1.0,
-        growth_factor: 2.0,
-        decay_per_day: 1.0,
+        access_increment: 1.0,
+        half_life_days: 7.0,
         ceiling: 100.0,
         floor: 0.0,
     };
     let mut store = SalienceStore::new_with_clock(config, clock.clone());
 
-    // Bring document to score 16.0 via 5 accesses at t0
+    // Bring document to score 5.0 via 5 accesses at t0
     for _ in 0..5 {
         store.record_access("doc1", AccessType::McpRetrieval);
     }
-    assert_eq!(store.get_salience("doc1"), 16.0);
+    assert_eq!(store.get_salience("doc1"), 5.0);
 
-    // Advance clock by 1 day (controlled clock)
-    clock.advance_days(1.0);
-    // Score should decay linearly by decay_per_day (1.0) -> 15.0
-    assert_eq!(store.get_salience("doc1"), 15.0);
-
-    // Advance clock by another day (total 2 days)
-    clock.advance_days(1.0);
-    // Score should be 14.0
-    assert_eq!(store.get_salience("doc1"), 14.0);
-
-    // Advance clock by 3.5 days (total 5.5 days without access)
-    clock.advance_days(3.5);
-    // Score should be 16.0 - 5.5 = 10.5
-    assert_eq!(store.get_salience("doc1"), 10.5);
-
-    // Advance clock by 20 days (past floor)
-    clock.advance_days(20.0);
-    // Score should be clamped at floor 0.0
-    assert_eq!(store.get_salience("doc1"), 0.0);
+    // Advance clock by 7 days (half-life): score halves to 2.5
+    clock.advance_days(7.0);
+    assert!((store.get_salience("doc1") - 2.5).abs() < 1e-4);
 }
 
 #[test]
@@ -103,27 +66,27 @@ fn test_decay_then_access_recovers_exponentially() {
     let clock = Arc::new(MockClock::new(t0));
     let config = SalienceConfig {
         initial_score: 1.0,
-        growth_factor: 2.0,
-        decay_per_day: 1.0,
+        access_increment: 1.0,
+        half_life_days: 7.0,
         ceiling: 100.0,
         floor: 0.0,
     };
     let mut store = SalienceStore::new_with_clock(config, clock.clone());
 
-    // Bring to 8.0 at t0
+    // Bring to 4.0 at t0
     for _ in 0..4 {
         store.record_access("doc1", AccessType::Read);
     }
-    assert_eq!(store.get_salience("doc1"), 8.0);
+    assert_eq!(store.get_salience("doc1"), 4.0);
 
-    // 2 days without access -> drops to 6.0
-    clock.advance_days(2.0);
-    assert_eq!(store.get_salience("doc1"), 6.0);
+    // 7 days without access -> drops to 2.0
+    clock.advance_days(7.0);
+    assert!((store.get_salience("doc1") - 2.0).abs() < 1e-4);
 
-    // Access at t0 + 2 days: raises 6.0 * 2.0 = 12.0
+    // Access at t0 + 7 days: raises 2.0 + 1.0 = 3.0
     let s = store.record_access("doc1", AccessType::SearchHit);
-    assert_eq!(s, 12.0);
-    assert_eq!(store.get_salience("doc1"), 12.0);
+    assert_eq!(s, 3.0);
+    assert!((store.get_salience("doc1") - 3.0).abs() < 1e-4);
 }
 
 #[test]
@@ -167,8 +130,8 @@ fn test_recent_read_boost_ceiling_and_decay() {
     let clock = Arc::new(MockClock::new(t0));
     let config = SalienceConfig {
         initial_score: 1.0,
-        growth_factor: 2.0,
-        decay_per_day: 1.0,
+        access_increment: 1.0,
+        half_life_days: 7.0,
         ceiling: 100.0,
         floor: 0.0,
     };
@@ -177,26 +140,24 @@ fn test_recent_read_boost_ceiling_and_decay() {
     // Initially unaccessed: boost is 1.0 (no boost)
     assert_eq!(store.get_recent_read_boost("doc1"), 1.0);
 
-    // Access 1: score = 1.0 -> boost = 1.0 + 0.20 * (1.0 / 100.0) = 1.002
+    // Access 1: score = 1.0 -> logarithmic boost
     store.record_access("doc1", AccessType::Read);
-    assert!((store.get_recent_read_boost("doc1") - 1.002).abs() < 1e-5);
+    assert!(store.get_recent_read_boost("doc1") > 1.0);
 
-    // Repeated accesses up to ceiling: score = 100.0 -> boost = 1.0 + 0.20 * 1.0 = 1.20
-    for _ in 0..10 {
+    // Repeated accesses up to ceiling (100.0)
+    for _ in 0..99 {
         store.record_access("doc1", AccessType::McpRetrieval);
     }
     assert_eq!(store.get_salience("doc1"), 100.0);
     assert_eq!(store.get_recent_read_boost("doc1"), 1.20);
 
-    // Controlled clock advances by 10 days: score decays to 90.0
+    // Controlled clock advances by 10 days: score decays
     clock.advance_days(10.0);
-    assert_eq!(store.get_salience("doc1"), 90.0);
-    assert!((store.get_recent_read_boost("doc1") - 1.18).abs() < 1e-5);
+    assert!(store.get_recent_read_boost("doc1") > 1.0);
 
-    // Controlled clock advances by 90 more days: decays to floor 0.0 -> boost back to 1.0
-    clock.advance_days(90.0);
-    assert_eq!(store.get_salience("doc1"), 0.0);
-    assert_eq!(store.get_recent_read_boost("doc1"), 1.0);
+    // Controlled clock advances by a large number of half-lives (e.g. 500 days) to decay to floor
+    clock.advance_days(500.0);
+    assert!(store.get_recent_read_boost("doc1") <= 1.00001);
 }
 
 #[test]

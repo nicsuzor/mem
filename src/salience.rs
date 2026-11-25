@@ -81,15 +81,15 @@ impl AccessType {
     }
 }
 
-/// Configuration parameters for exponential growth and linear decay.
+/// Configuration parameters for additive growth and half-life exponential decay.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SalienceConfig {
     /// Score granted on first access (or after decaying to floor).
     pub initial_score: f64,
-    /// Multiplier applied to current score on each subsequent access.
-    pub growth_factor: f64,
-    /// Linear points lost per 24-hour day without access.
-    pub decay_per_day: f64,
+    /// Additive points added to score on each subsequent access.
+    pub access_increment: f64,
+    /// Half-life in 24-hour days for exponential decay without access.
+    pub half_life_days: f64,
     /// Maximum score clamp ceiling.
     pub ceiling: f64,
     /// Minimum score clamp floor.
@@ -100,8 +100,8 @@ impl Default for SalienceConfig {
     fn default() -> Self {
         Self {
             initial_score: 1.0,
-            growth_factor: 2.0,
-            decay_per_day: 1.0,
+            access_increment: 1.0,
+            half_life_days: 7.0,
             ceiling: 100.0,
             floor: 0.0,
         }
@@ -130,14 +130,15 @@ impl SalienceEntry {
         }
     }
 
-    /// Calculate the decayed score at a given timestamp without mutating state.
+    /// Calculate the decayed score at a given timestamp using exponential half-life decay.
     pub fn score_at(&self, now: DateTime<Utc>, config: &SalienceConfig) -> f64 {
         if self.score <= config.floor {
             return config.floor;
         }
         let elapsed_seconds = (now - self.last_accessed).num_seconds().max(0) as f64;
         let elapsed_days = elapsed_seconds / 86400.0;
-        let decayed = self.score - (elapsed_days * config.decay_per_day);
+        let half_life = if config.half_life_days > 0.0 { config.half_life_days } else { 7.0 };
+        let decayed = self.score * 0.5_f64.powf(elapsed_days / half_life);
         decayed.clamp(config.floor, config.ceiling)
     }
 }
@@ -226,7 +227,7 @@ impl SalienceStore {
         let new_score = if current_decayed <= config.floor {
             config.initial_score
         } else {
-            (current_decayed * config.growth_factor).min(config.ceiling)
+            (current_decayed + config.access_increment).min(config.ceiling)
         };
 
         entry.score = new_score;
@@ -301,16 +302,21 @@ pub fn daily_recency_decay(date_str: &str, now: DateTime<Utc>) -> Option<f64> {
     Some(0.85 + 0.15 * (-age_days / 14.0).exp())
 }
 
-/// Multiplicative recent-read access boost derived from salience score.
-/// Bounded between 1.0 (unaccessed or decayed to floor) and 1.20 (at ceiling).
+/// Logarithmic `recent_read_boost` mapping:
+/// `1.0 + MAX_BOOST * ((1.0 + (score - floor)).ln() / (1.0 + (ceiling - floor)).ln()).clamp(0.0, 1.0)`
 pub fn recent_read_boost(salience_score: f64, config: &SalienceConfig) -> f64 {
     if salience_score <= config.floor {
         return 1.0;
     }
     const MAX_BOOST: f64 = 0.20;
     let range = (config.ceiling - config.floor).max(1e-9);
-    let normalized_salience = ((salience_score - config.floor) / range).clamp(0.0, 1.0);
-    1.0 + MAX_BOOST * normalized_salience
+    let numerator = (1.0 + (salience_score - config.floor)).ln();
+    let denominator = (1.0 + range).ln();
+    if denominator <= 0.0 {
+        return 1.0;
+    }
+    let norm = (numerator / denominator).clamp(0.0, 1.0);
+    1.0 + MAX_BOOST * norm
 }
 
 /// Compute document recency decay factor under clock `now`.
@@ -329,8 +335,8 @@ pub fn document_recency_decay(
         }
     }
     let is_daily = doc_type.map(|t| t.eq_ignore_ascii_case("daily")).unwrap_or(false);
-    if let Some(d) = date {
-        if is_daily || doc_type.is_none() || d.len() >= 10 {
+    if is_daily {
+        if let Some(d) = date {
             if let Some(decay) = daily_recency_decay(d, now) {
                 return decay;
             }
@@ -443,6 +449,54 @@ mod tests {
         assert!(out1 >= floor, "out1 must meet or exceed floor");
         assert!(out2 >= floor, "out2 must meet or exceed floor");
         assert!(out3 >= floor, "out3 must meet or exceed floor");
+    }
+
+    #[test]
+    fn test_salience_growth_decay_and_monotonic_boost() {
+        let config = SalienceConfig::default();
+        let now = Utc::now();
+        let clock = Arc::new(MockClock::new(now));
+        let mut store = SalienceStore::new_with_clock(config.clone(), clock.clone());
+
+        // 8 accesses: score = 1.0 + 7 * 1.0 = 8.0 (does not saturate at 1.20x boost)
+        for _ in 0..8 {
+            store.record_access("doc_a", AccessType::Read);
+        }
+        let score_8 = store.get_salience("doc_a");
+        assert_eq!(score_8, 8.0);
+        let boost_8 = store.get_recent_read_boost("doc_a");
+        assert!(boost_8 < 1.15, "8 accesses boost ({boost_8}) should be well below 1.20");
+
+        // Monotonicity across 1, 8, 20, 50, 100 accesses
+        let mut scores = Vec::new();
+        let mut store2 = SalienceStore::new_with_clock(config.clone(), clock.clone());
+        for count in [1, 8, 20, 50, 100] {
+            let mut s = 0.0;
+            for _ in 0..count {
+                s = store2.record_access(&format!("doc_{count}"), AccessType::Read);
+            }
+            scores.push((count, s, store2.get_recent_read_boost(&format!("doc_{count}"))));
+        }
+        for window in scores.windows(2) {
+            assert!(window[0].2 < window[1].2, "boost must be strictly monotonic: {} vs {}", window[0].2, window[1].2);
+        }
+
+        // Half-life decay at 7 days
+        let mut store3 = SalienceStore::new_with_clock(config.clone(), clock.clone());
+        store3.record_access("doc_hl", AccessType::Read); // score = 1.0
+        let clock_mock = MockClock::new(now);
+        clock_mock.advance_days(7.0);
+        let entry = store3.get_entry("doc_hl").unwrap();
+        let decayed = entry.score_at(clock_mock.now(), &config);
+        assert!((decayed - 0.5).abs() < 1e-4, "score after 7 days (half-life) should be 0.5, got {decayed}");
+
+        // Dated type: note does NOT get 14-day daily decay
+        let note_decay = document_recency_decay(Some("note"), Some("2020-01-01"), None, now);
+        assert_eq!(note_decay, 1.0, "dated type: note must not get daily decay, got {note_decay}");
+
+        // type: daily gets decayed
+        let daily_decay = document_recency_decay(Some("daily"), Some("2020-01-01"), None, now);
+        assert!(daily_decay < 1.0, "type: daily should be decayed");
     }
 }
 
