@@ -366,31 +366,52 @@ fn evaluate_query(
     exclude_tags: &HashSet<String>,
 ) -> Result<QueryDiagnostic> {
     let query_embedding = embedder.encode_query(&q.query)?;
-    let fetch_limit = if q.type_filter.is_some() {
+    let fetch_limit = (POOL_SIZE_DENSE + POOL_SIZE_LEX).max(if q.type_filter.is_some() {
         limit * 10
     } else {
-        limit * 2
-    };
+        limit * 5
+    });
 
     let exclude_pred = |cand: &GateCandidate<'_>| -> bool {
         !is_excluded(cand.id, cand.tags, graph, exclude_ids, exclude_tags)
     };
 
-    // Exact production `handle_pkb_search` call sequence (`try_search_hybrid` delegates to
-    // `try_search_hybrid_with_context` with `&()` as `graph_lookup` and `None` as `temporal_hook`).
-    let results = store.try_search_hybrid_with_context(
-        &q.query,
-        &query_embedding,
-        fetch_limit,
-        pkb_root,
-        None,
-        None,
-        q.type_filter.as_deref(),
-        Some(reranker),
-        Some(&exclude_pred),
-        &(),
-        None,
-    )?;
+    let eval_config = RankingConfig {
+        apply_type_boost: true,
+        ..Default::default()
+    };
+
+    // Exact production `handle_pkb_search` single-pass call sequence.
+    let results = match graph {
+        Some(g) => store.try_search_hybrid_with_config(
+            &q.query,
+            &query_embedding,
+            fetch_limit,
+            pkb_root,
+            None,
+            None,
+            q.type_filter.as_deref(),
+            Some(reranker),
+            Some(&exclude_pred),
+            g,
+            None,
+            &eval_config,
+        )?,
+        None => store.try_search_hybrid_with_config(
+            &q.query,
+            &query_embedding,
+            fetch_limit,
+            pkb_root,
+            None,
+            None,
+            q.type_filter.as_deref(),
+            Some(reranker),
+            Some(&exclude_pred),
+            &(),
+            None,
+            &eval_config,
+        )?,
+    };
 
     let mut scored: Vec<_> = results
         .iter()
@@ -399,16 +420,13 @@ fn evaluate_query(
             Some(g) => r.path.is_file() && g.resolve(&r.id).is_some(),
             None => true,
         })
-        .map(|r| {
-            let s = score_post_hybrid_candidate(&q.query, r, graph, None, None, now, 0.0);
-            (r, s)
-        })
         .collect();
 
     scored.sort_by(|a, b| {
-        b.1.final_score
-            .partial_cmp(&a.1.final_score)
-            .unwrap_or(std::cmp::Ordering::Equal)
+        ordered_float::OrderedFloat(b.score)
+            .cmp(&ordered_float::OrderedFloat(a.score))
+            .then_with(|| a.id.cmp(&b.id))
+            .then_with(|| a.chunk_id.cmp(&b.chunk_id))
     });
     scored.truncate(limit);
 
@@ -422,15 +440,15 @@ fn evaluate_query(
     let mut top_10: Vec<TopResultDiagnostic> = Vec::with_capacity(scored.len().min(10));
     let mut final_rank_by_id: HashMap<String, (usize, f32)> = HashMap::new();
 
-    for (idx, (r, s)) in scored.iter().enumerate() {
+    for (idx, r) in scored.iter().enumerate() {
         let rank = idx + 1;
         let display_id = display_id_for(graph, &r.id);
         let grade = match_judgment(&r.id, &display_id, &q.judgments, &resolved_judgment_map);
         ranked_grades.push(grade);
 
-        final_rank_by_id.insert(r.id.clone(), (rank, s.final_score));
+        final_rank_by_id.insert(r.id.clone(), (rank, r.score));
         if display_id != r.id {
-            final_rank_by_id.insert(display_id.clone(), (rank, s.final_score));
+            final_rank_by_id.insert(display_id.clone(), (rank, r.score));
         }
 
         if rank <= 10 {
@@ -450,7 +468,7 @@ fn evaluate_query(
                 id: display_id,
                 doc_type: node_type,
                 status: node_status,
-                final_score: s.final_score,
+                final_score: r.score,
                 m_id: compute_m_id(&q.query, &r.id, &r.path, &aliases),
                 m_status: compute_m_status(r.status.as_deref()),
                 judge_grade: grade,

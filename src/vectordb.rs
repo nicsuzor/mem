@@ -120,6 +120,49 @@ impl DocumentEntry {
             chunks,
         )
     }
+
+    /// Build a [`SearchResult`] from this entry at `best_chunk_idx`.
+    fn to_search_result(
+        &self,
+        best_chunk_idx: usize,
+        score: f32,
+        abs_path: PathBuf,
+        matched_terms: usize,
+    ) -> SearchResult {
+        let display_source = if !self.body_chunks.is_empty() {
+            &self.body_chunks
+        } else {
+            &self.chunk_texts
+        };
+
+        let full_chunk = if best_chunk_idx < display_source.len() {
+            display_source[best_chunk_idx].clone()
+        } else if !display_source.is_empty() {
+            display_source[0].clone()
+        } else {
+            String::new()
+        };
+
+        let trunc = full_chunk.floor_char_boundary(300.min(full_chunk.len()));
+        let snippet = full_chunk[..trunc].to_string();
+
+        SearchResult {
+            path: abs_path,
+            title: self.title.clone(),
+            score,
+            snippet,
+            chunk_text: full_chunk,
+            id: self.id.clone(),
+            date: self.date.clone(),
+            doc_type: self.doc_type.clone(),
+            status: self.status.clone(),
+            tags: self.tags.clone(),
+            confidence: self.confidence,
+            chunk_id: Some(best_chunk_idx),
+            matched_terms,
+            modified: self.modified.clone(),
+        }
+    }
 }
 
 /// An index entry whose backing document is absent from disk — a stale
@@ -169,6 +212,8 @@ pub struct SearchResult {
     pub tags: Vec<String>,
     pub confidence: Option<f64>,
     pub chunk_id: Option<usize>,
+    pub matched_terms: usize,
+    pub modified: Option<String>,
 }
 
 /// Metadata-only patch produced by [`VectorStore::prepare_upsert`] when the
@@ -1323,6 +1368,41 @@ fn upsert_entry_to_bm25(bm25: &mut crate::bm25::Bm25Index, entry: &DocumentEntry
         graph_lookup: &G,
         temporal_hook: Option<&crate::ranking::TemporalAccessHook>,
     ) -> std::result::Result<Vec<SearchResult>, crate::rerank::RerankerError> {
+        let config = crate::ranking::RankingConfig::default();
+        self.try_search_hybrid_with_config(
+            query,
+            query_embedding,
+            limit,
+            pkb_root,
+            since,
+            before,
+            type_filter,
+            reranker,
+            predicate,
+            graph_lookup,
+            temporal_hook,
+            &config,
+        )
+    }
+
+    /// Hybrid search with explicit graph structural lookup, temporal/access hook, and
+    /// full [`crate::ranking::RankingConfig`] for single-pass calibrated fusion.
+    #[allow(clippy::too_many_arguments)]
+    pub fn try_search_hybrid_with_config<G: crate::ranking::GraphStructuralLookup>(
+        &self,
+        query: &str,
+        query_embedding: &[f32],
+        limit: usize,
+        pkb_root: &Path,
+        since: Option<&str>,
+        before: Option<&str>,
+        type_filter: Option<&str>,
+        reranker: Option<&crate::rerank::CrossEncoderReranker>,
+        predicate: Option<&dyn Fn(&GateCandidate) -> bool>,
+        graph_lookup: &G,
+        temporal_hook: Option<&crate::ranking::TemporalAccessHook>,
+        config: &crate::ranking::RankingConfig,
+    ) -> std::result::Result<Vec<SearchResult>, crate::rerank::RerankerError> {
         let tracer = opentelemetry::global::tracer("mem");
         use opentelemetry::trace::Tracer;
         let span = tracer.start("search_hybrid");
@@ -1331,8 +1411,8 @@ fn upsert_entry_to_bm25(bm25: &mut crate::bm25::Bm25Index, entry: &DocumentEntry
 
         let clean_query = crate::bm25::strip_wikilink_brackets(query);
 
-        let fetch_limit_dense = crate::ranking::POOL_SIZE_DENSE.max(limit);
-        let fetch_limit_lex = crate::ranking::POOL_SIZE_LEX.max(limit);
+        let fetch_limit_dense = config.pool_size_dense.max(limit);
+        let fetch_limit_lex = config.pool_size_lex.max(limit);
 
         let vector_results = self.search(
             query_embedding,
@@ -1346,12 +1426,91 @@ fn upsert_entry_to_bm25(bm25: &mut crate::bm25::Bm25Index, entry: &DocumentEntry
         let bm25_results =
             self.search_bm25(&clean_query, fetch_limit_lex, pkb_root, since, before, type_filter, predicate);
 
-        let config = crate::ranking::RankingConfig::default();
-        let fused = crate::ranking::try_fuse_tm2c2(
+        // Decoupled exact-identity lookup across all indexed documents + graph aliases,
+        // ensuring exact-ID and [[wikilink]] queries always enter the pool even outside top-100.
+        let id_candidates = crate::ranking::extract_exact_id_candidates(query);
+        let mut exact_matches: Vec<SearchResult> = Vec::new();
+        if !id_candidates.is_empty() {
+            if let Ok(date_filter) = crate::date_filter::DateFilter::parse(since, before) {
+                let mut seen_ids: std::collections::HashSet<String> = vector_results
+                    .iter()
+                    .chain(bm25_results.iter())
+                    .map(|r| r.id.clone())
+                    .collect();
+
+                for entry in self.documents.values() {
+                    if seen_ids.contains(&entry.id) {
+                        continue;
+                    }
+                    if !matches_type_filter(entry.doc_type.as_deref(), type_filter) {
+                        continue;
+                    }
+                    if date_filter.is_active() && !date_filter.matches(entry.modified.as_deref()) {
+                        continue;
+                    }
+
+                    let file_name = entry.path.file_name().and_then(|n| n.to_str());
+                    let file_stem = entry.path.file_stem().and_then(|s| s.to_str());
+                    let aliases = graph_lookup.aliases(&entry.id);
+                    let matched = id_candidates.iter().any(|cand| {
+                        crate::ranking::matches_doc_identity(cand, &entry.id, file_stem, &aliases)
+                            || file_name.is_some_and(|name| cand.eq_ignore_ascii_case(name))
+                    });
+                    if !matched {
+                        continue;
+                    }
+
+                    let abs_path = if entry.path.is_absolute() {
+                        entry.path.clone()
+                    } else {
+                        pkb_root.join(&entry.path)
+                    };
+
+                    let mut best_score = 0.0f32;
+                    let mut best_chunk_idx = 0usize;
+                    if !entry.chunk_embeddings.is_empty() {
+                        best_score = f32::NEG_INFINITY;
+                        for (i, chunk_emb) in entry.chunk_embeddings.iter().enumerate() {
+                            let score = distance::cosine_similarity(query_embedding, chunk_emb);
+                            if score > best_score {
+                                best_score = score;
+                                best_chunk_idx = i;
+                            }
+                        }
+                    }
+
+                    if let Some(pred) = predicate {
+                        let cand = GateCandidate {
+                            id: &entry.id,
+                            path: &abs_path,
+                            title: &entry.title,
+                            doc_type: entry.doc_type.as_deref(),
+                            status: entry.status.as_deref(),
+                            tags: &entry.tags,
+                            chunk_id: Some(best_chunk_idx),
+                        };
+                        if !pred(&cand) {
+                            continue;
+                        }
+                    }
+
+                    seen_ids.insert(entry.id.clone());
+                    exact_matches.push(entry.to_search_result(
+                        best_chunk_idx,
+                        best_score.max(0.0),
+                        abs_path,
+                        0,
+                    ));
+                }
+            }
+        }
+
+        let fused = crate::ranking::try_fuse_tm2c2_with_exact(
             vector_results,
             bm25_results,
+            exact_matches,
             query,
-            &config,
+            config,
             reranker,
             graph_lookup,
             temporal_hook,
@@ -1490,44 +1649,7 @@ fn upsert_entry_to_bm25(bm25: &mut crate::bm25::Bm25Index, entry: &DocumentEntry
                     }
                 }
 
-                // Prefer body_chunks (no frontmatter metadata) for display;
-                // fall back to chunk_texts if body_chunks unavailable
-                let display_source = if !entry.body_chunks.is_empty() {
-                    &entry.body_chunks
-                } else {
-                    &entry.chunk_texts
-                };
-
-                let full_chunk = if best_chunk_idx < display_source.len() {
-                    display_source[best_chunk_idx].clone()
-                } else if !display_source.is_empty() {
-                    display_source[0].clone()
-                } else {
-                    String::new()
-                };
-
-                let snippet = {
-                    let mut trunc = 300.min(full_chunk.len());
-                    while trunc > 0 && !full_chunk.is_char_boundary(trunc) {
-                        trunc -= 1;
-                    }
-                    full_chunk[..trunc].to_string()
-                };
-
-                results.push(SearchResult {
-                    path: abs_path,
-                    title: entry.title.clone(),
-                    score: best_score,
-                    snippet,
-                    chunk_text: full_chunk,
-                    id: entry.id.clone(),
-                    date: entry.date.clone(),
-                    doc_type: entry.doc_type.clone(),
-                    status: entry.status.clone(),
-                    tags: entry.tags.clone(),
-                    confidence: entry.confidence,
-                    chunk_id: Some(best_chunk_idx),
-                });
+                results.push(entry.to_search_result(best_chunk_idx, best_score, abs_path, 0));
             }
         }
 
@@ -1590,6 +1712,8 @@ fn upsert_entry_to_bm25(bm25: &mut crate::bm25::Bm25Index, entry: &DocumentEntry
                 tags: entry.tags.clone(),
                 confidence: entry.confidence,
                 chunk_id: None,
+                matched_terms: 0,
+                modified: entry.modified.clone(),
             });
         }
 
@@ -3029,7 +3153,8 @@ mod tests {
         let res = store.search_bm25("[[kb_295732fd]]", 5, Path::new("/pkb"), None, None, None, None);
         assert_eq!(res.len(), 1);
         assert_eq!(res[0].id, "kb_295732fd");
-        assert!(res[0].score >= crate::bm25::EXACT_ID_BM25_BOOST);
+        assert!(res[0].score > 0.0 && res[0].score < 100.0);
+        assert!(res[0].matched_terms >= 1);
     }
 
     #[test]
@@ -3248,6 +3373,117 @@ mod tests {
         assert_eq!(
             std::fs::metadata(&db_path).unwrap().modified().unwrap(),
             snap_mtime_before
+        );
+    }
+
+    #[test]
+    fn test_vectordb_exact_id_direct_lookup_outside_top_100_and_aliases() {
+        struct AliasLookup;
+        impl crate::ranking::GraphStructuralLookup for AliasLookup {
+            fn outdegree(&self, _id: &str) -> i32 {
+                0
+            }
+            fn aliases(&self, id: &str) -> Vec<String> {
+                if id == "doc_alpha" {
+                    vec!["spec-alias-9".to_string()]
+                } else {
+                    Vec::new()
+                }
+            }
+        }
+
+        let mut store = VectorStore::new(3);
+        // 110 distractors with high dense cosine similarity [1, 0, 0]
+        for i in 0..110 {
+            let id = format!("distractor_{i:03}");
+            store.documents.insert(
+                id.clone(),
+                make_entry(
+                    &format!("notes/{id}.md"),
+                    &format!("Distractor Note {i}"),
+                    Some("note"),
+                    Some("active"),
+                    &[],
+                    Some(&id),
+                    None,
+                    vec![1.0, 0.0, 0.0],
+                ),
+            );
+        }
+
+        // Target documents outside top-100 dense (orthogonal [0, 1, 0]) and absent from BM25
+        for (id, doc_type, path) in [
+            ("kb-48219034", "note", "notes/kb-48219034.md"),
+            ("wf-example", "template", "workflows/wf-example.md"),
+            ("item_1234", "task", "tasks/item_1234.md"),
+            ("doc_alpha", "note", "notes/doc_alpha.md"),
+        ] {
+            store.documents.insert(
+                id.to_string(),
+                make_entry(
+                    path,
+                    &format!("Target {id}"),
+                    Some(doc_type),
+                    Some("ready"),
+                    &[],
+                    Some(id),
+                    None,
+                    vec![0.0, 1.0, 0.0],
+                ),
+            );
+        }
+
+        let query_emb = vec![1.0, 0.0, 0.0];
+        let cfg = crate::ranking::RankingConfig::default();
+
+        for (query, expected_id) in [
+            ("kb-48219034", "kb-48219034"),
+            ("wf-example", "wf-example"),
+            ("inspect item_1234 please", "item_1234"),
+            ("see [[doc_alpha]] here", "doc_alpha"),
+            ("spec-alias-9", "doc_alpha"),
+        ] {
+            let res = store
+                .try_search_hybrid_with_config(
+                    query,
+                    &query_emb,
+                    10,
+                    Path::new("/pkb"),
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    &AliasLookup,
+                    None,
+                    &cfg,
+                )
+                .unwrap();
+            assert!(!res.is_empty(), "query '{query}' must return results");
+            assert_eq!(res[0].id, expected_id, "query '{query}' must rank {expected_id} #1");
+            assert_eq!(res[0].score, 1.0, "query '{query}' must pin exact ID to 1.000");
+        }
+
+        // Direct lookup must still respect type_filter
+        let filtered = store
+            .try_search_hybrid_with_config(
+                "doc_alpha",
+                &query_emb,
+                10,
+                Path::new("/pkb"),
+                None,
+                None,
+                Some("task"),
+                None,
+                None,
+                &AliasLookup,
+                None,
+                &cfg,
+            )
+            .unwrap();
+        assert!(
+            !filtered.iter().any(|r| r.id == "doc_alpha"),
+            "type_filter=task must exclude note doc_alpha even on exact-ID query"
         );
     }
 }

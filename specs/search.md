@@ -36,40 +36,42 @@ Query
   │
   ├───► Dense Query Encoding (BGE-M3, 1024-dim ONNX) ──► Vector Index (Cosine Similarity)
   │                                                                 │ (Top 100)
-  └───► NFKD / Lowercase / Stopwords / Porter Stemmer  ──► BM25 v2 Lexical Index
-                                                                 │ (Top 100)
+  ├───► NFKD / Lowercase / Stopwords / Porter Stemmer  ──► BM25 v2 Lexical Index
+  │                                                                 │ (Top 100, pure BM25)
+  └───► Direct Exact-ID / [[wikilink]] / Alias Lookup  ─────────────┼─► Candidate Pool P
+                                                                    │
                                                        Raw-Score Silence Floor
-                                                       (tau_cos >= 0.45 OR s_lex > 0)
-                                                                 │
+                                                       (tau_cos = 0.55; exact-ID bypass;
+                                                        >=3-term multi-match lex gate;
+                                                        sub-floor dense => s_norm_dense = 0)
+                                                                    │
                                                        Local Min-Max Normalisation
                                                        (|P| == 1 => s_norm = 1.0)
-                                                                 │
+                                                                    │
                                                        Adaptive Convex Combination (TM2C2)
                                                        (alpha = 0.35 id / 0.65 prose)
-                                                                 │
+                                                                    │
                                                        Cross-Encoder Reranker (by default, Top 40)
-                                                       (or degraded fallback with explicit absent reason)
-                                                                 │
-                                                       Unified Multiplicative Priors
-                                                       (M_struct * M_proximity * M_title)
-                                                                 │
-                                                       Temporal & Access Priors
-                                                       (Recency Decay & Recent-Read Boost)
-                                                                 │
-                                                       Terminal Soft-Ceiling Scaling & Identity Reservation
-                                                       (Identity match = 1.000; non-identity hits bounded
-                                                        in [floor, 0.990] via C1 rational knee)
-                                                                 │
-                                                       Final Ranked Results
+                                                       (or degraded fallback with reranker_reason)
+                                                                    │
+                                                       Single-Pass Unified Multiplicative Priors
+                                                       (M_struct * (1 + title + type + proximity)
+                                                        * M_recency_access)
+                                                                    │
+                                                       Single Terminal Soft-Ceiling & Identity Pin
+                                                       (Identity match = 1.000; non-identity hits
+                                                        bounded in [floor, 0.990] via single C1 knee)
+                                                                    │
+                                                       Final Ranked Results (id, chunk_id tie-break)
 ```
 
-1. **Dual-Path Candidate Retrieval**: Top 100 dense vector matches (BGE-M3 embeddings, cosine similarity) and top 100 BM25 v2 lexical matches are retrieved concurrently.
-2. **Raw-Score Silence Floor**: Candidates must pass the silence threshold ($\tau_{\cos} = 0.45$ or $s_{\text{raw}}^{\text{lex}} > 0$). If both candidate pools fail the threshold, the search returns empty immediately, preventing low-relevance noise from being inflated to 1.0.
-3. **Local Min-Max Normalisation & TM2C2 Fusion**: Surviving candidates are normalised query-locally into $[0.0, 1.0]$ and combined adaptively via TM2C2 ($\alpha = 0.35$ for identifier/code queries, $\alpha = 0.65$ for natural language prose).
-4. **Cross-Encoder Reranking by Default**: Enabled by default; the top 40 candidates are re-scored using a local transformer cross-encoder running on ONNX Runtime. When model files are absent, search proceeds with `ranking: "fused"` and explicitly reports the absence reason in the reply.
-5. **Unified Multiplicative Priors**: Applied in a single pass incorporating identifier match, document lifecycle status, graph connectivity ($M_{\text{struct}} \in [0.30, 2.268]$), query-time graph proximity (`boost_id`), and token-overlap title match (`title_match_boost`).
-6. **Temporal & Access Priors under Floor Invariance**: Exponential recency decay and recent-read boost apply via the modular `TemporalAccessHook`, strictly respecting relevance floor invariance so sub-floor items are never promoted.
-7. **Terminal Soft-Ceiling Scaling & Identity Reservation**: Non-identity candidate scores crossing $T = 0.900$ are saturated asymptotically toward $C = 0.990$ using a $C^1$-continuous rational knee curve, strictly preserving discrimination and rank monotonicity while reserving $1.000$ exclusively for exact identity matches.
+1. **Dual-Path Candidate Retrieval + Direct Identity Lookup**: Top 100 dense vector matches (BGE-M3 embeddings, cosine similarity), top 100 pure Okapi BM25 v2 lexical matches (recording distinct `matched_terms` without `+1000` inflation), and direct store/graph-alias exact-identity matches (`extract_exact_id_candidates`) are unioned into candidate pool $P$. Caller `fetch_limit` uses `(POOL_SIZE_DENSE + POOL_SIZE_LEX).max(limit * 5)` (or `limit * 10` when filtering) so candidates are not prematurely truncated before priors.
+2. **Recalibrated Raw-Score Silence Floor**: Unless an exact-ID match is present, queries with $\max(s_{\text{raw}}^{\text{dense}}) < \tau_{\cos} = 0.55$ return empty immediately if $\max(s_{\text{raw}}^{\text{lex}}) \le 0$ OR if the query contains $\ge 3$ deduplicated content terms and no lexical candidate matched $\ge 2$ terms. When lexical survives below $\tau_{\cos}$, $s_{\text{norm}}^{\text{dense}}$ is forced to $0.0$ for all candidates so sub-floor cosine noise is never stretched to $1.0$.
+3. **Local Min-Max Normalisation & TM2C2 Fusion**: Surviving candidates are normalised query-locally into $[0.0, 1.0]$ and combined adaptively via TM2C2 ($\alpha = 0.35$ for explicit wikilinks or identifier-heavy queries $\le 3$ tokens, $\alpha = 0.65$ for natural language prose).
+4. **Cross-Encoder Reranking by Default**: Enabled by default; the top 40 candidates are re-scored using a local transformer cross-encoder running on ONNX Runtime. When not loaded, search proceeds with `ranking: "fused"`, `reranker_loaded: false`, and explicitly emits `reranker_reason` in every JSON/`structuredContent` envelope.
+5. **Single-Pass Unified Multiplicative Priors**: Applied in one unified pass inside `try_fuse_tm2c2_with_exact` incorporating real `GraphStore` `outdegree` and `aliases`, `include_done`-aware status (`M_struct`), bounded stemmed max-denominator `title_match_boost` ($\in [0.0, 0.25]$), `type_boost`, query-time graph proximity (`boost_id`), and `TemporalAccessHook` (`document_recency_decay * recent_read_boost`).
+6. **Temporal & Access Priors under Floor Invariance**: Exponential recency decay (`type: daily`-only 14-day `date` decay) and logarithmic recent-read boost apply via `TemporalAccessHook`, strictly respecting relevance floor invariance so sub-floor items are never promoted above `floor`.
+7. **Single Terminal Soft-Ceiling Scaling & Identity Reservation**: Non-identity candidate scores crossing $T = 0.900$ are saturated asymptotically toward $C = 0.990$ using a $C^1$-continuous rational knee curve applied **exactly once** at the end of the unified pass, reserving $1.000$ exclusively for exact identity matches.
 
 ---
 
@@ -134,22 +136,26 @@ Document fields are weighted in the lexical index:
 
 Dense embeddings are generated by the BGE-M3 model (1024-dimensional floating point vectors) and persisted in `$ACA_DATA/pkb_vectors.bin`. Cosine similarity evaluates query vectors against chunk vectors.
 
-### 4.2. Candidate Pools ($P_{\text{dense}}$, $P_{\text{lex}}$)
+### 4.2. Candidate Pools ($P_{\text{dense}}$, $P_{\text{lex}}$, and Direct Exact-ID Lookup)
 
 Candidate retrieval fetches up to:
 - $N_{\text{dense}} = 100$ top vector candidates (`POOL_SIZE_DENSE`)
-- $N_{\text{lex}} = 100$ top BM25 candidates (`POOL_SIZE_LEX`)
+- $N_{\text{lex}} = 100$ top pure Okapi BM25 candidates (`POOL_SIZE_LEX`), tracking distinct matched query terms (`matched_terms`) per hit
+- Direct exact-identity matches across `VectorStore::documents` and `GraphStructuralLookup::aliases` (`extract_exact_id_candidates`), respecting `since`, `before`, `type_filter`, and pre-pool gate predicates so exact-ID and `[[wikilink]]` targets enter $P$ even when outside top-100 dense/BM25.
 
-### 4.3. Raw-Score Silence Floor ($\tau_{\cos} = 0.45$)
+MCP search handlers request `fetch_limit = (POOL_SIZE_DENSE + POOL_SIZE_LEX).max(limit * 5)` (or `.max(limit * 10)` when filtering by type / `actionable_only`), avoiding premature `limit * 2` truncation.
 
-To prevent irrelevant or noisy queries from stretching background noise to 1.0 during min-max normalization, a raw-score silence floor is enforced:
+### 4.3. Raw-Score Silence Floor ($\tau_{\cos} = 0.55$)
 
-$$\tau_{\cos} = 0.45$$
+To prevent irrelevant or noisy queries from stretching background BGE-M3 cosine noise to 1.0 during min-max normalization, a recalibrated raw-score silence floor is enforced:
 
-1. If $\max(s_{\text{raw}}^{\text{dense}}) < \tau_{\cos}$ **AND** $\max(s_{\text{raw}}^{\text{lex}}) \le 0$, the query fails the silence floor and returns empty results (`[]`) immediately.
-2. For candidate pool construction:
-   - Dense candidates with $s_{\text{raw}}^{\text{dense}} < 0$ are discarded.
-   - Lexical candidates with $s_{\text{raw}}^{\text{lex}} \le 0$ are discarded.
+$$\tau_{\cos} = 0.55$$
+
+1. **Exact-ID Bypass**: If any candidate in $P$ satisfies `is_exact_id_match`, the query is never silenced.
+2. Otherwise, when $\max(s_{\text{raw}}^{\text{dense}}) < \tau_{\cos}$:
+   - If $\max(s_{\text{raw}}^{\text{lex}}) \le 0$, return empty results (`[]`) immediately.
+   - Compute the deduplicated content term count of the query via `content_terms_v2`. If $|Q_{\text{content}}| \ge 3$ and no lexical candidate has `matched_terms >= 2`, return empty (`[]`) immediately (suppressing multi-word no-answer queries hitting a single incidental word).
+   - If lexical survives (1–2 content terms, or $\ge 2$ matched terms), force $s_{\text{norm}}^{\text{dense}}(d) = 0.0$ for all candidates so sub-floor dense background noise is never min-max stretched to $1.0$.
 
 ### 4.4. Query-Local Min-Max Normalisation & Single-Candidate Pool Rule
 
@@ -175,9 +181,16 @@ $$\alpha(q) = \begin{cases}
 0.65 & \text{if } q \text{ is prose / natural language (dense-favoured)}
 \end{cases}$$
 
-A query is classified as **identifier-like** if:
-1. It contains an underscore `_`, hyphen `-`, or digit run (`0`–`9`); OR
-2. It has $\le 3$ tokens and contains uppercase letters (e.g. camelCase, PascalCase) or path delimiters (`/` or `\`).
+A query is classified as **identifier-like** (`is_identifier_query`) iff:
+1. It contains an explicit `[[wikilink]]` target (regardless of token count); OR
+2. It has $1$–$3$ whitespace tokens and `id_tokens * 2 >= tokens.len()`, where a token is identifier-like if it:
+   - contains `_`, `/`, or `\`; OR
+   - is an ALL-CAPS acronym ($\text{len} \ge 2$, uppercase ASCII/digits with $\ge 1$ ASCII letter, e.g. `TM2C2`, `ONNX`, `LFS`); OR
+   - is CamelCase (contains both ASCII lowercase and an ASCII uppercase letter after index 0, e.g. `VectorStore`); OR
+   - mixes ASCII letters and digits (e.g. `kb-48219034`, `v0.5.10`, `2026J`, `task-42`); OR
+   - is a standalone single-token ISO date (`YYYY-MM-DD`).
+
+Queries with $> 3$ whitespace tokens (without explicit `[[wikilink]]`), plain lowercase hyphenated English words (`in-session`, `end-to-end`, `follow-up`), and ISO dates inside multi-word queries route as prose ($\alpha = 0.65$).
 
 ### 4.6. Local ONNX Cross-Encoder Reranker
 
@@ -212,27 +225,30 @@ $$m_{\text{id}}(q, d) = \begin{cases}
 1.0 & \text{otherwise}
 \end{cases}$$
 
-Matching rules:
-- **Whole-query exact match**: Trimmed query (after stripping wikilink brackets) matching `doc_id`, filename, filename stem, or alias case-insensitively always yields $m_{\text{id}} = 2.0$ (covering single-token lookups and multi-word exact titles/aliases).
-- **Multi-token sub-token match**: When a query contains multiple tokens, a sub-token matches `doc_id`, filename stem, or alias only if it is explicitly wrapped as a `[[wikilink]]` in the raw query (target matching also matches `file_name` and strips `#heading` / `|alias` suffixes) or is identifier-shaped (contains `_`, `-`, or an ASCII digit, e.g. `task_1234` or `kb-abcd`). Plain alphabetic words inside multi-word prose queries do not trigger $m_{\text{id}} = 2.0$ or the $1.000$ exact-identity pin.
+Matching rules (`extract_exact_id_candidates` + `matches_doc_identity`):
+- **Whole-query exact match**: Trimmed query (after stripping optional `[[...]]` brackets) matching `doc_id`, filename, filename stem, or alias case-insensitively always yields $m_{\text{id}} = 2.0$ (covering single-token lookups and multi-word exact titles/aliases).
+- **Explicit wikilink targets**: `[[target]]`, `[[target#heading]]`, and `[[target|alias]]` targets in the raw query match `doc_id`, filename, filename stem, or alias case-insensitively.
+- **Multi-token sub-token match**: When a query contains multiple tokens, a sub-token matches `doc_id`, filename stem, or alias only if it is identifier-shaped (requires `_`, `/`, `\`, or mixed ASCII letters and digits such as `task_1234` or `kb-48219034`). Plain alphabetic or lowercase hyphenated English words (`follow-up`, `in-session`) inside multi-word prose queries do not trigger $m_{\text{id}} = 2.0$ or the $1.000$ exact-identity pin.
 
 Exact identifier lookups are strongly boosted to guarantee pinpoint navigation when querying known IDs, wikilinks, or stems.
 
 ### 5.2. Lifecycle Status Prior ($m_{\text{status}}$)
 
-Documents in active work states receive priority over historical, completed, or abandoned nodes:
+Documents in active work states receive priority over historical, completed, or abandoned nodes (`compute_m_status_for_query`):
 
-| Status Category | Status Values | Multiplier $m_{\text{status}}$ |
-|---|---|---|
-| **Active / Ready** | `ready`, `in_progress`, `active` | $1.05$ |
-| **Neutral / Default** | `inbox`, `queued`, untyped / missing status | $1.00$ |
-| **Secondary / Paused** | `review`, `paused`, `someday`, `partial` | $0.85$ |
-| **Completed** | `done`, `completed` | $0.60$ |
-| **Deprecations / Inactive** | `cancelled`, `failed`, `archived`, `superseded` | $0.30$ |
+| Status Category | Status Values | Multiplier $m_{\text{status}}$ (`include_done=false`) | `include_done=true` |
+|---|---|---|---|
+| **Active / Ready** | `ready`, `in_progress`, `active` | $1.05$ | $1.05$ |
+| **Neutral / Default** | `inbox`, `queued`, untyped / missing status | $1.00$ | $1.00$ |
+| **Secondary / Paused** | `review`, `paused`, `someday`, `partial` | $0.85$ | $0.85$ |
+| **Completed** | `done`, `complete`, `completed` | $0.60$ | $1.00$ |
+| **Deprecations / Inactive** | `cancelled`, `failed`, `archived`, `superseded` | $0.30$ | $0.30$ |
+
+When `include_done: true` is passed by the caller, completed nodes (`done`, `complete`, `completed`) are neutralized to $1.00$.
 
 ### 5.3. Graph Topology Prior ($m_{\text{graph}}$)
 
-A bounded multiplier rewards structural hubs and referenced notes using outward link degree $\text{deg}^+(d)$:
+A bounded multiplier rewards structural hubs and referenced notes using outward link degree $\text{deg}^+(d)$ (provided directly via `GraphStructuralLookup for GraphStore`):
 
 $$m_{\text{graph}}(d) = 1 + 0.08 \cdot \min\left(1, \frac{\ln(1 + \max(0, \text{deg}^+(d)))}{\ln(21)}\right)$$
 
@@ -240,7 +256,15 @@ $$m_{\text{graph}}(d) = 1 + 0.08 \cdot \min\left(1, \frac{\ln(1 + \max(0, \text{
 - For nodes with $20$ outward links ($\text{deg}^+ = 20$): $m_{\text{graph}} = 1 + 0.08 \cdot \frac{\ln(21)}{\ln(21)} = 1.08$.
 - For nodes with $\text{deg}^+ > 20$: clamped at $1.08$.
 
-### 5.4. Structural Prior Bounds
+### 5.4. Bounded Stemmed Title Relevance (`title_match_boost`)
+
+Title overlap is computed over Porter-stemmed deduplicated content terms (`content_terms_v2`) using max-denominator coverage:
+
+$$\text{title\_match\_boost}(q, t) = \frac{|Q \cap T|}{\max(|Q|, |T|)} \cdot 0.25 \in [0.0, 0.25]$$
+
+Max-denominator coverage bounds the multiplicative title factor to at most $1.25\times$ and prevents short 1-word stub titles from overpowering substantive multi-term documents.
+
+### 5.5. Structural Prior Bounds
 
 The total structural prior $M_{\text{struct}}$ is strictly bounded:
 
@@ -267,7 +291,7 @@ $$\text{decay}(\text{age\_days}) = 0.85 + 0.15 \cdot \exp\left(-\frac{\text{age\
 
 - **Half-Life Scaling**: Recency multiplier begins at $1.0$ when $\text{age\_days} = 0$.
 - **Asymptotic Floor**: As age increases, the multiplier asymptotically approaches $0.85$ ($\approx 0.905$ at 14 days, $\approx 0.870$ at 28 days).
-- **Non-Daily Documents**: Notes carrying an explicit `modified` timestamp decay gradually with a 30-day denominator: $0.85 + 0.15 \cdot \exp(-\text{age\_days} / 30.0)$.
+- **Non-Daily Documents**: The 14-day `date` decay applies strictly to `type: daily`; other dated documents (such as `type: note`) do not inherit 14-day daily decay from `date`, and only decay gradually from an explicit `modified` timestamp with a 30-day denominator: $0.85 + 0.15 \cdot \exp(-\text{age\_days} / 30.0)$.
 
 ### 6.2. Actionable & Strategic Type Immunity
 
@@ -285,11 +309,11 @@ Type immunity is evaluated at the head of `document_recency_decay`. Even if a ta
 
 Documents accumulate salience through access events in the in-memory `SalienceStore` (`src/salience.rs`):
 - **Access Types**: Direct read (`get_document`), search retrieval hits, graph traversals, and MCP calls.
-- **Exponential Growth**: First access initializes score to $1.0$; each subsequent access multiplies the current score by $2.0$ up to a ceiling of $100.0$.
-- **Linear Daily Decay**: Without access, scores decay linearly by $1.0$ per 24 hours down to a floor of $0.0$.
-- **Multiplicative Boost**: Mapped to a bounded multiplier in $[1.0, 1.20]$:
+- **Additive Growth**: First access (or access at floor) initializes score to $1.0$; each subsequent access adds `access_increment = 1.0` up to a ceiling of $100.0$.
+- **Exponential Half-Life Decay**: Without access, scores decay exponentially with `half_life_days = 7.0` ($s(t) = s_0 \cdot 0.5^{\Delta t / 7.0}$) clamped in $[0.0, 100.0]$.
+- **Logarithmic Multiplicative Boost**: Mapped to a bounded multiplier in $[1.0, 1.20]$ that stays well below $1.20\times$ at moderate read counts (e.g., 8 reads yields $< 1.15\times$):
 
-$$\text{boost} = 1.0 + 0.20 \cdot \text{clamp}\left(\frac{\text{salience} - \text{floor}}{\text{ceiling} - \text{floor}}, 0.0, 1.0\right)$$
+$$\text{boost} = 1.0 + 0.20 \cdot \text{clamp}\left(\frac{\ln(1 + (\text{salience} - \text{floor}))}{\ln(1 + (\text{ceiling} - \text{floor}))}, 0.0, 1.0\right)$$
 
 ---
 
@@ -353,9 +377,9 @@ Retrieval surfaces adhere to identical scoring semantics:
 In default format (`format` omitted or `"markdown"`), `search` emits `extract` on every hit in `structuredContent.results[]` for `snippet`, `chunk`, and `full` (omitted for `metadata` and `ids`) and omits the extract text from `content[0].text` (which carries only the compact markdown header and per-hit metadata) so each extract appears once on the wire.
 
 ### 9.2. Reranker Execution and Absence Transparency
-The cross-encoder reranker runs by default on candidate pools. Search replies explicitly declare execution state in the envelope:
-- When reranker is loaded and executed: `ranking: "reranked"`, `reranker_loaded: true`.
-- When model files are absent or unconfigured: `ranking: "fused"`, `reranker_loaded: false`, with `reranker_reason` explicitly identifying why (e.g. `"model absent"` or `"disabled by configuration"`).
+The cross-encoder reranker runs by default on candidate pools. Search replies explicitly declare execution state in every `structuredContent` / JSON envelope (zero hits, `ids_only`, `format: "json"`, and default markdown):
+- When reranker is loaded and executed: `ranking: "reranked"`, `reranker_loaded: true` (omitting `reranker_reason`).
+- When model files are absent or unconfigured: `ranking: "fused"`, `reranker_loaded: false`, with `reranker_reason` explicitly identifying why via `CrossEncoderReranker::absent_reason()` (e.g. `"model absent"` or `"disabled by configuration"`).
 
 ### 9.3. Type Family Filtering Semantics
 Filter expressions on `type` follow universal taxonomic categories (`specs/pkb-type-taxonomy.md`):
@@ -372,13 +396,15 @@ Filter expressions on `type` follow universal taxonomic categories (`specs/pkb-t
 ## 10. Verification and Invariants
 
 The automated test suite verifies all ranking and retrieval invariants:
-- **Silence Floor**: `test_silence_floor_on_garbage_queries_returns_empty`, `test_silence_floor_dense_above_threshold_passes`, `test_silence_floor_lex_above_threshold_passes`
+- **Silence Floor ($\tau_{\cos} = 0.55$ & Multi-Term Gate)**: `test_silence_floor_on_garbage_queries_returns_empty`, `test_silence_floor_dense_above_threshold_passes`, `test_silence_floor_lex_above_threshold_passes`, `test_silence_floor_recalibrated_055_and_multiterm_lex_gate`
+- **Decoupled Exact-ID Lookup & Title Coverage**: `test_vectordb_exact_id_direct_lookup_outside_top_100_and_aliases`, `test_extract_exact_id_candidates_and_matches_doc_identity`, `test_title_match_boost_bounded_max_denominator_and_stemmed`
+- **Single-Pass Fusion & Soft-Knee Ceiling**: `test_single_soft_knee_ceiling_not_double_compressed`, `test_search_fetch_limit_does_not_truncate_at_20_and_single_pass_graph_priors`, `test_include_done_neutralizes_done_status_discount`, `test_search_include_done_neutralizes_done_discount_end_to_end`
 - **Single-Candidate Pools**: `test_single_candidate_dense_surviving`, `test_single_candidate_lex_surviving`
 - **Adaptive Alpha Routing**: `test_alpha_routing_identifier_queries`, `test_alpha_routing_prose_queries`
-- **Structural Priors**: `test_m_struct_overall_bounds`, `test_m_status_values`, `test_m_graph_monotonicity`
+- **Structural Priors**: `test_m_struct_overall_bounds`, `test_m_status_values`, `test_m_graph_outdegree_formula_and_bounds`
 - **Chunking & Contextual Headers**: `test_contextual_header_formatting`, `test_line_boundary_splitting_and_overlap` in `src/chunker.rs`
-- **BM25 Lexical Index**: `test_bm25_exact_match_retrieval`, `test_tokenizer_preserves_identifiers_and_splits` in `src/bm25.rs`
-- **Recency Decay & Salience**: `test_daily_decay_monotonic`, `test_task_type_immunity`, `test_floor_invariance`
+- **BM25 Lexical Index**: `test_bm25_exact_match_retrieval`, `test_bm25_pure_scoring_and_matched_terms`, `test_tokenizer_preserves_identifiers_and_splits` in `src/bm25.rs`
+- **Recency Decay & Salience**: `test_salience_growth_decay_and_monotonic_boost` in `src/salience.rs`, `tests/salience_tests.rs`, `src/mcp_server/tests/salience_mcp_tests.rs`
 - **Top Hits Score Discrimination (C1)**: `test_search_scores_are_discriminating_and_do_not_saturate_at_one`
 - **Identity-Key Hit Exclusivity (C2)**: `test_exact_id_scores_one_prose_hits_sub_one`
 - **Unified Ranking & Prior Parity (C3)**: `test_ranked_score_deprecation_parity`
@@ -391,5 +417,5 @@ The automated test suite verifies all ranking and retrieval invariants:
   - `test_matches_type_filter_exact_negation` (C9)
   - `test_matches_type_filter_composite_expressions` (C10)
 - **Summary Detail & Lean Projections (AC1)**: `test_search_summary_detail_hit_carries_type_status_snippet_and_metadata_omits_snippet`
-- **Reranker Execution and Absence Reason (AC3)**: `test_search_reranker_executes_by_default_or_reports_absent_reason`
+- **Reranker Execution and Absence Reason**: `test_absent_reason` in `src/rerank.rs`, `test_search_emits_reranker_reason_across_all_envelopes` in `src/mcp_server/handlers_search.rs`
 - **Concurrent Search Fan-out (AC1 & AC2)**: `test_concurrent_five_searches_do_not_serialise` in `src/mcp_server/tests/slow_tail_tests.rs` ensuring 5 concurrent searches complete in under twice single query latency, and OpenTelemetry trace analysis verifying `encode_query` does not block on model disk loading or session mutexes.

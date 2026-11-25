@@ -23,9 +23,6 @@ pub const WEIGHT_HEADING: f32 = 2.0;
 pub const WEIGHT_BODY: f32 = 1.0;
 pub const WEIGHT_ID_TOKENS: f32 = 1.0;
 
-/// Dominant anchor boost added to BM25 score when a query term exactly matches the document ID.
-pub const EXACT_ID_BM25_BOOST: f32 = 1000.0;
-
 /// Standard English stopword list for lexical retrieval.
 static ENGLISH_STOPWORDS: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
     let words = [
@@ -284,6 +281,26 @@ fn add_v2_token(token: &str, stemmer: &rust_stemmers::Stemmer, out: &mut Vec<Str
     if stemmed != token && !is_stopword(&stemmed) {
         out.push(stemmed);
     }
+}
+
+/// Extract the deduplicated set of Porter-stemmed v2 content terms from text.
+///
+/// Mirrors the query-term deduplication used by [`Bm25Index::search`] so raw
+/// surface forms are collapsed onto their Porter stem when present.
+pub fn content_terms_v2(text: &str) -> HashSet<String> {
+    let mut terms: HashSet<String> = tokenize_v2(text).into_iter().collect();
+    let raw_with_stem: Vec<String> = terms
+        .iter()
+        .filter(|t| {
+            let s = stem_word(t);
+            s != **t && terms.contains(&s)
+        })
+        .cloned()
+        .collect();
+    for raw in raw_with_stem {
+        terms.remove(&raw);
+    }
+    terms
 }
 
 /// A stored chunk entry in the BM25 index.
@@ -637,8 +654,9 @@ impl Bm25Index {
             }
         }
 
-        // Accumulate scores per (doc_id, chunk_id)
+        // Accumulate scores and distinct matched query terms per (doc_id, chunk_id)
         let mut scores: HashMap<(String, usize), f32> = HashMap::new();
+        let mut matched_terms: HashMap<(String, usize), usize> = HashMap::new();
 
         for (term, q_count) in q_freqs {
             if let Some(postings) = self.postings.get(&term) {
@@ -655,17 +673,10 @@ impl Bm25Index {
                     if let Some(chunk) = self.chunks.get(&(doc_id.clone(), *chunk_id)) {
                         let dl = chunk.length as f32;
                         let denom = tf + BM25_K1 * (1.0 - BM25_B + BM25_B * (dl / avg_dl));
-                        let mut term_score = idf * ((tf * (BM25_K1 + 1.0)) / denom) * q_multiplier;
-                        let is_exact_id = doc_id.eq_ignore_ascii_case(&term)
-                            || chunk
-                                .path
-                                .file_stem()
-                                .and_then(|s| s.to_str())
-                                .is_some_and(|s| s.eq_ignore_ascii_case(&term));
-                        if is_exact_id {
-                            term_score += EXACT_ID_BM25_BOOST;
-                        }
-                        *scores.entry((doc_id.clone(), *chunk_id)).or_insert(0.0) += term_score;
+                        let term_score = idf * ((tf * (BM25_K1 + 1.0)) / denom) * q_multiplier;
+                        let key = (doc_id.clone(), *chunk_id);
+                        *scores.entry(key.clone()).or_insert(0.0) += term_score;
+                        *matched_terms.entry(key).or_insert(0) += 1;
                     }
                 }
             }
@@ -679,6 +690,10 @@ impl Bm25Index {
         };
 
         for ((doc_id, chunk_id), score) in scores {
+            let m_terms = matched_terms
+                .get(&(doc_id.clone(), chunk_id))
+                .copied()
+                .unwrap_or(0);
             let chunk = match self.chunks.get(&(doc_id, chunk_id)) {
                 Some(c) => c,
                 None => continue,
@@ -729,6 +744,8 @@ impl Bm25Index {
                 tags: chunk.tags.clone(),
                 confidence: chunk.confidence,
                 chunk_id: Some(chunk.chunk_id),
+                matched_terms: m_terms,
+                modified: chunk.modified.clone(),
             };
 
             match best_by_doc.entry(chunk.id.clone()) {
@@ -930,11 +947,12 @@ mod tests {
         let results = idx.search("[[kb_295732fd]]", 5, Path::new("/pkb"), None, None, None, None);
         assert!(!results.is_empty());
         assert_eq!(results[0].id, "kb_295732fd", "Bracketed ID query [[kb_295732fd]] must rank target document #1");
-        assert!(results[0].score >= EXACT_ID_BM25_BOOST, "Exact ID match must receive dominant anchor boost");
+        assert!(results[0].score > 0.0 && results[0].score < 100.0, "BM25 must return pure Okapi BM25 scores without +1000 inflation; got {}", results[0].score);
+        assert!(results[0].matched_terms >= 1);
     }
 
     #[test]
-    fn test_bm25_exact_id_dominant_anchor_scoring() {
+    fn test_bm25_pure_scoring_and_matched_terms() {
         let mut idx = Bm25Index::new();
         // Task whose title does NOT repeat the ID slug
         idx.upsert(
@@ -969,11 +987,15 @@ mod tests {
         );
 
         let results = idx.search("aops_8a2448c0", 5, Path::new("/pkb"), None, None, None, None);
-        assert!(!results.is_empty());
-        assert_eq!(results[0].id, "aops_8a2448c0", "Exact ID query must rank matching document #1 regardless of title slug repetition");
-        assert!(results[0].score >= EXACT_ID_BM25_BOOST);
-        if results.len() > 1 {
-            assert!(results[0].score > results[1].score + 900.0, "Exact ID match must dominate competitor mentions");
+        assert_eq!(results.len(), 2);
+        for r in &results {
+            assert!(
+                r.score > 0.0 && r.score < 100.0,
+                "Pure BM25 must not add +1000 inflation; got {} for {}",
+                r.score,
+                r.id
+            );
+            assert!(r.matched_terms >= 1, "matched_terms must be populated");
         }
     }
 }

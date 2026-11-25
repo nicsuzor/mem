@@ -745,6 +745,8 @@ mod tests {
                 tags: vec![],
                 confidence: None,
                 chunk_id: None,
+                matched_terms: 0,
+                modified: None,
             },
         ];
 
@@ -770,6 +772,8 @@ mod tests {
                 tags: vec![],
                 confidence: None,
                 chunk_id: None,
+                matched_terms: 0,
+                modified: None,
             },
             SearchResult {
                 path: PathBuf::from("tasks/task-target.md"),
@@ -784,6 +788,8 @@ mod tests {
                 tags: vec![],
                 confidence: None,
                 chunk_id: None,
+                matched_terms: 0,
+                modified: None,
             },
         ];
 
