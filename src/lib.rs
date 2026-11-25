@@ -26,6 +26,7 @@ pub mod graph_store;
 pub mod lint;
 pub mod lsp;
 pub mod mcp_server;
+pub mod model_manifest;
 pub mod metrics;
 pub mod migrations;
 pub mod path_lint;

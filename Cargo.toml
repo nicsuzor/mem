@@ -112,6 +112,9 @@ opentelemetry-otlp = { version = "0.17", features = ["http-proto", "reqwest-clie
 tracing-opentelemetry = "0.25"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 http = "1"
+toml = "1.2.3"
+sha2 = "0.11.1"
+hex = "0.4.3"
 
 [package.metadata.binstall]
 pkg-url = "https://github.com/nicsuzor/mem/releases/download/v{ version }/mem-v{ version }-{ target }.tar.gz"

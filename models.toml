@@ -1,0 +1,15 @@
+[[assets]]
+name = "tokenizer.json"
+repo = "BAAI/bge-m3"
+filename = "tokenizer.json"
+sha256 = "6710678b12670bc442b99edc952c4d996ae309a7020c1fa0096dd245c2faf790"
+
+[[assets]]
+name = "model.onnx"
+repo = "BAAI/bge-m3"
+filename = "model.onnx"
+
+[[assets]]
+name = "reranker.onnx"
+repo = "BAAI/bge-m3-reranker"
+filename = "model.onnx"
