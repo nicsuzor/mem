@@ -347,8 +347,10 @@ Retrieval surfaces adhere to identical scoring semantics:
 - `summary`: Compact agent scan projection (`id`, `title`, `type`, `status`, `score`, and matching `snippet`), enabling fast relevance judgment without full reads.
 - `snippet`: Standard projection including `extract` as short snippet alongside priors and tags.
 - `chunk`: Standard projection including full matched chunk body in `extract`.
-- `full`: Complete document body up to `max_bytes`.
-- `ids`: Identity list projection.
+- `full`: Complete document body up to `max_bytes` in `extract`.
+- `ids`: Identity list projection (`ids` / `results` as ID strings, no `extract`).
+
+In default format (`format` omitted or `"markdown"`), `search` emits `extract` on every hit in `structuredContent.results[]` for `snippet`, `chunk`, and `full` (omitted for `metadata` and `ids`) and omits the extract text from `content[0].text` (which carries only the compact markdown header and per-hit metadata) so each extract appears once on the wire.
 
 ### 9.2. Reranker Execution and Absence Transparency
 The cross-encoder reranker runs by default on candidate pools. Search replies explicitly declare execution state in the envelope:
