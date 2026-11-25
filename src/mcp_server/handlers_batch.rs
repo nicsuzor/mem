@@ -867,7 +867,11 @@ impl PkbSearchServer {
         Ok(CallToolResult::success(vec![ContentBlock::text(json)]))
     }
 
-    pub(crate) fn handle_status(&self, _args: &JsonValue) -> Result<CallToolResult, McpError> {
+    pub(crate) fn handle_status(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
+        let include_stale_paths = args
+            .get("include_stale_paths")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
         let node_count = self.graph.read().node_count();
         let (disk_file_count, indexed_file_count) = self.index_disk_counts();
         let vector_count = self.store.read().len();
@@ -881,11 +885,31 @@ impl PkbSearchServer {
         let embed_worker_running = self.embed_worker_running.load(Ordering::Relaxed);
         let graph_rebuild_pending = self.graph_rebuild_pending.load(Ordering::Relaxed)
             || self.graph_rebuild_dirty.load(Ordering::Relaxed);
-        let stale_report = crate::check_index_staleness_with_stats(&self.pkb_root, &self.store);
-        let stale_docs = stale_report.stale_count;
+        let (stale_docs, stale_paths) = if include_stale_paths {
+            let stale_report = crate::check_index_staleness_with_stats(&self.pkb_root, &self.store);
+            (stale_report.stale_count, Some(stale_report.stale_documents))
+        } else {
+            (
+                crate::check_index_staleness(&self.pkb_root, &self.store),
+                None,
+            )
+        };
         let is_fresh = stale_docs == 0;
         let ghost_count = node_count.saturating_sub(indexed_file_count);
         let unparseable_count = disk_file_count.saturating_sub(indexed_file_count);
+
+        let mut last_reindex_json = serde_json::json!({
+            "timestamp": last_reindex.timestamp,
+            "outcome": last_reindex.outcome,
+        });
+        let mut freshness_json = serde_json::json!({
+            "is_fresh": is_fresh,
+            "stale_documents": stale_docs,
+        });
+        if let Some(paths) = stale_paths {
+            last_reindex_json["stale_documents"] = serde_json::json!(&paths);
+            freshness_json["stale_document_paths"] = serde_json::json!(paths);
+        }
 
         let info = serde_json::json!({
             "name": env!("CARGO_PKG_NAME"),
@@ -900,11 +924,7 @@ impl PkbSearchServer {
                 "indexed_file_count": indexed_file_count,
                 "unparseable_file_count": unparseable_count,
                 "vector_count": vector_count,
-                "last_reindex": {
-                    "timestamp": last_reindex.timestamp,
-                    "outcome": last_reindex.outcome,
-                    "stale_documents": stale_report.stale_documents,
-                }
+                "last_reindex": last_reindex_json
             },
             "queue": {
                 "depth": queue_depth,
@@ -918,11 +938,7 @@ impl PkbSearchServer {
                 "embed_worker_running": embed_worker_running,
                 "graph_rebuild_pending": graph_rebuild_pending,
             },
-            "freshness": {
-                "is_fresh": is_fresh,
-                "stale_documents": stale_docs,
-                "stale_document_paths": stale_report.stale_documents,
-            }
+            "freshness": freshness_json
         });
         let json = serde_json::to_string_pretty(&info).unwrap_or_default();
         Ok(CallToolResult::success(vec![ContentBlock::text(json)]))

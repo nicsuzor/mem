@@ -137,3 +137,81 @@ fn status_reports_node_and_disk_file_counts() {
         "{status}"
     );
 }
+
+#[test]
+fn status_omits_stale_document_paths_by_default() {
+    let (_tmp, server) = server_with_index_disk_disagreement();
+    for args in [json!({}), json!({"include_stale_paths": false})] {
+        let text = text_of(&server.handle_status(&args).unwrap());
+        let status: serde_json::Value = serde_json::from_str(&text).unwrap();
+        let freshness = status.get("freshness").expect("freshness section");
+        assert_eq!(
+            freshness.get("is_fresh").and_then(|v| v.as_bool()),
+            Some(false),
+            "{status}"
+        );
+        assert!(
+            freshness
+                .get("stale_documents")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0)
+                >= 1,
+            "expected scalar stale_documents count >= 1: {status}"
+        );
+        assert!(
+            freshness.get("stale_document_paths").is_none(),
+            "freshness.stale_document_paths must be omitted by default: {status}"
+        );
+        let last_reindex = status
+            .get("index")
+            .and_then(|i| i.get("last_reindex"))
+            .expect("index.last_reindex section");
+        assert!(
+            last_reindex.get("stale_documents").is_none(),
+            "index.last_reindex.stale_documents must be omitted by default: {status}"
+        );
+        assert!(
+            !text.contains("tasks/unindexed.md"),
+            "default status response must not inline stale document paths: {text}"
+        );
+    }
+}
+
+#[test]
+fn status_includes_stale_document_paths_when_requested() {
+    let (_tmp, server) = server_with_index_disk_disagreement();
+    let text = text_of(
+        &server
+            .handle_status(&json!({"include_stale_paths": true}))
+            .unwrap(),
+    );
+    let status: serde_json::Value = serde_json::from_str(&text).unwrap();
+    let freshness = status.get("freshness").expect("freshness section");
+    assert_eq!(
+        freshness.get("is_fresh").and_then(|v| v.as_bool()),
+        Some(false),
+        "{status}"
+    );
+    let stale_paths = freshness
+        .get("stale_document_paths")
+        .and_then(|v| v.as_array())
+        .expect("freshness.stale_document_paths array when opted in");
+    assert!(
+        stale_paths
+            .iter()
+            .any(|v| v.as_str() == Some("tasks/unindexed.md")),
+        "expected tasks/unindexed.md in freshness.stale_document_paths: {status}"
+    );
+    let reindex_stale = status
+        .get("index")
+        .and_then(|i| i.get("last_reindex"))
+        .and_then(|r| r.get("stale_documents"))
+        .and_then(|v| v.as_array())
+        .expect("index.last_reindex.stale_documents array when opted in");
+    assert!(
+        reindex_stale
+            .iter()
+            .any(|v| v.as_str() == Some("tasks/unindexed.md")),
+        "expected tasks/unindexed.md in index.last_reindex.stale_documents: {status}"
+    );
+}

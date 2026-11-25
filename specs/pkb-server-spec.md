@@ -389,7 +389,7 @@ Keep the index in sync with files on disk.
 | Function | CLI                 | MCP       | Purpose                 |
 | -------- | ------------------- | --------- | ----------------------- |
 | Reindex  | `reindex [--force]` | `reindex` | Full re-scan + rebuild  |
-| Status   | `status`            | —         | Document count, DB size |
+| Status   | `status`            | `status`  | Operational counts, queue depth, write state, and freshness (`stale_documents` count); stale document path lists (`freshness.stale_document_paths`, `index.last_reindex.stale_documents`) are omitted by default and included only when `include_stale_paths: true` |
 | Add      | `add <files>`       | —         | Add specific files      |
 
 ## CLI vs MCP Boundary

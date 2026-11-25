@@ -628,7 +628,13 @@ impl PkbSearchServer {
                 "Report server operational diagnostics: document count, reindex queue depth, write locks, and vector-store freshness.",
                 serde_json::from_value::<JsonObject>(serde_json::json!({
                     "type": "object",
-                    "properties": {}
+                    "properties": {
+                        "include_stale_paths": {
+                            "type": "boolean",
+                            "default": false,
+                            "description": "Include lists of stale document paths in freshness.stale_document_paths and index.last_reindex.stale_documents (default: false)."
+                        }
+                    }
                 }))
                 .unwrap(),
             )
