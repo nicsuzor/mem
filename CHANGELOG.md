@@ -5,6 +5,29 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.11](https://github.com/nicsuzor/mem/compare/mem-v0.5.10...mem-v0.5.11) (2026-11-25)
+
+
+### Features
+
+* **embeddings:** support fp16 BGE-M3 ONNX model variant ([#858](https://github.com/nicsuzor/mem/issues/858)) ([894643d](https://github.com/nicsuzor/mem/commit/894643df3fcae1d8e0f2192f4e21241b25cfdac9))
+* **mcp:** add reverse-chronological completion feed to list_tasks ([#872](https://github.com/nicsuzor/mem/issues/872)) ([e1ed934](https://github.com/nicsuzor/mem/commit/e1ed934aacdd0139c644a9ba75d279d835eef208))
+
+
+### Bug Fixes
+
+* **mcp:** prohibit non-task nodes as children of a task ([#870](https://github.com/nicsuzor/mem/issues/870)) ([6ec1170](https://github.com/nicsuzor/mem/commit/6ec117052f1e28f75647722b01af869b4bdf7948))
+
+
+### Documentation
+
+* **spec:** specify double-counting lint report in graph linter ([#800](https://github.com/nicsuzor/mem/issues/800)) ([ed87f70](https://github.com/nicsuzor/mem/commit/ed87f7012498eaf8136eb24708188b5c885dd772))
+
+
+### CI/CD
+
+* remove agent-enforcer and rename pr-pipeline to CI ([#869](https://github.com/nicsuzor/mem/issues/869)) ([1de25c3](https://github.com/nicsuzor/mem/commit/1de25c37f6115816c4cb3ab2a3896445e438c3f9))
+
 ## [0.5.10](https://github.com/nicsuzor/mem/compare/mem-v0.5.9...mem-v0.5.10) (2026-11-20)
 
 
