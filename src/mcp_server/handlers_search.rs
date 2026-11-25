@@ -7,6 +7,123 @@ use std::path::PathBuf;
 
 use super::{PkbSearchServer, MAX_RESULTS};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct TierMask {
+    pub(super) knowledge: bool,
+    pub(super) log: bool,
+    pub(super) archive: bool,
+}
+
+impl TierMask {
+    pub(super) fn contains(&self, tier: crate::graph::CorpusTier) -> bool {
+        match tier {
+            crate::graph::CorpusTier::Knowledge => self.knowledge,
+            crate::graph::CorpusTier::Log => self.log,
+            crate::graph::CorpusTier::Archive => self.archive,
+        }
+    }
+}
+
+fn parse_search_tier_mask(args: &JsonValue, doc_type: Option<&str>) -> Result<TierMask, McpError> {
+    if let Some(raw) = args.get("tiers").filter(|v| !v.is_null()) {
+        let mut mask = TierMask {
+            knowledge: false,
+            log: false,
+            archive: false,
+        };
+        let mut tokens: Vec<String> = Vec::new();
+        if let Some(arr) = raw.as_array() {
+            for item in arr {
+                let Some(s) = item.as_str() else {
+                    return Err(McpError {
+                        code: ErrorCode::INVALID_PARAMS,
+                        message: Cow::from(
+                            "Invalid 'tiers' element: expected string (knowledge|log|archive|all)",
+                        ),
+                        data: None,
+                    });
+                };
+                for part in s.split(',') {
+                    let t = part.trim().to_ascii_lowercase();
+                    if !t.is_empty() {
+                        tokens.push(t);
+                    }
+                }
+            }
+        } else if let Some(s) = raw.as_str() {
+            for part in s.split(',') {
+                let t = part.trim().to_ascii_lowercase();
+                if !t.is_empty() {
+                    tokens.push(t);
+                }
+            }
+        } else {
+            return Err(McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from(
+                    "Invalid 'tiers' parameter: expected array of strings or comma-separated string",
+                ),
+                data: None,
+            });
+        }
+
+        if tokens.is_empty() {
+            return Err(McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from(
+                    "Invalid 'tiers' parameter: must specify at least one tier (knowledge|log|archive|all)",
+                ),
+                data: None,
+            });
+        }
+
+        for token in tokens {
+            match token.as_str() {
+                "knowledge" => mask.knowledge = true,
+                "log" => mask.log = true,
+                "archive" => mask.archive = true,
+                "all" => {
+                    mask.knowledge = true;
+                    mask.log = true;
+                    mask.archive = true;
+                }
+                other => {
+                    return Err(McpError {
+                        code: ErrorCode::INVALID_PARAMS,
+                        message: Cow::from(format!(
+                            "Invalid tier '{other}'. Valid values: knowledge, log, archive, all"
+                        )),
+                        data: None,
+                    });
+                }
+            }
+        }
+        return Ok(mask);
+    }
+
+    let mut mask = TierMask {
+        knowledge: true,
+        log: false,
+        archive: false,
+    };
+    if let Some(dt) = doc_type {
+        for raw_tok in dt.split(',') {
+            let tok = raw_tok.trim();
+            if tok.is_empty() || tok.starts_with('!') {
+                continue;
+            }
+            let exact = tok.strip_prefix('=').unwrap_or(tok).trim();
+            if matches!(
+                exact.to_ascii_lowercase().as_str(),
+                "session-log" | "transcript" | "verbatim-log"
+            ) {
+                mask.log = true;
+            }
+        }
+    }
+    Ok(mask)
+}
+
 impl PkbSearchServer {
     pub(crate) fn handle_task_search(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
         self.ensure_graph_fresh();
@@ -339,6 +456,7 @@ impl PkbSearchServer {
 
     pub(crate) fn handle_pkb_search(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
         self.ensure_graph_fresh();
+        let search_start = std::time::Instant::now();
         let query = args
             .get("query")
             .and_then(|v| v.as_str())
@@ -420,15 +538,45 @@ impl PkbSearchServer {
         };
         let reranker_loaded = self.reranker.is_model_loaded();
 
+        let doc_type = args.get("type").and_then(|v| v.as_str());
+        let allowed_tiers = parse_search_tier_mask(args, doc_type)?;
+        let include_superseded = args
+            .get("include_superseded")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let include_private = args
+            .get("include_private")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let caller_ctx = args
+            .get("caller")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(String::from);
+        let surface_ctx = args
+            .get("surface")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(String::from);
+        let prompt_kind_ctx = args
+            .get("prompt_kind")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(String::from);
+
+        let embed_start = std::time::Instant::now();
         let query_embedding = self.embedder.encode_query(query).map_err(|e| McpError {
             code: ErrorCode::INTERNAL_ERROR,
             message: Cow::from(format!("Embedding error: {e}")),
             data: None,
         })?;
+        let embed_ms = embed_start.elapsed().as_secs_f64() * 1000.0;
 
         let since = args.get("since").and_then(|v| v.as_str());
         let before = args.get("before").and_then(|v| v.as_str());
-        let doc_type = args.get("type").and_then(|v| v.as_str());
 
         let graph = self.graph.read();
         let store = self.acquire_store_read();
@@ -512,6 +660,25 @@ impl PkbSearchServer {
                 limit * 5
             },
         );
+        let pre_pool_gate = |cand: &crate::vectordb::GateCandidate| -> bool {
+            if !allowed_tiers.contains(cand.tier) {
+                return false;
+            }
+            if !include_private && crate::graph::is_private_tags(cand.tags) {
+                return false;
+            }
+            if !include_superseded
+                && (cand.superseded
+                    || graph
+                        .get_node(cand.id)
+                        .is_some_and(|n| !n.superseded_by.is_empty()))
+            {
+                return false;
+            }
+            true
+        };
+
+        let retrieve_start = std::time::Instant::now();
         let results = store
             .try_search_hybrid_with_config(
                 query,
@@ -522,7 +689,7 @@ impl PkbSearchServer {
                 before,
                 doc_type,
                 Some(&self.reranker),
-                None,
+                Some(&pre_pool_gate),
                 &*graph,
                 Some(&temporal_hook),
                 &ranking_config,
@@ -532,6 +699,7 @@ impl PkbSearchServer {
                 message: Cow::from(e.to_string()),
                 data: None,
             })?;
+        let retrieve_ms = retrieve_start.elapsed().as_secs_f64() * 1000.0;
 
         let mut scored: Vec<_> = results
             .iter()
@@ -616,7 +784,26 @@ impl PkbSearchServer {
 
         scored.truncate(limit);
 
+        let record_telemetry = |ids: Vec<String>, abstained: bool| {
+            crate::otel::call_metrics::CallMetrics::record_search_telemetry(
+                crate::otel::call_metrics::SearchTelemetry {
+                    result_count: ids.len(),
+                    result_ids: ids,
+                    abstained,
+                    reranker_loaded,
+                    degraded: false,
+                    stage_embed_ms: Some(embed_ms),
+                    stage_retrieve_ms: Some(retrieve_ms),
+                    stage_total_ms: Some(search_start.elapsed().as_secs_f64() * 1000.0),
+                    caller: caller_ctx.clone(),
+                    surface: surface_ctx.clone(),
+                    prompt_kind: prompt_kind_ctx.clone(),
+                },
+            );
+        };
+
         if scored.is_empty() {
+            record_telemetry(Vec::new(), true);
             let mut zero = serde_json::json!({
                 "total": 0,
                 "showing": 0,
@@ -642,6 +829,7 @@ impl PkbSearchServer {
                         .to_string()
                 })
                 .collect();
+            record_telemetry(id_list.clone(), false);
 
             let mut payload = serde_json::json!({
                 "query": query,
@@ -675,6 +863,17 @@ impl PkbSearchServer {
             }
             return Ok(Self::structured_result(output, payload));
         }
+
+        let returned_ids: Vec<String> = scored
+            .iter()
+            .map(|(r, _, _, _, _)| {
+                let node = graph.get_node(&r.id);
+                node.map(|n| n.task_id.as_deref().unwrap_or(&n.id))
+                    .unwrap_or(&r.id)
+                    .to_string()
+            })
+            .collect();
+        record_telemetry(returned_ids, false);
 
         if format.eq_ignore_ascii_case("json") {
             let json_results: Vec<serde_json::Value> = scored
@@ -2079,6 +2278,7 @@ mod search_status_projection_tests {
             .handle_pkb_search(&serde_json::json!({
                 "query": "signal beacon",
                 "limit": 5,
+                "tiers": ["all"],
                 "format": "json",
             }))
             .expect("search");
@@ -2303,10 +2503,11 @@ mod search_status_projection_tests {
             "Actionable task for quarterly budget review.",
         );
 
-        // 1. Unfiltered search with limit=6: daily <= 2, transcript <= 2, canonical docs survive into top-K
+        // 1. Search across knowledge + log with limit=6: daily <= 2, transcript <= 2, canonical docs survive into top-K
         let res = server
             .handle_pkb_search(&serde_json::json!({
                 "query": "quarterly budget review",
+                "tiers": ["knowledge", "log"],
                 "limit": 6,
                 "format": "json",
             }))
@@ -2434,5 +2635,186 @@ mod search_status_projection_tests {
                 "After MetadataOnly edit, MCP search for {q:?} must find lfs_guide; got {hits:?}"
             );
         }
+    }
+
+    #[test]
+    fn test_pre_pool_tier_privacy_and_superseded_gates() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let embedder = Arc::new(crate::embeddings::Embedder::new_dummy());
+        let dim = embedder.encode_query("seed").unwrap().len();
+        let store = Arc::new(RwLock::new(crate::vectordb::VectorStore::new(dim)));
+        let graph = Arc::new(RwLock::new(crate::graph_store::GraphStore::build(&[], dir.path())));
+        let server = PkbSearchServer::new(
+            store,
+            embedder,
+            dir.path().to_path_buf(),
+            dir.path().join("db"),
+            graph,
+        );
+        let pkb_root = &server.pkb_root;
+
+        let seed_doc = |id: &str, extra_fm: &str, body: &str| {
+            let path = pkb_root.join(format!("{id}.md"));
+            std::fs::write(
+                &path,
+                format!("---\nid: {id}\n{extra_fm}\n---\n\n{body}"),
+            )
+            .unwrap();
+            let doc = crate::pkb::parse_file(&path).unwrap();
+            let emb = server.embedder.encode_query("quantum lattice beacon").unwrap();
+            server
+                .store
+                .write()
+                .insert_precomputed(&doc, vec![doc.body.clone()], vec![emb]);
+            server
+                .graph
+                .write()
+                .replace_node(crate::graph::GraphNode::from_pkb_document(&doc));
+        };
+
+        // Flood >100 archived/log/private/superseded docs with high keyword density so they would
+        // exhaust POOL_SIZE_DENSE (100) and POOL_SIZE_LEX (100) if gating happened post-pool!
+        for i in 0..105 {
+            let body = "quantum lattice beacon quantum lattice beacon quantum lattice beacon";
+            match i % 4 {
+                0 => seed_doc(
+                    &format!("noise-arch-{i:03}"),
+                    &format!("title: \"Noise Archive {i}\"\ntype: note\nstatus: archived"),
+                    body,
+                ),
+                1 => seed_doc(
+                    &format!("noise-log-{i:03}"),
+                    &format!("title: \"Noise Transcript {i}\"\ntype: transcript"),
+                    body,
+                ),
+                2 => seed_doc(
+                    &format!("noise-priv-{i:03}"),
+                    &format!("title: \"Noise Private {i}\"\ntype: note\ntags: [confidential]"),
+                    body,
+                ),
+                _ => seed_doc(
+                    &format!("noise-sup-{i:03}"),
+                    &format!("title: \"Noise Superseded {i}\"\ntype: note\nstatus: superseded"),
+                    body,
+                ),
+            }
+        }
+
+        // Single valid knowledge note
+        seed_doc(
+            "valid-kn-001",
+            "title: \"Valid Knowledge Lattice\"\ntype: note\nstatus: active",
+            "Concise entry mentioning quantum lattice beacon once.",
+        );
+
+        // Default search: only valid-kn-001 returns; none of the 105 excluded docs displace it
+        let default_res = server
+            .handle_pkb_search(&serde_json::json!({
+                "query": "quantum lattice beacon",
+                "limit": 10,
+                "format": "json",
+            }))
+            .expect("default search");
+        let default_json: serde_json::Value =
+            serde_json::from_str(&result_text(&default_res)).unwrap();
+        let default_ids: Vec<&str> = default_json["results"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|r| r["id"].as_str())
+            .collect();
+        assert_eq!(default_ids, vec!["valid-kn-001"]);
+
+        // Opt-in tiers: ["archive"] surfaces archived docs
+        let arch_res = server
+            .handle_pkb_search(&serde_json::json!({
+                "query": "quantum lattice beacon",
+                "limit": 5,
+                "tiers": ["archive"],
+                "format": "json",
+            }))
+            .expect("archive search");
+        let arch_json: serde_json::Value = serde_json::from_str(&result_text(&arch_res)).unwrap();
+        let arch_ids: Vec<&str> = arch_json["results"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|r| r["id"].as_str())
+            .collect();
+        assert!(!arch_ids.is_empty());
+        assert!(arch_ids.iter().all(|id| id.starts_with("noise-arch-")));
+
+        // Opt-in tiers: ["log"] surfaces log docs
+        let log_res = server
+            .handle_pkb_search(&serde_json::json!({
+                "query": "quantum lattice beacon",
+                "limit": 5,
+                "tiers": ["log"],
+                "format": "json",
+            }))
+            .expect("log search");
+        let log_json: serde_json::Value = serde_json::from_str(&result_text(&log_res)).unwrap();
+        let log_ids: Vec<&str> = log_json["results"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|r| r["id"].as_str())
+            .collect();
+        assert!(!log_ids.is_empty());
+        assert!(log_ids.iter().all(|id| id.starts_with("noise-log-")));
+
+        // Opt-in include_private: true surfaces private docs
+        let priv_res = server
+            .handle_pkb_search(&serde_json::json!({
+                "query": "quantum lattice beacon",
+                "limit": 20,
+                "include_private": true,
+                "format": "json",
+            }))
+            .expect("private search");
+        let priv_json: serde_json::Value = serde_json::from_str(&result_text(&priv_res)).unwrap();
+        let priv_ids: Vec<&str> = priv_json["results"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|r| r["id"].as_str())
+            .collect();
+        assert!(priv_ids.iter().any(|id| id.starts_with("noise-priv-")));
+
+        // Opt-in include_superseded: true surfaces superseded docs
+        let sup_res = server
+            .handle_pkb_search(&serde_json::json!({
+                "query": "quantum lattice beacon",
+                "limit": 20,
+                "include_superseded": true,
+                "format": "json",
+            }))
+            .expect("superseded search");
+        let sup_json: serde_json::Value = serde_json::from_str(&result_text(&sup_res)).unwrap();
+        let sup_ids: Vec<&str> = sup_json["results"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|r| r["id"].as_str())
+            .collect();
+        assert!(sup_ids.iter().any(|id| id.starts_with("noise-sup-")));
+    }
+
+    #[test]
+    fn test_parse_search_tier_mask_ignores_negated_log_type() {
+        let neg = parse_search_tier_mask(&serde_json::json!({}), Some("!transcript")).unwrap();
+        assert!(neg.knowledge && !neg.log && !neg.archive);
+
+        let neg_exact =
+            parse_search_tier_mask(&serde_json::json!({}), Some("note,!=session-log")).unwrap();
+        assert!(neg_exact.knowledge && !neg_exact.log && !neg_exact.archive);
+
+        let pos = parse_search_tier_mask(&serde_json::json!({}), Some("=transcript")).unwrap();
+        assert!(pos.knowledge && pos.log && !pos.archive);
+
+        let comp =
+            parse_search_tier_mask(&serde_json::json!({}), Some("!transcript,verbatim-log"))
+                .unwrap();
+        assert!(comp.knowledge && comp.log && !comp.archive);
     }
 }

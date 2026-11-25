@@ -1,12 +1,14 @@
 //! MCP server for PKB semantic search + task graph.
 //!
 //! Implements rmcp 0.1.5 ServerHandler trait manually with tool dispatch.
-//! Provides 18 tools for search, documents, tasks, and knowledge graph.
+//! Provides 20 tools for search, resolution, hydration, documents, tasks, and knowledge graph.
 
 pub mod handlers_batch;
 pub mod handlers_document;
 pub mod handlers_excalidraw;
+pub mod handlers_hydrate;
 pub mod handlers_prompt;
+pub mod handlers_resolve;
 pub mod handlers_search;
 pub mod handlers_task;
 pub mod handlers_task_lifecycle;
@@ -1961,6 +1963,8 @@ impl PkbSearchServer {
     ) -> Result<CallToolResult, McpError> {
         let mut res = match name {
             "search" => self.handle_pkb_search(args),
+            "resolve" => self.handle_resolve(args),
+            "hydrate" => self.handle_hydrate(args),
             "get_document" => self.handle_get_document(args),
             "list_documents" => self.handle_list_documents(args),
             "task_search" => self.handle_task_search(args),
@@ -2252,6 +2256,68 @@ impl PkbSearchServer {
                 "hybrid_search.time_ms",
                 hybrid_search_time_ms,
             ));
+
+            if let Some(ref st) = metrics.search_telemetry {
+                let result_ids_json =
+                    serde_json::to_string(&st.result_ids).unwrap_or_else(|_| "[]".to_string());
+                // Untruncated complete ordered JSON array of returned hit IDs.
+                current_span.set_attribute(opentelemetry::KeyValue::new(
+                    "search.result_ids",
+                    result_ids_json,
+                ));
+                current_span.set_attribute(opentelemetry::KeyValue::new(
+                    "search.result_count",
+                    st.result_count as i64,
+                ));
+                current_span.set_attribute(opentelemetry::KeyValue::new(
+                    "search.abstained",
+                    st.abstained,
+                ));
+                current_span.set_attribute(opentelemetry::KeyValue::new(
+                    "search.reranker_loaded",
+                    st.reranker_loaded,
+                ));
+                current_span.set_attribute(opentelemetry::KeyValue::new(
+                    "search.degraded",
+                    st.degraded,
+                ));
+                if let Some(embed_ms) = st.stage_embed_ms {
+                    current_span.set_attribute(opentelemetry::KeyValue::new(
+                        "search.stage.embed_ms",
+                        embed_ms,
+                    ));
+                }
+                if let Some(retrieve_ms) = st.stage_retrieve_ms {
+                    current_span.set_attribute(opentelemetry::KeyValue::new(
+                        "search.stage.retrieve_ms",
+                        retrieve_ms,
+                    ));
+                }
+                if let Some(total_ms) = st.stage_total_ms {
+                    current_span.set_attribute(opentelemetry::KeyValue::new(
+                        "search.stage.total_ms",
+                        total_ms,
+                    ));
+                }
+                if let Some(ref caller) = st.caller {
+                    current_span.set_attribute(opentelemetry::KeyValue::new(
+                        "caller",
+                        caller.clone(),
+                    ));
+                }
+                if let Some(ref surface) = st.surface {
+                    current_span.set_attribute(opentelemetry::KeyValue::new(
+                        "surface",
+                        surface.clone(),
+                    ));
+                }
+                if let Some(ref pk) = st.prompt_kind {
+                    current_span.set_attribute(opentelemetry::KeyValue::new(
+                        "prompt_kind",
+                        pk.clone(),
+                    ));
+                }
+            }
 
             if is_error {
                 current_span.set_status(opentelemetry::trace::Status::Error {

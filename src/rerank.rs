@@ -400,7 +400,7 @@ impl CrossEncoderReranker {
     /// If configured off: does no work and returns Ok(()).
     /// If configured on and model failed to load: returns Err(RerankerError::Unavailable).
     pub fn rerank(&self, query: &str, candidates: &mut [SearchResult], top_k: usize) -> Result<(), RerankerError> {
-        if candidates.is_empty() || !self.config.enabled {
+        if candidates.is_empty() || !self.config.enabled || top_k == 0 {
             return Ok(());
         }
 
@@ -412,7 +412,7 @@ impl CrossEncoderReranker {
             return Err(RerankerError::Unavailable("reranker_unavailable".to_string()));
         };
 
-        let n = candidates.len().min(self.config.top_n_candidates);
+        let n = candidates.len().min(self.config.top_n_candidates).min(top_k);
         let (to_rerank, _remainder) = candidates.split_at_mut(n);
         if to_rerank.is_empty() {
             return Ok(());

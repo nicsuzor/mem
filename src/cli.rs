@@ -579,9 +579,9 @@ enum Commands {
         /// Specific files to lint (omit to lint entire PKB)
         files: Vec<PathBuf>,
 
-        /// Auto-fix fixable issues in place
-        #[arg(long)]
-        fix: bool,
+        /// Auto-fix fixable issues in place (optionally scoped, e.g. `--fix tier`)
+        #[arg(long, num_args = 0..=1, default_missing_value = "all", value_name = "SCOPE")]
+        fix: Option<String>,
 
         /// Check cross-references (parent, depends_on, wikilinks) — slower, requires full scan
         #[arg(long)]
@@ -3124,7 +3124,7 @@ async fn main() -> Result<()> {
         }
 
         Commands::Lint {
-            files,
+            mut files,
             fix,
             mut refs,
             broken_links,
@@ -3134,11 +3134,26 @@ async fn main() -> Result<()> {
             if broken_links {
                 refs = true;
             }
+            let fix_scope = match fix.as_deref() {
+                None => lint::FixScope::None,
+                Some(s) if s.eq_ignore_ascii_case("all") => lint::FixScope::All,
+                Some(s) if s.eq_ignore_ascii_case("tier") => lint::FixScope::Tier,
+                Some(other) => {
+                    let candidate = PathBuf::from(other);
+                    if candidate.exists() || other.contains('/') || other.ends_with(".md") {
+                        files.push(candidate);
+                        lint::FixScope::All
+                    } else {
+                        eprintln!("Unknown --fix scope '{}': expected 'all' or 'tier'", other);
+                        std::process::exit(2);
+                    }
+                }
+            };
             let start = std::time::Instant::now();
 
             let (results, summary) = if files.is_empty() {
                 // Lint entire PKB
-                lint::lint_directory(&pkb_root, fix, refs)
+                lint::lint_directory_scoped(&pkb_root, fix_scope, refs)
             } else {
                 // Lint specific files
                 let known_ids = if refs {
@@ -3148,7 +3163,7 @@ async fn main() -> Result<()> {
                 };
                 let results: Vec<lint::FileResult> = files
                     .iter()
-                    .map(|f| lint::lint_file(f, fix, known_ids.as_ref(), None, None))
+                    .map(|f| lint::lint_file_scoped(f, fix_scope, known_ids.as_ref(), None, None))
                     .collect();
                 let summary = lint::LintSummary::from_results(&results);
                 (results, summary)

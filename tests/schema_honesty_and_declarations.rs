@@ -554,6 +554,7 @@ async fn test_every_tool_rejects_when_any_required_field_is_missing() {
         "batch_reclassify",
         json!({ "ids": ["task-seed1"], "new_type": "task" }),
     );
+    valid_samples.insert("hydrate", json!({ "prompt": "seed" }));
 
     let mut failures = Vec::new();
 
@@ -614,6 +615,12 @@ async fn test_every_tool_rejects_when_any_required_field_is_missing() {
                     failures.push(format!("Tool '{name}' returned code {:?} (expected INVALID_PARAMS) when required parameter '{req_field}' was null: {}", e.code, e.message));
                 }
                 Err(_) => {}
+            }
+
+            // `hydrate.prompt` treats empty/whitespace as valid filler abstention (abstained: true)
+            // rather than an INVALID_PARAMS error, while still rejecting omitted/null prompt.
+            if name == "hydrate" && req_field == "prompt" {
+                continue;
             }
 
             // Case 3: Parameter empty (empty string, empty array, or empty object depending on base type)
