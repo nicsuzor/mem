@@ -1518,12 +1518,15 @@ impl PkbSearchServer {
             let mut deleted_count = 0;
             let mut failed_count = 0;
             let mut results = Vec::new();
+            let mut deleted_node_ids: Vec<String> = Vec::new();
+            let mut deleted_set: std::collections::HashSet<String> =
+                std::collections::HashSet::new();
 
             for id in ids {
                 let graph = self.graph.read();
                 let node = match graph.resolve(&id) {
-                    Some(n) => n.clone(),
-                    None => {
+                    Some(n) if !deleted_set.contains(&n.id) => n.clone(),
+                    _ => {
                         results.push(serde_json::json!({
                             "id": id,
                             "deleted": false,
@@ -1581,7 +1584,8 @@ impl PkbSearchServer {
                     continue;
                 }
 
-                self.rebuild_graph_remove(&node_id);
+                deleted_set.insert(node_id.clone());
+                deleted_node_ids.push(node_id.clone());
                 self.try_remove_document(&node_id, Some(&abs_path));
 
                 results.push(serde_json::json!({
@@ -1590,6 +1594,8 @@ impl PkbSearchServer {
                 }));
                 deleted_count += 1;
             }
+
+            self.batch_remove_and_rebuild(&deleted_node_ids);
 
             let payload = serde_json::json!({
                 "deleted_count": deleted_count,

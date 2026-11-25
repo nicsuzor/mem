@@ -1208,12 +1208,81 @@ impl GraphStore {
         affected_nodes
     }
 
-    /// Cheap in-place removal. Drops the node from `nodes`; stale edges and
-    /// resolution-map entries are left for the background rebuild to fix.
-    pub fn remove_node_in_place(&mut self, id: &str, pkb_root: &Path) {
-        self.nodes.remove(id);
+    /// In-memory node eviction with synchronous inverse cleanup and zero disk I/O.
+    ///
+    /// Drops `id` from `nodes`, `resolution_map`, and `edges`, and removes `id`
+    /// from its parent's `children`/`subtasks` and from its dependencies'
+    /// `blocks`/`soft_blocks` lists so close-gates and reads stay consistent
+    /// immediately and during Tier-2 patch-merge. Returns affected neighbor IDs
+    /// (plus `id` itself when present).
+    pub fn remove_node(&mut self, id: &str) -> Vec<String> {
+        let mut affected = Vec::new();
+        if let Some(removed) = self.nodes.remove(id) {
+            affected.push(id.to_string());
+
+            if let Some(ref pid) = removed.parent {
+                let resolved_pid = self
+                    .resolution_map
+                    .get(&pid.to_lowercase())
+                    .cloned()
+                    .unwrap_or_else(|| pid.clone());
+                if let Some(p) = self.nodes.get_mut(&resolved_pid) {
+                    p.children.retain(|c| c != id);
+                    p.subtasks.retain(|s| s != id);
+                    p.leaf = p.children.is_empty();
+                    affected.push(resolved_pid);
+                }
+            }
+
+            for dep in &removed.depends_on {
+                let canon_dep = self
+                    .resolution_map
+                    .get(&dep.to_lowercase())
+                    .cloned()
+                    .unwrap_or_else(|| dep.clone());
+                if let Some(dep_node) = self.nodes.get_mut(&canon_dep) {
+                    dep_node.blocks.retain(|b| b != id);
+                    affected.push(canon_dep);
+                }
+            }
+
+            for sdep in &removed.soft_depends_on {
+                let canon_sdep = self
+                    .resolution_map
+                    .get(&sdep.to_lowercase())
+                    .cloned()
+                    .unwrap_or_else(|| sdep.clone());
+                if let Some(dep_node) = self.nodes.get_mut(&canon_sdep) {
+                    dep_node.soft_blocks.retain(|b| b != id);
+                    affected.push(canon_sdep);
+                }
+            }
+        }
         self.resolution_map.retain(|_, target| target != id);
+        self.edges.retain(|e| e.source != id && e.target != id);
+        deduplicate_vec(&mut affected);
+        affected
+    }
+
+    /// Cheap in-place removal. Drops the node from `nodes`, `resolution_map`,
+    /// `edges`, and neighbor inverses, and refreshes the cached disk generation
+    /// stamp.
+    pub fn remove_node_in_place(&mut self, id: &str, pkb_root: &Path) -> Vec<String> {
+        let affected = self.remove_node(id);
         self.generation = crate::pkb::scan_generation(pkb_root);
+        affected
+    }
+
+    /// Batch in-place removal for multiple nodes. Evicts all `ids` and refreshes
+    /// the cached disk generation stamp once.
+    pub fn remove_nodes_in_place(&mut self, ids: &[String], pkb_root: &Path) -> Vec<String> {
+        let mut affected = Vec::new();
+        for id in ids {
+            affected.extend(self.remove_node(id));
+        }
+        self.generation = crate::pkb::scan_generation(pkb_root);
+        deduplicate_vec(&mut affected);
+        affected
     }
 
     /// Re-run classification (ready / blocked / roots) from the current nodes

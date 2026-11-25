@@ -540,11 +540,13 @@ impl PkbSearchServer {
         let mut new_graph = GraphStore::build_with_embeddings(&docs, &self.pkb_root, &snapshot);
         let loaded = {
             let mut g = self.graph.write();
-            let patched_ids: Vec<String> =
-                self.patched_during_rebuild.lock().iter().cloned().collect();
+            let patched_ids: HashSet<String> =
+                std::mem::take(&mut *self.patched_during_rebuild.lock());
             for id in &patched_ids {
                 if let Some(live_node) = g.nodes_map().get(id).cloned() {
                     new_graph.replace_node(live_node);
+                } else {
+                    new_graph.remove_node(id);
                 }
             }
             if !patched_ids.is_empty() {
@@ -661,22 +663,57 @@ impl PkbSearchServer {
         self.schedule_graph_rebuild();
     }
 
-    /// Synchronous fast path for node removal. In-place delete from the
-    /// nodes map + resolution map. Stale edges are left for the background
-    /// rebuild to clean up. See [`rebuild_graph_for_pkb_document`] for
+    /// Synchronous fast path for node removal. Evicts the node from `nodes`,
+    /// `resolution_map`, `edges`, and neighbor inverses, then schedules a
+    /// coalesced background rebuild. See [`rebuild_graph_for_pkb_document`] for
     /// the consistency model.
     pub(crate) fn rebuild_graph_remove(&self, id: &str) {
         let _t = std::time::Instant::now();
         {
             let mut g = self.graph.write();
-            g.remove_node_in_place(id, &self.pkb_root);
+            let affected = g.remove_node_in_place(id, &self.pkb_root);
             g.reclassify();
             // Same as rebuild_graph_for_pkb_document: insert inside the write
-            // lock so the removal is visible to any concurrent Tier-2 swap.
-            self.patched_during_rebuild.lock().insert(id.to_string());
+            // lock so the removal (and parent/dep inverse updates) is visible
+            // to any concurrent Tier-2 swap.
+            let mut patched = self.patched_during_rebuild.lock();
+            patched.insert(id.to_string());
+            for a in affected {
+                patched.insert(a);
+            }
         }
         tracing::debug!(target: "perf::graph_rebuild", phase = "inplace_remove", elapsed_ms = _t.elapsed().as_secs_f64() * 1000.0);
 
+        self.schedule_graph_rebuild();
+    }
+
+    /// Batch in-place removal for multiple documents. Holds the graph write
+    /// lock once, evicts all nodes, updates the generation stamp and
+    /// classification once, then schedules a single coalesced background
+    /// rebuild.
+    pub(crate) fn batch_remove_and_rebuild(&self, ids: &[String]) {
+        if ids.is_empty() {
+            return;
+        }
+        let _t = std::time::Instant::now();
+        {
+            let mut g = self.graph.write();
+            let affected = g.remove_nodes_in_place(ids, &self.pkb_root);
+            g.reclassify();
+            let mut patched = self.patched_during_rebuild.lock();
+            for id in ids {
+                patched.insert(id.clone());
+            }
+            for a in affected {
+                patched.insert(a);
+            }
+        }
+        tracing::debug!(
+            target: "perf::graph_rebuild",
+            phase = "inplace_batch_remove",
+            n = ids.len(),
+            elapsed_ms = _t.elapsed().as_secs_f64() * 1000.0
+        );
         self.schedule_graph_rebuild();
     }
 
@@ -767,26 +804,41 @@ impl PkbSearchServer {
 
             // Patch-merge in two phases to minimise the write-lock window.
             //
-            // Phase 1 (no graph write lock): snapshot the patches that
-            // landed between our read and now, clone the live state of
-            // those nodes under a brief read lock, fold them into the
-            // local `merged` graph, and reclassify. This is the expensive
-            // step (reclassify is O(V+E)) but no Tier-1 caller is blocked.
+            // Phase 1 (no graph write lock): drain the patches that landed
+            // between our read and now, snapshot the live state of those IDs
+            // under a brief read lock (distinguishing upserts from deletions),
+            // fold both updates and removals into `merged`, and reclassify.
             //
-            // Phase 2 (write lock): fold any *late* patches that landed
-            // during Phase 1, then swap. In the common case `late` is
-            // empty and the locked section is just a pointer assignment.
+            // Phase 2 (write lock): drain ALL patches that landed during
+            // Phase 1 (including further mutations or deletions of IDs already
+            // seen in Phase 1), apply their final live state to `merged`,
+            // then swap. Leaving deleted IDs in `merged` would resurrect them
+            // into `*g` and permanently cement them because the next Tier-2
+            // iteration clones `g.nodes_cloned()` from memory and `merged`
+            // inherits the post-delete `GenerationStamp`.
             let mut merged = new_graph;
-            let initial_patched: HashSet<String> = patched.lock().clone();
-            let live_initial: Vec<crate::graph::GraphNode> = {
+            let initial_patched: HashSet<String> = std::mem::take(&mut *patched.lock());
+            let (live_initial_updates, live_initial_removals): (
+                Vec<crate::graph::GraphNode>,
+                Vec<String>,
+            ) = {
                 let g = graph.read();
-                initial_patched
-                    .iter()
-                    .filter_map(|id| g.nodes_map().get(id).cloned())
-                    .collect()
+                let mut updates = Vec::new();
+                let mut removals = Vec::new();
+                for id in &initial_patched {
+                    if let Some(live_node) = g.nodes_map().get(id).cloned() {
+                        updates.push(live_node);
+                    } else {
+                        removals.push(id.clone());
+                    }
+                }
+                (updates, removals)
             };
-            for live_node in live_initial {
+            for live_node in live_initial_updates {
                 merged.replace_node(live_node);
+            }
+            for removed_id in &live_initial_removals {
+                merged.remove_node(removed_id);
             }
             let mut reclassified = false;
             if !initial_patched.is_empty() {
@@ -814,20 +866,13 @@ impl PkbSearchServer {
                 return;
             }
 
-            let late: Vec<String> = patched
-                .lock()
-                .iter()
-                .filter(|id| !initial_patched.contains(*id))
-                .cloned()
-                .collect();
+            let late: HashSet<String> = std::mem::take(&mut *patched.lock());
             for id in &late {
                 if let Some(live_node) = g.nodes_map().get(id).cloned() {
                     merged.replace_node(live_node);
+                } else {
+                    merged.remove_node(id);
                 }
-                // If the node no longer exists in the live graph (e.g.
-                // delete landed mid-rebuild), the just-built graph either
-                // doesn't have it either, or we leave the just-built copy
-                // — a follow-up rebuild will reconcile.
             }
             if !late.is_empty() {
                 merged.reclassify();
