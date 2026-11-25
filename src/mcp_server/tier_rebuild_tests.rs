@@ -1027,4 +1027,272 @@ mod tier_rebuild_tests {
             "generation stamp after removal must match scan_generation on disk"
         );
     }
+
+    /// Regression test: a delete landing while a Tier-2 background rebuild is in
+    /// flight must NOT be resurrected when Tier-2 swaps its graph in. Previously,
+    /// Phase 1 (`filter_map`) and Phase 2 (`if let Some(...)`) skipped deleted IDs
+    /// in `patched_during_rebuild`, letting the stale pre-delete snapshot overwrite
+    /// `*g` while inheriting the post-delete `GenerationStamp`, permanently cementing
+    /// deleted phantom nodes in memory.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn tier2_swap_does_not_resurrect_concurrent_delete() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::create_dir_all(root.join("tasks")).unwrap();
+        std::fs::write(
+            root.join("tasks/epic-root.md"),
+            "---\nid: epic-root\ntitle: Epic Root\ntype: task\nstatus: ready\n---\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("tasks/child-a.md"),
+            "---\nid: child-a\ntitle: Child A\ntype: task\nstatus: ready\nparent: epic-root\n---\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("tasks/child-b.md"),
+            "---\nid: child-b\ntitle: Child B\ntype: task\nstatus: ready\nparent: epic-root\n---\n",
+        )
+        .unwrap();
+
+        let graph = GraphStore::build_from_directory(root);
+        let store = VectorStore::new(3);
+        let embedder = Embedder::new_dummy();
+        let server = PkbSearchServer::new(
+            Arc::new(RwLock::new(store)),
+            Arc::new(embedder),
+            root.to_path_buf(),
+            root.join("db.bin"),
+            Arc::new(RwLock::new(graph)),
+        );
+        server.set_tier2_sleep_ms(200);
+
+        // Kick off Tier-2: it snapshots `nodes_cloned()` containing child-a and child-b.
+        server.schedule_graph_rebuild();
+
+        // While Tier-2 sleeps, delete child-a from disk and remove it via Tier-1.
+        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+        std::fs::remove_file(root.join("tasks/child-a.md")).unwrap();
+        server.rebuild_graph_remove("child-a");
+
+        // Wait for the in-flight Tier-2 and any coalesced follow-up to fully drain.
+        for _ in 0..80 {
+            tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+            if !server.graph_rebuild_pending() {
+                break;
+            }
+        }
+        assert!(
+            !server.graph_rebuild_pending(),
+            "Tier-2 rebuild should have drained"
+        );
+
+        let g = server.graph.read();
+        assert!(
+            g.get_node("child-a").is_none(),
+            "deleted child-a must not be resurrected by Tier-2 swap"
+        );
+        assert!(
+            g.resolve("child-a").is_none(),
+            "deleted child-a must not resolve after Tier-2 swap"
+        );
+        let parent = g.get_node("epic-root").expect("epic-root must exist");
+        assert!(
+            !parent.children.contains(&"child-a".to_string()),
+            "epic-root.children must not retain deleted child-a: {:?}",
+            parent.children
+        );
+        assert!(
+            parent.children.contains(&"child-b".to_string()),
+            "surviving child-b must remain under epic-root"
+        );
+        assert_eq!(g.node_count(), 2);
+    }
+
+    /// Regression test: batch `delete(ids=[...])` while a slow Tier-2 rebuild is
+    /// in flight must evict all deleted nodes and leave zero phantoms in GraphStore
+    /// or parent.children after Tier-2 drains.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn tier2_batch_delete_under_slow_rebuild_evicts_all_nodes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::create_dir_all(root.join("tasks")).unwrap();
+        std::fs::write(
+            root.join("tasks/parent-epic.md"),
+            "---\nid: parent-epic\ntitle: Parent Epic\ntype: task\nstatus: ready\n---\n",
+        )
+        .unwrap();
+        let mut child_ids = Vec::new();
+        for i in 0..20 {
+            let cid = format!("child-{i:02}");
+            std::fs::write(
+                root.join(format!("tasks/{cid}.md")),
+                format!(
+                    "---\nid: {cid}\ntitle: Child {i}\ntype: task\nstatus: cancelled\nparent: parent-epic\n---\n"
+                ),
+            )
+            .unwrap();
+            child_ids.push(cid);
+        }
+
+        let graph = GraphStore::build_from_directory(root);
+        let store = VectorStore::new(3);
+        let embedder = Embedder::new_dummy();
+        let server = PkbSearchServer::new(
+            Arc::new(RwLock::new(store)),
+            Arc::new(embedder),
+            root.to_path_buf(),
+            root.join("db.bin"),
+            Arc::new(RwLock::new(graph)),
+        );
+        server.set_tier2_sleep_ms(150);
+
+        // Start a Tier-2 rebuild before the batch delete so the batch delete
+        // executes while Tier-2 holds a stale snapshot containing all 20 children.
+        server.schedule_graph_rebuild();
+        tokio::time::sleep(tokio::time::Duration::from_millis(30)).await;
+
+        let res = server
+            .handle_delete_document(&json!({
+                "ids": child_ids,
+                "type": "task"
+            }))
+            .expect("batch delete should succeed");
+        let structured = res.structured_content.expect("structured_content");
+        assert_eq!(structured["deleted_count"], 20);
+        assert_eq!(structured["failed_count"], 0);
+
+        // Wait for all Tier-2 rebuild iterations to drain.
+        for _ in 0..80 {
+            tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+            if !server.graph_rebuild_pending() {
+                break;
+            }
+        }
+        assert!(
+            !server.graph_rebuild_pending(),
+            "Tier-2 rebuild should have drained"
+        );
+
+        let g = server.graph.read();
+        assert_eq!(
+            g.node_count(),
+            1,
+            "only parent-epic should remain in GraphStore after batch delete"
+        );
+        for cid in &child_ids {
+            assert!(
+                g.get_node(cid).is_none(),
+                "batch-deleted node {cid} must not remain as a phantom in GraphStore"
+            );
+            assert!(
+                g.resolve(cid).is_none(),
+                "batch-deleted node {cid} must not resolve"
+            );
+        }
+        let parent = g.get_node("parent-epic").expect("parent-epic must remain");
+        assert!(
+            parent.children.is_empty(),
+            "parent-epic.children must be empty after deleting all children: {:?}",
+            parent.children
+        );
+        assert!(parent.leaf);
+        assert_eq!(g.generation(), crate::pkb::scan_generation(root));
+    }
+
+    /// Regression test: updating a node and then deleting the same ID during an
+    /// in-flight Tier-2 rebuild must evict the node (Phase 2 must not skip an ID
+    /// simply because Phase 1 also saw it).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn tier2_update_then_delete_same_id_does_not_resurrect() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::create_dir_all(root.join("tasks")).unwrap();
+        let path_a = root.join("tasks/task-a.md");
+        std::fs::write(
+            &path_a,
+            "---\nid: task-a\ntitle: Task A\ntype: task\nstatus: ready\n---\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("tasks/task-b.md"),
+            "---\nid: task-b\ntitle: Task B\ntype: task\nstatus: ready\n---\n",
+        )
+        .unwrap();
+
+        let graph = GraphStore::build_from_directory(root);
+        let store = VectorStore::new(3);
+        let embedder = Embedder::new_dummy();
+        let server = PkbSearchServer::new(
+            Arc::new(RwLock::new(store)),
+            Arc::new(embedder),
+            root.to_path_buf(),
+            root.join("db.bin"),
+            Arc::new(RwLock::new(graph)),
+        );
+        server.set_tier2_sleep_ms(180);
+
+        server.schedule_graph_rebuild();
+        tokio::time::sleep(tokio::time::Duration::from_millis(30)).await;
+
+        let updated = make_task_doc("task-a", "blocked", 1, &[]);
+        server.rebuild_graph_for_pkb_document(&updated);
+
+        tokio::time::sleep(tokio::time::Duration::from_millis(30)).await;
+        std::fs::remove_file(&path_a).unwrap();
+        server.rebuild_graph_remove("task-a");
+
+        for _ in 0..80 {
+            tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+            if !server.graph_rebuild_pending() {
+                break;
+            }
+        }
+
+        let g = server.graph.read();
+        assert!(
+            g.get_node("task-a").is_none(),
+            "task-a deleted after update must not be resurrected"
+        );
+        assert!(g.get_node("task-b").is_some());
+    }
+
+    /// Synchronous unit test: `remove_node_in_place` immediately prunes parent
+    /// `children`/`leaf` and dependency `blocks` before any Tier-2 rebuild runs.
+    #[test]
+    fn remove_node_in_place_prunes_parent_children_and_blocks_immediately() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::create_dir_all(root.join("tasks")).unwrap();
+        std::fs::write(
+            root.join("tasks/epic-1.md"),
+            "---\nid: epic-1\ntitle: Epic 1\ntype: task\nstatus: ready\n---\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("tasks/dep-1.md"),
+            "---\nid: dep-1\ntitle: Dep 1\ntype: task\nstatus: ready\n---\n",
+        )
+        .unwrap();
+        let child_path = root.join("tasks/child-1.md");
+        std::fs::write(
+            &child_path,
+            "---\nid: child-1\ntitle: Child 1\ntype: task\nstatus: ready\nparent: epic-1\ndepends_on:\n  - dep-1\n---\n",
+        )
+        .unwrap();
+
+        let mut graph = GraphStore::build_from_directory(root);
+        assert!(graph.get_node("epic-1").unwrap().children.contains(&"child-1".to_string()));
+        assert!(!graph.get_node("epic-1").unwrap().leaf);
+        assert!(graph.get_node("dep-1").unwrap().blocks.contains(&"child-1".to_string()));
+
+        std::fs::remove_file(&child_path).unwrap();
+        let affected = graph.remove_node_in_place("child-1", root);
+        assert!(affected.contains(&"epic-1".to_string()));
+        assert!(affected.contains(&"dep-1".to_string()));
+        assert!(graph.get_node("child-1").is_none());
+        assert!(graph.get_node("epic-1").unwrap().children.is_empty());
+        assert!(graph.get_node("epic-1").unwrap().leaf);
+        assert!(graph.get_node("dep-1").unwrap().blocks.is_empty());
+    }
 }
