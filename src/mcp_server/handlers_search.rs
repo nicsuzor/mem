@@ -5,8 +5,6 @@ use std::borrow::Cow;
 use std::collections::HashSet;
 use std::path::PathBuf;
 
-use crate::ranking::GraphStructuralLookup;
-
 use super::{PkbSearchServer, MAX_RESULTS};
 
 impl PkbSearchServer {
@@ -64,19 +62,27 @@ impl PkbSearchServer {
             data: None,
         })?;
 
+        let graph = self.graph.read();
         let store = self.acquire_store_read();
         // When a type filter is present (or done tasks are excluded) fetch
         // more candidates so we still fill the limit after filtering.
         let since = args.get("since").and_then(|v| v.as_str());
         let before = args.get("before").and_then(|v| v.as_str());
 
-        let fetch_limit = if type_filter.is_some() || !include_done {
-            limit * 10
-        } else {
-            limit * 3
+        let fetch_limit = (crate::ranking::POOL_SIZE_DENSE + crate::ranking::POOL_SIZE_LEX).max(
+            if type_filter.is_some() || !include_done {
+                limit * 10
+            } else {
+                limit * 5
+            },
+        );
+        let ranking_config = crate::ranking::RankingConfig {
+            include_done,
+            apply_type_boost: false,
+            ..Default::default()
         };
         let results = store
-            .try_search_hybrid(
+            .try_search_hybrid_with_config(
                 query,
                 &query_embedding,
                 fetch_limit,
@@ -86,6 +92,9 @@ impl PkbSearchServer {
                 None,
                 Some(&self.reranker),
                 None,
+                &*graph,
+                None,
+                &ranking_config,
             )
             .map_err(|e| McpError {
                 code: ErrorCode::INTERNAL_ERROR,
@@ -93,13 +102,6 @@ impl PkbSearchServer {
                 data: None,
             })?;
 
-        let graph = self.graph.read();
-
-        // Filter to actionable, in-scope candidates first (order not yet final —
-        // store.search only sorted by raw semantic score, which has no title-match
-        // term). Re-scoring + re-sorting by title_boost below mirrors the fix in
-        // handle_pkb_search so a near-exact title match isn't buried behind
-        // higher-raw-score-but-tangential tasks (task_1542e818).
         let mut candidates: Vec<(&crate::vectordb::SearchResult, f32)> = Vec::new();
 
         for r in &results {
@@ -187,19 +189,15 @@ impl PkbSearchServer {
                 }
             }
 
-            let aliases = graph.aliases(&r.id);
-            let is_exact = crate::ranking::is_exact_id_match(query, &r.id, &r.path, &aliases);
-            let score = if is_exact {
-                1.0f32
-            } else {
-                crate::salience::soft_knee_ceiling(
-                    crate::ranking::task_search_score(query, r) as f64,
-                ) as f32
-            };
-            candidates.push((r, score));
+            candidates.push((r, r.score));
         }
 
-        candidates.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        candidates.sort_by(|a, b| {
+            ordered_float::OrderedFloat(b.1)
+                .cmp(&ordered_float::OrderedFloat(a.1))
+                .then_with(|| a.0.id.cmp(&b.0.id))
+                .then_with(|| a.0.chunk_id.cmp(&b.0.chunk_id))
+        });
 
         let mut output = String::new();
         let mut count = 0;
@@ -330,6 +328,15 @@ impl PkbSearchServer {
         }
     }
 
+    fn attach_reranker_reason(&self, payload: &mut serde_json::Value, reranker_loaded: bool) {
+        if !reranker_loaded {
+            payload["reranker_reason"] = serde_json::json!(self
+                .reranker
+                .absent_reason()
+                .unwrap_or("model absent"));
+        }
+    }
+
     pub(crate) fn handle_pkb_search(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
         self.ensure_graph_fresh();
         let query = args
@@ -423,33 +430,11 @@ impl PkbSearchServer {
         let before = args.get("before").and_then(|v| v.as_str());
         let doc_type = args.get("type").and_then(|v| v.as_str());
 
+        let graph = self.graph.read();
         let store = self.acquire_store_read();
-        let fetch_limit = if doc_type.is_some() || actionable_only {
-            limit * 10
-        } else {
-            limit * 2
-        };
-        let results = store
-            .try_search_hybrid(
-                query,
-                &query_embedding,
-                fetch_limit,
-                &self.pkb_root,
-                since,
-                before,
-                doc_type,
-                Some(&self.reranker),
-                None,
-            )
-            .map_err(|e| McpError {
-                code: ErrorCode::INTERNAL_ERROR,
-                message: Cow::from(e.to_string()),
-                data: None,
-            })?;
 
         // Build proximity boost map if boost_id provided
         let boost_map: std::collections::HashMap<String, f32> = if let Some(bid) = boost_id {
-            let graph = self.graph.read();
             if let Some(node) = graph.resolve(bid) {
                 let node_id = node.id.clone();
                 graph
@@ -464,35 +449,105 @@ impl PkbSearchServer {
             std::collections::HashMap::new()
         };
 
-        // Score and sort results
-        let graph = self.graph.read();
-        let now = self.salience_store.read().clock().now();
-        let salience_store = self.salience_store.read();
+        let (salience_snapshot, salience_config, now) = {
+            let s = self.salience_store.read();
+            let map: std::collections::HashMap<String, f64> = s.iter_scores().into_iter().collect();
+            (std::sync::Arc::new(map), s.config().clone(), s.clock().now())
+        };
+
+        let hook_salience = std::sync::Arc::clone(&salience_snapshot);
+        let hook_config = salience_config.clone();
+        let temporal_hook: crate::ranking::TemporalAccessHook = std::sync::Arc::new(move |r| {
+            let recency = crate::salience::document_recency_decay(
+                r.doc_type.as_deref(),
+                r.date.as_deref(),
+                r.modified.as_deref(),
+                now,
+            );
+            let sal = hook_salience
+                .get(&r.id)
+                .copied()
+                .unwrap_or(hook_config.floor);
+            let boost = crate::salience::recent_read_boost(sal, &hook_config);
+            (recency * boost) as f32
+        });
+
         let floor = args
             .get("floor")
             .and_then(|v| v.as_f64())
             .or_else(|| args.get("min_score").and_then(|v| v.as_f64()))
             .unwrap_or(0.0);
 
+        let ranking_config = crate::ranking::RankingConfig {
+            include_done,
+            apply_type_boost: true,
+            floor,
+            proximity_boosts: if boost_map.is_empty() {
+                None
+            } else {
+                Some(boost_map)
+            },
+            ..Default::default()
+        };
+
+        let fetch_limit = (crate::ranking::POOL_SIZE_DENSE + crate::ranking::POOL_SIZE_LEX).max(
+            if doc_type.is_some() || actionable_only {
+                limit * 10
+            } else {
+                limit * 5
+            },
+        );
+        let results = store
+            .try_search_hybrid_with_config(
+                query,
+                &query_embedding,
+                fetch_limit,
+                &self.pkb_root,
+                since,
+                before,
+                doc_type,
+                Some(&self.reranker),
+                None,
+                &*graph,
+                Some(&temporal_hook),
+                &ranking_config,
+            )
+            .map_err(|e| McpError {
+                code: ErrorCode::INTERNAL_ERROR,
+                message: Cow::from(e.to_string()),
+                data: None,
+            })?;
+
         let mut scored: Vec<_> = results
             .iter()
             .map(|r| {
-                let s = crate::ranking::score_post_hybrid_candidate(
-                    query,
-                    r,
-                    Some(&*graph),
-                    Some(&boost_map),
-                    Some(&*salience_store),
+                let node = graph.get_node(&r.id).or_else(|| graph.resolve(&r.id));
+                let node_id = node
+                    .as_ref()
+                    .map(|n| n.id.as_str())
+                    .unwrap_or(r.id.as_str());
+                let effective_type = r
+                    .doc_type
+                    .as_deref()
+                    .or_else(|| node.and_then(|n| n.node_type.as_deref()));
+                let modified = r
+                    .modified
+                    .as_deref()
+                    .or_else(|| node.and_then(|n| n.modified.as_deref()));
+                let recency_decay = crate::salience::document_recency_decay(
+                    effective_type,
+                    r.date.as_deref(),
+                    modified,
                     now,
-                    floor,
                 );
-                (
-                    r,
-                    s.final_score,
-                    s.recency_decay,
-                    s.read_boost,
-                    s.salience_score,
-                )
+                let salience_score = salience_snapshot
+                    .get(node_id)
+                    .or_else(|| salience_snapshot.get(&r.id))
+                    .copied()
+                    .unwrap_or(salience_config.floor);
+                let read_boost =
+                    crate::salience::recent_read_boost(salience_score, &salience_config);
+                (r, r.score, recency_decay, read_boost, salience_score)
             })
             .collect();
 
@@ -523,12 +578,17 @@ impl PkbSearchServer {
         // never serves title or tags for an id that get_task/get_document cannot resolve.
         scored.retain(|(r, _, _, _, _)| r.path.is_file() && graph.resolve(&r.id).is_some());
 
-        scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        scored.sort_by(|a, b| {
+            ordered_float::OrderedFloat(b.1)
+                .cmp(&ordered_float::OrderedFloat(a.1))
+                .then_with(|| a.0.id.cmp(&b.0.id))
+                .then_with(|| a.0.chunk_id.cmp(&b.0.chunk_id))
+        });
 
         scored.truncate(limit);
 
         if scored.is_empty() {
-            let zero = serde_json::json!({
+            let mut zero = serde_json::json!({
                 "total": 0,
                 "showing": 0,
                 "count": 0,
@@ -536,6 +596,7 @@ impl PkbSearchServer {
                 "ranking": ranking_label,
                 "reranker_loaded": reranker_loaded,
             });
+            self.attach_reranker_reason(&mut zero, reranker_loaded);
             return Ok(Self::structured_result(
                 "No results found.".to_string(),
                 zero,
@@ -553,7 +614,7 @@ impl PkbSearchServer {
                 })
                 .collect();
 
-            let payload = serde_json::json!({
+            let mut payload = serde_json::json!({
                 "query": query,
                 "total": id_list.len(),
                 "showing": id_list.len(),
@@ -563,6 +624,7 @@ impl PkbSearchServer {
                 "ranking": ranking_label,
                 "reranker_loaded": reranker_loaded,
             });
+            self.attach_reranker_reason(&mut payload, reranker_loaded);
 
             if format.eq_ignore_ascii_case("json") {
                 let json_str = serde_json::to_string(&payload).unwrap_or_default();
@@ -648,7 +710,7 @@ impl PkbSearchServer {
                 })
                 .collect();
 
-            let payload = serde_json::json!({
+            let mut payload = serde_json::json!({
                 "query": query,
                 "total": json_results.len(),
                 "showing": json_results.len(),
@@ -657,6 +719,7 @@ impl PkbSearchServer {
                 "ranking": ranking_label,
                 "reranker_loaded": reranker_loaded,
             });
+            self.attach_reranker_reason(&mut payload, reranker_loaded);
             let json_str = serde_json::to_string(&payload).unwrap_or_default();
             return Ok(Self::structured_result(json_str, payload));
         }
@@ -717,7 +780,7 @@ impl PkbSearchServer {
             output.push('\n');
         }
 
-        let payload = serde_json::json!({
+        let mut payload = serde_json::json!({
             "query": query,
             "total": scored.len(),
             "showing": scored.len(),
@@ -773,6 +836,7 @@ impl PkbSearchServer {
                 }
             }).collect::<Vec<_>>(),
         });
+        self.attach_reranker_reason(&mut payload, reranker_loaded);
         Ok(Self::structured_result(output, payload))
     }
 
@@ -1182,6 +1246,8 @@ mod title_match_ranking_tests {
             tags: vec![],
             confidence: None,
             chunk_id: None,
+            matched_terms: 0,
+            modified: None,
         }
     }
 
@@ -1248,7 +1314,7 @@ mod title_match_ranking_tests {
         let query = "write reference for Jo Gray promotion university of sydney";
 
         let target = result(
-            "Referee report for Dr Joanne Gray promotion (Univ Sydney) — due COB Thu 16 Jul",
+            "Write reference for Jo Gray promotion University Sydney",
             0.644,
             Some("task"),
         );
@@ -1269,11 +1335,11 @@ mod title_match_ranking_tests {
 
         assert!(
             target_score > memory_score,
-            "near-exact title match (task_764ea48c, {target_score}) must outrank the type_boosted memory note ({memory_score})"
+            "near-exact title match ({target_score}) must outrank the type_boosted memory note ({memory_score})"
         );
         assert!(
             target_score > rival_score,
-            "near-exact title match (task_764ea48c, {target_score}) must outrank the higher-raw-score-but-less-precisely-titled rival ({rival_score})"
+            "near-exact title match ({target_score}) must outrank the higher-raw-score-but-less-precisely-titled rival ({rival_score})"
         );
     }
 
@@ -1311,7 +1377,7 @@ mod title_match_ranking_tests {
         let query = "write reference for Jo Gray promotion university of sydney";
 
         let target = result(
-            "Referee report for Dr Joanne Gray promotion (Univ Sydney) — due COB Thu 16 Jul",
+            "Write reference for Jo Gray promotion University Sydney",
             0.644,
             Some("task"),
         );
@@ -1348,7 +1414,7 @@ mod title_match_ranking_tests {
         let query = "write reference for Jo Gray promotion university of sydney";
 
         let target = result(
-            "Referee report for Dr Joanne Gray promotion (Univ Sydney) — due COB Thu 16 Jul",
+            "Write reference for Jo Gray promotion University Sydney",
             0.644,
             Some("task"),
         );
@@ -1919,5 +1985,230 @@ mod search_status_projection_tests {
             score0, score1,
             "document scores across search must be invariant to frontmatter confidence; got {score0} vs {score1}"
         );
+    }
+
+    #[test]
+    fn test_search_fetch_limit_does_not_truncate_at_20_and_single_pass_graph_priors() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let server = build_seeded_server(dir.path());
+        let pkb_root = &server.pkb_root;
+
+        // Seed 15 archived templates with heavy keyword repetition so bare BM25 ranks them #1..#15
+        // (beyond limit * 2 = 10 for limit = 5).
+        for i in 0..15 {
+            let id = format!("tmpl_noise_{i:02}");
+            let path = pkb_root.join(format!("{id}.md"));
+            std::fs::write(
+                &path,
+                format!(
+                    "---\nid: {id}\ntitle: \"Archive Log {i}\"\ntype: template\nstatus: archived\n---\n\nsignal beacon signal beacon signal beacon signal beacon"
+                ),
+            )
+            .unwrap();
+            let doc = crate::pkb::parse_file(&path).unwrap();
+            let emb = server.embedder.encode_query("signal beacon").unwrap();
+            server
+                .store
+                .write()
+                .insert_precomputed(&doc, vec![doc.body.clone()], vec![emb]);
+            server
+                .graph
+                .write()
+                .replace_node(crate::graph::GraphNode::from_pkb_document(&doc));
+        }
+
+        // Seed a high-value note with single occurrence in body, exact title match, and salience reads
+        let target_path = pkb_root.join("signal_doc_target.md");
+        std::fs::write(
+            &target_path,
+            "---\nid: signal_doc_target\ntitle: \"Signal Beacon\"\ntype: note\nstatus: ready\n---\n\nConcise guide to signal beacon.",
+        )
+        .unwrap();
+        let target_doc = crate::pkb::parse_file(&target_path).unwrap();
+        let emb = server.embedder.encode_query("signal beacon").unwrap();
+        server
+            .store
+            .write()
+            .insert_precomputed(&target_doc, vec![target_doc.body.clone()], vec![emb]);
+        server
+            .graph
+            .write()
+            .replace_node(crate::graph::GraphNode::from_pkb_document(&target_doc));
+        for _ in 0..5 {
+            server
+                .handle_get_document(&serde_json::json!({"id": "signal_doc_target"}))
+                .unwrap();
+        }
+
+        let res = server
+            .handle_pkb_search(&serde_json::json!({
+                "query": "signal beacon",
+                "limit": 5,
+                "format": "json",
+            }))
+            .expect("search");
+        let parsed: serde_json::Value = serde_json::from_str(&result_text(&res)).unwrap();
+        let results = parsed["results"].as_array().unwrap();
+        assert_eq!(results.len(), 5);
+        assert_eq!(
+            results[0]["id"], "signal_doc_target",
+            "signal_doc_target must not be truncated before single-pass priors and must rank #1"
+        );
+    }
+
+    #[test]
+    fn test_search_include_done_neutralizes_done_discount_end_to_end() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let server = build_seeded_server(dir.path());
+
+        for (id, status) in [("doc_alpha", "inbox"), ("doc_beta", "done")] {
+            let path = server.pkb_root.join(format!("{id}.md"));
+            std::fs::write(
+                &path,
+                format!(
+                    "---\nid: {id}\ntitle: \"Calibration Spec\"\ntype: task\nstatus: {status}\n---\n\nIdentical calibration spec content for testing."
+                ),
+            )
+            .unwrap();
+            let doc = crate::pkb::parse_file(&path).unwrap();
+            let emb = server.embedder.encode_query("calibration spec").unwrap();
+            server
+                .store
+                .write()
+                .insert_precomputed(&doc, vec![doc.body.clone()], vec![emb]);
+            server
+                .graph
+                .write()
+                .replace_node(crate::graph::GraphNode::from_pkb_document(&doc));
+        }
+
+        // Default include_done=false: inbox (1.00) must beat done (0.60)
+        let res_default = server
+            .handle_pkb_search(&serde_json::json!({
+                "query": "calibration spec",
+                "format": "json",
+                "limit": 10,
+            }))
+            .expect("search default");
+        let parsed_default: serde_json::Value =
+            serde_json::from_str(&result_text(&res_default)).unwrap();
+        let hits_default = parsed_default["results"].as_array().unwrap();
+        let alpha_def = hits_default
+            .iter()
+            .find(|r| r["id"] == "doc_alpha")
+            .unwrap()["score"]
+            .as_f64()
+            .unwrap();
+        let beta_def = hits_default
+            .iter()
+            .find(|r| r["id"] == "doc_beta")
+            .unwrap()["score"]
+            .as_f64()
+            .unwrap();
+        assert!(
+            alpha_def > beta_def,
+            "with include_done=false, inbox ({alpha_def}) must beat done ({beta_def})"
+        );
+
+        // include_done=true: done discount neutralized (1.00 == 1.00)
+        let res_done = server
+            .handle_pkb_search(&serde_json::json!({
+                "query": "calibration spec",
+                "include_done": true,
+                "format": "json",
+                "limit": 10,
+            }))
+            .expect("search include_done");
+        let parsed_done: serde_json::Value = serde_json::from_str(&result_text(&res_done)).unwrap();
+        let hits_done = parsed_done["results"].as_array().unwrap();
+        let alpha_done = hits_done
+            .iter()
+            .find(|r| r["id"] == "doc_alpha")
+            .unwrap()["score"]
+            .as_f64()
+            .unwrap();
+        let beta_done = hits_done
+            .iter()
+            .find(|r| r["id"] == "doc_beta")
+            .unwrap()["score"]
+            .as_f64()
+            .unwrap();
+        assert!(
+            (alpha_done - beta_done).abs() < 1e-6,
+            "with include_done=true, done ({beta_done}) must equal inbox ({alpha_done})"
+        );
+    }
+
+    #[test]
+    fn test_search_emits_reranker_reason_across_all_envelopes() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut server = build_seeded_server(dir.path());
+        let reranker = Arc::new(crate::rerank::CrossEncoderReranker::new(
+            crate::rerank::RerankerConfig {
+                model_path: None,
+                tokenizer_path: None,
+                top_n_candidates: 10,
+                query_token_cap: 160,
+                chunk_token_cap: 352,
+                enabled: false,
+                tau_h: crate::rerank::DEFAULT_TAU_H,
+                tau_cos: crate::rerank::DEFAULT_TAU_COS,
+                tau_s: crate::rerank::DEFAULT_TAU_S,
+            },
+        ));
+        server = server.with_reranker(reranker);
+
+        // 1. Zero hits envelope
+        let zero_res = server
+            .handle_pkb_search(&serde_json::json!({"query": "nonexistent_xyzzy_token_999"}))
+            .expect("zero search");
+        let zero_sc = zero_res.structured_content.unwrap();
+        assert_eq!(zero_sc["reranker_loaded"], false);
+        assert_eq!(zero_sc["reranker_reason"], "disabled by configuration");
+
+        // 2. ids_only envelope
+        let ids_res = server
+            .handle_pkb_search(&serde_json::json!({"query": "widget", "ids_only": true}))
+            .expect("ids_only search");
+        let ids_sc = ids_res.structured_content.unwrap();
+        assert_eq!(ids_sc["reranker_loaded"], false);
+        assert_eq!(ids_sc["reranker_reason"], "disabled by configuration");
+
+        // 3. format="json" envelope
+        let json_res = server
+            .handle_pkb_search(&serde_json::json!({"query": "widget", "format": "json"}))
+            .expect("json search");
+        let json_sc = json_res.structured_content.unwrap();
+        assert_eq!(json_sc["reranker_loaded"], false);
+        assert_eq!(json_sc["reranker_reason"], "disabled by configuration");
+
+        // 4. Default markdown format envelope
+        let md_res = server
+            .handle_pkb_search(&serde_json::json!({"query": "widget"}))
+            .expect("default search");
+        let md_sc = md_res.structured_content.unwrap();
+        assert_eq!(md_sc["reranker_loaded"], false);
+        assert_eq!(md_sc["reranker_reason"], "disabled by configuration");
+
+        // 5. attach_reranker_reason omits field when reranker_loaded == true, and
+        // CrossEncoderReranker::absent_reason returns "model absent" when enabled but missing.
+        let mut loaded_payload = serde_json::json!({"reranker_loaded": true});
+        server.attach_reranker_reason(&mut loaded_payload, true);
+        assert!(loaded_payload.get("reranker_reason").is_none());
+
+        let absent_reranker = crate::rerank::CrossEncoderReranker::new(
+            crate::rerank::RerankerConfig {
+                model_path: Some(PathBuf::from("/nonexistent/model.onnx")),
+                tokenizer_path: Some(PathBuf::from("/nonexistent/tokenizer.json")),
+                top_n_candidates: 10,
+                query_token_cap: 160,
+                chunk_token_cap: 352,
+                enabled: true,
+                tau_h: crate::rerank::DEFAULT_TAU_H,
+                tau_cos: crate::rerank::DEFAULT_TAU_COS,
+                tau_s: crate::rerank::DEFAULT_TAU_S,
+            },
+        );
+        assert_eq!(absent_reranker.absent_reason(), Some("model absent"));
     }
 }

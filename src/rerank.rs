@@ -387,6 +387,16 @@ impl CrossEncoderReranker {
         &self.config
     }
 
+    pub fn absent_reason(&self) -> Option<&'static str> {
+        if self.is_model_loaded() {
+            None
+        } else if !self.config.enabled {
+            Some("disabled by configuration")
+        } else {
+            Some("model absent")
+        }
+    }
+
     /// Rerank a slice of SearchResult candidates for the given query.
     ///
     /// Encodes (query, title_heading_chunk) pairs using the tokenizer's native pair encoding,
@@ -735,6 +745,8 @@ mod tests {
                 tags: vec![],
                 confidence: None,
                 chunk_id: None,
+                matched_terms: 0,
+                modified: None,
             },
         ];
 
@@ -760,6 +772,8 @@ mod tests {
                 tags: vec![],
                 confidence: None,
                 chunk_id: None,
+                matched_terms: 0,
+                modified: None,
             },
             SearchResult {
                 path: PathBuf::from("tasks/task-target.md"),
@@ -774,6 +788,8 @@ mod tests {
                 tags: vec![],
                 confidence: None,
                 chunk_id: None,
+                matched_terms: 0,
+                modified: None,
             },
         ];
 
@@ -878,5 +894,24 @@ mod tests {
         std::fs::write(path.join("model.onnx"), b"12345678901").unwrap();
         std::fs::write(path.join("tokenizer.json"), b"12345678901").unwrap();
         assert!(verify_manifest(path, &manifest).is_ok());
+    }
+
+    #[test]
+    fn test_absent_reason() {
+        let config_disabled = RerankerConfig {
+            enabled: false,
+            ..Default::default()
+        };
+        let reranker_disabled = CrossEncoderReranker::new(config_disabled);
+        assert_eq!(reranker_disabled.absent_reason(), Some("disabled by configuration"));
+
+        let config_absent = RerankerConfig {
+            enabled: true,
+            model_path: Some(PathBuf::from("/nonexistent/model.onnx")),
+            tokenizer_path: Some(PathBuf::from("/nonexistent/tokenizer.json")),
+            ..Default::default()
+        };
+        let reranker_absent = CrossEncoderReranker::new(config_absent);
+        assert_eq!(reranker_absent.absent_reason(), Some("model absent"));
     }
 }

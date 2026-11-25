@@ -94,6 +94,8 @@ mod tests {
             tags: vec![],
             confidence: None,
             chunk_id: None,
+            matched_terms: 0,
+            modified: None,
         }
     }
 
