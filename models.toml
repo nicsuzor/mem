@@ -10,6 +10,16 @@ repo = "BAAI/bge-m3"
 filename = "model.onnx"
 
 [[assets]]
+name = "model_fp16.onnx"
+repo = "Xenova/bge-m3"
+filename = "model_fp16.onnx"
+
+[[assets]]
+name = "model_quantized.onnx"
+repo = "BAAI/bge-m3"
+filename = "model_quantized.onnx"
+
+[[assets]]
 name = "reranker.onnx"
 repo = "BAAI/bge-m3-reranker"
 filename = "model.onnx"

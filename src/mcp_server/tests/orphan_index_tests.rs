@@ -316,7 +316,7 @@ fn test_delete_document_removes_vector_index_entry_and_leaves_zero_orphans() {
         .handle_pkb_search(&json!({"query": "zzzdeletetest", "limit": 10}))
         .expect("search succeeds");
     assert!(
-        result_text(&search_res).contains("No results found.")
+        result_text(&search_res).is_empty()
             || !result_text(&search_res).contains("task-live")
     );
 }

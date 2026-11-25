@@ -1171,18 +1171,20 @@ fn upsert_entry_to_bm25(bm25: &mut crate::bm25::Bm25Index, entry: &DocumentEntry
         Ok(())
     }
 
-    /// Batch validate unique document IDs across a slice of PKB documents.
+    /// Batch validate unique explicit frontmatter document IDs across a slice of PKB documents.
+    /// Documents without an explicit frontmatter `id` are skipped; collisions on different
+    /// normalized paths fail explicitly naming both paths.
     pub fn validate_unique_document_ids(docs: &[PkbDocument]) -> Result<()> {
         let mut id_to_path: HashMap<String, PathBuf> = HashMap::new();
         for doc in docs {
-            let fm_id = doc.frontmatter.as_ref().and_then(|f| f.get("id").and_then(|v| v.as_str()));
-            let fallback;
-            let doc_id = match fm_id {
-                Some(id) => id,
-                None => {
-                    fallback = doc.id();
-                    &fallback
-                }
+            let Some(doc_id) = doc
+                .frontmatter
+                .as_ref()
+                .and_then(|f| f.get("id").and_then(|v| v.as_str()))
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+            else {
+                continue;
             };
             let norm_path = PathBuf::from(doc.path.to_string_lossy().replace('\\', "/"));
             if let Some(existing_path) = id_to_path.get(doc_id) {
@@ -1211,15 +1213,10 @@ fn upsert_entry_to_bm25(bm25: &mut crate::bm25::Bm25Index, entry: &DocumentEntry
             .collect()
     }
 
-    /// Apply a PreparedUpsert with duplicate ID check.
+    /// Apply a PreparedUpsert with duplicate ID check on full entry upserts.
     pub fn apply_prepared_checked(&mut self, prepared: PreparedUpsert) -> Result<()> {
-        match &prepared {
-            PreparedUpsert::MetadataOnly(patch) => {
-                self.check_duplicate_id(&patch.id, Path::new(""))?;
-            }
-            PreparedUpsert::Full(entry) => {
-                self.check_duplicate_id(&entry.id, &entry.path)?;
-            }
+        if let PreparedUpsert::Full(entry) = &prepared {
+            self.check_duplicate_id(&entry.id, &entry.path)?;
         }
         self.apply_prepared(prepared);
         Ok(())
@@ -3673,6 +3670,33 @@ mod tests {
         store.apply_prepared(PreparedUpsert::Full(Box::new(entry_shared)));
         let check_res = store.check_duplicate_id("shared_id", Path::new("notes/path2.md"));
         assert!(check_res.is_err(), "check_duplicate_id must fail when another path uses the ID");
+        assert!(store.check_duplicate_id("shared_id", Path::new("notes/path1.md")).is_ok());
+
+        // MetadataOnly patch via apply_prepared_checked succeeds on existing entry
+        let patch = MetadataPatch {
+            id: "shared_id".to_string(),
+            title: "Path 1 Retitled".to_string(),
+            doc_type: Some("note".to_string()),
+            status: Some("active".to_string()),
+            tags: vec![],
+            date: None,
+            consolidated: None,
+            consolidated_at: None,
+            modified: None,
+            confidence: None,
+            file_hash: "h2".to_string(),
+        };
+        assert!(store.apply_prepared_checked(PreparedUpsert::MetadataOnly(patch)).is_ok());
+        assert_eq!(store.get_entry("shared_id").unwrap().title, "Path 1 Retitled");
+
+        // Docs without explicit frontmatter ID must not falsely collide on fallback stem
+        let mut readme_a = doc_dup1.clone();
+        readme_a.path = PathBuf::from("a/README.md");
+        readme_a.frontmatter = None;
+        let mut readme_b = doc_dup2.clone();
+        readme_b.path = PathBuf::from("b/README.md");
+        readme_b.frontmatter = None;
+        assert!(VectorStore::validate_unique_document_ids(&[readme_a, readme_b]).is_ok());
 
         // paths_missing_embeddings helper test
         store.documents.clear();

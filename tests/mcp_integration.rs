@@ -321,7 +321,36 @@ struct HttpServer {
 
 impl HttpServer {
     fn start() -> Self {
+        Self::start_with_reindex(false)
+    }
+
+    fn start_indexed() -> Self {
+        Self::start_with_reindex(true)
+    }
+
+    fn start_with_reindex(run_reindex: bool) -> Self {
         let (temp_dir, pkb_root, db_path) = create_test_pkb();
+
+        if run_reindex {
+            let out = Command::new(pkb_binary())
+                .env_remove("PKB_MCP_URL")
+                .args([
+                    "--pkb-root",
+                    pkb_root.to_str().unwrap(),
+                    "--db-path",
+                    db_path.to_str().unwrap(),
+                    "reindex",
+                ])
+                .env("ACA_DATA", pkb_root.to_str().unwrap())
+                .env("AOPS_DUMMY_EMBEDDER", "1")
+                .output()
+                .expect("failed to run pkb reindex for test fixture");
+            assert!(
+                out.status.success(),
+                "fixture reindex failed: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        }
 
         let mut cmd = Command::new(pkb_binary());
         cmd.env_remove("PKB_MCP_URL")
@@ -806,9 +835,9 @@ fn test_http_direct_stateless_tool_call_and_headers() {
     let traceparent = format!("00-{trace_id}-{parent_span_id}-01");
     let (status, headers, body) = http_post_mcp(
         server.port,
-        &tool_call_request_with_args(1, "search", json!({"query": "alpha"})),
+        &tool_call_request_with_args(1, "list_tasks", json!({})),
         "tools/call",
-        Some("search"),
+        Some("list_tasks"),
         &[
             ("x-session-id", "test-stateless-header-session"),
             ("traceparent", &traceparent),
@@ -1401,7 +1430,7 @@ fn test_http2_listener_serves_requests_with_keepalive() {
 
 #[test]
 fn test_http2_concurrent_multiplexed_tool_calls() {
-    let server = HttpServer::start();
+    let server = HttpServer::start_indexed();
     let port = server.port;
 
     let rt = tokio::runtime::Builder::new_multi_thread()
@@ -1475,7 +1504,7 @@ fn test_http2_concurrent_multiplexed_tool_calls() {
 
 #[test]
 fn test_phases_1_to_3_concurrency_and_contracts() {
-    let server = HttpServer::start();
+    let server = HttpServer::start_indexed();
     let port = server.port;
 
     let rt = tokio::runtime::Builder::new_multi_thread()
@@ -1620,5 +1649,133 @@ fn test_phases_1_to_3_concurrency_and_contracts() {
             h.await.unwrap();
         }
     });
+}
+
+fn http_get_route(port: u16, route: &str) -> (u16, String) {
+    use std::io::{Read, Write};
+    let mut stream = std::net::TcpStream::connect(format!("127.0.0.1:{port}"))
+        .expect("connect to HTTP server");
+    let req = format!("GET {route} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n");
+    stream.write_all(req.as_bytes()).unwrap();
+    let mut resp = String::new();
+    stream.read_to_string(&mut resp).unwrap();
+    let (head, body) = resp.split_once("\r\n\r\n").unwrap_or((&resp, ""));
+    let status: u16 = head
+        .lines()
+        .next()
+        .and_then(|l| l.split_whitespace().nth(1))
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
+    (status, body.to_string())
+}
+
+#[test]
+fn test_http_health_endpoint_index_empty_and_single_writer_lock() {
+    let (_temp_dir, pkb_root, db_path) = create_test_pkb();
+
+    let mut cmd = Command::new(pkb_binary());
+    cmd.env_remove("PKB_MCP_URL")
+        .args([
+            "--pkb-root",
+            pkb_root.to_str().unwrap(),
+            "--db-path",
+            db_path.to_str().unwrap(),
+            "mcp",
+            "--http",
+            "--port",
+            "0",
+        ])
+        .env("ACA_DATA", pkb_root.to_str().unwrap())
+        .env("AOPS_DUMMY_EMBEDDER", "1")
+        .stdin(Stdio::null());
+
+    let (mut child, port) = spawn_http_mcp(cmd);
+    let server = HttpServer {
+        child: None,
+        port,
+        _temp_dir: None,
+    };
+    server.wait_ready();
+
+    // 1. Vault has task-test-01.md on disk while vector store has 0 vectors -> /health returns 503
+    let (health_status, health_body) = http_get_route(port, "/health");
+    assert_eq!(
+        health_status, 503,
+        "GET /health must return 503 when index_empty; body={health_body}"
+    );
+    let health_json: Value = serde_json::from_str(&health_body).expect("valid health JSON");
+    assert_eq!(health_json["status"], "unhealthy");
+    assert_eq!(health_json["ready"], false);
+    assert_eq!(health_json["index_empty"], true);
+    assert_eq!(health_json["graph_doc_count"], 1);
+    assert_eq!(health_json["vector_count"], 0);
+
+    // 2. Search on index_empty returns JSON-RPC error containing "index_empty:"
+    let search_resp = http_call_tool(port, 10, "search", json!({"query": "Sample Integration Task"}));
+    let err_msg = search_resp["error"]["message"]
+        .as_str()
+        .unwrap_or_else(|| panic!("expected index_empty JSON-RPC error, got: {search_resp}"));
+    assert!(
+        err_msg.starts_with("index_empty:"),
+        "expected index_empty prefix, got: {err_msg}"
+    );
+
+    // 3. Second pkb mcp writer against the same db_path fails fast on exclusive .lock
+    let second = Command::new(pkb_binary())
+        .env_remove("PKB_MCP_URL")
+        .args([
+            "--pkb-root",
+            pkb_root.to_str().unwrap(),
+            "--db-path",
+            db_path.to_str().unwrap(),
+            "mcp",
+            "--http",
+            "--port",
+            "0",
+        ])
+        .env("ACA_DATA", pkb_root.to_str().unwrap())
+        .env("AOPS_DUMMY_EMBEDDER", "1")
+        .stdin(Stdio::null())
+        .output()
+        .expect("spawn second pkb mcp");
+    assert!(
+        !second.status.success(),
+        "second writer must fail fast when lock is held"
+    );
+    let second_stderr = String::from_utf8_lossy(&second.stderr);
+    assert!(
+        second_stderr.contains("Index lock"),
+        "expected explicit lock error on stderr, got: {second_stderr}"
+    );
+
+    // 4. Write a task via create_task -> populates vector store -> /health becomes 200 OK
+    let create_resp = http_call_tool(
+        port,
+        11,
+        "create_task",
+        json!({
+            "title": "Health Recovery Task",
+            "slug": "health-recovery",
+            "body": "Populates vector index."
+        }),
+    );
+    assert!(
+        create_resp.get("result").is_some(),
+        "create_task must succeed: {create_resp}"
+    );
+
+    let (health_status_ok, health_body_ok) = http_get_route(port, "/health");
+    assert_eq!(
+        health_status_ok, 200,
+        "GET /health must return 200 once vector store is non-empty; body={health_body_ok}"
+    );
+    let health_ok_json: Value = serde_json::from_str(&health_body_ok).expect("valid health JSON");
+    assert_eq!(health_ok_json["status"], "ok");
+    assert_eq!(health_ok_json["ready"], true);
+    assert_eq!(health_ok_json["index_empty"], false);
+    assert!(health_ok_json["vector_count"].as_u64().unwrap_or(0) >= 1);
+
+    child.kill().ok();
+    child.wait().ok();
 }
 

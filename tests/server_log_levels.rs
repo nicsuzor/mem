@@ -73,6 +73,26 @@ fn start_server() -> Server {
     git(&root, &["add", "-A"]);
     git(&root, &["commit", "-q", "-m", "init"]);
     let db = root.join("vectors.bin");
+    let reindex_out = Command::new(env!("CARGO_BIN_EXE_pkb"))
+        .env_remove("RUST_LOG")
+        .env_remove("PKB_MCP_URL")
+        .env_remove("OTEL_EXPORTER_OTLP_ENDPOINT")
+        .env("ACA_DATA", &root)
+        .env("AOPS_DUMMY_EMBEDDER", "1")
+        .args([
+            "--pkb-root",
+            root.to_str().unwrap(),
+            "--db-path",
+            db.to_str().unwrap(),
+            "reindex",
+        ])
+        .output()
+        .expect("run pkb reindex for log-level fixture");
+    assert!(
+        reindex_out.status.success(),
+        "fixture reindex failed: {}",
+        String::from_utf8_lossy(&reindex_out.stderr)
+    );
 
     let mut child = Command::new(env!("CARGO_BIN_EXE_pkb"))
         .env_remove("RUST_LOG")

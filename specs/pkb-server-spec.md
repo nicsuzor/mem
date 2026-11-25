@@ -414,6 +414,7 @@ When the MCP server runs over Streamable HTTP (`pkb mcp --http`):
 | Route | Protocol | Session Management | Response Format | Purpose |
 | ----- | -------- | ------------------ | --------------- | ------- |
 | `/mcp` | MCP `2026-07-28` | Stateless (`NeverSessionManager`) | Direct JSON (`application/json`) | Single stateless MCP endpoint serving `server/discover`, `tools/list`, `tools/call`, `prompts/list`, and `prompts/get` with per-request metadata and `session_id` enforcement. |
+| `/health` | HTTP `GET` | None | JSON (`application/json`) | Readiness and index health probe returning `200 OK` (`status: "ok"`) when ready or `503 Service Unavailable` (`status: "unhealthy"`) when `index_empty` (`graph_doc_count > 0 && vector_count == 0`). Payload includes `status`, `ready`, `index_empty`, `graph_doc_count`, `vector_count`, `empty_embeddings`, `embed_pending`, `reranker_loaded`, and `last_reindex`. |
 
 ### Route Semantics (`/mcp`)
 
@@ -457,6 +458,14 @@ Excalidraw canvases (`*.excalidraw`) may sit beside the markdown. They are files
 ### Vector Store
 
 Binary vector database at `$ACA_DATA/pkb_vectors.bin`. Contains BGE-M3 embeddings (1024 dimensions). This is a derived cache — can be rebuilt from files at any time.
+
+#### Index Integrity, Single-Writer Lock, and Freshness
+
+- **Single-Writer Lock**: `pkb mcp` (stdio and HTTP) and CLI write commands (`pkb reindex`, `pkb add`, `pkb forget`) acquire an exclusive advisory lock (`{db_path}.lock`) at startup and fail fast with an explicit error if another writer already holds it. While holding the lock, the MCP server marks itself as the lock owner (`owns_index_lock`) so background saves and WAL compaction proceed without self-deadlock.
+- **Stale Path-ID Eviction & Duplicate Frontmatter ID Refusal**: Re-indexing a file path under a new document ID evicts any prior vector/BM25 entry still bound to that path. Creating a document with an explicit frontmatter `id` already owned by another file path is rejected before disk write (`INVALID_PARAMS`, naming both conflicting paths), and full `pkb reindex` fails explicitly if two files declare the same explicit frontmatter `id`.
+- **Inline Small-Write Embedding & Reconciliation**: Writes with bodies `<= 4 KB` attempt synchronous embedding under a `1500 ms` timeout so small documents become semantically searchable immediately on return, falling back to a metadata/skeleton entry plus asynchronous background embedding on timeout or error. On `pkb mcp` startup and every 60 seconds thereafter, the server runs `reconcile_empty_embeddings` to queue any remaining skeleton entries with empty embeddings for background embedding.
+- **Model Asset Verification (`models.toml`)**: Loading local BGE-M3 ONNX/tokenizer assets from disk cache verifies pinned assets against the embedded `models.toml` manifest (`tokenizer.json` SHA-256 `6710678b12670bc442b99edc952c4d996ae309a7020c1fa0096dd245c2faf790`) via `model_manifest::verify_file_integrity` (shared with reranker manifest bounds checks). Unpinned optional ONNX assets pass without hash pinning; dummy embedder mode skips asset verification.
+- **Empty-Index Error & Zero-Hit Semantics (`search`)**: When the knowledge graph has nodes (`node_count > 0`) while the vector store is empty (`store.is_empty()`), `search` fails explicitly with `INTERNAL_ERROR` (`"index_empty: ..."`) instead of silently returning zero hits. When the vault itself is empty or a query matches zero documents against a populated index, `search` returns empty text (`""`) in `content[0].text` alongside the structured zero-hit payload (`{ "total": 0, "showing": 0, "count": 0, "results": [] }`).
 
 #### Persisted Format & Schema Evolution Policy
 

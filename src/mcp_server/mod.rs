@@ -235,6 +235,8 @@ pub struct PkbSearchServer {
     pub(crate) rebuild_mutex: Arc<Mutex<()>>,
     /// Total count of full graph rebuilds performed.
     pub(crate) rebuild_count: Arc<std::sync::atomic::AtomicUsize>,
+    /// True when this server process owns the exclusive `.lock` guard acquired at `pkb mcp` startup.
+    pub(crate) owns_index_lock: Arc<std::sync::atomic::AtomicBool>,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -321,7 +323,50 @@ impl PkbSearchServer {
             })),
             rebuild_mutex: Arc::new(Mutex::new(())),
             rebuild_count: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            owns_index_lock: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
+    }
+
+    /// Record whether this `PkbSearchServer` process owns the exclusive index file lock.
+    pub fn set_owns_index_lock(&self, owns: bool) {
+        self.owns_index_lock.store(owns, Ordering::SeqCst);
+    }
+
+    /// Compute server health and readiness status for `GET /health`.
+    pub fn health_status(&self) -> (axum::http::StatusCode, serde_json::Value) {
+        let graph_doc_count = self
+            .graph
+            .read()
+            .nodes_map()
+            .values()
+            .filter(|n| !n.path.as_os_str().is_empty())
+            .count();
+        let (vector_count, empty_embeddings) = {
+            let store = self.store.read();
+            (store.len(), store.count_docs_missing_embeddings())
+        };
+        let embed_pending = self.embed_pending.lock().len();
+        let reranker_loaded = self.reranker.is_model_loaded();
+        let last_reindex = self.last_reindex.read().clone();
+        let index_empty = graph_doc_count > 0 && vector_count == 0;
+        let ready = !index_empty;
+        let status_code = if ready {
+            axum::http::StatusCode::OK
+        } else {
+            axum::http::StatusCode::SERVICE_UNAVAILABLE
+        };
+        let payload = serde_json::json!({
+            "status": if ready { "ok" } else { "unhealthy" },
+            "ready": ready,
+            "index_empty": index_empty,
+            "graph_doc_count": graph_doc_count,
+            "vector_count": vector_count,
+            "empty_embeddings": empty_embeddings,
+            "embed_pending": embed_pending,
+            "reranker_loaded": reranker_loaded,
+            "last_reindex": last_reindex,
+        });
+        (status_code, payload)
     }
 
     /// Set the clock for time-dependent salience decay and recency calculations.
@@ -955,8 +1000,11 @@ impl PkbSearchServer {
         }
     }
 
-    /// Check whether the index file lock is available (no reindex in progress).
+    /// Check whether the index file lock is available (no external reindex in progress).
     pub(crate) fn index_lock_available(&self) -> bool {
+        if self.owns_index_lock.load(Ordering::SeqCst) {
+            return true;
+        }
         match VectorStore::acquire_lock(&self.db_path) {
             Ok(mut lock) => match lock.try_write() {
                 Ok(_guard) => true,
@@ -968,13 +1016,12 @@ impl PkbSearchServer {
     }
 
     /// True when an *external* process (e.g. `pkb reindex`) holds the
-    /// cross-process index file lock. False when the lock is available OR
-    /// when our own background save thread is the one holding it. This is
-    /// the predicate the upsert path should consult when deciding whether
-    /// to defer in-memory writes — deferring on a self-save triggers an
-    /// expensive disk reload on the next call (the thing the
-    /// `save_in_flight` flag exists to avoid).
+    /// cross-process index file lock. False when this server owns the lock,
+    /// when the lock is available, OR when our own background save thread holds it.
     pub(crate) fn external_lock_held(&self) -> bool {
+        if self.owns_index_lock.load(Ordering::SeqCst) {
+            return false;
+        }
         if self
             .save_in_flight
             .load(std::sync::atomic::Ordering::SeqCst)
@@ -982,6 +1029,70 @@ impl PkbSearchServer {
             return false;
         }
         !self.index_lock_available()
+    }
+
+    /// Persist `store` to `db_path`, skipping redundant lock acquisition when this
+    /// process already owns the exclusive index lock (prevents self-deadlock).
+    fn save_store_to_disk(store: &RwLock<VectorStore>, db_path: &Path, owns_lock: bool) {
+        let t_bg = std::time::Instant::now();
+        if owns_lock {
+            let t_save = std::time::Instant::now();
+            if let Err(e) = store.read().save(db_path) {
+                tracing::error!("Failed to save vector store: {e}");
+            }
+            let elapsed_save = t_save.elapsed();
+            tracing::debug!(
+                target: "perf::vector",
+                phase = "bg_save_success",
+                owns_lock = true,
+                save_ms = elapsed_save.as_secs_f64() * 1000.0,
+                elapsed_ms = t_bg.elapsed().as_secs_f64() * 1000.0
+            );
+            return;
+        }
+
+        let t_lock = std::time::Instant::now();
+        match VectorStore::acquire_lock(db_path) {
+            Ok(mut lock) => {
+                let elapsed_lock_acquire = t_lock.elapsed();
+                let t_write_lock = std::time::Instant::now();
+                match lock.try_write() {
+                    Ok(_guard) => {
+                        let elapsed_write_lock = t_write_lock.elapsed();
+                        let t_save = std::time::Instant::now();
+                        if let Err(e) = store.read().save(db_path) {
+                            tracing::error!("Failed to save vector store: {e}");
+                        }
+                        let elapsed_save = t_save.elapsed();
+                        tracing::debug!(
+                            target: "perf::vector",
+                            phase = "bg_save_success",
+                            lock_acquire_ms = elapsed_lock_acquire.as_secs_f64() * 1000.0,
+                            write_lock_ms = elapsed_write_lock.as_secs_f64() * 1000.0,
+                            save_ms = elapsed_save.as_secs_f64() * 1000.0,
+                            elapsed_ms = t_bg.elapsed().as_secs_f64() * 1000.0
+                        );
+                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                        tracing::debug!(
+                            "Vector store lock held by another process — disk save deferred"
+                        );
+                        tracing::debug!(
+                            target: "perf::vector",
+                            phase = "bg_save_deferred",
+                            lock_acquire_ms = elapsed_lock_acquire.as_secs_f64() * 1000.0,
+                            elapsed_ms = t_bg.elapsed().as_secs_f64() * 1000.0
+                        );
+                    }
+                    Err(e) => {
+                        tracing::error!("Failed to acquire write lock for save: {e}");
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::error!("Failed to open lock file for save: {e}");
+            }
+        }
     }
 
     /// Return path to the Write-Ahead Log (.wal) file for vector persistence.
@@ -1015,63 +1126,12 @@ impl PkbSearchServer {
         let db_path = self.db_path.clone();
         let pending = self.save_pending.clone();
         let in_flight = self.save_in_flight.clone();
+        let owns_lock = self.owns_index_lock.clone();
 
         let do_save = move || {
-            // Mark self-save in flight BEFORE acquiring the file lock.
-            // Concurrent upsert calls observing a non-available file lock
-            // will see this flag and skip the defer-and-reload path that
-            // would otherwise trigger a 1–2s store reload on the next call.
             in_flight.store(true, Ordering::SeqCst);
-            // Clear save_pending BEFORE serializing: any concurrent write
-            // that arrives during serialize will schedule a follow-up save
-            // (rather than be silently dropped).
             pending.store(false, Ordering::SeqCst);
-
-            let t_bg = std::time::Instant::now();
-
-            let t_lock = std::time::Instant::now();
-            match VectorStore::acquire_lock(&db_path) {
-                Ok(mut lock) => {
-                    let elapsed_lock_acquire = t_lock.elapsed();
-                    let t_write_lock = std::time::Instant::now();
-                    match lock.try_write() {
-                        Ok(_guard) => {
-                            let elapsed_write_lock = t_write_lock.elapsed();
-                            let t_save = std::time::Instant::now();
-                            if let Err(e) = store.read().save(&db_path) {
-                                tracing::error!("Failed to save vector store: {e}");
-                            }
-                            let elapsed_save = t_save.elapsed();
-                            tracing::debug!(
-                                target: "perf::vector",
-                                phase = "bg_save_success",
-                                lock_acquire_ms = elapsed_lock_acquire.as_secs_f64() * 1000.0,
-                                write_lock_ms = elapsed_write_lock.as_secs_f64() * 1000.0,
-                                save_ms = elapsed_save.as_secs_f64() * 1000.0,
-                                elapsed_ms = t_bg.elapsed().as_secs_f64() * 1000.0
-                            );
-                        }
-                        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                            tracing::debug!(
-                                "Vector store lock held by another process — disk save deferred"
-                            );
-                            tracing::debug!(
-                                target: "perf::vector",
-                                phase = "bg_save_deferred",
-                                lock_acquire_ms = elapsed_lock_acquire.as_secs_f64() * 1000.0,
-                                elapsed_ms = t_bg.elapsed().as_secs_f64() * 1000.0
-                            );
-                        }
-                        Err(e) => {
-                            tracing::error!("Failed to acquire write lock for save: {e}");
-                        }
-                    }
-                }
-                Err(e) => {
-                    tracing::error!("Failed to open lock file for save: {e}");
-                }
-            }
-
+            Self::save_store_to_disk(&store, &db_path, owns_lock.load(Ordering::SeqCst));
             in_flight.store(false, Ordering::SeqCst);
         };
 
@@ -1228,8 +1288,53 @@ impl PkbSearchServer {
     pub const INLINE_EMBED_MAX_BYTES: usize = 4096;
     pub const INLINE_EMBED_TIMEOUT_MS: u64 = 1500;
 
+    /// Check whether creating a document with an explicit `id` at `rel_path` conflicts
+    /// with an existing document in either the vector store or knowledge graph.
+    pub(crate) fn check_create_duplicate_id(
+        &self,
+        explicit_id: Option<&str>,
+        abs_target_path: &Path,
+    ) -> Result<(), McpError> {
+        let Some(raw_id) = explicit_id.map(str::trim).filter(|s| !s.is_empty()) else {
+            return Ok(());
+        };
+        let sanitized_id = crate::document_crud::sanitize_explicit_id(raw_id);
+        let rel_path = abs_target_path
+            .strip_prefix(&self.pkb_root)
+            .unwrap_or(abs_target_path);
+
+        self.store
+            .read()
+            .check_duplicate_id(&sanitized_id, rel_path)
+            .map_err(|e| McpError {
+                code: ErrorCode::INVALID_PARAMS,
+                message: Cow::from(e.to_string()),
+                data: None,
+            })?;
+
+        let norm_rel = rel_path.to_string_lossy().replace('\\', "/");
+        if let Some(existing) = self.graph.read().get_node(&sanitized_id) {
+            if !existing.path.as_os_str().is_empty() {
+                let existing_norm = existing.path.to_string_lossy().replace('\\', "/");
+                if existing_norm != norm_rel {
+                    return Err(McpError {
+                        code: ErrorCode::INVALID_PARAMS,
+                        message: Cow::from(format!(
+                            "Duplicate document ID conflict: ID '{}' is declared by both '{}' and '{}'",
+                            sanitized_id,
+                            existing.path.display(),
+                            rel_path.display()
+                        )),
+                        data: None,
+                    });
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Reconcile empty embeddings: reads all document paths missing embeddings from the vector store,
-    /// parses each existing markdown file, and schedules/queues embedding, returning the count queued.
+    /// parses each existing markdown file relative to `pkb_root`, and queues embedding, returning the count queued.
     pub fn reconcile_empty_embeddings(&self) -> usize {
         let missing_paths = self.store.read().paths_missing_embeddings();
         let mut queued_count = 0;
@@ -1242,7 +1347,11 @@ impl PkbSearchServer {
             if !abs_path.exists() {
                 continue;
             }
-            if let Some(doc) = crate::pkb::parse_file(&abs_path) {
+            if let Some(doc) = crate::pkb::parse_file_relative(&abs_path, &self.pkb_root) {
+                let path_key = doc.path.to_string_lossy().to_string();
+                if self.embed_pending.lock().contains_key(&path_key) {
+                    continue;
+                }
                 self.schedule_embed(doc);
                 queued_count += 1;
             }
@@ -1542,6 +1651,7 @@ impl PkbSearchServer {
         let save_pending = self.save_pending.clone();
         let save_in_flight = self.save_in_flight.clone();
         let db_path = self.db_path.clone();
+        let owns_lock = self.owns_index_lock.clone();
 
         let worker = move || {
             loop {
@@ -1591,7 +1701,9 @@ impl PkbSearchServer {
                     if let Err(e) = wal_res {
                         tracing::error!("background embed: Failed to append to WAL: {e}");
                     }
-                    store.write().apply_prepared(prepared);
+                    if let Err(e) = store.write().apply_prepared_checked(prepared) {
+                        tracing::error!("background embed: duplicate ID check failed: {e}");
+                    }
                     tracing::debug!(
                         target: "perf::vector",
                         phase = "bg_embed",
@@ -1619,29 +1731,11 @@ impl PkbSearchServer {
                 let pending = save_pending.clone();
                 let in_flight = save_in_flight.clone();
                 let db_path = db_path.clone();
+                let owns_lock = owns_lock.clone();
                 let do_save = move || {
                     in_flight.store(true, Ordering::SeqCst);
                     pending.store(false, Ordering::SeqCst);
-                    match crate::vectordb::VectorStore::acquire_lock(&db_path) {
-                        Ok(mut lock) => match lock.try_write() {
-                            Ok(_guard) => {
-                                if let Err(e) = store.read().save(&db_path) {
-                                    tracing::error!("Failed to save vector store: {e}");
-                                }
-                            }
-                            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                                tracing::debug!(
-                                    "Vector store lock held by another process — disk save deferred"
-                                );
-                            }
-                            Err(e) => {
-                                tracing::error!("Failed to acquire write lock for save: {e}");
-                            }
-                        },
-                        Err(e) => {
-                            tracing::error!("Failed to open lock file for save: {e}");
-                        }
-                    }
+                    Self::save_store_to_disk(&store, &db_path, owns_lock.load(Ordering::SeqCst));
                     in_flight.store(false, Ordering::SeqCst);
                 };
                 match tokio::runtime::Handle::try_current() {
@@ -2366,5 +2460,215 @@ mod client_identity_tests {
         let mut args = serde_json::json!({"_client": "spoof"});
         apply_client_identity(&mut args, Some(DASHBOARD_CLIENT));
         assert!(is_dashboard_client(&args));
+    }
+}
+
+#[cfg(test)]
+mod index_integrity_and_health_tests {
+    use super::*;
+
+    fn make_server(root: &Path) -> PkbSearchServer {
+        let graph = GraphStore::build_from_directory(root);
+        PkbSearchServer::new(
+            Arc::new(RwLock::new(VectorStore::new(3))),
+            Arc::new(Embedder::new_dummy()),
+            root.to_path_buf(),
+            root.join("pkb_vectors.bin"),
+            Arc::new(RwLock::new(graph)),
+        )
+    }
+
+    #[test]
+    fn health_status_reports_unhealthy_503_when_index_empty_and_200_when_populated_or_empty_vault() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::create_dir_all(root.join("notes")).unwrap();
+
+        // Empty vault: graph=0, store=0 -> 200 OK (not index_empty)
+        let server_empty = make_server(root);
+        let (code, body) = server_empty.health_status();
+        assert_eq!(code, axum::http::StatusCode::OK);
+        assert_eq!(body["status"], "ok");
+        assert_eq!(body["ready"], true);
+        assert_eq!(body["index_empty"], false);
+        assert_eq!(body["graph_doc_count"], 0);
+        assert_eq!(body["vector_count"], 0);
+
+        // Vault with markdown doc on disk and 0 vectors -> 503 Service Unavailable (index_empty)
+        let note_path = root.join("notes/sample.md");
+        std::fs::write(
+            &note_path,
+            "---\nid: note-health-1\ntitle: Health Sample\ntype: note\n---\nBody text.\n",
+        )
+        .unwrap();
+        let server_unindexed = make_server(root);
+        let (code_bad, body_bad) = server_unindexed.health_status();
+        assert_eq!(code_bad, axum::http::StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(body_bad["status"], "unhealthy");
+        assert_eq!(body_bad["ready"], false);
+        assert_eq!(body_bad["index_empty"], true);
+        assert_eq!(body_bad["graph_doc_count"], 1);
+        assert_eq!(body_bad["vector_count"], 0);
+
+        // Search on index_empty returns explicit INTERNAL_ERROR starting with "index_empty:"
+        let search_err = server_unindexed
+            .handle_pkb_search(&serde_json::json!({"query": "Health Sample"}))
+            .expect_err("search on index_empty must fail explicitly");
+        assert_eq!(search_err.code, ErrorCode::INTERNAL_ERROR);
+        assert!(
+            search_err.message.starts_with("index_empty:"),
+            "Expected index_empty error prefix, got: {}",
+            search_err.message
+        );
+
+        // Once vector store has the document, health returns 200 OK
+        let doc = crate::pkb::parse_file_relative(&note_path, root).unwrap();
+        server_unindexed
+            .store_for_test()
+            .write()
+            .insert_precomputed(&doc, vec![doc.body.clone()], vec![vec![0.1; 3]]);
+        let (code_ok, body_ok) = server_unindexed.health_status();
+        assert_eq!(code_ok, axum::http::StatusCode::OK);
+        assert_eq!(body_ok["status"], "ok");
+        assert_eq!(body_ok["ready"], true);
+        assert_eq!(body_ok["index_empty"], false);
+        assert_eq!(body_ok["vector_count"], 1);
+        assert_eq!(body_ok["empty_embeddings"], 0);
+        assert!(body_ok.get("embed_pending").is_some());
+        assert!(body_ok.get("reranker_loaded").is_some());
+        assert!(body_ok.get("last_reindex").is_some());
+    }
+
+    #[test]
+    fn duplicate_explicit_id_rejected_on_create_naming_both_paths() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let server = make_server(root);
+
+        server
+            .handle_create_document(&serde_json::json!({
+                "title": "First Note",
+                "type": "note",
+                "slug": "first-note",
+                "id": "dup-explicit-1",
+                "body": "First body."
+            }))
+            .expect("first create should succeed");
+
+        let err = server
+            .handle_create_document(&serde_json::json!({
+                "title": "Second Note",
+                "type": "note",
+                "slug": "second-note",
+                "id": "dup-explicit-1",
+                "body": "Second body."
+            }))
+            .expect_err("duplicate explicit id across distinct paths must fail");
+        assert_eq!(err.code, ErrorCode::INVALID_PARAMS);
+        assert!(
+            err.message.contains("notes/dup-explicit-1_first_note.md")
+                && err.message.contains("notes/dup-explicit-1_second_note.md"),
+            "Error must name both paths, got: {}",
+            err.message
+        );
+        assert!(
+            !root.join("notes/dup-explicit-1_second_note.md").exists(),
+            "Rejected duplicate create must not write file to disk"
+        );
+
+        let err_mem = server
+            .handle_create_memory(&serde_json::json!({
+                "title": "Dup Memory",
+                "slug": "dup-mem",
+                "id": "dup-explicit-1",
+                "body": "Memory body."
+            }))
+            .expect_err("duplicate explicit id in create_memory must fail");
+        assert_eq!(err_mem.code, ErrorCode::INVALID_PARAMS);
+        assert!(
+            err_mem.message.contains("notes/dup-explicit-1_first_note.md")
+                && err_mem.message.contains("memories/dup-explicit-1_dup_mem.md"),
+            "Error must name both paths, got: {}",
+            err_mem.message
+        );
+        assert!(!root.join("memories/dup-explicit-1_dup_mem.md").exists());
+
+        let err_task = server
+            .handle_create_task(&serde_json::json!({
+                "title": "Dup Task",
+                "slug": "dup-task",
+                "id": "dup-explicit-1",
+                "body": "Task body."
+            }))
+            .expect_err("duplicate explicit id in create_task must fail");
+        assert_eq!(err_task.code, ErrorCode::INVALID_PARAMS);
+        assert!(
+            err_task.message.contains("notes/dup-explicit-1_first_note.md")
+                && err_task.message.contains("tasks/dup-explicit-1_dup_task.md"),
+            "Error must name both paths, got: {}",
+            err_task.message
+        );
+        assert!(!root.join("tasks/dup-explicit-1_dup_task.md").exists());
+    }
+
+    #[test]
+    fn owns_index_lock_prevents_self_deadlock_and_reconcile_embeds_relative_paths() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        std::fs::create_dir_all(root.join("notes")).unwrap();
+        let note_path = root.join("notes/skel.md");
+        std::fs::write(
+            &note_path,
+            "---\nid: skel-1\ntitle: Skeleton Note\ntype: note\n---\nReconcile body content.\n",
+        )
+        .unwrap();
+
+        let server = make_server(root);
+        let mut lock = VectorStore::acquire_lock(&server.db_path).unwrap();
+        let _guard = lock.try_write().unwrap();
+
+        // Without owns_index_lock, external_lock_held is true while lock is held.
+        assert!(server.external_lock_held());
+        assert!(!server.index_lock_available());
+
+        // With owns_index_lock=true (same-process mcp startup owner), no self-deadlock.
+        server.set_owns_index_lock(true);
+        assert!(!server.external_lock_held());
+        assert!(server.index_lock_available());
+
+        // Insert a skeleton entry (empty chunk_embeddings) and reconcile it.
+        let skeleton = crate::vectordb::DocumentEntry {
+            path: PathBuf::from("notes/skel.md"),
+            title: "Skeleton Note".to_string(),
+            doc_type: Some("note".to_string()),
+            status: None,
+            tags: vec![],
+            id: "skel-1".to_string(),
+            date: None,
+            consolidated: None,
+            consolidated_at: None,
+            modified: None,
+            confidence: None,
+            content_hash: None,
+            file_hash: None,
+            body_hash: None,
+            chunk_embeddings: Vec::new(),
+            chunk_texts: Vec::new(),
+            body_chunks: Vec::new(),
+        };
+        server
+            .store_for_test()
+            .write()
+            .apply_prepared(crate::vectordb::PreparedUpsert::Full(Box::new(skeleton)));
+        assert_eq!(server.store_for_test().read().count_docs_missing_embeddings(), 1);
+
+        let queued = server.reconcile_empty_embeddings();
+        assert_eq!(queued, 1);
+        // Without a tokio runtime, schedule_embed executes inline; verify relative path & populated embeddings.
+        let store_arc = server.store_for_test();
+        let store_read = store_arc.read();
+        let entry = store_read.get_entry("skel-1").unwrap();
+        assert_eq!(entry.path, PathBuf::from("notes/skel.md"));
+        assert!(!entry.chunk_embeddings.is_empty());
     }
 }

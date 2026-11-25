@@ -240,6 +240,12 @@ fn canvas_written_over_mcp_is_not_indexed_or_searchable() {
     let root = tmp.path();
     write_file(root, "note.md", "---\nid: n1\ntitle: Plain note\n---\nordinary words\n");
     let server = make_server(root);
+    if let Some(doc) = crate::pkb::parse_file_relative(&root.join("note.md"), root) {
+        server
+            .store_for_test()
+            .write()
+            .insert_precomputed(&doc, vec![doc.body.clone()], vec![vec![0.1; 3]]);
+    }
     server
         .handle_write_excalidraw(&json!({
             "path": "zanzibarquokka.excalidraw",
