@@ -287,6 +287,49 @@ impl PkbSearchServer {
         crate::ranking::task_search_score(query, r)
     }
 
+    fn resolve_hit_extract<'a>(
+        &self,
+        r: &'a crate::vectordb::SearchResult,
+        node: Option<&crate::graph::GraphNode>,
+        detail: &str,
+        max_bytes: usize,
+    ) -> Cow<'a, str> {
+        match detail.to_ascii_lowercase().as_str() {
+            "metadata" | "ids" => Cow::Borrowed(""),
+            "snippet" | "summary" => Cow::Borrowed(&r.snippet),
+            "full" => {
+                // Read full document from disk
+                let abs_path = node
+                    .and_then(|n| self.abs_path_for_node(n, None).ok())
+                    .unwrap_or_else(|| {
+                        if r.path.as_os_str().is_empty() {
+                            PathBuf::new()
+                        } else {
+                            r.path.clone()
+                        }
+                    });
+                if !abs_path.as_os_str().is_empty() {
+                    match std::fs::read_to_string(&abs_path) {
+                        Ok(content) => {
+                            if content.len() > max_bytes {
+                                let mut truncated = Self::truncate_body(content, Some(max_bytes));
+                                truncated
+                                    .push_str(&format!("\n... [truncated at {max_bytes} bytes]"));
+                                Cow::Owned(truncated)
+                            } else {
+                                Cow::Owned(content)
+                            }
+                        }
+                        Err(_) => Cow::Borrowed(&r.chunk_text),
+                    }
+                } else {
+                    Cow::Borrowed(&r.chunk_text)
+                }
+            }
+            _ => Cow::Borrowed(&r.chunk_text), // "chunk"
+        }
+    }
+
     pub(crate) fn handle_pkb_search(&self, args: &JsonValue) -> Result<CallToolResult, McpError> {
         self.ensure_graph_fresh();
         let query = args
@@ -597,12 +640,9 @@ impl PkbSearchServer {
                     if let Some(p) = project {
                         obj["project"] = serde_json::json!(p);
                     }
-                    if detail != "metadata" {
-                        let ext = match detail {
-                            "snippet" => &r.snippet,
-                            _ => &r.chunk_text,
-                        };
-                        obj["extract"] = serde_json::json!(ext);
+                    if !detail.eq_ignore_ascii_case("metadata") {
+                        let ext = self.resolve_hit_extract(r, node, detail, max_bytes);
+                        obj["extract"] = serde_json::json!(ext.as_ref());
                     }
                     obj
                 })
@@ -650,7 +690,11 @@ impl PkbSearchServer {
                 r.title,
                 score
             ));
-            if detail != "metadata" && ((*recency_decay - 1.0).abs() > 1e-4 || (*read_boost - 1.0).abs() > 1e-4 || *salience_score > 0.0) {
+            if !detail.eq_ignore_ascii_case("metadata")
+                && ((*recency_decay - 1.0).abs() > 1e-4
+                    || (*read_boost - 1.0).abs() > 1e-4
+                    || *salience_score > 0.0)
+            {
                 output.push_str(&format!(
                     "**Priors:** recency={:.3}, recent_read={:.3}, salience={:.1}\n",
                     recency_decay, read_boost, salience_score
@@ -667,47 +711,8 @@ impl PkbSearchServer {
             if let Some(project) = node.and_then(|n| n.project.as_deref()) {
                 output.push_str(&format!("**Project:** {project}\n"));
             }
-            if detail != "metadata" && !r.tags.is_empty() {
+            if !detail.eq_ignore_ascii_case("metadata") && !r.tags.is_empty() {
                 output.push_str(&format!("**Tags:** {}\n", r.tags.join(", ")));
-            }
-            let extract: std::borrow::Cow<'_, str> = match detail {
-                "metadata" => std::borrow::Cow::Borrowed(""),
-                "snippet" | "summary" => std::borrow::Cow::Borrowed(&r.snippet),
-                "full" => {
-                    // Read full document from disk
-                    let abs_path = node
-                        .and_then(|n| self.abs_path_for_node(n, None).ok())
-                        .unwrap_or_else(|| {
-                            if r.path.as_os_str().is_empty() {
-                                PathBuf::new()
-                            } else {
-                                r.path.clone()
-                            }
-                        });
-                    if !abs_path.as_os_str().is_empty() {
-                        match std::fs::read_to_string(&abs_path) {
-                            Ok(content) => {
-                                if content.len() > max_bytes {
-                                    let mut truncated =
-                                        Self::truncate_body(content, Some(max_bytes));
-                                    truncated.push_str(&format!(
-                                        "\n... [truncated at {max_bytes} bytes]"
-                                    ));
-                                    std::borrow::Cow::Owned(truncated)
-                                } else {
-                                    std::borrow::Cow::Owned(content)
-                                }
-                            }
-                            Err(_) => std::borrow::Cow::Borrowed(&r.chunk_text),
-                        }
-                    } else {
-                        std::borrow::Cow::Borrowed(&r.chunk_text)
-                    }
-                }
-                _ => std::borrow::Cow::Borrowed(&r.chunk_text), // "chunk" (default)
-            };
-            if !extract.is_empty() {
-                output.push_str(&format!("\n> {}\n", extract.replace('\n', "\n> ")));
             }
             output.push('\n');
         }
@@ -749,6 +754,7 @@ impl PkbSearchServer {
                         "snippet": r.snippet,
                     })
                 } else {
+                    let extract = self.resolve_hit_extract(r, node, detail, max_bytes);
                     let mut obj = serde_json::json!({
                         "id": r.id,
                         "title": r.title,
@@ -758,6 +764,7 @@ impl PkbSearchServer {
                         "recency_decay": recency_decay,
                         "recent_read_boost": read_boost,
                         "salience": salience,
+                        "extract": extract.as_ref(),
                     });
                     if let Some(ref s) = hit_status {
                         obj["status"] = serde_json::json!(s);
