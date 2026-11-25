@@ -242,10 +242,18 @@ fn render_pkb_context(items: &[HydrateItem], max_chars: usize) -> (String, usize
             }
         }
         if lines.is_empty() {
-            // Even empty-extract item 0 exceeded tiny max_chars: force-cap final string cleanly at char boundary.
-            let candidate_str = wrap(1, &[format_hydrate_line(item, "")]);
-            let cap = candidate_str.floor_char_boundary(max_chars.min(candidate_str.len()));
-            return (candidate_str[..cap].to_string(), 1);
+            // Even empty-extract item 0 exceeded tiny max_chars: try empty extract, then minimal ID pointer.
+            // Never slice mid-tag or omit the closing `</pkb-context>` tag; if even the minimal wrapper
+            // cannot fit, return empty `(String::new(), 0)` so callers abstain cleanly.
+            let empty_extract = wrap(1, &[format_hydrate_line(item, "")]);
+            if empty_extract.len() <= max_chars {
+                return (empty_extract, 1);
+            }
+            let minimal = wrap(1, &[format!("- {}", xml_escape(&item.id))]);
+            if minimal.len() <= max_chars {
+                return (minimal, 1);
+            }
+            return (String::new(), 0);
         }
         break;
     }
@@ -339,6 +347,14 @@ impl PkbSearchServer {
         let query_slice_end = raw_prompt.floor_char_boundary(HYDRATE_QUERY_MAX_BYTES.min(raw_prompt.len()));
         let query = &raw_prompt[..query_slice_end];
         let trimmed = query.trim();
+
+        if self.reranker.is_enabled() && !self.reranker.is_model_loaded() {
+            return Err(McpError {
+                code: ErrorCode::INTERNAL_ERROR,
+                message: Cow::from("reranker_unavailable"),
+                data: None,
+            });
+        }
 
         let reranker_loaded = self.reranker.is_model_loaded();
         let reranker_active = self.reranker.is_enabled() && reranker_loaded;
@@ -691,6 +707,15 @@ impl PkbSearchServer {
         }
 
         let (brief, rendered_count) = render_pkb_context(&selected, max_chars);
+        if rendered_count == 0 {
+            return Ok(build_abstain(
+                "below_floor",
+                degraded,
+                ranking_label,
+                Some(embed_ms),
+                Some(retrieve_ms),
+            ));
+        }
         selected.truncate(rendered_count);
 
         let result_ids: Vec<String> = selected.iter().map(|i| i.id.clone()).collect();
@@ -1024,5 +1049,77 @@ mod tests {
         assert_eq!(sc_ov["reason"], "overloaded");
         assert_eq!(sc_ov["degraded"], true);
         assert_eq!(sc_ov["brief"], "");
+    }
+
+    #[test]
+    fn test_hydrate_raises_reranker_unavailable_when_enabled_and_unloaded() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+        let missing_reranker = Arc::new(crate::rerank::CrossEncoderReranker::new(
+            crate::rerank::RerankerConfig {
+                model_path: Some(std::path::PathBuf::from("/nonexistent/model.onnx")),
+                tokenizer_path: Some(std::path::PathBuf::from("/nonexistent/tokenizer.json")),
+                top_n_candidates: 10,
+                query_token_cap: 160,
+                chunk_token_cap: 352,
+                enabled: true,
+                tau_h: crate::rerank::DEFAULT_TAU_H,
+                tau_cos: crate::rerank::DEFAULT_TAU_COS,
+                tau_s: crate::rerank::DEFAULT_TAU_S,
+            },
+        ));
+        let server = make_seeded_server(root).with_reranker(missing_reranker);
+
+        let err = server
+            .handle_hydrate(&serde_json::json!({"prompt": "test prompt"}))
+            .expect_err("enabled but unloaded reranker must fail fast");
+        assert_eq!(err.code, ErrorCode::INTERNAL_ERROR);
+        assert_eq!(err.message.as_ref(), "reranker_unavailable");
+
+        // Disabled reranker runs normally in fused mode with degraded: false
+        let disabled_srv = make_seeded_server(root);
+        seed_doc(
+            &disabled_srv,
+            "fused-doc-001.md",
+            "---\nid: fused-doc-001\ntitle: \"Fused Note\"\ntype: note\n---\n\nfused fallback test",
+            "fused fallback test",
+        );
+        let ok_res = disabled_srv
+            .handle_hydrate(&serde_json::json!({"prompt": "fused fallback test"}))
+            .unwrap();
+        let sc = ok_res.structured_content.unwrap();
+        assert_eq!(sc["abstained"], false);
+        assert_eq!(sc["ranking"], "fused");
+        assert_eq!(sc["degraded"], false);
+    }
+
+    #[test]
+    fn test_render_pkb_context_never_emits_unclosed_tag_on_tiny_max_chars() {
+        let item = HydrateItem {
+            id: "doc-tiny-001".to_string(),
+            title: "Tiny Budget Title That Exceeds Minimal Overhead".to_string(),
+            doc_type: "note".to_string(),
+            status: Some("active".to_string()),
+            modified: Some("2026-11-24".to_string()),
+            heading: Some("Section".to_string()),
+            extract: "Long extract text that cannot fit when max_chars is tiny.".to_string(),
+            score: 0.9,
+            pinned: false,
+        };
+
+        for cap in [1usize, 50, 180, 220, 260, 400] {
+            let (rendered, count) = render_pkb_context(std::slice::from_ref(&item), cap);
+            assert!(
+                rendered.len() <= cap,
+                "cap={cap} exceeded: len={}",
+                rendered.len()
+            );
+            if count == 0 {
+                assert!(rendered.is_empty(), "count==0 must return empty brief");
+            } else {
+                assert!(rendered.starts_with("<pkb-context "), "bad open: {rendered}");
+                assert!(rendered.ends_with("</pkb-context>"), "unclosed tag at cap={cap}: {rendered}");
+            }
+        }
     }
 }

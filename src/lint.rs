@@ -2266,11 +2266,12 @@ fn apply_tier_fixes(content: &str, path: &Path) -> String {
         cur_type.trim().to_ascii_lowercase().as_str(),
         "session-log" | "transcript" | "verbatim-log"
     );
+    let is_template_type = cur_type.trim().eq_ignore_ascii_case("template");
 
     let wants_archive = legacy_tags
         .iter()
         .any(|t| t == "archived" || t == "onenote-import");
-    let wants_log_type: Option<&str> = if is_already_log_type {
+    let wants_log_type: Option<&str> = if is_already_log_type || is_template_type {
         None
     } else if legacy_tags.iter().any(|t| t == "verbatim-log") {
         Some("verbatim-log")
@@ -5682,5 +5683,23 @@ Real broken link that must be reported:
             .diagnostics
             .iter()
             .any(|d| d.rule == "doc-daily-no-date"));
+    }
+
+    #[test]
+    fn test_lint_tier_fix_never_promotes_template_to_log() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("wf-template.md");
+        std::fs::write(
+            &path,
+            "---\nid: wf-template-01\ntitle: Workflow Template\ntype: template\ntier: log\ntags: [transcript, workflow]\n---\n\nTemplate steps.\n",
+        )
+        .unwrap();
+
+        let fixed = lint_file_scoped(&path, FixScope::Tier, None, None, None)
+            .fixed_content
+            .expect("expected legacy tier/tag cleanup on template");
+        assert!(fixed.contains("type: template"), "template must never retype to log:\n{fixed}");
+        assert!(!fixed.contains("tier:"), "got:\n{fixed}");
+        assert!(fixed.contains("tags: [workflow]"), "got:\n{fixed}");
     }
 }

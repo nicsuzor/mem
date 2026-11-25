@@ -392,16 +392,6 @@ impl CrossEncoderReranker {
         }
     }
 
-    /// Rerank up to `min(top_n, top_n_candidates)` search candidates in place.
-    pub fn rerank_top_n(
-        &self,
-        query: &str,
-        candidates: &mut [SearchResult],
-        top_n: usize,
-    ) -> Result<(), RerankerError> {
-        self.rerank(query, candidates, top_n)
-    }
-
     /// Rerank a slice of SearchResult candidates for the given query.
     ///
     /// Encodes (query, title_heading_chunk) pairs using the tokenizer's native pair encoding,

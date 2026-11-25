@@ -107,12 +107,18 @@ fn parse_search_tier_mask(args: &JsonValue, doc_type: Option<&str>) -> Result<Ti
         archive: false,
     };
     if let Some(dt) = doc_type {
-        let lower = dt.to_ascii_lowercase();
-        if lower.contains("session-log")
-            || lower.contains("transcript")
-            || lower.contains("verbatim-log")
-        {
-            mask.log = true;
+        for raw_tok in dt.split(',') {
+            let tok = raw_tok.trim();
+            if tok.is_empty() || tok.starts_with('!') {
+                continue;
+            }
+            let exact = tok.strip_prefix('=').unwrap_or(tok).trim();
+            if matches!(
+                exact.to_ascii_lowercase().as_str(),
+                "session-log" | "transcript" | "verbatim-log"
+            ) {
+                mask.log = true;
+            }
         }
     }
     Ok(mask)
@@ -2792,5 +2798,23 @@ mod search_status_projection_tests {
             .filter_map(|r| r["id"].as_str())
             .collect();
         assert!(sup_ids.iter().any(|id| id.starts_with("noise-sup-")));
+    }
+
+    #[test]
+    fn test_parse_search_tier_mask_ignores_negated_log_type() {
+        let neg = parse_search_tier_mask(&serde_json::json!({}), Some("!transcript")).unwrap();
+        assert!(neg.knowledge && !neg.log && !neg.archive);
+
+        let neg_exact =
+            parse_search_tier_mask(&serde_json::json!({}), Some("note,!=session-log")).unwrap();
+        assert!(neg_exact.knowledge && !neg_exact.log && !neg_exact.archive);
+
+        let pos = parse_search_tier_mask(&serde_json::json!({}), Some("=transcript")).unwrap();
+        assert!(pos.knowledge && pos.log && !pos.archive);
+
+        let comp =
+            parse_search_tier_mask(&serde_json::json!({}), Some("!transcript,verbatim-log"))
+                .unwrap();
+        assert!(comp.knowledge && comp.log && !comp.archive);
     }
 }
