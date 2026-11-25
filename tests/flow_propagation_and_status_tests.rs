@@ -172,12 +172,31 @@ fn test_ac3_status_lists_stale_documents_when_not_fresh() {
     let parsed: Value = serde_json::from_str(&text).expect("valid json output");
 
     assert_eq!(parsed["freshness"]["is_fresh"], false);
-    // When is_fresh is false, the status must list the stale documents
-    let stale_list = parsed["freshness"]["stale_document_paths"]
+    assert_eq!(parsed["freshness"]["stale_documents"], 1);
+    assert!(
+        parsed["freshness"].get("stale_document_paths").is_none(),
+        "default status must omit stale_document_paths to avoid payload bloat"
+    );
+    assert!(
+        parsed["index"]["last_reindex"]
+            .get("stale_documents")
+            .is_none(),
+        "default status must omit index.last_reindex.stale_documents to avoid payload bloat"
+    );
+
+    // When include_stale_paths is explicitly requested, status lists the stale documents
+    let res_opt_in = server
+        .dispatch_tool_sync("status", &json!({"include_stale_paths": true}))
+        .expect("status with include_stale_paths succeeds");
+    let text_opt_in: String = res_opt_in
+        .content
+        .iter()
+        .filter_map(|c| c.as_text().map(|t| t.text.as_str()))
+        .collect();
+    let parsed_opt_in: Value = serde_json::from_str(&text_opt_in).expect("valid json output");
+    let stale_list = parsed_opt_in["freshness"]["stale_document_paths"]
         .as_array()
-        .or_else(|| parsed["freshness"]["stale_document_names"].as_array())
-        .or_else(|| parsed["freshness"]["stale_documents_list"].as_array())
-        .expect("status must list the stale documents when is_fresh is false");
+        .expect("status must list stale_document_paths when include_stale_paths is true");
     assert!(
         !stale_list.is_empty(),
         "stale documents list must not be empty"
@@ -247,7 +266,24 @@ fn test_ac3_reindex_leaves_is_fresh_true() {
         "reindex must leave is_fresh true"
     );
     assert_eq!(s1["freshness"]["stale_documents"], 0);
-    let stale_paths = s1["freshness"]["stale_document_paths"].as_array().unwrap();
+    assert!(
+        s1["freshness"].get("stale_document_paths").is_none(),
+        "stale_document_paths must be omitted by default"
+    );
+
+    // When opted in after reindex, stale_document_paths is an empty array
+    let res1_opt_in = server
+        .dispatch_tool_sync("status", &json!({"include_stale_paths": true}))
+        .expect("status with include_stale_paths succeeds");
+    let text1_opt_in: String = res1_opt_in
+        .content
+        .iter()
+        .filter_map(|c| c.as_text().map(|t| t.text.as_str()))
+        .collect();
+    let s1_opt_in: Value = serde_json::from_str(&text1_opt_in).unwrap();
+    let stale_paths = s1_opt_in["freshness"]["stale_document_paths"]
+        .as_array()
+        .expect("stale_document_paths array when include_stale_paths is true");
     assert!(
         stale_paths.is_empty(),
         "stale_document_paths must be empty after reindex"
