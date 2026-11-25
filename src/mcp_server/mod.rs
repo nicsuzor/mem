@@ -92,6 +92,13 @@ pub(crate) fn parse_and_validate_slug(args: &JsonValue) -> Result<String, McpErr
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InlineEmbedOutcome {
+    Applied,
+    DuplicateIdRejected,
+    FallbackNeeded,
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ReindexStatus {
     pub timestamp: String,
@@ -1417,6 +1424,10 @@ impl PkbSearchServer {
 
         match (entry_exists, body_unchanged) {
             (true, true) => {
+                if let Err(e) = self.store.read().check_duplicate_id(&doc_id, &doc.path) {
+                    tracing::error!("try_upsert_document duplicate ID check failed: {e}; skipping vector store update");
+                    return;
+                }
                 // Body unchanged: just patch metadata fields (cheap).
                 let patch = crate::vectordb::VectorStore::prepare_metadata_patch(doc);
                 if let Err(e) = crate::vectordb::VectorStore::append_wal_record(
@@ -1437,78 +1448,35 @@ impl PkbSearchServer {
             }
             (true, false) => {
                 // Body changed: for small writes (<= 4 KB), try inline embedding under tight timeout with async fallback.
-                if doc.body.len() <= Self::INLINE_EMBED_MAX_BYTES {
-                    let doc_clone = doc.clone();
-                    let embedder_clone = self.embedder.clone();
-                    let existing_entry = self.store.read().get_entry(&doc_id).cloned();
-                    let (tx, rx) = std::sync::mpsc::channel();
-                    let handle = std::thread::spawn(move || {
-                        let res = crate::vectordb::VectorStore::prepare_upsert(
-                            &doc_clone,
-                            &embedder_clone,
-                            existing_entry.as_ref(),
-                        );
-                        let _ = tx.send(res);
-                    });
-
-                    match rx.recv_timeout(std::time::Duration::from_millis(Self::INLINE_EMBED_TIMEOUT_MS)) {
-                        Ok(Ok(prepared)) => {
-                            let wal_p = self.wal_path();
-                            let wal_res = match &prepared {
-                                crate::vectordb::PreparedUpsert::MetadataOnly(patch) => {
-                                    crate::vectordb::VectorStore::append_wal_record(
-                                        &wal_p,
-                                        &crate::vectordb::WalRecord::MetadataOnly(patch.clone()),
-                                    )
-                                }
-                                crate::vectordb::PreparedUpsert::Full(entry) => {
-                                    crate::vectordb::VectorStore::append_wal_record(
-                                        &wal_p,
-                                        &crate::vectordb::WalRecord::Upsert(entry.clone()),
-                                    )
-                                }
-                            };
-                            if let Err(e) = wal_res {
-                                tracing::error!("Failed to append to WAL: {e}");
-                            }
-                            if let Err(e) = self.store.write().apply_prepared_checked(prepared) {
-                                tracing::warn!("try_upsert_document duplicate ID check failed: {e}; falling back to metadata patch + schedule_embed");
-                                let patch = crate::vectordb::VectorStore::prepare_metadata_patch(doc);
-                                self.store.write().apply_prepared(crate::vectordb::PreparedUpsert::MetadataOnly(patch));
-                                self.schedule_embed(doc.clone());
-                            } else {
-                                tracing::debug!(
-                                    target: "perf::vector",
-                                    phase = "store_upsert_inmem_inline",
-                                    body_changed = true,
-                                    inline_embedded = true,
-                                    elapsed_ms = _t_upsert.elapsed().as_secs_f64() * 1000.0
-                                );
-                            }
-                            let _ = handle.join();
-                            let _t_save = std::time::Instant::now();
-                            self.save_store();
-                            return;
-                        }
-                        Ok(Err(e)) => {
-                            tracing::warn!("Inline embed prepare_upsert failed ({e}); falling back to metadata patch + schedule_embed");
-                        }
-                        Err(_) => {
-                            tracing::warn!("Inline embed timed out after {}ms; falling back to metadata patch + schedule_embed", Self::INLINE_EMBED_TIMEOUT_MS);
-                        }
+                let existing_entry = self.store.read().get_entry(&doc_id).cloned();
+                match self.try_inline_embed_and_apply(doc, existing_entry, _t_upsert) {
+                    InlineEmbedOutcome::Applied => {
+                        self.save_store();
+                        return;
                     }
+                    InlineEmbedOutcome::DuplicateIdRejected => return,
+                    InlineEmbedOutcome::FallbackNeeded => {}
                 }
 
                 // Fallback: patch metadata now, queue re-embed for later.
+                if let Err(e) = self.store.read().check_duplicate_id(&doc_id, &doc.path) {
+                    tracing::error!("try_upsert_document duplicate ID check failed: {e}; skipping metadata patch and embed queue");
+                    return;
+                }
                 let patch = crate::vectordb::VectorStore::prepare_metadata_patch(doc);
+                let apply_res = self
+                    .store
+                    .write()
+                    .apply_prepared_checked(crate::vectordb::PreparedUpsert::MetadataOnly(patch.clone()));
+                if let Err(e) = apply_res {
+                    tracing::error!("Duplicate ID check failed on metadata patch: {e}; skipping embed queue");
+                    return;
+                }
                 if let Err(e) = crate::vectordb::VectorStore::append_wal_record(
                     &self.wal_path(),
-                    &crate::vectordb::WalRecord::MetadataOnly(patch.clone()),
+                    &crate::vectordb::WalRecord::MetadataOnly(patch),
                 ) {
                     tracing::error!("Failed to append to WAL: {e}");
-                }
-                if let Err(e) = self.store.write().apply_prepared_checked(crate::vectordb::PreparedUpsert::MetadataOnly(patch)) {
-                    tracing::warn!("Duplicate ID check failed on metadata patch: {e}");
                 }
                 self.schedule_embed(doc.clone());
                 tracing::debug!(
@@ -1521,62 +1489,13 @@ impl PkbSearchServer {
             }
             _ => {
                 // New document: for small writes (<= 4 KB), try inline embedding under tight timeout with async fallback.
-                if doc.body.len() <= Self::INLINE_EMBED_MAX_BYTES {
-                    let doc_clone = doc.clone();
-                    let embedder_clone = self.embedder.clone();
-                    let (tx, rx) = std::sync::mpsc::channel();
-                    let handle = std::thread::spawn(move || {
-                        let res = crate::vectordb::VectorStore::prepare_upsert(
-                            &doc_clone,
-                            &embedder_clone,
-                            None,
-                        );
-                        let _ = tx.send(res);
-                    });
-
-                    match rx.recv_timeout(std::time::Duration::from_millis(Self::INLINE_EMBED_TIMEOUT_MS)) {
-                        Ok(Ok(prepared)) => {
-                            let wal_p = self.wal_path();
-                            let wal_res = match &prepared {
-                                crate::vectordb::PreparedUpsert::MetadataOnly(patch) => {
-                                    crate::vectordb::VectorStore::append_wal_record(
-                                        &wal_p,
-                                        &crate::vectordb::WalRecord::MetadataOnly(patch.clone()),
-                                    )
-                                }
-                                crate::vectordb::PreparedUpsert::Full(entry) => {
-                                    crate::vectordb::VectorStore::append_wal_record(
-                                        &wal_p,
-                                        &crate::vectordb::WalRecord::Upsert(entry.clone()),
-                                    )
-                                }
-                            };
-                            if let Err(e) = wal_res {
-                                tracing::error!("Failed to append to WAL: {e}");
-                            }
-                            if let Err(e) = self.store.write().apply_prepared_checked(prepared) {
-                                tracing::warn!("try_upsert_document duplicate ID check failed: {e}; falling back to skeleton + schedule_embed");
-                            } else {
-                                tracing::debug!(
-                                    target: "perf::vector",
-                                    phase = "store_upsert_inmem_inline_new",
-                                    new_doc = true,
-                                    inline_embedded = true,
-                                    elapsed_ms = _t_upsert.elapsed().as_secs_f64() * 1000.0
-                                );
-                                let _ = handle.join();
-                                let _t_save = std::time::Instant::now();
-                                self.save_store();
-                                return;
-                            }
-                        }
-                        Ok(Err(e)) => {
-                            tracing::warn!("Inline new doc embed failed ({e}); falling back to skeleton + schedule_embed");
-                        }
-                        Err(_) => {
-                            tracing::warn!("Inline new doc embed timed out after {}ms; falling back to skeleton + schedule_embed", Self::INLINE_EMBED_TIMEOUT_MS);
-                        }
+                match self.try_inline_embed_and_apply(doc, None, _t_upsert) {
+                    InlineEmbedOutcome::Applied => {
+                        self.save_store();
+                        return;
                     }
+                    InlineEmbedOutcome::DuplicateIdRejected => return,
+                    InlineEmbedOutcome::FallbackNeeded => {}
                 }
 
                 // New document skeleton fallback: create a skeleton/placeholder entry instantly with empty vectors
@@ -1606,14 +1525,19 @@ impl PkbSearchServer {
                     consolidated: doc.consolidated,
                     consolidated_at: doc.consolidated_at.clone(),
                 };
-                if let Err(e) = crate::vectordb::VectorStore::append_wal_record(
-                    &self.wal_path(),
-                    &crate::vectordb::WalRecord::Upsert(Box::new(entry.clone())),
-                ) {
-                    tracing::error!("Failed to append to WAL: {e}");
+                let wal_record = crate::vectordb::WalRecord::Upsert(Box::new(entry.clone()));
+                let apply_res = self
+                    .store
+                    .write()
+                    .apply_prepared_checked(crate::vectordb::PreparedUpsert::Full(Box::new(entry)));
+                if let Err(e) = apply_res {
+                    tracing::error!("Duplicate ID check failed on skeleton insert: {e}; skipping embed queue");
+                    return;
                 }
-                if let Err(e) = self.store.write().apply_prepared_checked(crate::vectordb::PreparedUpsert::Full(Box::new(entry))) {
-                    tracing::warn!("Duplicate ID check failed on skeleton insert: {e}");
+                if let Err(e) =
+                    crate::vectordb::VectorStore::append_wal_record(&self.wal_path(), &wal_record)
+                {
+                    tracing::error!("Failed to append to WAL: {e}");
                 }
                 self.schedule_embed(doc.clone());
                 tracing::debug!(
@@ -1630,6 +1554,77 @@ impl PkbSearchServer {
         let _t_save = std::time::Instant::now();
         self.save_store();
         tracing::debug!(target: "perf::vector", phase = "save_store_dispatch", elapsed_ms = _t_save.elapsed().as_secs_f64() * 1000.0);
+    }
+
+    fn try_inline_embed_and_apply(
+        &self,
+        doc: &crate::pkb::PkbDocument,
+        existing_entry: Option<crate::vectordb::DocumentEntry>,
+        started_at: std::time::Instant,
+    ) -> InlineEmbedOutcome {
+        if doc.body.len() > Self::INLINE_EMBED_MAX_BYTES {
+            return InlineEmbedOutcome::FallbackNeeded;
+        }
+        let is_new = existing_entry.is_none();
+        let doc_clone = doc.clone();
+        let embedder_clone = self.embedder.clone();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let handle = std::thread::spawn(move || {
+            let res = crate::vectordb::VectorStore::prepare_upsert(
+                &doc_clone,
+                &embedder_clone,
+                existing_entry.as_ref(),
+            );
+            let _ = tx.send(res);
+        });
+
+        match rx.recv_timeout(std::time::Duration::from_millis(Self::INLINE_EMBED_TIMEOUT_MS)) {
+            Ok(Ok(prepared)) => {
+                let wal_record = match &prepared {
+                    crate::vectordb::PreparedUpsert::MetadataOnly(patch) => {
+                        crate::vectordb::WalRecord::MetadataOnly(patch.clone())
+                    }
+                    crate::vectordb::PreparedUpsert::Full(entry) => {
+                        crate::vectordb::WalRecord::Upsert(entry.clone())
+                    }
+                };
+                // Bind apply_res so the RwLockWriteGuard drops immediately before error handling.
+                let apply_res = self.store.write().apply_prepared_checked(prepared);
+                if let Err(e) = apply_res {
+                    tracing::error!(
+                        "try_upsert_document duplicate ID check failed: {e}; skipping vector store update and embed queue"
+                    );
+                    let _ = handle.join();
+                    return InlineEmbedOutcome::DuplicateIdRejected;
+                }
+                if let Err(e) =
+                    crate::vectordb::VectorStore::append_wal_record(&self.wal_path(), &wal_record)
+                {
+                    tracing::error!("Failed to append to WAL: {e}");
+                }
+                tracing::debug!(
+                    target: "perf::vector",
+                    phase = if is_new { "store_upsert_inmem_inline_new" } else { "store_upsert_inmem_inline" },
+                    body_changed = true,
+                    new_doc = is_new,
+                    inline_embedded = true,
+                    elapsed_ms = started_at.elapsed().as_secs_f64() * 1000.0
+                );
+                let _ = handle.join();
+                InlineEmbedOutcome::Applied
+            }
+            Ok(Err(e)) => {
+                tracing::warn!("Inline embed prepare_upsert failed ({e}); falling back to async schedule_embed");
+                InlineEmbedOutcome::FallbackNeeded
+            }
+            Err(_) => {
+                tracing::warn!(
+                    "Inline embed timed out after {}ms; falling back to async schedule_embed",
+                    Self::INLINE_EMBED_TIMEOUT_MS
+                );
+                InlineEmbedOutcome::FallbackNeeded
+            }
+        }
     }
 
     /// Queue a document for background re-embedding. Coalesces by path
@@ -2670,5 +2665,89 @@ mod index_integrity_and_health_tests {
         let entry = store_read.get_entry("skel-1").unwrap();
         assert_eq!(entry.path, PathBuf::from("notes/skel.md"));
         assert!(!entry.chunk_embeddings.is_empty());
+    }
+
+    #[test]
+    fn try_upsert_document_duplicate_id_inline_does_not_deadlock_or_queue_embed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let server = make_server(root);
+
+        let original = crate::pkb::PkbDocument {
+            path: PathBuf::from("notes/original.md"),
+            title: "Original Title".to_string(),
+            tags: vec![],
+            doc_type: Some("note".to_string()),
+            status: None,
+            consolidated: None,
+            consolidated_at: None,
+            modified: None,
+            body: "Small original body.".to_string(),
+            content_hash: "orig-body-hash".to_string(),
+            file_hash: "orig-file-hash".to_string(),
+            frontmatter: Some(serde_json::json!({ "id": "shared-inline-id" })),
+        };
+        server.try_upsert_document(&original);
+
+        // Colliding <= 4 KB document at a different path with changed body exercises
+        // try_inline_embed_and_apply's apply_prepared_checked Err branch on the same thread.
+        let colliding = crate::pkb::PkbDocument {
+            path: PathBuf::from("notes/duplicate.md"),
+            title: "Colliding Title".to_string(),
+            tags: vec![],
+            doc_type: Some("note".to_string()),
+            status: None,
+            consolidated: None,
+            consolidated_at: None,
+            modified: None,
+            body: "Small colliding body.".to_string(),
+            content_hash: "dup-body-hash".to_string(),
+            file_hash: "dup-file-hash".to_string(),
+            frontmatter: Some(serde_json::json!({ "id": "shared-inline-id" })),
+        };
+        server.try_upsert_document(&colliding);
+
+        assert!(
+            server.embed_pending.lock().is_empty(),
+            "rejected duplicate ID must not queue async schedule_embed"
+        );
+        let store_arc = server.store_for_test();
+        let store_read = store_arc.read();
+        let stored = store_read.get_entry("shared-inline-id").unwrap();
+        assert_eq!(stored.path, PathBuf::from("notes/original.md"));
+        assert_eq!(stored.title, "Original Title");
+    }
+
+    #[test]
+    fn ghost_only_graph_does_not_trigger_false_index_empty() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let mut graph = GraphStore::build(&[], root);
+        graph.upsert_node_in_place(
+            crate::graph::GraphNode {
+                id: "ghost-only".to_string(),
+                label: "Ghost Only".to_string(),
+                ..Default::default()
+            },
+            root,
+        );
+        assert_eq!(graph.node_count(), 1);
+        let server = PkbSearchServer::new(
+            Arc::new(RwLock::new(VectorStore::new(3))),
+            Arc::new(Embedder::new_dummy()),
+            root.to_path_buf(),
+            root.join("pkb_vectors.bin"),
+            Arc::new(RwLock::new(graph)),
+        );
+
+        let (code, body) = server.health_status();
+        assert_eq!(code, axum::http::StatusCode::OK);
+        assert_eq!(body["index_empty"], false);
+        assert_eq!(body["graph_doc_count"], 0);
+
+        let search_res = server
+            .handle_pkb_search(&serde_json::json!({"query": "ghost"}))
+            .expect("ghost-only graph must not fail with index_empty");
+        assert_eq!(search_res.structured_content.unwrap()["total"], 0);
     }
 }

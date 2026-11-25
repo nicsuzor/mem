@@ -20,10 +20,7 @@ pub struct ModelManifest {
 impl ModelManifest {
     pub fn load() -> Self {
         let content = include_str!("../models.toml");
-        toml::from_str(content).unwrap_or_else(|e| {
-            tracing::warn!("Failed to parse embedded models.toml: {e}; using empty manifest");
-            Self { assets: Vec::new() }
-        })
+        toml::from_str(content).expect("embedded models.toml must parse")
     }
 
     pub fn find_asset(&self, filename: &str) -> Option<&ModelAsset> {

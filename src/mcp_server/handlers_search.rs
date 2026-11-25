@@ -432,13 +432,17 @@ impl PkbSearchServer {
 
         let graph = self.graph.read();
         let store = self.acquire_store_read();
-        if graph.node_count() > 0 && store.is_empty() {
+        let graph_doc_count = graph
+            .nodes_map()
+            .values()
+            .filter(|n| !n.path.as_os_str().is_empty())
+            .count();
+        if graph_doc_count > 0 && store.is_empty() {
             return Err(McpError {
                 code: ErrorCode::INTERNAL_ERROR,
                 message: Cow::from(format!(
-                    "index_empty: vector store has 0 documents while knowledge graph has {} nodes. \
+                    "index_empty: vector store has 0 documents while knowledge graph has {graph_doc_count} document nodes. \
                      Run `pkb reindex` or check index health.",
-                    graph.node_count()
                 )),
                 data: None,
             });
