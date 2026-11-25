@@ -87,12 +87,12 @@ Text chunking is implemented in `src/chunker.rs` and replaces character-based sl
 
 ### 2.2. Contextual Headers
 
-Every chunk prepends document-level hierarchy metadata before dense encoding and lexical indexing:
+Every chunk prepends document-level hierarchy metadata before dense encoding:
 
 $$\text{Header} = \texttt{"\{title\} | \{doc\_type\} | \{H1 > H2 > H3\}\textbackslash n\textbackslash n"}$$
 
 - **Heading Stack**: ATX markdown headings (`#` through `######`) outside code fences are tracked in a hierarchical stack (`HeadingStack`).
-- **Context Injection**: Prepending the contextual header ensures isolated chunks retain full topical and architectural context during vector and BM25 retrieval.
+- **Context Injection**: Prepending the contextual header ensures isolated chunks retain full topical and architectural context during dense embedding. In BM25 indexing, the clean raw chunk body (`body_chunks`) is indexed as `body_text` (never double-counting `{title}`, `{doc_type}`, or `{heading_path}` into body term frequencies), while the active `heading_path` segment is extracted alongside in-chunk ATX `#` headings into BM25's weighted `heading` field.
 - **Clean Body Offsets**: Raw body byte slices and character offsets are preserved alongside the chunk so user-facing snippets and extracts do not repeat metadata headers.
 
 ---
@@ -108,25 +108,29 @@ Lexical search is implemented in `src/bm25.rs` using Okapi BM25 ranking over mul
 
 ### 3.2. Normalization and Tokenization Pipeline
 
-The lexical pipeline standardizes queries and document chunks:
+The lexical pipeline standardizes queries and document chunks (`tokenize_v2` / `add_v2_token`):
 1. **Unicode NFKD Normalization**: Decomposes characters into compatibility base forms (e.g. `é` $\to$ `e` + `\u{0301}`).
 2. **Diacritic Stripping**: Filters out Unicode combining diacritical marks (`U+0300`–`U+036F`).
-3. **Case Folding**: Converts text to lowercase ASCII.
-4. **Stopword Removal**: Eliminates standard English grammatical stopwords.
-5. **Stemming**: Applies the Porter English stemming algorithm to reduce inflections.
+3. **Case Folding**: Converts text to lowercase ASCII/Unicode.
+4. **Stopword Removal**: Eliminates standard English grammatical stopwords while retaining short acronyms and alphanumeric identifiers (e.g. `lfs`, `2026J`, `2026N`) across case variants.
+5. **Stemming & Raw-Token Retention**: Emits the lowercased raw token alongside any distinct Porter English stem during indexing, while query deduplication collapses inflected query terms onto their Porter stem (and exact single-token IDs mirror `WEIGHT_ID` onto any distinct stem) so acronyms and identifiers match deterministically across case variants.
 
-### 3.3. Multi-Field Document Model
+### 3.3. Multi-Field Document Model and Live Sync
 
 Document fields are weighted in the lexical index:
 
 | Field | Weight | Description |
 |---|---|---|
-| `title` | 4.0 | Document title |
-| `headings` | 2.5 | Contextual markdown headings |
+| `id` | 5.0 | Exact normalized document ID |
+| `title` | 3.0 | Document title |
+| `aliases` | 3.0 | Frontmatter `alias` and `aliases` (and synced `GraphStore` permalinks) |
 | `tags` | 2.0 | Explicit tags in frontmatter |
-| `aliases` | 2.0 | Alternate document identifiers |
-| `body_chunk` | 1.0 | Chunk body content |
+| `headings` | 2.0 | ATX markdown `#` headings (outside fenced code blocks) and contextual `heading_path` |
+| `body_chunk` | 1.0 | Clean chunk body content (`body_chunks`, stripped of contextual headers) |
 | `id_tokens` | 1.0 | Sub-token fragments of ID |
+
+- **Bincode-Compatible Alias Storage**: Frontmatter `alias` and `aliases` are held in an in-memory `VectorStore::doc_aliases` map (`#[serde(skip)]`) populated during document upserts and synchronized from `GraphStore` on server startup and graph rebuild (`sync_aliases_from_graph`), preserving full binary compatibility with `pkb_vectors.bin` and `pkb_vectors.wal`.
+- **Full Posting Refresh on Metadata Edits**: Applying `PreparedUpsert::MetadataOnly` (or `VectorStore::set_doc_aliases`) rebuilds that document's BM25 postings via `upsert_entry_to_bm25` so changes to `title`, `tags`, or `aliases` take effect immediately in lexical search without re-embedding.
 
 ---
 
@@ -349,12 +353,14 @@ pub fn apply_priors_with_floor(
 
 ---
 
-## 8. Deterministic Ordering and Tie-Breaking
+## 8. Deterministic Ordering, Series Collapse, and Tie-Breaking
 
 Search candidates are sorted descending by final score. Ties are broken deterministically:
 1. `score` descending (via `ordered_float::OrderedFloat`);
 2. `id` ascending (lexicographical);
 3. `chunk_id` ascending.
+
+Before truncating to `limit` in MCP `search`, `collapse_repetitive_series` caps repetitive series document types (`daily`, `transcript`) at `MAX_REPETITIVE_SERIES_SLOTS = 2` hits per series whenever the caller's `type` filter does not explicitly request that series (case-insensitive positive match). Relative order among all retained documents is preserved, and exact-ID `1.000` hits are never dropped.
 
 The final result vector is truncated to `limit`.
 
@@ -403,7 +409,8 @@ The automated test suite verifies all ranking and retrieval invariants:
 - **Adaptive Alpha Routing**: `test_alpha_routing_identifier_queries`, `test_alpha_routing_prose_queries`
 - **Structural Priors**: `test_m_struct_overall_bounds`, `test_m_status_values`, `test_m_graph_outdegree_formula_and_bounds`
 - **Chunking & Contextual Headers**: `test_contextual_header_formatting`, `test_line_boundary_splitting_and_overlap` in `src/chunker.rs`
-- **BM25 Lexical Index**: `test_bm25_exact_match_retrieval`, `test_bm25_pure_scoring_and_matched_terms`, `test_tokenizer_preserves_identifiers_and_splits` in `src/bm25.rs`
+- **BM25 Lexical Index**: `test_bm25_exact_match_retrieval`, `test_bm25_pure_scoring_and_matched_terms`, `test_tokenizer_preserves_identifiers_and_splits`, `test_short_acronyms_and_alphanumeric_case_variants` in `src/bm25.rs`; `test_bm25_aliases_indexed_without_breaking_bincode`, `test_bm25_headings_extracted_without_double_counting_contextual_header`, `test_metadata_only_update_refreshes_bm25_postings_immediately`, `test_short_acronyms_and_alphanumeric_hybrid_search_with_low_dense` in `src/vectordb.rs`
+- **Repetitive Series Collapse**: `test_collapse_repetitive_series_caps_unfiltered_and_preserves_exact_and_explicit` in `src/ranking.rs`, `test_search_collapses_repetitive_daily_and_transcript_series_unless_explicitly_filtered` in `src/mcp_server/handlers_search.rs`
 - **Recency Decay & Salience**: `test_salience_growth_decay_and_monotonic_boost` in `src/salience.rs`, `tests/salience_tests.rs`, `src/mcp_server/tests/salience_mcp_tests.rs`
 - **Top Hits Score Discrimination (C1)**: `test_search_scores_are_discriminating_and_do_not_saturate_at_one`
 - **Identity-Key Hit Exclusivity (C2)**: `test_exact_id_scores_one_prose_hits_sub_one`

@@ -600,6 +600,20 @@ impl PkbSearchServer {
                 .then_with(|| a.0.chunk_id.cmp(&b.0.chunk_id))
         });
 
+        scored = crate::ranking::collapse_repetitive_series_by(
+            scored,
+            doc_type,
+            |(r, _, _, _, _)| {
+                r.doc_type.as_deref().or_else(|| {
+                    graph
+                        .get_node(&r.id)
+                        .or_else(|| graph.resolve(&r.id))
+                        .and_then(|n| n.node_type.as_deref())
+                })
+            },
+            |(_, score, _, _, _)| *score,
+        );
+
         scored.truncate(limit);
 
         if scored.is_empty() {
@@ -2231,5 +2245,194 @@ mod search_status_projection_tests {
             },
         );
         assert_eq!(absent_reranker.absent_reason(), Some("model absent"));
+    }
+
+    #[test]
+    fn test_search_collapses_repetitive_daily_and_transcript_series_unless_explicitly_filtered() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let server = build_seeded_server(dir.path());
+        let emb = server
+            .embedder
+            .encode_query("quarterly budget review")
+            .unwrap();
+
+        let seed_doc = |id: &str, title: &str, doc_type: &str, body: &str| {
+            let path = server.pkb_root.join(format!("{id}.md"));
+            std::fs::write(
+                &path,
+                format!("---\nid: {id}\ntitle: \"{title}\"\ntype: {doc_type}\n---\n\n{body}"),
+            )
+            .unwrap();
+            let doc = crate::pkb::parse_file(&path).unwrap();
+            let chunks = crate::chunker::chunk_document(&doc.title, doc.doc_type.as_deref(), &doc.body);
+            let texts: Vec<String> = chunks.into_iter().map(|c| c.text).collect();
+            let chunk_embs = vec![emb.clone(); texts.len()];
+            server.store.write().insert_precomputed(&doc, texts, chunk_embs);
+            server
+                .graph
+                .write()
+                .replace_node(crate::graph::GraphNode::from_pkb_document(&doc));
+        };
+
+        // 4 daily notes and 4 transcripts with high keyword repetition
+        for i in 1..=4 {
+            seed_doc(
+                &format!("daily_{i}"),
+                &format!("Daily Log {i}"),
+                "daily",
+                "quarterly budget review quarterly budget review quarterly budget review",
+            );
+            seed_doc(
+                &format!("transcript_{i}"),
+                &format!("Meeting Transcript {i}"),
+                "transcript",
+                "quarterly budget review quarterly budget review quarterly budget review",
+            );
+        }
+        // 2 canonical knowledge docs with matching topic
+        seed_doc(
+            "know_budget_1",
+            "Quarterly Budget Review Policy",
+            "knowledge",
+            "Canonical policy for quarterly budget review.",
+        );
+        seed_doc(
+            "task_budget_1",
+            "Complete Quarterly Budget Review",
+            "task",
+            "Actionable task for quarterly budget review.",
+        );
+
+        // 1. Unfiltered search with limit=6: daily <= 2, transcript <= 2, canonical docs survive into top-K
+        let res = server
+            .handle_pkb_search(&serde_json::json!({
+                "query": "quarterly budget review",
+                "limit": 6,
+                "format": "json",
+            }))
+            .expect("unfiltered search");
+        let parsed: serde_json::Value = serde_json::from_str(&result_text(&res)).unwrap();
+        let hits = parsed["results"].as_array().unwrap();
+        assert_eq!(hits.len(), 6);
+        let daily_count = hits.iter().filter(|h| h["type"] == "daily").count();
+        let transcript_count = hits.iter().filter(|h| h["type"] == "transcript").count();
+        assert!(
+            daily_count <= crate::ranking::MAX_REPETITIVE_SERIES_SLOTS,
+            "daily count {daily_count} exceeded MAX_REPETITIVE_SERIES_SLOTS"
+        );
+        assert!(
+            transcript_count <= crate::ranking::MAX_REPETITIVE_SERIES_SLOTS,
+            "transcript count {transcript_count} exceeded MAX_REPETITIVE_SERIES_SLOTS"
+        );
+        assert!(
+            hits.iter().any(|h| h["id"] == "know_budget_1"),
+            "canonical knowledge doc must not be crowded out by daily/transcript series: {hits:?}"
+        );
+
+        // 2. Explicit type="daily": does NOT collapse daily series (all 4 returned)
+        let daily_res = server
+            .handle_pkb_search(&serde_json::json!({
+                "query": "quarterly budget review",
+                "type": "daily",
+                "limit": 10,
+                "format": "json",
+            }))
+            .expect("daily filtered search");
+        let daily_parsed: serde_json::Value = serde_json::from_str(&result_text(&daily_res)).unwrap();
+        let daily_hits = daily_parsed["results"].as_array().unwrap();
+        assert_eq!(daily_hits.len(), 4, "type=daily must not collapse daily hits");
+
+        // 3. Explicit type="transcript": does NOT collapse transcript series (all 4 returned)
+        let tr_res = server
+            .handle_pkb_search(&serde_json::json!({
+                "query": "quarterly budget review",
+                "type": "transcript",
+                "limit": 10,
+                "format": "json",
+            }))
+            .expect("transcript filtered search");
+        let tr_parsed: serde_json::Value = serde_json::from_str(&result_text(&tr_res)).unwrap();
+        let tr_hits = tr_parsed["results"].as_array().unwrap();
+        assert_eq!(tr_hits.len(), 4, "type=transcript must not collapse transcript hits");
+
+        // 4. Exact-ID lookup on a daily note still returns score 1.000
+        let exact_daily = server
+            .handle_pkb_search(&serde_json::json!({
+                "query": "daily_3",
+                "limit": 5,
+                "format": "json",
+            }))
+            .expect("exact daily lookup");
+        let exact_parsed: serde_json::Value = serde_json::from_str(&result_text(&exact_daily)).unwrap();
+        let exact_hits = exact_parsed["results"].as_array().unwrap();
+        assert_eq!(exact_hits[0]["id"], "daily_3");
+        assert_eq!(exact_hits[0]["score"].as_f64().unwrap(), 1.0);
+    }
+
+    #[test]
+    fn test_search_mcp_aliases_headings_metadata_refresh_and_acronyms_end_to_end() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let server = build_seeded_server(dir.path());
+
+        let path = server.pkb_root.join("notes").join("lfs_guide.md");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &path,
+            "---\nid: lfs_guide\ntitle: \"Binary Asset Storage\"\ntype: note\naliases:\n  - lfs\n  - 2026J\n---\n\n# Overview\n\n## Alpha Heading\n\nStores large blobs efficiently.\n",
+        )
+        .unwrap();
+
+        let doc = crate::pkb::parse_file(&path).unwrap();
+        let chunks = crate::chunker::chunk_document(&doc.title, doc.doc_type.as_deref(), &doc.body);
+        let texts: Vec<String> = chunks.into_iter().map(|c| c.text).collect();
+        let emb = server.embedder.encode_query("binary asset storage").unwrap();
+        server.store.write().insert_precomputed(&doc, texts, vec![emb]);
+        server
+            .graph
+            .write()
+            .replace_node(crate::graph::GraphNode::from_pkb_document(&doc));
+
+        // Alias & case-variant queries resolve via MCP search
+        for q in ["lfs", "LFS", "2026J", "2026j"] {
+            let res = server
+                .handle_pkb_search(&serde_json::json!({
+                    "query": q,
+                    "format": "json",
+                    "limit": 5,
+                }))
+                .expect("alias search");
+            let parsed: serde_json::Value = serde_json::from_str(&result_text(&res)).unwrap();
+            let hits = parsed["results"].as_array().unwrap();
+            assert!(
+                !hits.is_empty() && hits[0]["id"] == "lfs_guide",
+                "MCP search for {q:?} must rank lfs_guide #1; got {hits:?}"
+            );
+        }
+
+        // MetadataOnly update via try_upsert_document refreshes BM25 title & aliases immediately
+        std::fs::write(
+            &path,
+            "---\nid: lfs_guide\ntitle: \"Renamed Asset Storage\"\ntype: note\naliases:\n  - 2026N\n---\n\n# Overview\n\n## Alpha Heading\n\nStores large blobs efficiently.\n",
+        )
+        .unwrap();
+        let updated_doc = crate::pkb::parse_file(&path).unwrap();
+        server.try_upsert_document(&updated_doc);
+        server.rebuild_graph_for_pkb_document(&updated_doc);
+
+        for q in ["Renamed", "2026N", "2026n"] {
+            let res = server
+                .handle_pkb_search(&serde_json::json!({
+                    "query": q,
+                    "format": "json",
+                    "limit": 5,
+                }))
+                .expect("updated metadata search");
+            let parsed: serde_json::Value = serde_json::from_str(&result_text(&res)).unwrap();
+            let hits = parsed["results"].as_array().unwrap();
+            assert!(
+                !hits.is_empty() && hits[0]["id"] == "lfs_guide",
+                "After MetadataOnly edit, MCP search for {q:?} must find lfs_guide; got {hits:?}"
+            );
+        }
     }
 }

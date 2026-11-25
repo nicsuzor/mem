@@ -292,6 +292,10 @@ impl PkbSearchServer {
             .values()
             .filter(|n| !n.path.as_os_str().is_empty())
             .count();
+        {
+            let g = graph.read();
+            store.read().sync_aliases_from_graph(&g);
+        }
         Self {
             store,
             embedder,
@@ -639,6 +643,10 @@ impl PkbSearchServer {
             parsed_documents: parsed,
             loaded_nodes: loaded,
         };
+        {
+            let g = self.graph.read();
+            self.acquire_store_read().sync_aliases_from_graph(&g);
+        }
         (scanned, parsed, loaded)
     }
 
@@ -1406,6 +1414,7 @@ impl PkbSearchServer {
         }
 
         let doc_id = doc.id();
+        let aliases = doc.extract_aliases();
         let _t_upsert = std::time::Instant::now();
 
         // Check body-match under a brief read lock — extract only the two
@@ -1436,9 +1445,11 @@ impl PkbSearchServer {
                 ) {
                     tracing::error!("Failed to append to WAL: {e}");
                 }
-                self.store
-                    .write()
-                    .apply_prepared(crate::vectordb::PreparedUpsert::MetadataOnly(patch));
+                {
+                    let mut store_write = self.store.write();
+                    store_write.set_doc_aliases_map_only(&doc_id, aliases);
+                    store_write.apply_prepared(crate::vectordb::PreparedUpsert::MetadataOnly(patch));
+                }
                 tracing::debug!(
                     target: "perf::vector",
                     phase = "store_upsert_inmem",
@@ -1467,7 +1478,11 @@ impl PkbSearchServer {
                 let apply_res = self
                     .store
                     .write()
-                    .apply_prepared_checked(crate::vectordb::PreparedUpsert::MetadataOnly(patch.clone()));
+                    .apply_prepared_with_aliases_checked(
+                        crate::vectordb::PreparedUpsert::MetadataOnly(patch.clone()),
+                        &doc_id,
+                        aliases,
+                    );
                 if let Err(e) = apply_res {
                     tracing::error!("Duplicate ID check failed on metadata patch: {e}; skipping embed queue");
                     return;
@@ -1529,7 +1544,11 @@ impl PkbSearchServer {
                 let apply_res = self
                     .store
                     .write()
-                    .apply_prepared_checked(crate::vectordb::PreparedUpsert::Full(Box::new(entry)));
+                    .apply_prepared_with_aliases_checked(
+                        crate::vectordb::PreparedUpsert::Full(Box::new(entry)),
+                        &doc_id,
+                        aliases,
+                    );
                 if let Err(e) = apply_res {
                     tracing::error!("Duplicate ID check failed on skeleton insert: {e}; skipping embed queue");
                     return;
@@ -1589,7 +1608,12 @@ impl PkbSearchServer {
                     }
                 };
                 // Bind apply_res so the RwLockWriteGuard drops immediately before error handling.
-                let apply_res = self.store.write().apply_prepared_checked(prepared);
+                let doc_id = doc.id();
+                let aliases = doc.extract_aliases();
+                let apply_res = self
+                    .store
+                    .write()
+                    .apply_prepared_with_aliases_checked(prepared, &doc_id, aliases);
                 if let Err(e) = apply_res {
                     tracing::error!(
                         "try_upsert_document duplicate ID check failed: {e}; skipping vector store update and embed queue"
@@ -1696,7 +1720,12 @@ impl PkbSearchServer {
                     if let Err(e) = wal_res {
                         tracing::error!("background embed: Failed to append to WAL: {e}");
                     }
-                    if let Err(e) = store.write().apply_prepared_checked(prepared) {
+                    let aliases = doc.extract_aliases();
+                    if let Err(e) = store.write().apply_prepared_with_aliases_checked(
+                        prepared,
+                        &doc_id,
+                        aliases,
+                    ) {
                         tracing::error!("background embed: duplicate ID check failed: {e}");
                     }
                     tracing::debug!(
@@ -1796,11 +1825,12 @@ impl PkbSearchServer {
 
         // Parse + prepare in parallel (no lock). Everything that parses is
         // indexed — there are no type/sync exclusions.
-        let results: Vec<crate::vectordb::PreparedUpsert> = modified_paths
+        let results: Vec<(String, Vec<String>, crate::vectordb::PreparedUpsert)> = modified_paths
             .par_iter()
             .filter_map(|abs_path| {
                 let doc = crate::pkb::parse_file_relative(abs_path, &self.pkb_root)?;
                 let doc_id = doc.id();
+                let aliases = doc.extract_aliases();
 
                 let existing = self.acquire_store_read().get_entry(&doc_id).cloned();
                 match crate::vectordb::VectorStore::prepare_upsert(
@@ -1808,7 +1838,7 @@ impl PkbSearchServer {
                     &self.embedder,
                     existing.as_ref(),
                 ) {
-                    Ok(p) => Some(p),
+                    Ok(p) => Some((doc_id, aliases, p)),
                     Err(e) => {
                         tracing::warn!(
                             "finalize_batch: prepare_upsert failed for {}: {e}",
@@ -1824,7 +1854,7 @@ impl PkbSearchServer {
         {
             let mut store = self.acquire_store_write();
             let wal_p = self.wal_path();
-            for p in &results {
+            for (doc_id, aliases, p) in &results {
                 let wal_res = match p {
                     crate::vectordb::PreparedUpsert::MetadataOnly(patch) => {
                         crate::vectordb::VectorStore::append_wal_record(
@@ -1842,6 +1872,7 @@ impl PkbSearchServer {
                 if let Err(e) = wal_res {
                     tracing::error!("finalize_batch: Failed to append to WAL: {e}");
                 }
+                store.set_doc_aliases_map_only(doc_id, aliases.clone());
                 store.apply_prepared(p.clone());
             }
             for abs_path in removed_paths {

@@ -363,6 +363,10 @@ pub struct VectorStore {
     /// Database file path on disk (for sidecar persistence)
     #[serde(skip)]
     db_path: parking_lot::RwLock<Option<PathBuf>>,
+    /// In-memory frontmatter aliases per document ID (not serialized in bincode;
+    /// populated on upsert and synced from GraphStore on startup/rebuild).
+    #[serde(skip)]
+    doc_aliases: parking_lot::RwLock<HashMap<String, Vec<String>>>,
 }
 
 /// Category 2 Reference types expanding under the `note` / `notes` family.
@@ -494,6 +498,101 @@ impl VectorStore {
             bm25: Arc::new(parking_lot::RwLock::new(crate::bm25::Bm25Index::new())),
             stamps: Arc::new(parking_lot::RwLock::new(HashMap::new())),
             db_path: parking_lot::RwLock::new(None),
+            doc_aliases: parking_lot::RwLock::new(HashMap::new()),
+        }
+    }
+
+    /// Return cached frontmatter aliases for a document ID.
+    pub fn doc_aliases(&self, id: &str) -> Vec<String> {
+        self.doc_aliases.read().get(id).cloned().unwrap_or_default()
+    }
+
+    /// Update the in-memory alias map without triggering an immediate BM25 rebuild
+    /// (used right before `apply_prepared`, which already rebuilds BM25 postings).
+    pub(crate) fn set_doc_aliases_map_only(&mut self, id: &str, aliases: Vec<String>) {
+        let mut map = self.doc_aliases.write();
+        if aliases.is_empty() {
+            map.remove(id);
+        } else {
+            map.insert(id.to_string(), aliases);
+        }
+    }
+
+    /// Set frontmatter aliases for a document ID and refresh its BM25 postings
+    /// when the alias set changed and the entry is already indexed.
+    pub fn set_doc_aliases(&mut self, id: &str, aliases: Vec<String>) {
+        let changed = {
+            let mut map = self.doc_aliases.write();
+            if aliases.is_empty() {
+                map.remove(id).is_some()
+            } else {
+                let prev = map.get(id);
+                if prev == Some(&aliases) {
+                    false
+                } else {
+                    map.insert(id.to_string(), aliases.clone());
+                    true
+                }
+            }
+        };
+        if changed {
+            if let Some(entry) = self.documents.get(id) {
+                Self::upsert_entry_to_bm25(&mut self.bm25.write(), entry, &aliases);
+            }
+        }
+    }
+
+    /// Synchronize in-memory document aliases from `GraphStore` and refresh BM25
+    /// postings for any indexed document whose alias list changed.
+    pub fn sync_aliases_from_graph(&self, graph: &crate::graph_store::GraphStore) {
+        let mut updates: Vec<(String, Vec<String>)> = Vec::new();
+        {
+            let mut map = self.doc_aliases.write();
+            map.retain(|id, _| self.documents.contains_key(id));
+            for doc_id in self.documents.keys() {
+                let new_aliases: Vec<String> = graph
+                    .get_node(doc_id)
+                    .or_else(|| graph.resolve(doc_id))
+                    .map(|n| {
+                        n.permalinks
+                            .iter()
+                            .filter(|a| {
+                                !a.eq_ignore_ascii_case(doc_id)
+                                    && !a.eq_ignore_ascii_case(&n.id)
+                            })
+                            .cloned()
+                            .collect()
+                    })
+                    .unwrap_or_default();
+
+                let same = match map.get(doc_id) {
+                    None => new_aliases.is_empty(),
+                    Some(prev) => {
+                        prev.len() == new_aliases.len()
+                            && prev
+                                .iter()
+                                .zip(new_aliases.iter())
+                                .all(|(a, b)| a.eq_ignore_ascii_case(b))
+                    }
+                };
+                if !same {
+                    if new_aliases.is_empty() {
+                        map.remove(doc_id);
+                    } else {
+                        map.insert(doc_id.clone(), new_aliases.clone());
+                    }
+                    updates.push((doc_id.clone(), new_aliases));
+                }
+            }
+        }
+
+        if !updates.is_empty() {
+            let mut bm25 = self.bm25.write();
+            for (doc_id, aliases) in updates {
+                if let Some(entry) = self.documents.get(&doc_id) {
+                    Self::upsert_entry_to_bm25(&mut bm25, entry, &aliases);
+                }
+            }
         }
     }
 
@@ -1081,52 +1180,143 @@ impl VectorStore {
         Ok(PreparedUpsert::Full(Box::new(entry)))
     }
 
-fn upsert_entry_to_bm25(bm25: &mut crate::bm25::Bm25Index, entry: &DocumentEntry) {
-    bm25.remove(&entry.id);
-    let chunks: &[String] = if !entry.chunk_texts.is_empty() {
-        &entry.chunk_texts
-    } else if !entry.body_chunks.is_empty() {
-        &entry.body_chunks
-    } else {
-        &[]
-    };
-
-    if chunks.is_empty() {
-        bm25.upsert_chunk(
-            &entry.id,
-            0,
-            entry.path.clone(),
-            &entry.title,
-            entry.doc_type.clone(),
-            entry.status.clone(),
-            entry.tags.clone(),
-            entry.modified.clone(),
-            entry.date.clone(),
-            entry.confidence,
-            String::new(),
-            String::new(),
-            None,
-            &[],
-            "",
-        );
-    } else {
-        for (chunk_id, chunk_text) in chunks.iter().enumerate() {
-            let heading = if chunk_text.trim_start().starts_with('#') {
-                chunk_text
-                    .lines()
-                    .next()
-                    .map(|l| l.trim_start_matches('#').trim())
-            } else {
+    /// Parse an optional contextual header (`"{title} | {doc_type} | {heading_path}\n\n{body}"`)
+    /// from `chunk_text`, returning `(body_slice, Option<heading_path>)` if matched.
+    fn parse_contextual_header<'a>(
+        chunk_text: &'a str,
+        title: &str,
+        doc_type: Option<&str>,
+    ) -> Option<(&'a str, Option<String>)> {
+        let after_title = chunk_text.strip_prefix(title)?;
+        if after_title.is_empty() {
+            return Some(("", None));
+        }
+        if let Some(body) = after_title.strip_prefix("\n\n") {
+            return Some((body, None));
+        }
+        let rest = after_title.strip_prefix(" | ")?;
+        let (header_rest, body) = match rest.split_once("\n\n") {
+            Some((h, b)) => (h, b),
+            None => (rest, ""),
+        };
+        if header_rest.contains('\n') {
+            return None;
+        }
+        let dt = doc_type.unwrap_or("").trim();
+        let heading_path = if !dt.is_empty() {
+            if header_rest == dt {
                 None
-            };
-            let snippet = entry
-                .body_chunks
-                .get(chunk_id)
-                .cloned()
-                .unwrap_or_else(|| chunk_text.clone());
+            } else if let Some(hp) = header_rest
+                .strip_prefix(dt)
+                .and_then(|s| s.strip_prefix(" | "))
+            {
+                let trimmed = hp.trim();
+                (!trimmed.is_empty()).then(|| trimmed.to_string())
+            } else {
+                let trimmed = header_rest.trim();
+                (!trimmed.is_empty()).then(|| trimmed.to_string())
+            }
+        } else {
+            let trimmed = header_rest.trim();
+            (!trimmed.is_empty()).then(|| trimmed.to_string())
+        };
+        Some((body, heading_path))
+    }
+
+    /// Extract `heading_path` from `chunk_text`'s contextual header when `body_chunk`
+    /// is already known from `entry.body_chunks`. Handles the case where `title` or
+    /// `doc_type` changed via `MetadataOnly` after `chunk_text` was generated.
+    fn extract_heading_path_for_body_chunk(
+        chunk_text: &str,
+        body_chunk: &str,
+        title: &str,
+        doc_type: Option<&str>,
+    ) -> Option<String> {
+        if let Some((_, hp)) = Self::parse_contextual_header(chunk_text, title, doc_type) {
+            return hp;
+        }
+        let header_line = if body_chunk.is_empty() {
+            if chunk_text.contains('\n') {
+                return None;
+            }
+            chunk_text
+        } else {
+            let prefix = chunk_text.strip_suffix(body_chunk)?;
+            prefix.strip_suffix("\n\n")?
+        };
+        if header_line.contains('\n') {
+            return None;
+        }
+        let parts: Vec<&str> = header_line.splitn(3, " | ").collect();
+        if parts.len() == 3 {
+            let hp = parts[2].trim();
+            return (!hp.is_empty()).then(|| hp.to_string());
+        }
+        if parts.len() == 2 && doc_type.map(|d| d.trim().is_empty()).unwrap_or(true) {
+            let hp = parts[1].trim();
+            return (!hp.is_empty()).then(|| hp.to_string());
+        }
+        None
+    }
+
+    /// Collect all ATX markdown headings (`# ...` to `###### ...` outside fenced code blocks)
+    /// from `body_chunk`, combined with any non-empty segments from `heading_path`,
+    /// deduplicated case-insensitively while preserving order.
+    fn extract_markdown_headings(body_chunk: &str, heading_path: Option<&str>) -> Option<String> {
+        let mut headings: Vec<String> = Vec::new();
+        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut push_unique = |raw: &str| {
+            let trimmed = raw.trim();
+            if !trimmed.is_empty() && seen.insert(trimmed.to_ascii_lowercase()) {
+                headings.push(trimmed.to_string());
+            }
+        };
+
+        let mut in_code_fence = false;
+        for line in body_chunk.lines() {
+            let fence_candidate = line.trim_start();
+            if fence_candidate.starts_with("```") || fence_candidate.starts_with("~~~") {
+                in_code_fence = !in_code_fence;
+                continue;
+            }
+            if !in_code_fence {
+                if let Some((_, heading_title)) = crate::chunker::parse_atx_heading(line) {
+                    push_unique(&heading_title);
+                }
+            }
+        }
+
+        if let Some(hp) = heading_path {
+            for seg in hp.split(" > ") {
+                push_unique(seg);
+            }
+        }
+
+        if headings.is_empty() {
+            None
+        } else {
+            Some(headings.join(" "))
+        }
+    }
+
+    fn upsert_entry_to_bm25(
+        bm25: &mut crate::bm25::Bm25Index,
+        entry: &DocumentEntry,
+        aliases: &[String],
+    ) {
+        bm25.remove(&entry.id);
+        let chunks: &[String] = if !entry.chunk_texts.is_empty() {
+            &entry.chunk_texts
+        } else if !entry.body_chunks.is_empty() {
+            &entry.body_chunks
+        } else {
+            &[]
+        };
+
+        if chunks.is_empty() {
             bm25.upsert_chunk(
                 &entry.id,
-                chunk_id,
+                0,
                 entry.path.clone(),
                 &entry.title,
                 entry.doc_type.clone(),
@@ -1135,22 +1325,69 @@ fn upsert_entry_to_bm25(bm25: &mut crate::bm25::Bm25Index, entry: &DocumentEntry
                 entry.modified.clone(),
                 entry.date.clone(),
                 entry.confidence,
-                snippet,
-                chunk_text.clone(),
-                heading,
-                &[],
-                chunk_text,
+                String::new(),
+                String::new(),
+                None,
+                aliases,
+                "",
             );
+        } else {
+            for (chunk_id, chunk_text) in chunks.iter().enumerate() {
+                let (clean_body, heading_path) =
+                    if let Some(body_chunk) = entry.body_chunks.get(chunk_id) {
+                        let hp = Self::extract_heading_path_for_body_chunk(
+                            chunk_text,
+                            body_chunk,
+                            &entry.title,
+                            entry.doc_type.as_deref(),
+                        );
+                        (body_chunk.as_str(), hp)
+                    } else if let Some((stripped_body, hp)) = Self::parse_contextual_header(
+                        chunk_text,
+                        &entry.title,
+                        entry.doc_type.as_deref(),
+                    ) {
+                        (stripped_body, hp)
+                    } else {
+                        (chunk_text.as_str(), None)
+                    };
+
+                let heading = Self::extract_markdown_headings(clean_body, heading_path.as_deref());
+                let trunc = clean_body.floor_char_boundary(300.min(clean_body.len()));
+                let snippet = clean_body[..trunc].to_string();
+
+                bm25.upsert_chunk(
+                    &entry.id,
+                    chunk_id,
+                    entry.path.clone(),
+                    &entry.title,
+                    entry.doc_type.clone(),
+                    entry.status.clone(),
+                    entry.tags.clone(),
+                    entry.modified.clone(),
+                    entry.date.clone(),
+                    entry.confidence,
+                    snippet,
+                    clean_body.to_string(),
+                    heading.as_deref(),
+                    aliases,
+                    clean_body,
+                );
+            }
         }
     }
-}
 
     /// Synchronize the in-memory BM25 index with all documents currently in the store.
     pub fn sync_bm25_all(&self) {
+        let aliases_map = self.doc_aliases.read();
         let mut bm25 = self.bm25.write();
         bm25.clear();
         for entry in self.documents.values() {
-            Self::upsert_entry_to_bm25(&mut bm25, entry);
+            let aliases = aliases_map
+                .get(&entry.id)
+                .map(Vec::as_slice)
+                .unwrap_or(&[]);
+            Self::upsert_entry_to_bm25(&mut bm25, entry, aliases);
         }
     }
 
@@ -1222,6 +1459,23 @@ fn upsert_entry_to_bm25(bm25: &mut crate::bm25::Bm25Index, entry: &DocumentEntry
         Ok(())
     }
 
+    /// Apply a `PreparedUpsert` with duplicate-ID check while updating `doc_aliases`
+    /// atomically (rolling back `doc_aliases` if the duplicate-ID check fails).
+    pub fn apply_prepared_with_aliases_checked(
+        &mut self,
+        prepared: PreparedUpsert,
+        doc_id: &str,
+        aliases: Vec<String>,
+    ) -> Result<()> {
+        let prev_aliases = self.doc_aliases(doc_id);
+        self.set_doc_aliases_map_only(doc_id, aliases);
+        if let Err(e) = self.apply_prepared_checked(prepared) {
+            self.set_doc_aliases_map_only(doc_id, prev_aliases);
+            return Err(e);
+        }
+        Ok(())
+    }
+
     /// Apply a [`PreparedUpsert`] under a brief write lock.
     ///
     /// `MetadataOnly` is a cheap HashMap mutation; `Full` is a single
@@ -1243,16 +1497,13 @@ fn upsert_entry_to_bm25(bm25: &mut crate::bm25::Bm25Index, entry: &DocumentEntry
                     entry.confidence = patch.confidence;
                     entry.file_hash = Some(patch.file_hash);
 
-                    self.bm25.write().update_metadata(
-                        &entry.id,
-                        &entry.title,
-                        entry.doc_type.clone(),
-                        entry.status.clone(),
-                        entry.tags.clone(),
-                        entry.modified.clone(),
-                        entry.date.clone(),
-                        entry.confidence,
-                    );
+                    let aliases = self
+                        .doc_aliases
+                        .read()
+                        .get(&entry.id)
+                        .cloned()
+                        .unwrap_or_default();
+                    Self::upsert_entry_to_bm25(&mut self.bm25.write(), entry, &aliases);
                 } else {
                     // Race: the entry was removed between prepare and apply.
                     // Drop the patch — there's nothing to update.
@@ -1267,7 +1518,8 @@ fn upsert_entry_to_bm25(bm25: &mut crate::bm25::Bm25Index, entry: &DocumentEntry
                 // entry.path under a different ID, remove it first so a file
                 // never holds two index entries.
                 let norm_path_str = entry.path.to_string_lossy().replace('\\', "/");
-                let old_ids_to_remove: Vec<String> = self.documents
+                let old_ids_to_remove: Vec<String> = self
+                    .documents
                     .iter()
                     .filter(|(k, v)| {
                         **k != entry.id && v.path.to_string_lossy().replace('\\', "/") == norm_path_str
@@ -1283,10 +1535,17 @@ fn upsert_entry_to_bm25(bm25: &mut crate::bm25::Bm25Index, entry: &DocumentEntry
                         entry.id
                     );
                     self.bm25.write().remove(&old_id);
+                    self.doc_aliases.write().remove(&old_id);
                     self.documents.remove(&old_id);
                 }
 
-                Self::upsert_entry_to_bm25(&mut self.bm25.write(), &entry);
+                let aliases = self
+                    .doc_aliases
+                    .read()
+                    .get(&entry.id)
+                    .cloned()
+                    .unwrap_or_default();
+                Self::upsert_entry_to_bm25(&mut self.bm25.write(), &entry, &aliases);
                 self.documents.insert(entry.id.clone(), *entry);
             }
         }
@@ -1298,6 +1557,8 @@ fn upsert_entry_to_bm25(bm25: &mut crate::bm25::Bm25Index, entry: &DocumentEntry
     /// writers don't serialise behind embedding.
     pub fn upsert(&mut self, doc: &PkbDocument, embedder: &embeddings::Embedder) -> Result<()> {
         let id = doc.id();
+        let aliases = doc.extract_aliases();
+        self.set_doc_aliases_map_only(&id, aliases);
         let prepared = Self::prepare_upsert(doc, embedder, self.documents.get(&id))?;
         self.apply_prepared(prepared);
         Ok(())
@@ -1312,6 +1573,8 @@ fn upsert_entry_to_bm25(bm25: &mut crate::bm25::Bm25Index, entry: &DocumentEntry
     ) {
         let (id, confidence, date) = Self::extract_frontmatter_fields(doc);
         let canonical_id = id.unwrap_or_else(|| doc.id());
+        let aliases = doc.extract_aliases();
+        self.set_doc_aliases_map_only(&canonical_id, aliases.clone());
         let body_chunks = crate::chunker::chunk_markdown_clean(&doc.body);
         let body_hash = doc.body_hash();
 
@@ -1337,7 +1600,7 @@ fn upsert_entry_to_bm25(bm25: &mut crate::bm25::Bm25Index, entry: &DocumentEntry
             body_chunks: body_chunks.clone(),
         };
 
-        Self::upsert_entry_to_bm25(&mut self.bm25.write(), &entry);
+        Self::upsert_entry_to_bm25(&mut self.bm25.write(), &entry, &aliases);
 
         self.documents.insert(canonical_id, entry);
     }
@@ -1347,6 +1610,7 @@ fn upsert_entry_to_bm25(bm25: &mut crate::bm25::Bm25Index, entry: &DocumentEntry
     /// Returns true if the document was found and removed.
     pub fn remove(&mut self, id: &str) -> bool {
         self.bm25.write().remove(id);
+        self.doc_aliases.write().remove(id);
         if let Some(entry) = self.documents.remove(id) {
             self.stamps.write().remove(&entry.path);
             true
@@ -1361,6 +1625,7 @@ fn upsert_entry_to_bm25(bm25: &mut crate::bm25::Bm25Index, entry: &DocumentEntry
             });
             if let Some(actual_id) = found_id {
                 self.bm25.write().remove(&actual_id);
+                self.doc_aliases.write().remove(&actual_id);
                 if let Some(entry) = self.documents.remove(&actual_id) {
                     self.stamps.write().remove(&entry.path);
                     true
@@ -1381,11 +1646,13 @@ fn upsert_entry_to_bm25(bm25: &mut crate::bm25::Bm25Index, entry: &DocumentEntry
         let before = self.documents.len();
         let mut bm25 = self.bm25.write();
         let mut stamps = self.stamps.write();
+        let mut aliases = self.doc_aliases.write();
         self.documents.retain(|id, entry| {
             let keep = existing_ids.contains(id);
             if !keep {
                 bm25.remove(id);
                 stamps.remove(&entry.path);
+                aliases.remove(id);
             }
             keep
         });
@@ -3723,5 +3990,260 @@ mod tests {
         let missing = store.paths_missing_embeddings();
         assert_eq!(missing.len(), 1);
         assert_eq!(missing[0], PathBuf::from("notes/skeleton.md"));
+    }
+
+    #[test]
+    fn test_bm25_aliases_indexed_without_breaking_bincode() {
+        let mut store = VectorStore::new(3);
+        let mut fm = serde_json::Map::new();
+        fm.insert("id".to_string(), serde_json::json!("doc_storage"));
+        fm.insert("title".to_string(), serde_json::json!("Object Store"));
+        fm.insert("type".to_string(), serde_json::json!("note"));
+        fm.insert("alias".to_string(), serde_json::json!("lfs"));
+        fm.insert("aliases".to_string(), serde_json::json!(["Large File Storage", "git-lfs"]));
+
+        let doc = PkbDocument {
+            path: PathBuf::from("notes/doc_storage.md"),
+            title: "Object Store".to_string(),
+            tags: vec![],
+            doc_type: Some("note".to_string()),
+            status: Some("active".to_string()),
+            consolidated: None,
+            consolidated_at: None,
+            modified: None,
+            body: "Tracks binary blobs outside main packfiles.".to_string(),
+            content_hash: "chash_1".to_string(),
+            file_hash: "fhash_1".to_string(),
+            frontmatter: Some(serde_json::Value::Object(fm)),
+        };
+
+        let chunks = crate::chunker::chunk_document(&doc.title, doc.doc_type.as_deref(), &doc.body);
+        let chunk_texts: Vec<String> = chunks.into_iter().map(|c| c.text).collect();
+        store.insert_precomputed(&doc, chunk_texts, vec![vec![0.1, 0.0, 0.0]]);
+
+        let root = Path::new("/pkb");
+        for q in ["lfs", "LFS", "git-lfs", "Large File Storage"] {
+            let hits = store.search_bm25(q, 5, root, None, None, None, None);
+            assert!(
+                !hits.is_empty() && hits[0].id == "doc_storage",
+                "Alias query {q:?} must match doc_storage in BM25; got {hits:?}"
+            );
+        }
+
+        // Verify bincode wire format compatibility: DocumentEntry & VectorStore serialize/deserialize cleanly
+        let encoded = bincode::serialize(&store).expect("serialize VectorStore");
+        let decoded: VectorStore = bincode::deserialize(&encoded).expect("deserialize VectorStore");
+        assert_eq!(decoded.len(), 1);
+
+        // Verify sync_aliases_from_graph repopulates doc_aliases + BM25 on freshly deserialized store
+        let graph = crate::graph_store::GraphStore::build(&[doc], root);
+        decoded.sync_aliases_from_graph(&graph);
+        assert!(
+            decoded.doc_aliases("doc_storage").iter().any(|a| a.eq_ignore_ascii_case("lfs")),
+            "sync_aliases_from_graph must populate doc_aliases"
+        );
+        let after_sync = decoded.search_bm25("lfs", 5, root, None, None, None, None);
+        assert_eq!(after_sync.len(), 1);
+        assert_eq!(after_sync[0].id, "doc_storage");
+    }
+
+    #[test]
+    fn test_bm25_headings_extracted_without_double_counting_contextual_header() {
+        let mut store = VectorStore::new(3);
+        let root = Path::new("/pkb");
+
+        // doc_heading has "zephyr" in a genuine markdown ## Heading (inside body)
+        let doc_heading = PkbDocument {
+            path: PathBuf::from("notes/doc_heading.md"),
+            title: "System Manual".to_string(),
+            tags: vec![],
+            doc_type: Some("knowledge".to_string()),
+            status: Some("active".to_string()),
+            consolidated: None,
+            consolidated_at: None,
+            modified: None,
+            body: "Intro paragraph.\n\n```bash\n# ignored_fenced_heading\necho hi\n```\n\n## Zephyr Protocol\n\nDetails about protocol.".to_string(),
+            content_hash: "chash_h".to_string(),
+            file_hash: "fhash_h".to_string(),
+            frontmatter: Some(serde_json::json!({"id": "doc_heading", "title": "System Manual", "type": "knowledge"})),
+        };
+        // doc_body has "zephyr" only once in body prose (not a heading)
+        let doc_body = PkbDocument {
+            path: PathBuf::from("notes/doc_body.md"),
+            title: "Other Manual".to_string(),
+            tags: vec![],
+            doc_type: Some("knowledge".to_string()),
+            status: Some("active".to_string()),
+            consolidated: None,
+            consolidated_at: None,
+            modified: None,
+            body: "Intro paragraph.\n\n## General Notes\n\nMentions zephyr once in prose.".to_string(),
+            content_hash: "chash_b".to_string(),
+            file_hash: "fhash_b".to_string(),
+            frontmatter: Some(serde_json::json!({"id": "doc_body", "title": "Other Manual", "type": "knowledge"})),
+        };
+
+        for doc in [&doc_heading, &doc_body] {
+            let chunks = crate::chunker::chunk_document(&doc.title, doc.doc_type.as_deref(), &doc.body);
+            let texts: Vec<String> = chunks.into_iter().map(|c| c.text).collect();
+            store.insert_precomputed(doc, texts, vec![vec![0.1, 0.0, 0.0]]);
+        }
+
+        // Genuine heading gets WEIGHT_HEADING (2.0) + body (1.0) and outranks body-only mention
+        let hits = store.search_bm25("zephyr", 5, root, None, None, None, None);
+        assert_eq!(hits.len(), 2);
+        assert_eq!(hits[0].id, "doc_heading", "Heading match must outrank body-only match");
+        assert!(hits[0].score > hits[1].score);
+
+        // Code-fenced # line must NOT be indexed as a heading (check stored Bm25Chunk.heading)
+        {
+            let bm25 = store.bm25.read();
+            let hits_fenced = bm25.search("ignored_fenced_heading", 5, root, None, None, None, None);
+            assert_eq!(hits_fenced.len(), 1);
+            // Verify heading field does not include fenced comment
+            let chunk_h = hits_fenced[0].chunk_text.as_str();
+            assert!(!chunk_h.contains("System Manual | knowledge"), "BM25 chunk_text must not leak contextual header");
+        }
+
+        // Contextual header's {doc_type} ("knowledge") must NOT pollute body BM25 term freqs
+        let type_hits = store.search_bm25("knowledge", 5, root, None, None, None, None);
+        assert!(
+            type_hits.is_empty(),
+            "Contextual header doc_type must not be double-counted into body BM25; got {type_hits:?}"
+        );
+
+        // Title ("System") must only get WEIGHT_TITLE (not WEIGHT_TITLE + WEIGHT_BODY from contextual header)
+        let title_tf = store
+            .bm25
+            .read()
+            .search("system", 5, root, None, None, None, None);
+        assert_eq!(title_tf.len(), 1);
+    }
+
+    #[test]
+    fn test_metadata_only_update_refreshes_bm25_postings_immediately() {
+        let mut store = VectorStore::new(3);
+        let root = Path::new("/pkb");
+
+        let body = "Stable body content that does not change.";
+        let doc_v1 = PkbDocument {
+            path: PathBuf::from("notes/meta_refresh.md"),
+            title: "Original Alpha Title".to_string(),
+            tags: vec!["legacytag".to_string()],
+            doc_type: Some("note".to_string()),
+            status: Some("active".to_string()),
+            consolidated: None,
+            consolidated_at: None,
+            modified: None,
+            body: body.to_string(),
+            content_hash: "same_body_hash".to_string(),
+            file_hash: "fhash_v1".to_string(),
+            frontmatter: Some(serde_json::json!({
+                "id": "meta_refresh",
+                "title": "Original Alpha Title",
+                "type": "note"
+            })),
+        };
+        let chunks = crate::chunker::chunk_document(&doc_v1.title, doc_v1.doc_type.as_deref(), &doc_v1.body);
+        let texts: Vec<String> = chunks.into_iter().map(|c| c.text).collect();
+        store.insert_precomputed(&doc_v1, texts, vec![vec![1.0, 0.0, 0.0]]);
+
+        assert_eq!(store.search_bm25("Alpha", 5, root, None, None, None, None).len(), 1);
+        assert_eq!(store.search_bm25("legacytag", 5, root, None, None, None, None).len(), 1);
+
+        // Apply MetadataOnly patch changing title and tags while body hash is unchanged
+        let doc_v2 = PkbDocument {
+            path: PathBuf::from("notes/meta_refresh.md"),
+            title: "Updated Quantum Title".to_string(),
+            tags: vec!["freshtag".to_string()],
+            doc_type: Some("note".to_string()),
+            status: Some("active".to_string()),
+            consolidated: None,
+            consolidated_at: None,
+            modified: None,
+            body: body.to_string(),
+            content_hash: "same_body_hash".to_string(),
+            file_hash: "fhash_v2".to_string(),
+            frontmatter: Some(serde_json::json!({
+                "id": "meta_refresh",
+                "title": "Updated Quantum Title",
+                "type": "note",
+                "aliases": ["qalias"]
+            })),
+        };
+        let patch = VectorStore::prepare_metadata_patch(&doc_v2);
+        store.set_doc_aliases_map_only("meta_refresh", doc_v2.extract_aliases());
+        store.apply_prepared(PreparedUpsert::MetadataOnly(patch));
+
+        // New title, tag, and alias must match immediately
+        assert_eq!(store.search_bm25("Quantum", 5, root, None, None, None, None).len(), 1);
+        assert_eq!(store.search_bm25("freshtag", 5, root, None, None, None, None).len(), 1);
+        assert_eq!(store.search_bm25("qalias", 5, root, None, None, None, None).len(), 1);
+
+        // Old removed title and tag must no longer match
+        assert!(store.search_bm25("Alpha", 5, root, None, None, None, None).is_empty());
+        assert!(store.search_bm25("legacytag", 5, root, None, None, None, None).is_empty());
+
+        // Standalone set_doc_aliases also refreshes BM25 postings
+        store.set_doc_aliases("meta_refresh", vec!["renamedalias".to_string()]);
+        assert!(store.search_bm25("qalias", 5, root, None, None, None, None).is_empty());
+        assert_eq!(store.search_bm25("renamedalias", 5, root, None, None, None, None).len(), 1);
+    }
+
+    #[test]
+    fn test_short_acronyms_and_alphanumeric_hybrid_search_with_low_dense() {
+        let mut store = VectorStore::new(3);
+        let root = Path::new("/pkb");
+
+        let make_doc = |id: &str, title: &str, alias: &str, body: &str| PkbDocument {
+            path: PathBuf::from(format!("notes/{id}.md")),
+            title: title.to_string(),
+            tags: vec![],
+            doc_type: Some("note".to_string()),
+            status: Some("active".to_string()),
+            consolidated: None,
+            consolidated_at: None,
+            modified: None,
+            body: body.to_string(),
+            content_hash: format!("ch_{id}"),
+            file_hash: format!("fh_{id}"),
+            frontmatter: Some(serde_json::json!({
+                "id": id,
+                "title": title,
+                "type": "note",
+                "aliases": [alias],
+            })),
+        };
+
+        let doc_lfs = make_doc("doc_lfs", "LFS Storage", "lfs", "Tracking large files with lfs.");
+        let doc_2026j = make_doc("doc_2026j", "Cohort 2026J", "2026J", "Schedule for 2026J.");
+        let doc_2026n = make_doc("doc_2026n", "Cohort 2026N", "2026N", "Schedule for 2026N.");
+        let doc_noise = make_doc("doc_noise", "Unrelated Topic", "other", "Completely unrelated prose.");
+
+        for d in [&doc_lfs, &doc_2026j, &doc_2026n] {
+            let chunks = crate::chunker::chunk_document(&d.title, d.doc_type.as_deref(), &d.body);
+            let texts: Vec<String> = chunks.into_iter().map(|c| c.text).collect();
+            store.insert_precomputed(d, texts, vec![vec![0.0, 1.0, 0.0]]);
+        }
+        // Distractor has higher (but sub-0.55 silence-floor) dense similarity [0.4, 0.0, 0.9] -> cos with [1,0,0] = 0.406
+        let noise_chunks = crate::chunker::chunk_document(&doc_noise.title, doc_noise.doc_type.as_deref(), &doc_noise.body);
+        let noise_texts: Vec<String> = noise_chunks.into_iter().map(|c| c.text).collect();
+        store.insert_precomputed(&doc_noise, noise_texts, vec![vec![0.4, 0.0, 0.9]]);
+
+        let low_dense_query = vec![1.0, 0.0, 0.0];
+        for (query, expected_id) in [
+            ("lfs", "doc_lfs"),
+            ("LFS", "doc_lfs"),
+            ("2026J", "doc_2026j"),
+            ("2026j", "doc_2026j"),
+            ("2026N", "doc_2026n"),
+            ("2026n", "doc_2026n"),
+        ] {
+            let hits = store.search_hybrid(query, &low_dense_query, 5, root, None, None, None, None, None);
+            assert!(
+                !hits.is_empty() && hits[0].id == expected_id,
+                "Hybrid search for {query:?} under low dense scores must rank {expected_id} #1; got {hits:?}"
+            );
+        }
     }
 }

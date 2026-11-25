@@ -55,6 +55,11 @@ impl PkbDocument {
         self.content_hash.clone()
     }
 
+    /// Extract frontmatter `alias` and `aliases` (deduplicated case-insensitively).
+    pub fn extract_aliases(&self) -> Vec<String> {
+        extract_aliases_from_frontmatter(self.frontmatter.as_ref())
+    }
+
     /// Build a text representation suitable for embedding.
     /// Combines title, tags, and body for semantic richness.
     pub fn embedding_text(&self) -> String {
@@ -91,6 +96,41 @@ fn compute_content_hash(content: &[u8]) -> String {
         return blake3::hash(&normalized).to_hex().to_string();
     }
     blake3::hash(content).to_hex().to_string()
+}
+
+/// Extract deduplicated aliases from frontmatter `alias` and `aliases` fields.
+///
+/// Supports both YAML string scalars (single or comma-separated) and sequences of strings.
+pub fn extract_aliases_from_frontmatter(frontmatter: Option<&serde_json::Value>) -> Vec<String> {
+    let Some(fm) = frontmatter else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    let mut seen = HashSet::new();
+    let mut push_alias = |raw: &str| {
+        let trimmed = raw.trim();
+        if !trimmed.is_empty() && seen.insert(trimmed.to_ascii_lowercase()) {
+            out.push(trimmed.to_string());
+        }
+    };
+
+    for key in ["alias", "aliases"] {
+        if let Some(val) = fm.get(key) {
+            if let Some(arr) = val.as_array() {
+                for item in arr {
+                    if let Some(s) = item.as_str() {
+                        push_alias(s);
+                    }
+                }
+            } else if let Some(s) = val.as_str() {
+                for part in s.split(',') {
+                    push_alias(part);
+                }
+            }
+        }
+    }
+
+    out
 }
 
 /// Extract tags from the frontmatter `tags` field.
@@ -522,5 +562,27 @@ mod tests {
         let stamp3 = scan_generation(root);
         assert_eq!(stamp3.file_count, 2);
         assert!(stamp3.max_mtime > stamp2.max_mtime);
+    }
+
+    #[test]
+    fn test_extract_aliases_supports_string_and_sequence_deduplicated() {
+        let fm_seq = serde_json::json!({
+            "alias": "lfs",
+            "aliases": ["Large File Storage", "LFS", "git-lfs", ""]
+        });
+        assert_eq!(
+            extract_aliases_from_frontmatter(Some(&fm_seq)),
+            vec!["lfs", "Large File Storage", "git-lfs"]
+        );
+
+        let fm_str = serde_json::json!({
+            "aliases": "2026J, 2026N, 2026j"
+        });
+        assert_eq!(
+            extract_aliases_from_frontmatter(Some(&fm_str)),
+            vec!["2026J", "2026N"]
+        );
+
+        assert!(extract_aliases_from_frontmatter(None).is_empty());
     }
 }
