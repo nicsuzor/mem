@@ -66,7 +66,7 @@ Query
 ```
 
 1. **Dual-Path Candidate Retrieval + Direct Identity Lookup**: Top 100 dense vector matches (BGE-M3 embeddings, cosine similarity), top 100 pure Okapi BM25 v2 lexical matches (recording distinct `matched_terms` without `+1000` inflation), and direct store/graph-alias exact-identity matches (`extract_exact_id_candidates`) are unioned into candidate pool $P$. Caller `fetch_limit` uses `(POOL_SIZE_DENSE + POOL_SIZE_LEX).max(limit * 5)` (or `limit * 10` when filtering) so candidates are not prematurely truncated before priors.
-2. **Recalibrated Raw-Score Silence Floor**: Unless an exact-ID match is present, queries with $\max(s_{\text{raw}}^{\text{dense}}) < \tau_{\cos} = 0.55$ return empty immediately if $\max(s_{\text{raw}}^{\text{lex}}) \le 0$ OR if the query contains $\ge 3$ deduplicated content terms and no lexical candidate matched $\ge 2$ terms. When lexical survives below $\tau_{\cos}$, $s_{\text{norm}}^{\text{dense}}$ is forced to $0.0$ for all candidates so sub-floor cosine noise is never stretched to $1.0$.
+2. **Raw-Score Silence Floor**: Unless an exact-ID match is present, queries with $\max(s_{\text{raw}}^{\text{dense}}) < \tau_{\cos} = 0.55$ return empty immediately if $\max(s_{\text{raw}}^{\text{lex}}) \le 0$ OR if the query contains $\ge 3$ deduplicated content terms and no lexical candidate matched $\ge 2$ terms. When lexical survives below $\tau_{\cos}$, $s_{\text{norm}}^{\text{dense}}$ is forced to $0.0$ for all candidates so sub-floor cosine noise is never stretched to $1.0$.
 3. **Local Min-Max Normalisation & TM2C2 Fusion**: Surviving candidates are normalised query-locally into $[0.0, 1.0]$ and combined adaptively via TM2C2 ($\alpha = 0.35$ for explicit wikilinks or identifier-heavy queries $\le 3$ tokens, $\alpha = 0.65$ for natural language prose).
 4. **Cross-Encoder Reranking by Default**: Enabled by default; the top 40 candidates are re-scored using a local transformer cross-encoder running on ONNX Runtime. When not loaded, search proceeds with `ranking: "fused"`, `reranker_loaded: false`, and explicitly emits `reranker_reason` in every JSON/`structuredContent` envelope.
 5. **Single-Pass Unified Multiplicative Priors**: Applied in one unified pass inside `try_fuse_tm2c2_with_exact` incorporating real `GraphStore` `outdegree` and `aliases`, `include_done`-aware status (`M_struct`), bounded stemmed max-denominator `title_match_boost` ($\in [0.0, 0.25]$), `type_boost`, query-time graph proximity (`boost_id`), and `TemporalAccessHook` (`document_recency_decay * recent_read_boost`).
@@ -143,11 +143,11 @@ Candidate retrieval fetches up to:
 - $N_{\text{lex}} = 100$ top pure Okapi BM25 candidates (`POOL_SIZE_LEX`), tracking distinct matched query terms (`matched_terms`) per hit
 - Direct exact-identity matches across `VectorStore::documents` and `GraphStructuralLookup::aliases` (`extract_exact_id_candidates`), respecting `since`, `before`, `type_filter`, and pre-pool gate predicates so exact-ID and `[[wikilink]]` targets enter $P$ even when outside top-100 dense/BM25.
 
-MCP search handlers request `fetch_limit = (POOL_SIZE_DENSE + POOL_SIZE_LEX).max(limit * 5)` (or `.max(limit * 10)` when filtering by type / `actionable_only`), avoiding premature `limit * 2` truncation.
+MCP search handlers request `fetch_limit = (POOL_SIZE_DENSE + POOL_SIZE_LEX).max(limit * 5)` (or `.max(limit * 10)` when filtering by type / `actionable_only`), ensuring candidates are scored across the full union pool before post-filters and `limit` truncation.
 
 ### 4.3. Raw-Score Silence Floor ($\tau_{\cos} = 0.55$)
 
-To prevent irrelevant or noisy queries from stretching background BGE-M3 cosine noise to 1.0 during min-max normalization, a recalibrated raw-score silence floor is enforced:
+To prevent irrelevant or noisy queries from stretching background BGE-M3 cosine noise to 1.0 during min-max normalization, a raw-score silence floor is enforced:
 
 $$\tau_{\cos} = 0.55$$
 

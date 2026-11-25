@@ -62,8 +62,8 @@ impl PkbSearchServer {
             data: None,
         })?;
 
-        let store = self.acquire_store_read();
         let graph = self.graph.read();
+        let store = self.acquire_store_read();
         // When a type filter is present (or done tasks are excluded) fetch
         // more candidates so we still fill the limit after filtering.
         let since = args.get("since").and_then(|v| v.as_str());
@@ -430,8 +430,8 @@ impl PkbSearchServer {
         let before = args.get("before").and_then(|v| v.as_str());
         let doc_type = args.get("type").and_then(|v| v.as_str());
 
-        let store = self.acquire_store_read();
         let graph = self.graph.read();
+        let store = self.acquire_store_read();
 
         // Build proximity boost map if boost_id provided
         let boost_map: std::collections::HashMap<String, f32> = if let Some(bid) = boost_id {

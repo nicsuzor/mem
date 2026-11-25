@@ -64,6 +64,12 @@ pub trait GraphStructuralLookup {
     fn canonical_id(&self, _id: &str) -> Option<String> {
         None
     }
+    fn node_type(&self, _id: &str) -> Option<&str> {
+        None
+    }
+    fn modified(&self, _id: &str) -> Option<&str> {
+        None
+    }
 }
 
 impl GraphStructuralLookup for () {}
@@ -103,6 +109,18 @@ impl GraphStructuralLookup for crate::graph_store::GraphStore {
         self.get_node(id)
             .or_else(|| self.resolve(id))
             .map(|n| n.id.clone())
+    }
+
+    fn node_type(&self, id: &str) -> Option<&str> {
+        self.get_node(id)
+            .or_else(|| self.resolve(id))
+            .and_then(|n| n.node_type.as_deref())
+    }
+
+    fn modified(&self, id: &str) -> Option<&str> {
+        self.get_node(id)
+            .or_else(|| self.resolve(id))
+            .and_then(|n| n.modified.as_deref())
     }
 }
 
@@ -703,7 +721,42 @@ pub fn try_fuse_tm2c2_with_exact<G: GraphStructuralLookup>(
 
         let base_score =
             (r.score * m_struct * (1.0 + title_boost + type_boost + proximity_boost)) as f64;
-        let m_temporal = temporal_hook.map(|hook| hook(r)).unwrap_or(1.0) as f64;
+        let m_temporal = match temporal_hook {
+            Some(hook) => {
+                let canonical = graph_lookup.canonical_id(&r.id);
+                let fallback_type = if r.doc_type.is_none() {
+                    graph_lookup.node_type(&r.id)
+                } else {
+                    None
+                };
+                let fallback_mod = if r.modified.is_none() {
+                    graph_lookup.modified(&r.id)
+                } else {
+                    None
+                };
+                let needs_override = canonical
+                    .as_deref()
+                    .is_some_and(|cid| cid != r.id)
+                    || fallback_type.is_some()
+                    || fallback_mod.is_some();
+                if needs_override {
+                    let mut resolved = r.clone();
+                    if let Some(cid) = canonical {
+                        resolved.id = cid;
+                    }
+                    if let Some(dt) = fallback_type {
+                        resolved.doc_type = Some(dt.to_string());
+                    }
+                    if let Some(m) = fallback_mod {
+                        resolved.modified = Some(m.to_string());
+                    }
+                    hook(&resolved)
+                } else {
+                    hook(r)
+                }
+            }
+            None => 1.0,
+        } as f64;
 
         if base_score < floor {
             let attenuated = base_score * m_temporal.min(1.0);
@@ -1707,5 +1760,63 @@ mod tests {
         assert_eq!(exact.len(), 1);
         assert_eq!(exact[0].id, "spec_001");
         assert_eq!(exact[0].score, 1.0);
+    }
+
+    #[test]
+    fn test_temporal_hook_receives_graph_node_fallbacks() {
+        struct FallbackLookup;
+        impl GraphStructuralLookup for FallbackLookup {
+            fn canonical_id(&self, id: &str) -> Option<String> {
+                if id == "alias_hit" {
+                    Some("canonical_doc".to_string())
+                } else {
+                    None
+                }
+            }
+            fn node_type(&self, id: &str) -> Option<&str> {
+                if id == "alias_hit" {
+                    Some("note")
+                } else {
+                    None
+                }
+            }
+            fn modified(&self, id: &str) -> Option<&str> {
+                if id == "alias_hit" {
+                    Some("2026-01-15")
+                } else {
+                    None
+                }
+            }
+        }
+
+        let config = RankingConfig::default();
+        let mut r_fallback = make_result("alias_hit", "Fallback Hit", 0.85, None);
+        r_fallback.doc_type = None;
+        r_fallback.modified = None;
+        let r_plain = make_result("plain_doc", "Plain Doc", 0.85, None);
+
+        let hook: TemporalAccessHook = Arc::new(|r| {
+            if r.id == "canonical_doc"
+                && r.doc_type.as_deref() == Some("note")
+                && r.modified.as_deref() == Some("2026-01-15")
+            {
+                1.20
+            } else {
+                1.0
+            }
+        });
+
+        let fused = fuse_tm2c2(
+            vec![r_fallback, r_plain],
+            vec![],
+            "search query",
+            &config,
+            None,
+            &FallbackLookup,
+            Some(&hook),
+            10,
+        );
+        assert_eq!(fused[0].id, "alias_hit");
+        assert!(fused[0].score > fused[1].score);
     }
 }
