@@ -55,25 +55,32 @@ impl PkbSearchServer {
     ) -> Result<CallToolResult, McpError> {
         let mut update_args = serde_json::Map::new();
         update_args.insert("id".to_string(), JsonValue::String(id.to_string()));
-        update_args.insert(
+        let mut updates = args
+            .get("updates")
+            .and_then(|v| v.as_object())
+            .cloned()
+            .unwrap_or_default();
+        updates.insert(
             "status".to_string(),
             JsonValue::String("in_progress".to_string()),
         );
         if let Some(assignee) = args.get("assignee").and_then(|v| v.as_str()) {
-            update_args.insert(
+            updates.insert(
                 "assignee".to_string(),
                 JsonValue::String(assignee.to_string()),
             );
         }
-        // session_id: arg or env $AOPS_SESSION_ID (same convention as release_task).
+        // session_id: baggage["session.id"], legacy arg, or env $AOPS_SESSION_ID (same convention as release_task).
         let session_id = args
-            .get("session_id")
+            .get("_baggage_session_id")
+            .or_else(|| args.get("session_id"))
             .and_then(|v| v.as_str())
             .map(str::to_string)
             .or_else(|| std::env::var("AOPS_SESSION_ID").ok());
         if let Some(sid) = session_id {
-            update_args.insert("session_id".to_string(), JsonValue::String(sid));
+            updates.insert("session_id".to_string(), JsonValue::String(sid));
         }
+        update_args.insert("updates".to_string(), JsonValue::Object(updates));
 
         self.handle_update_task(&JsonValue::Object(update_args))?;
 
@@ -759,7 +766,10 @@ impl PkbSearchServer {
             }
         }
 
-        let session_id_opt = args.get("session_id").and_then(|v| v.as_str());
+        let session_id_opt = args
+            .get("_baggage_session_id")
+            .or_else(|| args.get("session_id"))
+            .and_then(|v| v.as_str());
 
         // M3 → M2 → root fallback: try topic match, then per-session epic, then root.
         let parent_id = if let Some((epic_id, score, ref epic_title)) =
@@ -914,7 +924,10 @@ impl PkbSearchServer {
         let branch = args.get("branch").and_then(|v| v.as_str());
         let blocker = args.get("blocker").and_then(|v| v.as_str());
         let reason = args.get("reason").and_then(|v| v.as_str());
-        let session_id_arg = args.get("session_id").and_then(|v| v.as_str());
+        let session_id_arg = args
+            .get("_baggage_session_id")
+            .or_else(|| args.get("session_id"))
+            .and_then(|v| v.as_str());
         let issue_url = args.get("issue_url").and_then(|v| v.as_str());
         if args.get("follow_up_tasks").is_some() {
             return Err(McpError {

@@ -12,34 +12,22 @@ impl PkbSearchServer {
     fn attach_output_schemas(tools: &mut [Tool]) {
         for tool in tools {
             if tool.output_schema.is_none() {
-                tool.output_schema = Some(std::sync::Arc::new(
-                    serde_json::from_value(Self::output_schema_for_tool(&tool.name)).unwrap(),
-                ));
-            }
-
-            let mut schema = (*tool.input_schema).clone();
-            let props = schema
-                .entry("properties".to_string())
-                .or_insert_with(|| serde_json::json!({}));
-            if let Some(props_obj) = props.as_object_mut() {
-                props_obj.insert(
-                    "session_id".to_string(),
-                    serde_json::json!({
-                        "type": "string",
-                        "minLength": 1,
-                        "description": "Calling agent's active session/conversation ID (e.g. CLAUDE_CODE_SESSION_ID or ANTIGRAVITY_CONVERSATION_ID) or client identifier."
-                    }),
-                );
-            }
-            let required = schema
-                .entry("required".to_string())
-                .or_insert_with(|| serde_json::json!([]));
-            if let Some(req_arr) = required.as_array_mut() {
-                if !req_arr.iter().any(|v| v.as_str() == Some("session_id")) {
-                    req_arr.push(serde_json::json!("session_id"));
+                let mut out_val = Self::output_schema_for_tool(&tool.name);
+                if let Some(obj) = out_val.as_object_mut() {
+                    obj.entry("$schema".to_string()).or_insert_with(|| {
+                        serde_json::json!("https://json-schema.org/draft/2020-12/schema")
+                    });
                 }
+                tool.output_schema = Some(std::sync::Arc::new(
+                    serde_json::from_value(out_val).unwrap(),
+                ));
+            } else if let Some(ref existing) = tool.output_schema {
+                let mut out_map = (**existing).clone();
+                out_map.entry("$schema".to_string()).or_insert_with(|| {
+                    serde_json::json!("https://json-schema.org/draft/2020-12/schema")
+                });
+                tool.output_schema = Some(std::sync::Arc::new(out_map));
             }
-            tool.input_schema = std::sync::Arc::new(schema);
 
             let ann = tool.annotations.get_or_insert_with(ToolAnnotations::new);
             ann.open_world_hint = Some(false);
@@ -49,6 +37,7 @@ impl PkbSearchServer {
             } else {
                 ann.read_only_hint.get_or_insert(false);
                 ann.destructive_hint.get_or_insert(false);
+                ann.idempotent_hint.get_or_insert(false);
             }
         }
     }
@@ -365,7 +354,6 @@ impl PkbSearchServer {
                         "status": { "type": "string", "enum": ["inbox", "ready", "failed"] },
                         "allow_missing_parent": { "type": "boolean" },
                         "force": { "type": "boolean" },
-                        "session_id": { "type": "string" },
                         "issue_url": { "type": "string" },
                         "release_summary": { "type": "string" },
                         "contributes_to": { "type": "array", "items": { "type": "object" } },
@@ -419,7 +407,6 @@ impl PkbSearchServer {
                         "waiting_since": { "type": "string" },
                         "due": { "type": "string" },
                         "project": { "type": "string" },
-                        "session_id": { "type": "string" },
                         "issue_url": { "type": "string" },
                         "release_summary": { "type": "string" },
                         "released_at": { "type": "string" },

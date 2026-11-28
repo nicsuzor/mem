@@ -785,8 +785,8 @@ fn test_http_discover() {
         .as_str()
         .expect("discover must return server instructions");
     assert!(
-        instructions.contains("session_id"),
-        "instructions must tell agents to pass session_id: {instructions}"
+        !instructions.is_empty() && !instructions.contains("session_id"),
+        "instructions must be non-empty and not require session_id: {instructions}"
     );
 }
 
@@ -886,11 +886,10 @@ fn test_http_direct_stateless_tool_call_and_headers() {
         &[("Mcp-Session-Id", "stale-client-session")],
     );
     assert_eq!(unattr_status, 200);
-    let unattr_json: Value = serde_json::from_str(&unattr_body).expect("valid JSON-RPC error");
-    assert_eq!(
-        unattr_json["error"]["code"].as_i64(),
-        Some(-32602),
-        "Mcp-Session-Id must not bind or substitute for caller session_id: {unattr_json}"
+    let unattr_json: Value = serde_json::from_str(&unattr_body).expect("valid JSON-RPC response");
+    assert!(
+        unattr_json.get("result").is_some() && unattr_json["result"]["isError"] != json!(true),
+        "graph_stats without session_id must succeed under MCP 2026-07-28: {unattr_json}"
     );
 }
 
@@ -948,14 +947,13 @@ fn test_http_tools_list_count() {
         "expected convert_document in HTTP tools/list response"
     );
     for t in tools {
-        let req = t["inputSchema"]["required"]
-            .as_array()
-            .expect("required array");
-        assert!(
-            req.iter().any(|v| v.as_str() == Some("session_id")),
-            "tool {} missing required session_id",
-            t["name"]
-        );
+        if let Some(req) = t["inputSchema"]["required"].as_array() {
+            assert!(
+                !req.iter().any(|v| v.as_str() == Some("session_id")),
+                "tool {} must not require session_id",
+                t["name"]
+            );
+        }
         assert_eq!(
             t["annotations"]["openWorldHint"],
             json!(false),
@@ -1026,18 +1024,19 @@ fn test_http_error_missing_protocol_metadata_and_missing_session_id() {
         "expected 4xx for missing protocol metadata, got {meta_status}"
     );
 
-    // Missing tool session_id rejected with JSON-RPC INVALID_PARAMS (-32602) on reads & writes
+    // Missing tool session_id succeeds on reads under MCP 2026-07-28 (no -32602 gate),
+    // while validation errors on missing required fields return SEP-1303 CallToolResult(isError=true).
     let (status, _, body) = http_post_mcp(
         server.port,
-        &tool_call_request_with_args(99, "search", json!({"query": "alpha"})),
+        &tool_call_request_with_args(99, "graph_stats", json!({})),
         "tools/call",
-        Some("search"),
+        Some("graph_stats"),
         &[],
     );
-    assert_eq!(status, 200, "JSON-RPC error expected; status={status}, body={body}");
-    let resp: Value = serde_json::from_str(&body).expect("valid JSON-RPC error");
-    assert_eq!(resp["error"]["code"].as_i64(), Some(-32602));
-    assert!(server.is_alive(), "server crashed after missing session_id");
+    assert_eq!(status, 200, "JSON-RPC response expected; status={status}, body={body}");
+    let resp: Value = serde_json::from_str(&body).expect("valid JSON-RPC response");
+    assert!(resp.get("result").is_some(), "expected result without session_id: {resp}");
+    assert!(server.is_alive(), "server crashed after call without session_id");
 }
 
 #[test]

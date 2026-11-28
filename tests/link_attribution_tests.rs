@@ -707,8 +707,11 @@ async fn test_stateless_client_info_dashboard_attribution() {
             None,
         )
         .await;
-    assert!(
-        spoofed.is_err(),
-        "Spoofed _client without clientInfo meta must be rejected"
+    let spoofed_res = spoofed
+        .expect("SEP-1303 returns CallToolResult(isError=true) for validation errors");
+    assert_eq!(
+        spoofed_res.is_error,
+        Some(true),
+        "Spoofed _client without clientInfo meta must be rejected with isError=true"
     );
 }
