@@ -166,3 +166,82 @@ fn test_release_task_schema_carries_checklist_validation_docstrings() {
         "completion_evidence description must document checklist validation requirement, got: {comp_ev_desc}"
     );
 }
+
+#[tokio::test]
+async fn test_mcp_2026_07_28_catalog_annotations_2020_12_and_sep1303() {
+    let tmp = tempfile::tempdir().unwrap();
+    let server = make_test_server(tmp.path());
+
+    // 1. Deterministic tools/list ordering across calls
+    let list1 = server.list_tools_result();
+    let list2 = server.list_tools_result();
+    let names1: Vec<&str> = list1.tools.iter().map(|t| t.name.as_ref()).collect();
+    let names2: Vec<&str> = list2.tools.iter().map(|t| t.name.as_ref()).collect();
+    assert_eq!(names1, names2, "tools/list ordering must be deterministic");
+
+    // 2. No session_id in input_schema.properties or required; complete ToolAnnotations; 2020-12 outputSchema
+    for tool in &list1.tools {
+        let in_val = serde_json::to_value(tool.input_schema.as_ref()).unwrap();
+        let props = in_val.get("properties").and_then(|p| p.as_object());
+        if tool.name != "update_task" {
+            assert!(
+                !props.is_some_and(|m| m.contains_key("session_id")),
+                "Published tool '{}' must not declare session_id in inputSchema.properties",
+                tool.name
+            );
+        }
+        let req = in_val.get("required").and_then(|r| r.as_array());
+        assert!(
+            !req.is_some_and(|arr| arr.iter().any(|v| v.as_str() == Some("session_id"))),
+            "Published tool '{}' must not require session_id in inputSchema.required",
+            tool.name
+        );
+
+        let ann = tool
+            .annotations
+            .as_ref()
+            .unwrap_or_else(|| panic!("Tool '{}' missing annotations", tool.name));
+        assert!(ann.read_only_hint.is_some(), "Tool '{}' missing readOnlyHint", tool.name);
+        assert!(ann.destructive_hint.is_some(), "Tool '{}' missing destructiveHint", tool.name);
+        assert!(ann.idempotent_hint.is_some(), "Tool '{}' missing idempotentHint", tool.name);
+        assert!(ann.open_world_hint.is_some(), "Tool '{}' missing openWorldHint", tool.name);
+
+        let out_val = serde_json::to_value(tool.output_schema.as_ref().unwrap().as_ref()).unwrap();
+        assert_eq!(
+            out_val.get("$schema").and_then(|v| v.as_str()),
+            Some("https://json-schema.org/draft/2020-12/schema"),
+            "Tool '{}' outputSchema must declare JSON Schema 2020-12",
+            tool.name
+        );
+    }
+
+    // 3. Server instructions must not require session_id or mention retired read-only proxy domains
+    let info = rmcp::ServerHandler::get_info(&server);
+    let instr = info.instructions.unwrap_or_default();
+    assert!(
+        !instr.contains("MUST include a non-empty `session_id`"),
+        "Server instructions must not require session_id: {instr}"
+    );
+    assert!(
+        !instr.contains("mcp-ro"),
+        "Server instructions must omit retired read-only proxy domain references: {instr}"
+    );
+
+    // 4. SEP-1303: input validation failure on a known tool returns CallToolResult(isError=True)
+    let err_res = server
+        .execute_tool_call("create_task", &serde_json::json!({ "project": "mem" }), None, None)
+        .await
+        .expect("SEP-1303: validation failure must return Ok(CallToolResult) with is_error=true");
+    assert_eq!(
+        err_res.is_error,
+        Some(true),
+        "SEP-1303 validation failure must set is_error=Some(true)"
+    );
+
+    // 5. Unknown tool still returns protocol error (-32601 METHOD_NOT_FOUND)
+    let proto_err = server
+        .execute_tool_call("nonexistent_tool_xyz", &serde_json::json!({}), None, None)
+        .await
+        .expect_err("unknown tool must return McpError");
+    assert_eq!(proto_err.code, rmcp::model::ErrorCode::METHOD_NOT_FOUND);
+}

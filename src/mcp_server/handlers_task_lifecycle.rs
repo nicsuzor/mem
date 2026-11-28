@@ -65,9 +65,10 @@ impl PkbSearchServer {
                 JsonValue::String(assignee.to_string()),
             );
         }
-        // session_id: arg or env $AOPS_SESSION_ID (same convention as release_task).
+        // session_id: baggage["session.id"], legacy arg, or env $AOPS_SESSION_ID (same convention as release_task).
         let session_id = args
-            .get("session_id")
+            .get("_baggage_session_id")
+            .or_else(|| args.get("session_id"))
             .and_then(|v| v.as_str())
             .map(str::to_string)
             .or_else(|| std::env::var("AOPS_SESSION_ID").ok());
@@ -759,7 +760,10 @@ impl PkbSearchServer {
             }
         }
 
-        let session_id_opt = args.get("session_id").and_then(|v| v.as_str());
+        let session_id_opt = args
+            .get("_baggage_session_id")
+            .or_else(|| args.get("session_id"))
+            .and_then(|v| v.as_str());
 
         // M3 → M2 → root fallback: try topic match, then per-session epic, then root.
         let parent_id = if let Some((epic_id, score, ref epic_title)) =
@@ -914,7 +918,10 @@ impl PkbSearchServer {
         let branch = args.get("branch").and_then(|v| v.as_str());
         let blocker = args.get("blocker").and_then(|v| v.as_str());
         let reason = args.get("reason").and_then(|v| v.as_str());
-        let session_id_arg = args.get("session_id").and_then(|v| v.as_str());
+        let session_id_arg = args
+            .get("_baggage_session_id")
+            .or_else(|| args.get("session_id"))
+            .and_then(|v| v.as_str());
         let issue_url = args.get("issue_url").and_then(|v| v.as_str());
         if args.get("follow_up_tasks").is_some() {
             return Err(McpError {

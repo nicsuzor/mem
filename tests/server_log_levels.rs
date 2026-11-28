@@ -218,7 +218,7 @@ fn run_session(calls: &[(&str, Value, bool)]) -> Vec<String> {
         );
         if *expects_error {
             assert!(
-                body.contains("\"error\""),
+                body.contains("\"error\"") || body.contains("\"isError\":true"),
                 "{name} returned no error: {body}"
             );
         } else {

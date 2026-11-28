@@ -12,7 +12,8 @@ use opentelemetry_sdk::{
 
 use std::env;
 use config::OtelConfig;
-use opentelemetry_sdk::propagation::TraceContextPropagator;
+use opentelemetry::propagation::TextMapCompositePropagator;
+use opentelemetry_sdk::propagation::{BaggagePropagator, TraceContextPropagator};
 
 pub fn resource_attributes(config: &OtelConfig) -> Vec<KeyValue> {
     let service_name = env::var("OTEL_SERVICE_NAME")
@@ -37,7 +38,10 @@ pub fn resource_attributes(config: &OtelConfig) -> Vec<KeyValue> {
 pub fn init_telemetry() -> Option<TracerProvider> {
     let config = OtelConfig::from_env()?;
 
-    global::set_text_map_propagator(TraceContextPropagator::new());
+    global::set_text_map_propagator(TextMapCompositePropagator::new(vec![
+        Box::new(TraceContextPropagator::new()),
+        Box::new(BaggagePropagator::new()),
+    ]));
 
     let exporter = opentelemetry_otlp::new_exporter()
         .http()

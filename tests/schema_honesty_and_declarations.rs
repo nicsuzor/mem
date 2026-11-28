@@ -417,25 +417,21 @@ async fn test_every_tool_enforces_declared_required_fields() {
             .map(|arr| arr.iter().filter_map(|v| v.as_str()).collect::<Vec<&str>>())
             .unwrap_or_default();
 
-        assert!(
-            required.contains(&"session_id"),
-            "Tool '{name}' must require session_id in inputSchema"
-        );
+        if required.is_empty() {
+            continue;
+        }
 
-        // Calling with an empty object {} fails with INVALID_PARAMS
+        // Calling with an empty object {} fails with SEP-1303 CallToolResult(isError=true)
         let empty_args = json!({});
         let result = server.execute_tool_call(name, &empty_args, None, None).await;
 
+        let is_rejected = match &result {
+            Ok(res) => res.is_error == Some(true),
+            Err(e) => e.code == ErrorCode::INVALID_PARAMS,
+        };
         assert!(
-            result.is_err(),
-            "Tool '{name}' declares required fields {required:?} but calling with empty object succeeded!"
-        );
-        let err = result.unwrap_err();
-        assert_eq!(
-            err.code,
-            ErrorCode::INVALID_PARAMS,
-            "Tool '{name}' missing required fields must return INVALID_PARAMS, got {:?}",
-            err.code
+            is_rejected,
+            "Tool '{name}' declares required fields {required:?} but calling with empty object was not rejected with isError=true / INVALID_PARAMS: {result:?}"
         );
     }
 }
@@ -580,6 +576,20 @@ async fn test_every_tool_rejects_when_any_required_field_is_missing() {
             .unwrap()
             .insert("session_id".to_string(), json!("test-session"));
 
+        let check_rejected = |res: Result<rmcp::model::CallToolResult, rmcp::ErrorData>, req_field: &str, case_desc: &str| -> Option<String> {
+            match res {
+                Ok(r) if r.is_error == Some(true) => None,
+                Ok(_) => Some(format!(
+                    "Tool '{name}' SUCCEEDED when required parameter '{req_field}' was {case_desc}"
+                )),
+                Err(e) if e.code == ErrorCode::INVALID_PARAMS => None,
+                Err(e) => Some(format!(
+                    "Tool '{name}' returned code {:?} (expected isError=true or INVALID_PARAMS) when required parameter '{req_field}' was {case_desc}: {}",
+                    e.code, e.message
+                )),
+            }
+        };
+
         for &req_field in &required {
             // Case 1: Parameter omitted entirely
             let mut omitted_args = base_sample.as_object().unwrap().clone();
@@ -587,16 +597,8 @@ async fn test_every_tool_rejects_when_any_required_field_is_missing() {
             let result_omitted = server
                 .execute_tool_call(name, &serde_json::Value::Object(omitted_args), None, None)
                 .await;
-            match result_omitted {
-                Ok(_) => {
-                    failures.push(format!(
-                        "Tool '{name}' SUCCEEDED when required parameter '{req_field}' was omitted"
-                    ));
-                }
-                Err(e) if e.code != ErrorCode::INVALID_PARAMS => {
-                    failures.push(format!("Tool '{name}' returned code {:?} (expected INVALID_PARAMS) when required parameter '{req_field}' was omitted: {}", e.code, e.message));
-                }
-                Err(_) => {}
+            if let Some(msg) = check_rejected(result_omitted, req_field, "omitted") {
+                failures.push(msg);
             }
 
             // Case 2: Parameter explicitly null
@@ -605,16 +607,8 @@ async fn test_every_tool_rejects_when_any_required_field_is_missing() {
             let result_null = server
                 .execute_tool_call(name, &serde_json::Value::Object(null_args), None, None)
                 .await;
-            match result_null {
-                Ok(_) => {
-                    failures.push(format!(
-                        "Tool '{name}' SUCCEEDED when required parameter '{req_field}' was null"
-                    ));
-                }
-                Err(e) if e.code != ErrorCode::INVALID_PARAMS => {
-                    failures.push(format!("Tool '{name}' returned code {:?} (expected INVALID_PARAMS) when required parameter '{req_field}' was null: {}", e.code, e.message));
-                }
-                Err(_) => {}
+            if let Some(msg) = check_rejected(result_null, req_field, "null") {
+                failures.push(msg);
             }
 
             // `hydrate.prompt` treats empty/whitespace as valid filler abstention (abstained: true)
@@ -639,14 +633,8 @@ async fn test_every_tool_rejects_when_any_required_field_is_missing() {
                 let result_empty = server
                     .execute_tool_call(name, &serde_json::Value::Object(empty_args), None, None)
                     .await;
-                match result_empty {
-                    Ok(_) => {
-                        failures.push(format!("Tool '{name}' SUCCEEDED when required parameter '{req_field}' was empty (empty string/array/object)"));
-                    }
-                    Err(e) if e.code != ErrorCode::INVALID_PARAMS => {
-                        failures.push(format!("Tool '{name}' returned code {:?} (expected INVALID_PARAMS) when required parameter '{req_field}' was empty: {}", e.code, e.message));
-                    }
-                    Err(_) => {}
+                if let Some(msg) = check_rejected(result_empty, req_field, "empty (empty string/array/object)") {
+                    failures.push(msg);
                 }
             }
 
@@ -660,14 +648,8 @@ async fn test_every_tool_rejects_when_any_required_field_is_missing() {
                 let result_ws = server
                     .execute_tool_call(name, &serde_json::Value::Object(ws_args), None, None)
                     .await;
-                match result_ws {
-                    Ok(_) => {
-                        failures.push(format!("Tool '{name}' SUCCEEDED when required parameter '{req_field}' was whitespace-only"));
-                    }
-                    Err(e) if e.code != ErrorCode::INVALID_PARAMS => {
-                        failures.push(format!("Tool '{name}' returned code {:?} (expected INVALID_PARAMS) when required parameter '{req_field}' was whitespace-only: {}", e.code, e.message));
-                    }
-                    Err(_) => {}
+                if let Some(msg) = check_rejected(result_ws, req_field, "whitespace-only") {
+                    failures.push(msg);
                 }
             }
         }

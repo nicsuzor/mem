@@ -2110,6 +2110,38 @@ impl PkbSearchServer {
             if let Some(ref pid) = client_context.prompt_id {
                 attrs.push(opentelemetry::KeyValue::new("prompt.id", pid.clone()));
             }
+            if let Some(ref cname) = client_context.client_name {
+                attrs.push(opentelemetry::KeyValue::new("client.name", cname.clone()));
+                attrs.push(opentelemetry::KeyValue::new("mcp.client.name", cname.clone()));
+            }
+            if let Some(ref cver) = client_context.client_version {
+                attrs.push(opentelemetry::KeyValue::new("client.version", cver.clone()));
+                attrs.push(opentelemetry::KeyValue::new("mcp.client.version", cver.clone()));
+            }
+            if let Some(ref fua) = client_context.forwarded_user_agent {
+                attrs.push(opentelemetry::KeyValue::new("user_agent.original", fua.clone()));
+            }
+            if let Some(ref ts) = client_context.tracestate {
+                attrs.push(opentelemetry::KeyValue::new("trace.tracestate", ts.clone()));
+            }
+            if let Some(ref root_conv) = client_context.antigravity_root_conversation_id {
+                attrs.push(opentelemetry::KeyValue::new(
+                    "antigravity.google/root_conversation_id",
+                    root_conv.clone(),
+                ));
+            }
+            if let Some(ref conv) = client_context.antigravity_conversation_id {
+                attrs.push(opentelemetry::KeyValue::new(
+                    "antigravity.google/conversation_id",
+                    conv.clone(),
+                ));
+            }
+            for (bk, bv) in &client_context.baggage_entries {
+                attrs.push(opentelemetry::KeyValue::new(
+                    format!("baggage.{bk}"),
+                    bv.clone(),
+                ));
+            }
             if is_unattributed {
                 attrs.push(opentelemetry::KeyValue::new("aops.session.missing", true));
             }
@@ -2134,26 +2166,23 @@ impl PkbSearchServer {
             let cx = parent_cx.with_span(span);
             let _guard = cx.clone().attach();
 
-            let res = if is_unattributed {
-                Err(McpError {
-                    code: ErrorCode::INVALID_PARAMS,
-                    message: Cow::from(format!(
-                        "Missing required 'session_id' for tool '{canonical_name_task}'. \
-                         Supply your own active session or conversation ID (e.g. CLAUDE_CODE_SESSION_ID or ANTIGRAVITY_CONVERSATION_ID) \
-                         or client identifier via `session_id` in tool arguments, `_meta.session_id`, or `x-session-id` header."
-                    )),
-                    data: None,
-                })
-            } else {
-                apply_client_identity(&mut args, client_context.client_name.as_deref());
-                this_task.dispatch_tool_sync(&canonical_name_task, &args)
+            apply_client_identity(&mut args, client_context.client_name.as_deref());
+            apply_baggage_session(&mut args, client_context.baggage_session_id.as_deref());
+            let res = match this_task.dispatch_tool_sync(&canonical_name_task, &args) {
+                Ok(ok) => Ok(ok),
+                Err(e) if e.code == ErrorCode::INVALID_PARAMS => {
+                    Ok(CallToolResult::error(vec![ContentBlock::text(e.message)]))
+                }
+                Err(e) => Err(e),
             };
 
             let metrics =
                 crate::otel::call_metrics::CallMetrics::finish_recording().unwrap_or_default();
 
             // Add output attributes
-            let is_error = res.is_err();
+            let is_error = res
+                .as_ref()
+                .map_or(true, |r| r.is_error == Some(true));
             let output_str = match &res {
                 Ok(r) => serde_json::to_string(r).unwrap_or_default(),
                 Err(e) => serde_json::to_string(e).unwrap_or_default(),
@@ -2460,9 +2489,9 @@ impl ServerHandler for PkbSearchServer {
 
     fn get_info(&self) -> rmcp::model::ServerConfig {
         let mut instructions = String::from(
-            "Every PKB tool call (both reads and writes) MUST include a non-empty `session_id` \
-             identifying the calling agent's own active session or conversation ID \
-             (e.g. CLAUDE_CODE_SESSION_ID or ANTIGRAVITY_CONVERSATION_ID) or client identifier.",
+            "Personal Knowledge Base (PKB) MCP server. \
+             Use `search` (with compact `detail` levels such as `snippet` or `ids`) and `resolve` to locate notes and tasks, \
+             `get_document` / `get_task` / `hydrate` to inspect full records, and `create_task` / `claim_task` / `release_task` to manage tasks.",
         );
         if self.stale_count > 0 {
             instructions.push_str(&format!(
@@ -2497,6 +2526,20 @@ pub(crate) fn apply_client_identity(args: &mut JsonValue, client_name: Option<&s
         obj.remove("_client");
         if client_name == Some(DASHBOARD_CLIENT) {
             obj.insert("_client".to_string(), serde_json::json!(DASHBOARD_CLIENT));
+        }
+    }
+}
+
+/// Set the server-owned `_baggage_session_id` marker from `baggage["session.id"]`.
+/// Any caller-supplied `_baggage_session_id` is dropped first.
+pub(crate) fn apply_baggage_session(args: &mut JsonValue, baggage_session_id: Option<&str>) {
+    if let Some(obj) = args.as_object_mut() {
+        obj.remove("_baggage_session_id");
+        if let Some(sid) = baggage_session_id {
+            obj.insert(
+                "_baggage_session_id".to_string(),
+                serde_json::json!(sid),
+            );
         }
     }
 }
