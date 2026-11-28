@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.13](https://github.com/nicsuzor/mem/compare/mem-v0.5.12...mem-v0.5.13) (2026-11-28)
+
+
+### Features
+
+* **mcp:** upgrade server to MCP 2026-07-28 contract standards ([#882](https://github.com/nicsuzor/mem/issues/882)) ([3df56d5](https://github.com/nicsuzor/mem/commit/3df56d591337994e033291096aae50ff672d7e6e))
+
 ## [0.5.12](https://github.com/nicsuzor/mem/compare/mem-v0.5.11...mem-v0.5.12) (2026-11-25)
 
 
