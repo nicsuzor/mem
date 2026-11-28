@@ -100,6 +100,14 @@ fn non_empty_trimmed(s: &str) -> Option<String> {
     }
 }
 
+const ALLOWED_BAGGAGE_PAIRS: &[(&str, &str)] = &[
+    ("session.id", "session_id"),
+    ("agent.id", "agent_id"),
+    ("prompt.id", "prompt_id"),
+    ("task.id", "task_id"),
+    ("parent.session.id", "parent_session_id"),
+];
+
 fn extract_trace_and_baggage(extractor: &dyn Extractor) -> (Option<Context>, BTreeMap<String, String>) {
     let mut ctx = global::get_text_map_propagator(|prop| prop.extract(extractor));
     if !ctx.span().span_context().is_valid() || ctx.baggage().is_empty() {
@@ -118,10 +126,19 @@ fn extract_trace_and_baggage(extractor: &dyn Extractor) -> (Option<Context>, BTr
         }
     }
 
-    let mut baggage_map = BTreeMap::new();
+    let mut raw_baggage = BTreeMap::new();
     for (k, (v, _)) in ctx.baggage().iter() {
         if let Some(val) = non_empty_trimmed(&v.as_str()) {
-            baggage_map.insert(k.as_str().to_string(), val);
+            raw_baggage.insert(k.as_str().to_string(), val);
+        }
+    }
+
+    // Filter to allowlisted baggage keys and canonicalize underscore aliases to dotted keys,
+    // preferring dotted over underscore when both appear in the same carrier.
+    let mut baggage_map = BTreeMap::new();
+    for &(dotted, underscore) in ALLOWED_BAGGAGE_PAIRS {
+        if let Some(val) = raw_baggage.get(dotted).or_else(|| raw_baggage.get(underscore)) {
+            baggage_map.insert(dotted.to_string(), val.clone());
         }
     }
 
@@ -463,7 +480,7 @@ mod tests {
         let meta = json!({
             "traceparent": "00-22222222222222222222222222222222-2222222222222222-01",
             "tracestate": "vendor=meta",
-            "baggage": "session.id=meta-baggage-sess,agent.id=james",
+            "baggage": "session.id=meta-baggage-sess,agent.id=test-agent",
             "io.modelcontextprotocol/clientInfo": { "name": "claude-code", "version": "2.1.0" },
             "antigravity.google/root_conversation_id": "root-conv-1",
             "antigravity.google/conversation_id": "conv-2",
@@ -485,13 +502,18 @@ mod tests {
         );
         assert_eq!(cx.session_id.as_deref(), Some("meta-baggage-sess"));
         assert_eq!(cx.baggage_session_id.as_deref(), Some("meta-baggage-sess"));
-        assert_eq!(cx.agent_id.as_deref(), Some("james"));
+        assert_eq!(cx.agent_id.as_deref(), Some("test-agent"));
         assert_eq!(cx.client_name.as_deref(), Some("claude-code"));
         assert_eq!(cx.client_version.as_deref(), Some("2.1.0"));
         assert_eq!(cx.forwarded_user_agent.as_deref(), Some("Mozilla/5.0 GeminiWeb/1.0"));
         assert_eq!(cx.tracestate.as_deref(), Some("vendor=meta"));
         assert_eq!(cx.antigravity_root_conversation_id.as_deref(), Some("root-conv-1"));
         assert_eq!(cx.antigravity_conversation_id.as_deref(), Some("conv-2"));
+        assert!(
+            !cx.baggage_entries.iter().any(|(k, _)| k == "env"),
+            "non-allowlisted baggage key 'env' must be filtered out: {:?}",
+            cx.baggage_entries
+        );
 
         // Fallback to antigravity.google/conversation_id when session.id is absent
         let meta_agy_only = json!({
@@ -508,5 +530,110 @@ mod tests {
         );
         assert_eq!(cx_agy.session_id.as_deref(), Some("conv-only"));
         assert_eq!(cx_agy.baggage_session_id, None);
+    }
+
+    #[test]
+    fn test_baggage_allowlist_dotted_and_underscore_resolution() {
+        // Allowlisted underscore keys resolve when dotted keys are absent;
+        // arbitrary non-allowlisted keys are filtered out.
+        let req = Request::builder()
+            .header(
+                "baggage",
+                "session_id=under-sess,agent_id=under-agent,prompt_id=under-prompt,task_id=under-task,parent_session_id=under-parent,env=prod,custom.secret=nope",
+            )
+            .body(())
+            .unwrap();
+        let (parts, _) = req.into_parts();
+        let cx = ClientContext::extract(Some(&parts), None, &json!({}));
+
+        assert_eq!(cx.session_id.as_deref(), Some("under-sess"));
+        assert_eq!(cx.baggage_session_id.as_deref(), Some("under-sess"));
+        assert_eq!(cx.agent_id.as_deref(), Some("under-agent"));
+        assert_eq!(cx.prompt_id.as_deref(), Some("under-prompt"));
+        assert_eq!(cx.task_id.as_deref(), Some("under-task"));
+        let map: BTreeMap<&str, &str> = cx
+            .baggage_entries
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .collect();
+        assert_eq!(map.get("session.id"), Some(&"under-sess"));
+        assert_eq!(map.get("agent.id"), Some(&"under-agent"));
+        assert_eq!(map.get("prompt.id"), Some(&"under-prompt"));
+        assert_eq!(map.get("task.id"), Some(&"under-task"));
+        assert_eq!(map.get("parent.session.id"), Some(&"under-parent"));
+        assert!(!map.contains_key("env"));
+        assert!(!map.contains_key("custom.secret"));
+        assert_eq!(map.len(), 5);
+
+        // When both dotted and underscore appear in the same carrier, dotted takes precedence.
+        let req_both = Request::builder()
+            .header(
+                "baggage",
+                "session_id=under-sess,session.id=dotted-sess,agent_id=under-agent,agent.id=dotted-agent,prompt_id=under-prompt,prompt.id=dotted-prompt,task_id=under-task,task.id=dotted-task,parent_session_id=under-parent,parent.session.id=dotted-parent",
+            )
+            .body(())
+            .unwrap();
+        let (parts_both, _) = req_both.into_parts();
+        let cx_both = ClientContext::extract(Some(&parts_both), None, &json!({}));
+        assert_eq!(cx_both.session_id.as_deref(), Some("dotted-sess"));
+        assert_eq!(cx_both.baggage_session_id.as_deref(), Some("dotted-sess"));
+        assert_eq!(cx_both.agent_id.as_deref(), Some("dotted-agent"));
+        assert_eq!(cx_both.prompt_id.as_deref(), Some("dotted-prompt"));
+        assert_eq!(cx_both.task_id.as_deref(), Some("dotted-task"));
+        let map_both: BTreeMap<&str, &str> = cx_both
+            .baggage_entries
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .collect();
+        assert_eq!(
+            map_both.get("parent.session.id"),
+            Some(&"dotted-parent")
+        );
+    }
+
+    #[test]
+    fn test_baggage_cross_variant_meta_precedence_over_headers() {
+        // Header uses dotted for session.id/prompt.id/parent.session.id and underscore for agent_id/task_id;
+        // _meta uses the opposite variant for every key and must win across all of them.
+        let req = Request::builder()
+            .header(
+                "baggage",
+                "session.id=hdr-sess,agent_id=hdr-agent,prompt.id=hdr-prompt,task_id=hdr-task,parent.session.id=hdr-parent,env=prod",
+            )
+            .body(())
+            .unwrap();
+        let (parts, _) = req.into_parts();
+
+        let meta = json!({
+            "baggage": "session_id=meta-sess,agent.id=meta-agent,prompt_id=meta-prompt,task.id=meta-task,parent_session_id=meta-parent,extra_unlisted=drop"
+        });
+        let cx = ClientContext::extract(
+            Some(&parts),
+            Some(&rmcp::model::RequestMetaObject(rmcp::model::MetaObject(
+                meta.as_object().unwrap().clone(),
+            ))),
+            &json!({}),
+        );
+
+        assert_eq!(cx.session_id.as_deref(), Some("meta-sess"));
+        assert_eq!(cx.session_source, SessionSource::Meta);
+        assert_eq!(cx.baggage_session_id.as_deref(), Some("meta-sess"));
+        assert_eq!(cx.agent_id.as_deref(), Some("meta-agent"));
+        assert_eq!(cx.prompt_id.as_deref(), Some("meta-prompt"));
+        assert_eq!(cx.task_id.as_deref(), Some("meta-task"));
+
+        let map: BTreeMap<&str, &str> = cx
+            .baggage_entries
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .collect();
+        assert_eq!(map.get("session.id"), Some(&"meta-sess"));
+        assert_eq!(map.get("agent.id"), Some(&"meta-agent"));
+        assert_eq!(map.get("prompt.id"), Some(&"meta-prompt"));
+        assert_eq!(map.get("task.id"), Some(&"meta-task"));
+        assert_eq!(map.get("parent.session.id"), Some(&"meta-parent"));
+        assert!(!map.contains_key("env"));
+        assert!(!map.contains_key("extra_unlisted"));
+        assert_eq!(map.len(), 5);
     }
 }

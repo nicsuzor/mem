@@ -183,13 +183,11 @@ async fn test_mcp_2026_07_28_catalog_annotations_2020_12_and_sep1303() {
     for tool in &list1.tools {
         let in_val = serde_json::to_value(tool.input_schema.as_ref()).unwrap();
         let props = in_val.get("properties").and_then(|p| p.as_object());
-        if tool.name != "update_task" {
-            assert!(
-                !props.is_some_and(|m| m.contains_key("session_id")),
-                "Published tool '{}' must not declare session_id in inputSchema.properties",
-                tool.name
-            );
-        }
+        assert!(
+            !props.is_some_and(|m| m.contains_key("session_id")),
+            "Published tool '{}' must not declare session_id in inputSchema.properties",
+            tool.name
+        );
         let req = in_val.get("required").and_then(|r| r.as_array());
         assert!(
             !req.is_some_and(|arr| arr.iter().any(|v| v.as_str() == Some("session_id"))),

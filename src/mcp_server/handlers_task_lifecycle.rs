@@ -55,12 +55,17 @@ impl PkbSearchServer {
     ) -> Result<CallToolResult, McpError> {
         let mut update_args = serde_json::Map::new();
         update_args.insert("id".to_string(), JsonValue::String(id.to_string()));
-        update_args.insert(
+        let mut updates = args
+            .get("updates")
+            .and_then(|v| v.as_object())
+            .cloned()
+            .unwrap_or_default();
+        updates.insert(
             "status".to_string(),
             JsonValue::String("in_progress".to_string()),
         );
         if let Some(assignee) = args.get("assignee").and_then(|v| v.as_str()) {
-            update_args.insert(
+            updates.insert(
                 "assignee".to_string(),
                 JsonValue::String(assignee.to_string()),
             );
@@ -73,8 +78,9 @@ impl PkbSearchServer {
             .map(str::to_string)
             .or_else(|| std::env::var("AOPS_SESSION_ID").ok());
         if let Some(sid) = session_id {
-            update_args.insert("session_id".to_string(), JsonValue::String(sid));
+            updates.insert("session_id".to_string(), JsonValue::String(sid));
         }
+        update_args.insert("updates".to_string(), JsonValue::Object(updates));
 
         self.handle_update_task(&JsonValue::Object(update_args))?;
 

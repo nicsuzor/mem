@@ -407,7 +407,6 @@ impl PkbSearchServer {
                         "waiting_since": { "type": "string" },
                         "due": { "type": "string" },
                         "project": { "type": "string" },
-                        "session_id": { "type": "string" },
                         "issue_url": { "type": "string" },
                         "release_summary": { "type": "string" },
                         "released_at": { "type": "string" },

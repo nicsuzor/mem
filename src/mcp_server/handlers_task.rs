@@ -2425,6 +2425,7 @@ impl PkbSearchServer {
             "force",
             "allow_missing_parent",
             "session_id",
+            "_baggage_session_id",
             "_client",
             "_meta",
         ];
@@ -3023,7 +3024,12 @@ impl PkbSearchServer {
         if let Some(obj) = args.as_object() {
             let unsupported: Vec<&str> = obj
                 .keys()
-                .filter(|k| !matches!(k.as_str(), "project" | "session_id"))
+                .filter(|k| {
+                    !matches!(
+                        k.as_str(),
+                        "project" | "session_id" | "_baggage_session_id" | "_client" | "_meta"
+                    )
+                })
                 .map(|k| k.as_str())
                 .collect();
             if !unsupported.is_empty() {

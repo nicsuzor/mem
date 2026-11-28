@@ -265,7 +265,7 @@ async fn test_calls_without_session_id_succeed_and_baggage_populates_task_frontm
     let create_no_sess = server
         .execute_tool_call(
             "create_task",
-            &json!({"title": "Unattributed task", "slug": "unattr-task", "project": "test", "assignee": "james", "allow_missing_parent": true}),
+            &json!({"title": "Unattributed task", "slug": "unattr-task", "project": "test", "assignee": "test-agent", "allow_missing_parent": true}),
             None,
             None,
         )
@@ -320,7 +320,7 @@ async fn test_calls_without_session_id_succeed_and_baggage_populates_task_frontm
     );
 
     let claimed = server
-        .execute_tool_call("claim_task", &json!({"id": created_id, "assignee": "james"}), Some(&parts), Some(&meta))
+        .execute_tool_call("claim_task", &json!({"id": created_id, "assignee": "test-agent"}), Some(&parts), Some(&meta))
         .await
         .expect("claim_task with baggage must succeed");
     assert_eq!(
@@ -348,7 +348,12 @@ async fn test_calls_without_session_id_succeed_and_baggage_populates_task_frontm
     let spans = exporter.spans.lock().unwrap().clone();
     let unattr_span = spans
         .iter()
-        .find(|s| s.name == "mcp.create_task")
+        .find(|s| {
+            s.name == "mcp.create_task"
+                && s.attributes.iter().any(|kv| {
+                    kv.key.as_str() == "input.value" && kv.value.as_str().contains("unattr-task")
+                })
+        })
         .expect("mcp.create_task span emitted");
     let attrs: std::collections::HashMap<String, String> = unattr_span
         .attributes
@@ -366,7 +371,12 @@ async fn test_calls_without_session_id_succeed_and_baggage_populates_task_frontm
 
     let baggage_span = spans
         .iter()
-        .rfind(|s| s.name == "mcp.create_task")
+        .rfind(|s| {
+            s.name == "mcp.create_task"
+                && s.attributes.iter().any(|kv| {
+                    kv.key.as_str() == "input.value" && kv.value.as_str().contains("baggage-task")
+                })
+        })
         .expect("second mcp.create_task span emitted");
     let b_attrs: std::collections::HashMap<String, String> = baggage_span
         .attributes
@@ -443,5 +453,147 @@ async fn test_stateless_client_info_trace_and_no_leakage() {
     assert_eq!(
         attrs2.get("aops.session.source").map(|s| s.as_str()),
         Some("none")
+    );
+}
+
+#[tokio::test]
+async fn test_claim_task_without_prior_session_id_and_update_task_no_baggage_leak() {
+    let _lock = crate::mcp_server::tests::otel_spans_tests::OTEL_TEST_MUTEX.lock().await;
+    let server = build_session_test_server();
+
+    // 1. Create a task WITHOUT session_id
+    let created = server
+        .execute_tool_call(
+            "create_task",
+            &json!({
+                "title": "Task without initial session",
+                "slug": "no-sess-init",
+                "project": "test",
+                "allow_missing_parent": true
+            }),
+            None,
+            None,
+        )
+        .await
+        .expect("create_task without session_id must succeed");
+    assert!(!created.is_error.unwrap_or(false));
+    let created_id = created
+        .structured_content
+        .as_ref()
+        .and_then(|v| v.get("id"))
+        .and_then(|v| v.as_str())
+        .expect("created task id")
+        .to_string();
+
+    let initial = server
+        .execute_tool_call("get_task", &json!({"id": created_id}), None, None)
+        .await
+        .unwrap();
+    let initial_fm = initial
+        .structured_content
+        .as_ref()
+        .and_then(|v| v.get("frontmatter"))
+        .expect("initial frontmatter");
+    assert_eq!(
+        initial_fm.get("session_id"),
+        None,
+        "task created without session_id must start with no session_id in frontmatter"
+    );
+
+    // 2. Claim that task with baggage["session.id"] and clientInfo -> must persist session_id (via updates) without leaking _baggage_session_id/_client
+    let mut meta_map = serde_json::Map::new();
+    meta_map.insert("baggage".to_string(), json!("session.id=claim-baggage-sess"));
+    meta_map.insert(
+        "io.modelcontextprotocol/clientInfo".to_string(),
+        json!({"name": "overwhelm-dashboard", "version": "1.0.0"}),
+    );
+    let meta = make_meta(meta_map);
+
+    let claimed = server
+        .execute_tool_call(
+            "claim_task",
+            &json!({"id": created_id, "assignee": "test-agent"}),
+            None,
+            Some(&meta),
+        )
+        .await
+        .expect("claim_task with baggage must succeed");
+    assert!(!claimed.is_error.unwrap_or(false));
+    let claimed_fm = claimed
+        .structured_content
+        .as_ref()
+        .and_then(|v| v.get("frontmatter"))
+        .expect("claimed frontmatter");
+    assert_eq!(
+        claimed_fm.get("session_id").and_then(|v| v.as_str()),
+        Some("claim-baggage-sess"),
+        "claim_task must persist session_id from baggage onto task created without session_id"
+    );
+    assert_eq!(claimed_fm.get("status").and_then(|v| v.as_str()), Some("in_progress"));
+    assert_eq!(claimed_fm.get("_baggage_session_id"), None);
+    assert_eq!(claimed_fm.get("_client"), None);
+
+    // 3. Call update_task with baggage["session.id"] and dashboard clientInfo -> must not leak routing keys into frontmatter
+    let updated = server
+        .execute_tool_call(
+            "update_task",
+            &json!({"id": created_id, "updates": {"priority": 2}}),
+            None,
+            Some(&meta),
+        )
+        .await
+        .expect("update_task with baggage and clientInfo must succeed");
+    assert!(
+        !updated.is_error.unwrap_or(false),
+        "update_task must succeed: {updated:?}"
+    );
+
+    let after_update = server
+        .execute_tool_call("get_task", &json!({"id": created_id}), None, None)
+        .await
+        .unwrap();
+    let updated_fm = after_update
+        .structured_content
+        .as_ref()
+        .and_then(|v| v.get("frontmatter"))
+        .expect("updated frontmatter");
+    assert_eq!(updated_fm.get("priority").and_then(|v| v.as_i64()), Some(2));
+    assert_eq!(
+        updated_fm.get("_baggage_session_id"),
+        None,
+        "_baggage_session_id must never leak into frontmatter: {updated_fm:?}"
+    );
+    assert_eq!(
+        updated_fm.get("_client"),
+        None,
+        "_client must never leak into frontmatter: {updated_fm:?}"
+    );
+    assert_eq!(
+        updated_fm.get("_meta"),
+        None,
+        "_meta must never leak into frontmatter: {updated_fm:?}"
+    );
+}
+
+#[tokio::test]
+async fn test_task_summary_accepts_injected_baggage_and_client_info() {
+    let _lock = crate::mcp_server::tests::otel_spans_tests::OTEL_TEST_MUTEX.lock().await;
+    let server = build_session_test_server();
+
+    let mut meta_map = serde_json::Map::new();
+    meta_map.insert("baggage".to_string(), json!("session.id=summary-baggage-sess"));
+    meta_map.insert(
+        "io.modelcontextprotocol/clientInfo".to_string(),
+        json!({"name": "overwhelm-dashboard", "version": "1.0.0"}),
+    );
+    let meta = make_meta(meta_map);
+
+    let res = server
+        .execute_tool_call("task_summary", &json!({}), None, Some(&meta))
+        .await
+        .expect("task_summary with baggage and clientInfo must succeed");
+    assert!(
+        !res.is_error.unwrap_or(false),
+        "task_summary must not reject injected _baggage_session_id or _client: {res:?}"
     );
 }
